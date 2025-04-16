@@ -23,44 +23,47 @@ import torch.nn.functional as F
 # GPU 사용 가능 여부 확인
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-# 랜덤 시드 설정
-# np.random.seed(42)
-# torch.manual_seed(42)
-
 STOCK_TICKERS = [
     "AAPL", "MSFT", "AMZN", "GOOGL", "NVDA", "TSLA", "JPM", "JNJ", "PG", "V"
 ]
 
 def setup_logger(log_dir='logs'):
-    """로깅 설정"""
-    # 로그 디렉토리 생성
+    """
+    로깅 설정 함수.
+    - 로그 디렉토리가 없으면 생성한다.
+    - 기존에 등록된 핸들러가 있다면 제거해 중복 로그 출력 방지.
+    - 파일에는 모든 내용을 시간과 함께 기록하고, 콘솔에는 시간 없이 간단히 출력한다.
+    - 에피소드 시작 메시지는 로그 파일에만 기록한다.
+    """
+
     os.makedirs(log_dir, exist_ok=True)
-    
-    # 현재 시간으로 로그 파일명 생성
     current_time = datetime.now().strftime('%Y%m%d_%H%M%S')
     log_file = os.path.join(log_dir, f'training_log_{current_time}.txt')
-    
-    # 로거 설정
+
     logger = logging.getLogger('PortfolioRL')
     logger.setLevel(logging.INFO)
-    
-    # 파일 핸들러
+
+    # 기존 핸들러가 있다면 제거하여 중복 출력 방지
+    if logger.hasHandlers():
+        logger.handlers.clear()
+
+    # 파일 핸들러 - 모든 내용을 시간과 함께 기록
+    file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
     file_handler = logging.FileHandler(log_file)
     file_handler.setLevel(logging.INFO)
-    
-    # 콘솔 핸들러
+    file_handler.setFormatter(file_formatter)
+    logger.addHandler(file_handler)
+
+    # 콘솔 핸들러 - 시간 없이 간단히 출력, 에피소드 시작 메시지는 제외
+    console_formatter = logging.Formatter('%(message)s')
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(logging.INFO)
-    
-    # 포맷터
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-    file_handler.setFormatter(formatter)
-    console_handler.setFormatter(formatter)
-    
-    # 핸들러 추가
-    logger.addHandler(file_handler)
+    console_handler.setFormatter(console_formatter)
+    # 에피소드 시작 메시지를 필터링하는 필터 추가
+    console_handler.addFilter(lambda record: not record.getMessage().startswith('=== 에피소드'))
     logger.addHandler(console_handler)
-    
+
+    logger.info(f"Logger initialized. Logging to file: {log_file}")
     return logger
 
 class RunningMeanStd:
@@ -962,7 +965,7 @@ def train_ppo_agent(env, n_assets, n_features, max_episodes, max_timesteps, logg
         episode_start_time = time.time()
         current_episode_steps = 0 # 에피소드 내 스텝 수 추적
             
-        logger.info(f"\n=== 에피소드 {episode+1} 시작 ===")
+        # logger.info(f"\n=== 에피소드 {episode+1} 시작 ===")
         
         # --- 수정: max_timesteps 루프 제거, total_steps 기준으로 변경 --- 
         # while current_episode_steps < max_timesteps:
