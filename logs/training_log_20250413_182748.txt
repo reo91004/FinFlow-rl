@@ -1,0 +1,829 @@
+2025-04-13 18:27:48,576 - INFO - 
+===== GPU 상태 확인 =====
+2025-04-13 18:27:48,649 - INFO - CUDA 사용 가능: NVIDIA RTX A5000
+2025-04-13 18:27:48,649 - INFO - GPU 메모리 사용량: 0.00 MB
+2025-04-13 18:27:48,650 - INFO - GPU 메모리 예약량: 0.00 MB
+2025-04-13 18:27:48,656 - INFO - GPU 사용률: 9%
+2025-04-13 18:27:48,656 - INFO - GPU 메모리 사용률: 1%
+2025-04-13 18:28:09,184 - INFO - 
+=== 에피소드 1 시작 ===
+2025-04-13 18:28:09,357 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,373 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,382 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,395 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,405 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,405 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:09,411 - INFO - 
+=== 에피소드 2 시작 ===
+2025-04-13 18:28:09,420 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,427 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,435 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,444 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,455 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,455 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:09,457 - INFO - 
+=== 에피소드 3 시작 ===
+2025-04-13 18:28:09,463 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,471 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,478 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,489 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,501 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,501 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:09,503 - INFO - 
+=== 에피소드 4 시작 ===
+2025-04-13 18:28:09,509 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,517 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,525 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,536 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,546 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,546 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:09,549 - INFO - 
+=== 에피소드 5 시작 ===
+2025-04-13 18:28:09,555 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,563 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,571 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,581 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,592 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,592 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:09,595 - INFO - 
+=== 에피소드 6 시작 ===
+2025-04-13 18:28:09,607 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,616 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,624 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,634 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,644 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,644 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:09,646 - INFO - 
+=== 에피소드 7 시작 ===
+2025-04-13 18:28:09,653 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,661 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,669 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,680 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,690 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,690 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:09,693 - INFO - 
+=== 에피소드 8 시작 ===
+2025-04-13 18:28:09,702 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,709 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,717 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,727 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,737 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,737 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:09,739 - INFO - 
+=== 에피소드 9 시작 ===
+2025-04-13 18:28:09,745 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,753 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,761 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,770 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,785 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,786 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:09,789 - INFO - 
+=== 에피소드 10 시작 ===
+2025-04-13 18:28:09,796 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,804 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,812 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,821 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,831 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,831 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:09,834 - INFO - 
+=== 에피소드 11 시작 ===
+2025-04-13 18:28:09,841 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,848 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,857 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,870 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,880 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,880 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:09,883 - INFO - 
+=== 에피소드 12 시작 ===
+2025-04-13 18:28:09,889 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,900 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,908 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,917 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,928 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,928 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:09,931 - INFO - 
+=== 에피소드 13 시작 ===
+2025-04-13 18:28:09,937 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,945 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,954 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,964 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,974 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,974 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:09,977 - INFO - 
+=== 에피소드 14 시작 ===
+2025-04-13 18:28:09,984 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:09,992 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,002 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,011 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,021 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,021 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:10,025 - INFO - 
+=== 에피소드 15 시작 ===
+2025-04-13 18:28:10,035 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,045 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,054 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,063 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,074 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,075 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:10,077 - INFO - 
+=== 에피소드 16 시작 ===
+2025-04-13 18:28:10,084 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,091 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,099 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,109 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,119 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,119 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:10,121 - INFO - 
+=== 에피소드 17 시작 ===
+2025-04-13 18:28:10,128 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,137 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,146 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,155 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,165 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,165 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:10,168 - INFO - 
+=== 에피소드 18 시작 ===
+2025-04-13 18:28:10,176 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,183 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,191 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,204 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,214 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,214 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:10,217 - INFO - 
+=== 에피소드 19 시작 ===
+2025-04-13 18:28:10,224 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,231 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,242 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,252 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,264 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,264 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:10,266 - INFO - 
+=== 에피소드 20 시작 ===
+2025-04-13 18:28:10,275 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,282 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,290 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,300 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,310 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,310 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:10,509 - INFO - 
+=== 에피소드 21 시작 ===
+2025-04-13 18:28:10,516 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,524 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,532 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,542 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,553 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,553 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:10,555 - INFO - 
+=== 에피소드 22 시작 ===
+2025-04-13 18:28:10,562 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,574 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,583 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,592 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,602 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,602 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:10,604 - INFO - 
+=== 에피소드 23 시작 ===
+2025-04-13 18:28:10,611 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,619 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,627 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,636 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,646 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,647 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:10,649 - INFO - 
+=== 에피소드 24 시작 ===
+2025-04-13 18:28:10,657 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,664 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,673 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,685 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,696 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,696 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:10,698 - INFO - 
+=== 에피소드 25 시작 ===
+2025-04-13 18:28:10,704 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,712 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,720 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,730 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,741 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,741 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:10,744 - INFO - 
+=== 에피소드 26 시작 ===
+2025-04-13 18:28:10,751 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,759 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,767 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,776 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,786 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,786 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:10,788 - INFO - 
+=== 에피소드 27 시작 ===
+2025-04-13 18:28:10,795 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,802 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,811 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,820 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,831 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,831 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:10,834 - INFO - 
+=== 에피소드 28 시작 ===
+2025-04-13 18:28:10,842 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,850 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,860 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,869 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,879 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,879 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:10,882 - INFO - 
+=== 에피소드 29 시작 ===
+2025-04-13 18:28:10,888 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,896 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,904 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,913 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,923 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,923 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:10,925 - INFO - 
+=== 에피소드 30 시작 ===
+2025-04-13 18:28:10,932 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,942 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,952 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,965 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,975 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,975 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:10,978 - INFO - 
+=== 에피소드 31 시작 ===
+2025-04-13 18:28:10,984 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:10,991 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,000 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,009 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,019 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,019 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:11,022 - INFO - 
+=== 에피소드 32 시작 ===
+2025-04-13 18:28:11,032 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,040 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,048 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,058 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,071 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,072 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:11,074 - INFO - 
+=== 에피소드 33 시작 ===
+2025-04-13 18:28:11,080 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,088 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,096 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,105 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,115 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,115 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:11,118 - INFO - 
+=== 에피소드 34 시작 ===
+2025-04-13 18:28:11,124 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,131 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,139 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,148 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,162 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,162 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:11,164 - INFO - 
+=== 에피소드 35 시작 ===
+2025-04-13 18:28:11,170 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,178 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,186 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,195 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,206 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,207 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:11,209 - INFO - 
+=== 에피소드 36 시작 ===
+2025-04-13 18:28:11,217 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,225 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,235 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,246 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,258 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,258 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:11,261 - INFO - 
+=== 에피소드 37 시작 ===
+2025-04-13 18:28:11,268 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,277 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,285 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,294 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,304 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,304 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:11,306 - INFO - 
+=== 에피소드 38 시작 ===
+2025-04-13 18:28:11,313 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,322 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,330 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,340 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,351 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,351 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:11,353 - INFO - 
+=== 에피소드 39 시작 ===
+2025-04-13 18:28:11,361 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,369 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,377 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,386 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,396 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,396 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:11,399 - INFO - 
+=== 에피소드 40 시작 ===
+2025-04-13 18:28:11,405 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,412 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,421 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,430 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,439 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,440 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:11,637 - INFO - 
+=== 에피소드 41 시작 ===
+2025-04-13 18:28:11,645 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,652 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,661 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,670 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,680 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,680 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:11,683 - INFO - 
+=== 에피소드 42 시작 ===
+2025-04-13 18:28:11,689 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,699 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,707 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,717 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,727 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,727 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:11,730 - INFO - 
+=== 에피소드 43 시작 ===
+2025-04-13 18:28:11,740 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,748 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,759 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,768 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,778 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,779 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:11,781 - INFO - 
+=== 에피소드 44 시작 ===
+2025-04-13 18:28:11,787 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,795 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,808 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,817 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,827 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,827 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:11,830 - INFO - 
+=== 에피소드 45 시작 ===
+2025-04-13 18:28:11,838 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,845 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,854 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,867 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,881 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,881 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:11,884 - INFO - 
+=== 에피소드 46 시작 ===
+2025-04-13 18:28:11,893 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,901 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,910 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,920 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,930 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,930 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:11,933 - INFO - 
+=== 에피소드 47 시작 ===
+2025-04-13 18:28:11,939 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,947 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,955 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,965 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,979 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,979 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:11,981 - INFO - 
+=== 에피소드 48 시작 ===
+2025-04-13 18:28:11,988 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:11,995 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,004 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,014 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,025 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,025 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:12,028 - INFO - 
+=== 에피소드 49 시작 ===
+2025-04-13 18:28:12,040 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,050 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,060 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,070 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,080 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,080 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:12,082 - INFO - 
+=== 에피소드 50 시작 ===
+2025-04-13 18:28:12,090 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,097 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,105 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,118 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,131 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,131 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:12,135 - INFO - 
+=== 에피소드 51 시작 ===
+2025-04-13 18:28:12,142 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,149 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,157 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,166 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,177 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,177 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:12,179 - INFO - 
+=== 에피소드 52 시작 ===
+2025-04-13 18:28:12,186 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,195 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,204 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,216 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,229 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,229 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:12,231 - INFO - 
+=== 에피소드 53 시작 ===
+2025-04-13 18:28:12,238 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,245 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,253 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,262 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,274 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,275 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:12,277 - INFO - 
+=== 에피소드 54 시작 ===
+2025-04-13 18:28:12,285 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,292 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,302 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,312 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,326 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,326 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:12,328 - INFO - 
+=== 에피소드 55 시작 ===
+2025-04-13 18:28:12,334 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,342 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,350 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,359 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,369 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,369 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:12,372 - INFO - 
+=== 에피소드 56 시작 ===
+2025-04-13 18:28:12,379 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,387 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,396 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,408 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,420 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,420 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:12,422 - INFO - 
+=== 에피소드 57 시작 ===
+2025-04-13 18:28:12,428 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,436 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,444 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,454 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,464 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,464 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:12,466 - INFO - 
+=== 에피소드 58 시작 ===
+2025-04-13 18:28:12,475 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,485 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,493 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,504 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,514 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,514 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:12,516 - INFO - 
+=== 에피소드 59 시작 ===
+2025-04-13 18:28:12,527 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,535 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,545 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,554 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,565 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,565 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:12,568 - INFO - 
+=== 에피소드 60 시작 ===
+2025-04-13 18:28:12,575 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,582 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,591 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,600 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,611 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,611 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:12,827 - INFO - 
+=== 에피소드 61 시작 ===
+2025-04-13 18:28:12,835 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,846 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,854 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,865 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,876 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,876 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:12,878 - INFO - 
+=== 에피소드 62 시작 ===
+2025-04-13 18:28:12,885 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,892 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,901 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,910 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,923 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,923 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:12,926 - INFO - 
+=== 에피소드 63 시작 ===
+2025-04-13 18:28:12,933 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,941 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,949 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,961 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,971 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,971 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:12,974 - INFO - 
+=== 에피소드 64 시작 ===
+2025-04-13 18:28:12,980 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,987 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:12,996 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,005 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,022 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,022 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:13,025 - INFO - 
+=== 에피소드 65 시작 ===
+2025-04-13 18:28:13,031 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,038 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,047 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,056 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,066 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,066 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:13,068 - INFO - 
+=== 에피소드 66 시작 ===
+2025-04-13 18:28:13,075 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,083 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,091 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,103 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,113 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,113 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:13,116 - INFO - 
+=== 에피소드 67 시작 ===
+2025-04-13 18:28:13,124 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,131 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,139 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,149 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,163 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,163 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:13,165 - INFO - 
+=== 에피소드 68 시작 ===
+2025-04-13 18:28:13,172 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,181 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,191 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,201 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,213 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,213 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:13,215 - INFO - 
+=== 에피소드 69 시작 ===
+2025-04-13 18:28:13,223 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,231 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,239 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,249 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,259 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,259 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:13,262 - INFO - 
+=== 에피소드 70 시작 ===
+2025-04-13 18:28:13,269 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,277 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,285 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,294 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,304 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,304 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:13,307 - INFO - 
+=== 에피소드 71 시작 ===
+2025-04-13 18:28:13,314 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,322 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,330 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,341 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,351 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,351 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:13,354 - INFO - 
+=== 에피소드 72 시작 ===
+2025-04-13 18:28:13,361 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,369 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,377 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,387 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,397 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,397 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:13,400 - INFO - 
+=== 에피소드 73 시작 ===
+2025-04-13 18:28:13,409 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,417 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,425 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,434 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,444 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,444 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:13,446 - INFO - 
+=== 에피소드 74 시작 ===
+2025-04-13 18:28:13,453 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,460 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,470 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,479 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,489 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,490 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:13,493 - INFO - 
+=== 에피소드 75 시작 ===
+2025-04-13 18:28:13,503 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,512 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,522 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,531 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,541 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,541 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:13,544 - INFO - 
+=== 에피소드 76 시작 ===
+2025-04-13 18:28:13,550 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,558 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,566 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,577 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,587 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,587 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:13,590 - INFO - 
+=== 에피소드 77 시작 ===
+2025-04-13 18:28:13,596 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,604 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,615 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,626 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,636 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,636 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:13,638 - INFO - 
+=== 에피소드 78 시작 ===
+2025-04-13 18:28:13,645 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,652 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,660 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,670 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,680 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,680 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:13,683 - INFO - 
+=== 에피소드 79 시작 ===
+2025-04-13 18:28:13,689 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,696 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,705 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,718 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,727 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,727 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:13,730 - INFO - 
+=== 에피소드 80 시작 ===
+2025-04-13 18:28:13,737 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,744 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,753 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,762 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,774 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,774 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:13,973 - INFO - 
+=== 에피소드 81 시작 ===
+2025-04-13 18:28:13,981 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:13,988 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,000 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,009 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,019 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,019 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:14,021 - INFO - 
+=== 에피소드 82 시작 ===
+2025-04-13 18:28:14,029 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,039 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,048 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,057 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,068 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,068 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:14,071 - INFO - 
+=== 에피소드 83 시작 ===
+2025-04-13 18:28:14,078 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,087 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,096 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,107 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,118 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,118 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:14,120 - INFO - 
+=== 에피소드 84 시작 ===
+2025-04-13 18:28:14,127 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,135 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,149 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,159 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,168 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,169 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:14,171 - INFO - 
+=== 에피소드 85 시작 ===
+2025-04-13 18:28:14,177 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,185 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,193 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,203 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,213 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,213 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:14,216 - INFO - 
+=== 에피소드 86 시작 ===
+2025-04-13 18:28:14,224 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,232 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,241 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,251 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,261 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,261 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:14,263 - INFO - 
+=== 에피소드 87 시작 ===
+2025-04-13 18:28:14,274 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,282 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,290 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,300 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,310 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,310 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:14,312 - INFO - 
+=== 에피소드 88 시작 ===
+2025-04-13 18:28:14,320 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,328 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,340 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,349 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,359 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,359 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:14,361 - INFO - 
+=== 에피소드 89 시작 ===
+2025-04-13 18:28:14,368 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,379 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,387 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,396 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,406 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,406 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:14,409 - INFO - 
+=== 에피소드 90 시작 ===
+2025-04-13 18:28:14,416 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,426 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,438 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,448 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,458 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,458 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:14,461 - INFO - 
+=== 에피소드 91 시작 ===
+2025-04-13 18:28:14,470 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,477 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,486 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,495 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,505 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,505 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:14,508 - INFO - 
+=== 에피소드 92 시작 ===
+2025-04-13 18:28:14,514 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,521 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,530 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,542 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,552 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,552 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:14,555 - INFO - 
+=== 에피소드 93 시작 ===
+2025-04-13 18:28:14,563 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,571 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,579 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,589 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,600 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,600 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:14,602 - INFO - 
+=== 에피소드 94 시작 ===
+2025-04-13 18:28:14,609 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,618 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,629 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,638 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,649 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,649 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:14,651 - INFO - 
+=== 에피소드 95 시작 ===
+2025-04-13 18:28:14,658 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,665 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,674 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,683 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,693 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,694 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:14,696 - INFO - 
+=== 에피소드 96 시작 ===
+2025-04-13 18:28:14,703 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,710 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,718 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,729 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,743 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,743 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:14,746 - INFO - 
+=== 에피소드 97 시작 ===
+2025-04-13 18:28:14,752 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,760 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,770 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,779 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,789 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,789 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:14,791 - INFO - 
+=== 에피소드 98 시작 ===
+2025-04-13 18:28:14,798 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,805 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,813 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,823 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,836 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,837 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:14,839 - INFO - 
+=== 에피소드 99 시작 ===
+2025-04-13 18:28:14,846 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,853 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,862 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,871 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,881 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,881 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:14,884 - INFO - 
+=== 에피소드 100 시작 ===
+2025-04-13 18:28:14,894 - ERROR - 타임스텝 0 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,901 - ERROR - 타임스텝 1 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,909 - ERROR - 타임스텝 2 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,920 - ERROR - 타임스텝 3 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,931 - ERROR - 타임스텝 4 실행 중 오류: can't assign a numpy.ndarray to a torch.cuda.FloatTensor
+2025-04-13 18:28:14,931 - ERROR - 연속 예외 발생 한도 초과. 현재 에피소드 중단.
+2025-04-13 18:28:14,932 - INFO - 
+학습 완료!
+2025-04-13 18:28:23,135 - INFO - 
+Step 500 보상 분석:
+Raw Log Return: -0.0030
+Scaled Log Return: -0.0299
+Portfolio Variance: 0.0003
+Scaled Variance: 0.0058
+Transaction Cost: 0.0001
+Portfolio Value: 0.8652
+Moving Average Reward: -0.0769
+Weight Distribution - Min: 0.0000, Max: 0.2510, Mean: 0.1000
+2025-04-13 18:28:27,162 - INFO - 
+Step 1000 보상 분석:
+Raw Log Return: 0.0234
+Scaled Log Return: 0.2344
+Portfolio Variance: 0.0004
+Scaled Variance: 0.0080
+Transaction Cost: 0.0001
+Portfolio Value: 2.1109
+Moving Average Reward: 0.0567
+Weight Distribution - Min: 0.0000, Max: 0.2999, Mean: 0.1000
