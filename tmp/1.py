@@ -44,18 +44,24 @@ def setup_logger(log_dir='logs'):
     logger = logging.getLogger('PortfolioRL')
     logger.setLevel(logging.INFO)
     
-    # 파일 핸들러
-    file_handler = logging.FileHandler(log_file)
-    file_handler.setLevel(logging.INFO)
+    # 기존 핸들러 제거
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
     
-    # 콘솔 핸들러
+    # 파일 핸들러 - 모든 로그 기록
+    file_handler = logging.FileHandler(log_file)
+    file_handler.setLevel(logging.DEBUG)
+    
+    # 콘솔 핸들러 - 중요한 정보만 출력
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(logging.INFO)
     
     # 포맷터
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-    file_handler.setFormatter(formatter)
-    console_handler.setFormatter(formatter)
+    file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    console_formatter = logging.Formatter('%(message)s')
+    
+    file_handler.setFormatter(file_formatter)
+    console_handler.setFormatter(console_formatter)
     
     # 핸들러 추가
     logger.addHandler(file_handler)
@@ -961,10 +967,11 @@ def train_ppo_agent(env, n_assets, n_features, max_episodes, max_timesteps, logg
         episode_start_time = time.time()
         current_episode_steps = 0 # 에피소드 내 스텝 수 추적
             
-        logger.info(f"\n=== 에피소드 {episode+1} 시작 ===")
+        # 에피소드 시작 로그는 10번에 한 번만 출력
+        if episode % 10 == 0:
+            logger.debug(f"=== 에피소드 {episode+1} 시작 ===")
         
         # --- 수정: max_timesteps 루프 제거, total_steps 기준으로 변경 --- 
-        # while current_episode_steps < max_timesteps:
         done = False
         truncated = False
         while not done and not truncated:
@@ -1003,24 +1010,25 @@ def train_ppo_agent(env, n_assets, n_features, max_episodes, max_timesteps, logg
         # 현재는 매 에피소드 보상 기준으로 저장
         ppo_agent.save_model(episode, episode_reward)
             
+        # 5번에 한 번만 성능 정보 출력
         if (episode + 1) % 5 == 0:
             avg_reward = np.mean(episode_rewards[-5:])
             # 에피소드 종료 시점의 info 사용 시 주의 (루프 마지막 info)
             final_portfolio_value = info.get('portfolio_value', env.portfolio_value) if 'info' in locals() else env.portfolio_value
-            print(f"\n에피소드 {episode+1}/{max_episodes}")
-            print(f"최종 보상: {episode_reward:.4f}")
-            print(f"최종 포트폴리오 가치: {final_portfolio_value:.2f}") # 소수점 2자리
-            print(f"최근 5개 평균 보상: {avg_reward:.4f}")
-            print(f"에피소드 스텝 수: {current_episode_steps}") # 실제 스텝 수 출력
-            print(f"에피소드 시간: {episode_time:.2f}초 ({steps_per_second:.1f} 스텝/초)")
-            print(f"총 스텝 수: {total_steps}")
-            print(f"총 업데이트 횟수: {update_count}")
+            logger.info(f"\n에피소드 {episode+1}/{max_episodes}")
+            logger.info(f"최종 보상: {episode_reward:.4f}")
+            logger.info(f"최종 포트폴리오 가치: {final_portfolio_value:.2f}") # 소수점 2자리
+            logger.info(f"최근 5개 평균 보상: {avg_reward:.4f}")
+            logger.info(f"에피소드 스텝 수: {current_episode_steps}") # 실제 스텝 수 출력
+            logger.info(f"에피소드 시간: {episode_time:.2f}초 ({steps_per_second:.1f} 스텝/초)")
+            logger.info(f"총 스텝 수: {total_steps}")
+            logger.info(f"총 업데이트 횟수: {update_count}")
             print_memory_stats()
                 
     total_training_time = time.time() - training_start_time
-    print(f"\n총 학습 시간: {total_training_time:.2f}초")
-    print(f"총 스텝 수: {total_steps}")
-    print(f"스텝당 평균 시간: {total_training_time/total_steps if total_steps > 0 else 0:.4f}초")
+    logger.info(f"\n총 학습 시간: {total_training_time:.2f}초")
+    logger.info(f"총 스텝 수: {total_steps}")
+    logger.info(f"스텝당 평균 시간: {total_training_time/total_steps if total_steps > 0 else 0:.4f}초")
     
     # --- 학습 종료 후 obs_rms를 에이전트에 저장 --- 
     if hasattr(env, 'obs_rms') and env.normalize_states:
@@ -1325,9 +1333,6 @@ def main():
          
          # 성능 시각화
          plot_performance(test_results['portfolio_values'], title="PPO Portfolio Performance (Evaluation)")
-
-    # 결과 반환 (필요한 경우)
-    # return { ... } # main 함수의 반환 값은 현재 사용되지 않음
 
 if __name__ == "__main__":
     main()
