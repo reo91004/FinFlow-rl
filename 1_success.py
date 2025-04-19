@@ -25,7 +25,7 @@ DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 # 분석 대상 주식 티커 목록
 STOCK_TICKERS = [
-    "AAPL", "MSFT", "AMZN", "GOOGL", "NVDA", "TSLA", "JPM", "JNJ", "PG", "V"
+    "AAPL", "MSFT", "AMZN", "GOOGL", "AMD", "TSLA", "JPM", "JNJ", "PG", "V"
 ]
 
 # 학습/테스트 데이터 기간 설정
@@ -514,9 +514,9 @@ class ActorCritic(nn.Module):
         # 상태 텐서 평탄화 (batch_size, n_assets * n_features)
         original_shape = states.shape
         if states.dim() == 3: # 배치 처리
-            states = states.view(states.size(0), -1)
+            states = states.reshape(states.size(0), -1) # 수정: reshape 사용
         elif states.dim() == 2: # 단일 상태 처리 (추론 시)
-            states = states.view(1, -1)
+            states = states.reshape(1, -1) # 수정: reshape 사용
         else:
             raise ValueError(f"지원하지 않는 입력 상태 차원: {original_shape}")
 
@@ -1085,9 +1085,19 @@ def fetch_and_preprocess_data(start_date, end_date, tickers, save_path=DATA_SAVE
             if isinstance(raw_data.columns, pd.MultiIndex):
                 stock_data.columns = stock_data.columns.get_level_values(0)
 
-            if stock_data.isnull().values.any(): stock_data.ffill(inplace=True).bfill(inplace=True)
-            if stock_data.isnull().values.all():
-                logger.warning(f"{ticker}: 데이터 전체 NaN. 건너<0xEB><0x9A><0x8D>.")
+            # if stock_data.isnull().values.any(): stock_data.ffill(inplace=True).bfill(inplace=True)
+            # 수정: inplace=True 호출 분리
+            if stock_data.isnull().values.any():
+                stock_data.ffill(inplace=True)
+                stock_data.bfill(inplace=True)
+
+            # NaN이 여전히 남아있을 경우 (ffill/bfill로 채워지지 않는 경우) 0으로 채움
+            if stock_data.isnull().values.any():
+                stock_data.fillna(0, inplace=True)
+
+            # 데이터 전체가 NaN이었는지 다시 확인 (fillna 후에도 가능성 있음)
+            if stock_data.isnull().values.all(): # all() 체크 위치 이동 및 조건 강화
+                logger.warning(f"{ticker}: 데이터 처리 후에도 전체 NaN. 건너<0xEB><0x9A><0x8D>.")
                 error_count += 1; continue
 
             stock_data['MACD'] = compute_macd(stock_data['Close'])
@@ -1095,7 +1105,12 @@ def fetch_and_preprocess_data(start_date, end_date, tickers, save_path=DATA_SAVE
             for window in [14, 21, 100]:
                 stock_data[f'MA{window}'] = stock_data['Close'].rolling(window=window, min_periods=1).mean()
 
-            stock_data.bfill(inplace=True).ffill(inplace=True).fillna(0, inplace=True)
+            # stock_data.bfill(inplace=True).ffill(inplace=True).fillna(0, inplace=True)
+            # 수정: 지표 계산 후 NaN 처리 강화
+            stock_data.bfill(inplace=True)
+            stock_data.ffill(inplace=True)
+            stock_data.fillna(0, inplace=True) # 최종적으로 0으로 채움
+
             processed_dfs[ticker] = stock_data[FEATURE_NAMES]
 
         except Exception as e:
