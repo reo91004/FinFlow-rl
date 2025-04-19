@@ -1421,7 +1421,8 @@ def evaluate_ppo_agent(env: StockPortfolioEnv, ppo_agent: PPO, max_test_timestep
             logger.error("모델 로드 실패, 평가 중단.")
             return None
 
-    state, info_init = env.reset()
+    # 평가 환경 리셋 시 시작 인덱스를 0으로 고정
+    state, info_init = env.reset(start_index=0) # start_index=0 추가
     total_raw_reward = 0.0
     portfolio_values = [info_init['portfolio_value']]
     daily_returns = []
@@ -1603,11 +1604,14 @@ def main():
                 ref_weights_mean = ref_weights.mean(axis=0)
                 plot_feature_importance(drl_weights_mean, ref_weights_mean, plot_dir=run_dir,
                                         filename='feature_importance.png')
-                correlation = compute_correlation(drl_weights_mean, ref_weights_mean)
-                logger.info(f" DRL과 참조 모델 평균 특성 중요도 상관계수: {correlation:.4f}")
+                # 상관관계는 평균 가중치의 절댓값으로 계산
+                drl_weights_mean_abs = np.abs(drl_weights_mean)
+                ref_weights_mean_abs = np.abs(ref_weights_mean)
+                correlation = compute_correlation(drl_weights_mean_abs, ref_weights_mean_abs)
+                logger.info(f" DRL과 참조 모델 평균 특성 중요도 **절댓값** 상관계수: {correlation:.4f}") # 로그 메시지 수정
 
             plot_integrated_gradients(
-                drl_weights_mean, plot_dir=run_dir,
+                drl_weights_mean, plot_dir=run_dir, # 시각화는 원래 값 사용
                 title="DRL Agent Mean Integrated Gradients", filename='integrated_gradients_mean.png'
             )
         logger.info(" XAI 분석 완료!")
