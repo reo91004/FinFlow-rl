@@ -58,11 +58,12 @@ RMS_EPSILON = 1e-8
 # GAE 설정
 LAMBDA_GAE = 0.95
 
-# 모델 및 로그 저장 경로
+# 모델, 데이터 캐시, 결과 저장 경로
 MODEL_SAVE_PATH = 'models'
-LOG_SAVE_PATH = 'logs'
-PLOT_SAVE_PATH = 'plots'
+# LOG_SAVE_PATH = 'logs' # 제거됨
+# PLOT_SAVE_PATH = 'plots' # 제거됨
 DATA_SAVE_PATH = 'data'
+RESULTS_BASE_PATH = 'results' # 새로운 결과 저장 기본 경로
 
 # 설명 가능한 AI (XAI) 관련 설정
 INTEGRATED_GRADIENTS_STEPS = 50
@@ -72,18 +73,17 @@ XAI_SAMPLE_COUNT = 5 # 통합 그래디언트 분석 샘플 수
 FEATURE_NAMES = ['Open', 'High', 'Low', 'Close', 'Volume', 'MACD', 'RSI', 'MA14', 'MA21', 'MA100']
 
 # --- 로깅 설정 ---
-def setup_logger(log_dir=LOG_SAVE_PATH):
+def setup_logger(run_dir):
     """
-    로깅 시스템을 설정합니다.
-    파일 핸들러는 INFO 레벨 이상, 콘솔 핸들러는 WARNING 레벨 이상만 출력하도록 변경.
-    특정 필터는 제거하고 레벨로 제어합니다.
+    지정된 실행 디렉토리 내에 로그 파일을 생성하도록 로깅 시스템을 설정합니다.
+    파일 핸들러는 INFO 레벨 이상, 콘솔 핸들러는 WARNING 레벨 이상만 출력합니다.
+    Args:
+        run_dir (str): 로그 파일을 포함할 실행별 결과 디렉토리 경로.
     """
-    os.makedirs(log_dir, exist_ok=True)
-    current_time = datetime.now().strftime('%Y%m%d_%H%M%S')
-    log_file = os.path.join(log_dir, f'training_log_{current_time}.txt')
+    # os.makedirs(log_dir, exist_ok=True) # main에서 생성하므로 제거
+    log_file = os.path.join(run_dir, 'training.log') # 로그 파일 경로 수정
 
     logger = logging.getLogger('PortfolioRL')
-    # 기본 로거 레벨을 DEBUG로 설정하여 모든 메시지 처리 가능하도록 함
     logger.setLevel(logging.DEBUG)
 
     # 기존 핸들러 제거
@@ -1483,12 +1483,14 @@ def main():
     torch.manual_seed(current_time_seed)
     if torch.cuda.is_available(): torch.cuda.manual_seed_all(current_time_seed)
 
-    logger = setup_logger()
-
+    # --- 실행 시점 기준 결과 저장 디렉토리 생성 ---
     run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_plot_dir = os.path.join(PLOT_SAVE_PATH, run_timestamp)
-    os.makedirs(run_plot_dir, exist_ok=True)
-    logger.info(f"결과 저장 폴더: {run_plot_dir}")
+    run_dir = os.path.join(RESULTS_BASE_PATH, run_timestamp) # 기본 경로 사용
+    os.makedirs(run_dir, exist_ok=True)
+
+    # 로거 설정 (생성된 run_dir 전달)
+    logger = setup_logger(run_dir)
+    logger.info(f"결과 저장 폴더: {run_dir}")
 
     # --- 시스템 환경 확인 (INFO 레벨 유지) ---
     logger.info("\n" + "="*15 + " 시스템 환경 확인 " + "="*15)
@@ -1571,15 +1573,11 @@ def main():
     logger.info(f" 칼마 비율: {metrics['calmar_ratio']:.2f}")
     logger.info(f" 테스트 기간 총 Raw 보상: {test_results['episode_reward']:.4f}")
 
-    # 그래프 저장 폴더 생성
-    run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_plot_dir = os.path.join(PLOT_SAVE_PATH, run_timestamp)
-    os.makedirs(run_plot_dir, exist_ok=True)
-
+    # 그래프 저장
     plot_performance(
         test_results['portfolio_values'], dates=test_dates,
-        title="PPO Portfolio Performance (Evaluation)", filename=f"PPO_performance_{run_timestamp}.png",
-        plot_dir=run_plot_dir
+        title="PPO Portfolio Performance (Evaluation)", filename=f"PPO_performance.png",
+        plot_dir=run_dir
     )
     logger.info("="*48)
 
@@ -1603,14 +1601,14 @@ def main():
                 logger.error("참조 모델 가중치 계산 실패. 비교 분석 생략.")
             else:
                 ref_weights_mean = ref_weights.mean(axis=0)
-                plot_feature_importance(drl_weights_mean, ref_weights_mean, plot_dir=run_plot_dir,
-                                        filename=f"feature_importance_{run_timestamp}.png")
+                plot_feature_importance(drl_weights_mean, ref_weights_mean, plot_dir=run_dir,
+                                        filename='feature_importance.png')
                 correlation = compute_correlation(drl_weights_mean, ref_weights_mean)
                 logger.info(f" DRL과 참조 모델 평균 특성 중요도 상관계수: {correlation:.4f}")
 
             plot_integrated_gradients(
-                drl_weights_mean, plot_dir=run_plot_dir,
-                title="DRL Agent Mean Integrated Gradients", filename=f"integrated_gradients_mean_{run_timestamp}.png"
+                drl_weights_mean, plot_dir=run_dir,
+                title="DRL Agent Mean Integrated Gradients", filename='integrated_gradients_mean.png'
             )
         logger.info(" XAI 분석 완료!")
 
