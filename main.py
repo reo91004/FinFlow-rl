@@ -25,7 +25,7 @@ DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 # 분석 대상 주식 티커 목록
 STOCK_TICKERS = [
-    "AAPL", "MSFT", "AMZN", "GOOGL", "AMD", "TSLA", "JPM", "JNJ", "PG", "V"
+    "AAPL", "MSFT", "AMZN", "GOOGL", "NVDA", "TSLA", "JPM", "JNJ", "PG", "V"
 ]
 
 # 학습/테스트 데이터 기간 설정
