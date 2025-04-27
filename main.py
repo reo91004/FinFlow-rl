@@ -949,8 +949,7 @@ def linear_model_hindsight(features, returns):
         beta = model.coef_.reshape(n_assets, n_features_)
 
         # 식 (18): 각 자산별 피처 평균에 대한 내적 후 합산해 글로벌 피처 가중치 계산
-        feature_means_per_asset = features.mean(axis=0)  # shape (n_assets, n_features_)
-        feature_weights = (beta * feature_means_per_asset).sum(axis=0)  # shape (n_features_,)
+        feature_weights = (beta * features.mean(axis=0)).sum(axis=0)
 
         return feature_weights
 
@@ -1257,33 +1256,58 @@ def plot_feature_importance(drl_weights_mean, ref_weights_mean, plot_dir, featur
             or len(drl_weights_mean) != len(feature_names):
         return
         
+    # 값 범위 정규화 - outlier 필터링 및 MinMax 스케일링 적용
+    def normalize_weights(weights):
+        # Volume 컬럼을 위한 이상치 처리 로직
+        weights_abs = np.abs(weights)
+        median_abs = np.median(weights_abs)
+        mad = np.median(np.abs(weights_abs - median_abs))  # Median Absolute Deviation
+        threshold = median_abs + 10 * mad  # 보수적인 임계값
+
+        # 이상치 제한
+        clipped_weights = np.clip(weights, -threshold, threshold)
+        
+        # 크기가 있는 데이터에 MinMax 스케일링
+        if np.max(np.abs(clipped_weights)) > 1e-10:
+            scaled_weights = clipped_weights / np.max(np.abs(clipped_weights))
+        else:
+            scaled_weights = clipped_weights
+        
+        return scaled_weights, threshold
+
+    # DRL 가중치와 참조 모델 가중치 모두에 동일한 정규화 적용
+    drl_weights_normalized, drl_threshold = normalize_weights(drl_weights_mean)
+    ref_weights_normalized, ref_threshold = normalize_weights(ref_weights_mean)
+    
     plt.figure(figsize=(15, 7)) # 너비 증가
     num_features = len(feature_names)
     x = np.arange(num_features)
 
     # DRL 에이전트 중요도
     plt.subplot(1, 2, 1)
-    bars1 = plt.bar(x, drl_weights_mean, color='skyblue')
-    plt.ylabel('Importance Score')
-    plt.title('DRL Agent Mean Feature Importance')
+    bars1 = plt.bar(x, drl_weights_normalized, color='skyblue')
+    plt.ylabel('Normalized Importance Score')
+    plt.title(f'DRL Agent Feature Importance\n(Clipped at {drl_threshold:.2e})')
     plt.xticks(x, feature_names, rotation=45, ha="right")
     plt.grid(axis='y', linestyle='--')
+    plt.ylim(-1.1, 1.1)  # 정규화된 값의 y 축 범위 고정
     # 막대 위에 값 표시 (소수점 2자리)
     for bar in bars1:
         yval = bar.get_height()
-        plt.text(bar.get_x() + bar.get_width()/2.0, yval, f'{yval:.2f}', va='bottom' if yval >= 0 else 'top', ha='center')
+        plt.text(bar.get_x() + bar.get_width()/2.0, yval, f'{yval:.2f}', va='bottom' if yval >= 0 else 'top', ha='center', fontsize=8)
 
     # 참조 모델 중요도
     plt.subplot(1, 2, 2)
-    bars2 = plt.bar(x, ref_weights_mean, color='lightcoral')
-    plt.ylabel('Importance Score')
-    plt.title('Reference Model Mean Feature Importance')
+    bars2 = plt.bar(x, ref_weights_normalized, color='lightcoral')
+    plt.ylabel('Normalized Importance Score')
+    plt.title(f'Reference Model Feature Importance\n(Clipped at {ref_threshold:.2e})')
     plt.xticks(x, feature_names, rotation=45, ha="right")
     plt.grid(axis='y', linestyle='--')
+    plt.ylim(-1.1, 1.1)  # 정규화된 값의 y 축 범위 고정
     # 막대 위에 값 표시 (소수점 2자리)
     for bar in bars2:
         yval = bar.get_height()
-        plt.text(bar.get_x() + bar.get_width()/2.0, yval, f'{yval:.2f}', va='bottom' if yval >= 0 else 'top', ha='center')
+        plt.text(bar.get_x() + bar.get_width()/2.0, yval, f'{yval:.2f}', va='bottom' if yval >= 0 else 'top', ha='center', fontsize=8)
 
     
     plt.tight_layout()
@@ -1300,7 +1324,7 @@ def plot_feature_importance(drl_weights_mean, ref_weights_mean, plot_dir, featur
         pass # 오류 로깅은 주석 처리됨
     finally:
         plt.close()
-    
+     
 def plot_integrated_gradients(ig_values_mean, plot_dir, feature_names=FEATURE_NAMES, title="Mean Integrated Gradients", filename=None):
     """
     평균 통합 그래디언트 값을 막대 그래프로 시각화하고 지정된 디렉토리에 저장.
@@ -1315,35 +1339,76 @@ def plot_integrated_gradients(ig_values_mean, plot_dir, feature_names=FEATURE_NA
     if not isinstance(ig_values_mean, np.ndarray) or len(ig_values_mean) != len(feature_names):
         return # 데이터 오류 시 함수 종료
 
-    plt.figure(figsize=(12, 6))
-    num_features = len(feature_names)
-    x = np.arange(num_features)
-
-    bars = plt.bar(x, ig_values_mean, color='mediumpurple')
-    plt.ylabel('Mean Attribution Score')
-    plt.title(title)
-    plt.xticks(x, feature_names, rotation=45, ha="right")
-    plt.grid(axis='y', linestyle='--')
-
-    # 막대 위에 값 표시
-    for bar in bars:
-        yval = bar.get_height()
-        plt.text(bar.get_x() + bar.get_width()/2.0, yval, f'{yval:.2f}', va='bottom' if yval >= 0 else 'top', ha='center')
-
-    plt.tight_layout()
-
+    # 극단값을 제한하고 정규화하기
+    values_abs = np.abs(ig_values_mean)
+    median_abs = np.median(values_abs)
+    mad = np.median(np.abs(values_abs - median_abs))
+    threshold = median_abs + 10 * mad
+    
+    # 원본 값 보존 및 clipping
+    original_values = ig_values_mean.copy()
+    normalized_values = np.clip(ig_values_mean, -threshold, threshold)
+    
+    # 크기가 있는 데이터에 MinMax 스케일링 (-1~1 범위로)
+    if np.max(np.abs(normalized_values)) > 1e-10:
+        normalized_values = normalized_values / np.max(np.abs(normalized_values))
+    
+    # 파일 경로 생성
     if filename is None:
         current_time = datetime.now().strftime('%Y%m%d_%H%M%S')
-        filename = f'integrated_gradients_mean_{current_time}.png'
-    save_path = os.path.join(plot_dir, filename)
-
+        norm_filename = f'integrated_gradients_mean_{current_time}.png'
+        raw_filename = f'integrated_gradients_raw_{current_time}.png'
+    else:
+        file_base, file_ext = os.path.splitext(filename)
+        norm_filename = filename
+        raw_filename = f'{file_base}_raw{file_ext}'
+    
+    norm_save_path = os.path.join(plot_dir, norm_filename)
+    raw_save_path = os.path.join(plot_dir, raw_filename)
+    
+    num_features = len(feature_names)
+    x = np.arange(num_features)
+    
+    # 1. 원본 값 그래프 생성 및 저장
+    plt.figure(figsize=(12, 6))
+    plt.bar(x, original_values, color='lightsteelblue', alpha=0.7)
+    plt.ylabel('Raw Attribution Score')
+    plt.title(f'Original {title} (Unclipped)')
+    plt.xticks(x, feature_names, rotation=45, ha="right")
+    plt.grid(axis='y', linestyle='--')
+    plt.tight_layout()
+    
     try:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        plt.savefig(raw_save_path, dpi=300, bbox_inches='tight')
     except Exception as e:
-        pass # 오류 로깅은 주석 처리됨
+        pass
     finally:
         plt.close()
     
+    # 2. 정규화 값 그래프 생성 및 저장
+    plt.figure(figsize=(12, 6))
+    bars = plt.bar(x, normalized_values, color='mediumpurple')
+    plt.ylabel('Normalized Attribution Score')
+    plt.title(f'{title}\n(Normalized, clipped at {threshold:.2e})')
+    plt.xticks(x, feature_names, rotation=45, ha="right")
+    plt.grid(axis='y', linestyle='--')
+    plt.ylim(-1.1, 1.1)
+    
+    # 막대 위에 값 표시
+    for bar in bars:
+        yval = bar.get_height()
+        plt.text(bar.get_x() + bar.get_width()/2.0, yval, f'{yval:.2f}', 
+                va='bottom' if yval >= 0 else 'top', ha='center', fontsize=8)
+    
+    plt.tight_layout()
+    
+    try:
+        plt.savefig(norm_save_path, dpi=300, bbox_inches='tight')
+    except Exception as e:
+        pass  # 오류 로깅은 주석 처리됨
+    finally:
+        plt.close()
+     
 # --- 학습 및 평가 함수 ---
 def print_memory_stats(logger):
     """ 현재 GPU 메모리 사용량 및 캐시 상태를 로깅합니다. """
