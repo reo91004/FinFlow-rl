@@ -1563,13 +1563,21 @@ def main():
     logger.info("="*48)
 
     # --- 피처 스케일링 (z-score) 적용 ---
-    # 표준화를 위해 자산 차원을 유지한 채 (n_steps * n_assets, n_features) 형태로 변환한다.
+    # 기술 지표(Volume 제외) 인덱스만 스케일링하고 가격 관련 지표는 원래 스케일 유지
     n_features_data = data_array.shape[2]
-    scaler = StandardScaler()
-    scaler.fit(train_data.reshape(-1, n_features_data))
+    tech_start_idx = 5  # FEATURE_NAMES 기준 MACD부터
+    if n_features_data > tech_start_idx:
+        idx_to_scale = np.arange(tech_start_idx, n_features_data)
 
-    train_data = scaler.transform(train_data.reshape(-1, n_features_data)).reshape(train_data.shape)
-    test_data = scaler.transform(test_data.reshape(-1, n_features_data)).reshape(test_data.shape)
+        scaler = StandardScaler()
+        scaler.fit(train_data[:, :, idx_to_scale].reshape(-1, len(idx_to_scale)))
+
+        # 변환 적용
+        train_scaled_slice = scaler.transform(train_data[:, :, idx_to_scale].reshape(-1, len(idx_to_scale)))
+        test_scaled_slice  = scaler.transform(test_data[:,  :, idx_to_scale].reshape(-1, len(idx_to_scale)))
+
+        train_data[:, :, idx_to_scale] = train_scaled_slice.reshape(train_data.shape[0], train_data.shape[1], len(idx_to_scale))
+        test_data[:,  :, idx_to_scale] = test_scaled_slice.reshape(test_data.shape[0],  test_data.shape[1],  len(idx_to_scale))
 
     # --- 환경 및 에이전트 설정 (INFO 레벨 유지) ---
     logger.info("\n" + "="*14 + " 환경 및 에이전트 설정 " + "="*14)
