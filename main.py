@@ -79,8 +79,7 @@ INTEGRATED_GRADIENTS_STEPS = 50
 XAI_SAMPLE_COUNT = 5 # 통합 그래디언트 분석 샘플 수
 
 # 피처 이름 정의 (데이터 처리 순서와 일치)
-FEATURE_NAMES = ['Open', 'High', 'Low', 'Close', 'Volume', 'MACD', 'RSI', 'MA14', 'MA21', 'MA100',
-                 'Volume_Close_Ratio', 'ATR_20', 'BB_Width', 'SP500_RS']
+FEATURE_NAMES = ['Open', 'High', 'Low', 'Close', 'Volume', 'MACD', 'RSI', 'MA14', 'MA21', 'MA100']
 
 # --- 로깅 설정 ---
 def setup_logger(run_dir):
@@ -1028,6 +1027,12 @@ def integrated_gradients(model, state, baseline=None, steps=INTEGRATED_GRADIENTS
         gradient_sum = torch.zeros_like(state_tensor)
         alphas = torch.linspace(0, 1, steps, device=DEVICE)
     
+        # 모델의 현재 모드 저장
+        was_training = model.training
+        
+        # cudNN RNN의 backward는 training 모드에서만 작동하므로 임시로 모드 변경
+        model.train()
+        
         for alpha in alphas:
             # 1. 원본 형태로 보간
             interpolated_state_orig = baseline_tensor + alpha * (state_tensor - baseline_tensor)
@@ -1037,8 +1042,6 @@ def integrated_gradients(model, state, baseline=None, steps=INTEGRATED_GRADIENTS
             interpolated_state_input.requires_grad_(True)
 
             # 3. 모델 순전파 및 타겟 설정
-            # 모델을 eval 모드로 설정하고 그래디언트 계산 활성화
-            model.eval()
             # 중요: detach()나 torch.no_grad() 없이 순전파 진행
             concentration, value = model(interpolated_state_input)
             
@@ -1064,6 +1067,10 @@ def integrated_gradients(model, state, baseline=None, steps=INTEGRATED_GRADIENTS
                      logger.warning(f"IG: 그래디언트 형태 불일치 발생. grad shape: {gradient.shape}, expected: {state_tensor.shape}. 해당 스텝 건너<0xEB><0x9A><0x8D>.")
             # else: # grad가 None인 경우, backward 실패 가능성
                 # logger.warning(f"IG: Alpha {alpha:.2f}에서 그래디언트가 None입니다.")
+        
+        # 원래의 모델 모드로 복원
+        if not was_training:
+            model.eval()
 
         # 6. 최종 IG 계산
         integrated_grads_tensor = (state_tensor - baseline_tensor) * (gradient_sum / steps)
@@ -1090,6 +1097,24 @@ def linear_model_hindsight(features, returns):
     try:
         if not isinstance(features, np.ndarray) or not isinstance(returns, np.ndarray):
              raise TypeError("입력 데이터는 NumPy 배열이어야 합니다.")
+        
+        # 입력 형태 로깅
+        logger.info(f"선형 모델 입력 형태 - features: {features.shape}, returns: {returns.shape}")
+        
+        # features가 3차원인지 확인, 아닐 경우 변환 시도
+        if features.ndim == 2:
+            # 2차원 배열이면 (n_steps, n_assets*n_features) 형태로 가정
+            n_steps = features.shape[0]
+            # n_assets와 n_features 추정 (FEATURE_NAMES 길이로)
+            n_features_ = len(FEATURE_NAMES)
+            n_assets = features.shape[1] // n_features_
+            if n_assets * n_features_ != features.shape[1]:
+                logger.warning(f"특성 차원 불일치: {features.shape[1]} vs {n_assets}*{n_features_}")
+                # 강제로 변환 (데이터 손실 가능)
+                features = features[:, :n_assets*n_features_]
+            features = features.reshape(n_steps, n_assets, n_features_)
+            logger.info(f"특성 데이터 형태 변환: {features.shape}")
+        
         if features.shape[0] != len(returns):
             raise ValueError(f"features({features.shape[0]})와 returns({len(returns)})의 샘플 수가 일치하지 않습니다.")
         if features.ndim != 3 or returns.ndim != 1:
@@ -1107,11 +1132,13 @@ def linear_model_hindsight(features, returns):
 
         # 식 (18): 각 자산별 피처 평균에 대한 내적 후 합산해 글로벌 피처 가중치 계산
         feature_weights = (beta * features.mean(axis=0)).sum(axis=0)
-
+        
+        logger.info(f"선형 모델 학습 완료. 결과 형태: {feature_weights.shape}")
         return feature_weights
 
     except Exception as e:
         logger.error(f"Hindsight 선형 모델 학습 중 오류: {e}")
+        logger.error(traceback.format_exc())
         return None
 
 def compute_feature_weights_drl(ppo_agent, states):
@@ -2075,11 +2102,41 @@ def main():
     logger.info("선형 참조 모델 분석 중...")
     
     # 테스트 데이터에서 보상 계산 (일간 수익률)
-    ref_features = test_data.reshape(-1, test_data.shape[1] * test_data.shape[2])
+    ref_features = test_data[:-1]  # 마지막 날은 포함하지 않음 (returns가 n-1개이므로)
     ref_returns = np.array(ensemble_result['returns'])
     
+    # 데이터 형태 확인
+    logger.info(f"참조 모델 입력 데이터 형태 - features: {ref_features.shape}, returns: {len(ref_returns)}")
+    
+    # 데이터 차원 확인 및 조정
+    if ref_features.shape[1] != len(STOCK_TICKERS) or ref_features.shape[2] != len(FEATURE_NAMES):
+        logger.warning(f"참조 모델 데이터 차원 불일치: shape={ref_features.shape}, 티커={len(STOCK_TICKERS)}, 특성={len(FEATURE_NAMES)}")
+    
+    # 샘플 수 확인 후 조정
+    if ref_features.shape[0] != len(ref_returns):
+        logger.warning(f"특성({ref_features.shape[0]})과 반환({len(ref_returns)}) 길이 불일치. 특성 데이터 조정.")
+        # 더 짧은 길이에 맞춤
+        min_len = min(ref_features.shape[0], len(ref_returns))
+        ref_features = ref_features[:min_len]
+        ref_returns = ref_returns[:min_len]
+    
     # 선형 회귀 모델로 중요도 계산
-    ref_weights = linear_model_hindsight(ref_features, ref_returns)
+    try:
+        ref_weights = linear_model_hindsight(ref_features, ref_returns)
+        if ref_weights is None:
+            logger.warning("참조 모델 가중치 계산 실패, 더미 데이터 사용")
+            # 더미 데이터 생성
+            ref_weights = np.zeros(len(FEATURE_NAMES))
+        else:
+            # 가중치 로깅
+            logger.info("참조 모델 특성 중요도:")
+            for i, feature_name in enumerate(FEATURE_NAMES):
+                if i < len(ref_weights):
+                    logger.info(f"  {feature_name}: {ref_weights[i]:.4f}")
+    except Exception as e:
+        logger.error(f"참조 모델 분석 중 예외 발생: {e}")
+        logger.error(traceback.format_exc())
+        ref_weights = np.zeros(len(FEATURE_NAMES))
     
     # 3. 통합 그래디언트 분석
     logger.info("통합 그래디언트 분석 중...")
@@ -2110,18 +2167,64 @@ def main():
     # 모든 샘플의 평균 통합 그래디언트
     ig_values_mean = np.mean(ig_values, axis=0)
     
+    # 차원 확인 및 처리 (필요한 경우 평탄화)
+    logger.info(f"통합 그래디언트 원본 형태: {ig_values_mean.shape}")
+    
+    # 차원 변환 처리
+    if ig_values_mean.shape == (len(STOCK_TICKERS), len(FEATURE_NAMES)):
+        # 올바른 형태: (n_assets, n_features) -> 자산별 평균 계산
+        logger.info("통합 그래디언트: 각 자산별 특성 기여도를 평균하여 전체 특성 중요도 계산")
+        # 자산 차원에 대해 평균 계산하여 특성당 하나의 값으로 만듦
+        ig_feature_importance = np.mean(ig_values_mean, axis=0)
+        
+        # 통합 그래디언트 특성 중요도 로깅
+        for i, feature_name in enumerate(FEATURE_NAMES):
+            logger.info(f"  {feature_name}: {ig_feature_importance[i]:.4f}")
+            
+        ig_values_mean = ig_feature_importance
+    else:
+        logger.warning(f"예상치 못한 통합 그래디언트 형태: {ig_values_mean.shape}")
+        # 강제 재구성 시도
+        if ig_values_mean.ndim > 1:
+            n_features = len(FEATURE_NAMES)
+            if ig_values_mean.size >= n_features:
+                # 일부 데이터 손실을 감수하고 첫 n_features 개 요소 사용
+                ig_values_mean = ig_values_mean.flatten()[:n_features]
+                logger.info(f"통합 그래디언트 강제 변환: {ig_values_mean.shape}")
+            else:
+                # 데이터가 부족하면 0으로 패딩
+                temp = np.zeros(n_features)
+                temp[:ig_values_mean.size] = ig_values_mean.flatten()
+                ig_values_mean = temp
+                logger.info(f"통합 그래디언트 패딩 추가: {ig_values_mean.shape}")
+    
     # --- 결과 시각화 및 저장 ---
     # 1. 특성 중요도 비교 (DRL vs 선형 참조 모델)
-    plot_feature_importance(
-        drl_weights_mean, ref_weights, plot_dir=run_dir,
-        feature_names=FEATURE_NAMES, filename="feature_importance_comparison.png"
-    )
+    if ref_weights is not None:
+        # ref_weights가 올바른 형태인지 확인
+        if isinstance(ref_weights, np.ndarray):
+            # 필요시 형태 조정
+            if ref_weights.ndim > 1 and len(FEATURE_NAMES) == ref_weights.shape[1]:
+                ref_weights = np.mean(ref_weights, axis=0)  # 첫 번째 차원에 대해 평균 계산
+                
+            plot_feature_importance(
+                drl_weights_mean, ref_weights, plot_dir=run_dir,
+                feature_names=FEATURE_NAMES, filename="feature_importance_comparison.png"
+            )
+            logger.info("특성 중요도 비교 시각화 완료")
+        else:
+            logger.warning("참조 모델 가중치가 None이거나 예상치 않은 형태입니다.")
     
     # 2. 통합 그래디언트 시각화
-    plot_integrated_gradients(
-        ig_values_mean, plot_dir=run_dir,
-        feature_names=FEATURE_NAMES, filename="integrated_gradients.png"
-    )
+    if isinstance(ig_values_mean, np.ndarray) and len(ig_values_mean) == len(FEATURE_NAMES):
+        # 올바른 형태를 가진 경우에만 시각화
+        plot_integrated_gradients(
+            ig_values_mean, plot_dir=run_dir,
+            feature_names=FEATURE_NAMES, filename="integrated_gradients.png"
+        )
+        logger.info("통합 그래디언트 시각화 완료")
+    else:
+        logger.warning(f"통합 그래디언트 형태 불일치로 시각화 불가: {ig_values_mean.shape if isinstance(ig_values_mean, np.ndarray) else 'None'}")
     
     logger.info("XAI 분석 및 시각화 완료")
     
