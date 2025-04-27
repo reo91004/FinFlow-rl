@@ -1150,7 +1150,7 @@ def compute_feature_weights_drl(ppo_agent, states):
         states (np.ndarray): 분석할 상태 데이터 (n_steps, n_assets, n_features).
 
     Returns:
-        np.ndarray: 각 스텝별 특성 가중치 (n_steps, n_assets, n_features).
+        np.ndarray: 각 스텝별 특성 가중치.
                     오류 발생 시 빈 배열 반환.
     """
     logger = logging.getLogger('PortfolioRL')
@@ -1163,8 +1163,12 @@ def compute_feature_weights_drl(ppo_agent, states):
         # 메모리 효율성을 위한 배치 처리
         batch_size = 32  # 메모리 사용량과 속도의 균형을 위한 적절한 배치 크기
         n_states = len(states)
+        n_assets = states.shape[1]
+        n_features = states.shape[2]
         n_batches = (n_states + batch_size - 1) // batch_size  # 올림 나눗셈
 
+        logger.info(f"DRL 특성 가중치 계산 중: {n_states}개 샘플, 형태 {states.shape}")
+        
         # 프로그레스 바 설정
         pbar = tqdm(range(n_batches), desc="Calculating DRL Feature Weights", leave=False, ncols=100)
 
@@ -1177,9 +1181,25 @@ def compute_feature_weights_drl(ppo_agent, states):
             # 배치 내 각 상태에 대해 IG 계산
             batch_weights = []
             for state in batch_states:
-                # integrated_gradients 함수는 내부적으로 그래디언트를 계산해야 하므로 no_grad 제거
-                ig = integrated_gradients(ppo_agent.policy, state)
-                batch_weights.append(ig)
+                try:
+                    # integrated_gradients 함수는 내부적으로 그래디언트를 계산해야 하므로 no_grad 제거
+                    ig = integrated_gradients(ppo_agent.policy, state)
+                    
+                    # NaN 또는 Inf 값 확인
+                    if np.isnan(ig).any() or np.isinf(ig).any():
+                        logger.warning("특성 가중치에 NaN/Inf 값 발견. 0으로 대체")
+                        ig = np.nan_to_num(ig, nan=0.0, posinf=0.0, neginf=0.0)
+                    
+                    # 여기서 중요: 각 특성별 중요도 계산
+                    # 통합 그래디언트 결과는 (n_assets, n_features) 형태
+                    # 이를 특성별로 평균내어 전체 특성 중요도를 구함
+                    feature_importance = np.abs(ig).mean(axis=0)  # 자산에 대해 평균, 결과: (n_features,)
+                    
+                    batch_weights.append(feature_importance)
+                except Exception as e:
+                    logger.warning(f"샘플에 대한 통합 그래디언트 계산 중 오류: {e}")
+                    # 오류 발생 시 0으로 채운 배열 사용
+                    batch_weights.append(np.zeros(n_features))
                     
                 # 메모리 관리를 위해 주기적으로 캐시 비우기
                 if torch.cuda.is_available() and (len(batch_weights) % 10 == 0):
@@ -1194,14 +1214,21 @@ def compute_feature_weights_drl(ppo_agent, states):
 
         if not all_feature_weights:
              logger.warning("DRL 특성 가중치 계산 결과가 비어있습니다.")
-             return np.array([])
+             return np.zeros((1, n_features))  # 비어있는 경우 0으로 채운 배열 반환
 
-        return np.stack(all_feature_weights, axis=0)
+        # 결과 형태 확인 및 로깅 - 각 샘플별 특성 중요도 (n_samples, n_features)
+        result = np.stack(all_feature_weights, axis=0)
+        logger.info(f"DRL 특성 가중치 계산 완료. 결과 형태: {result.shape}")
+        
+        return result
 
     except Exception as e:
         logger.error(f"DRL 특성 가중치 계산 중 오류: {e}")
         logger.error(traceback.format_exc())
-        return np.array([])
+        # 오류 발생 시 에이전트가 있다면 샘플 크기에 맞는 0 배열 반환
+        if isinstance(ppo_agent, PPO) and isinstance(states, np.ndarray) and states.ndim == 3:
+            return np.zeros((1, states.shape[2]))
+        return np.zeros((1, 10))  # 기본 형태로 0 배열 반환
 
 def compute_correlation(arr1, arr2):
     """
@@ -2144,6 +2171,11 @@ def main():
     
     # 첫 번째 에이전트만 사용 (계산 비용 절감)
     primary_agent = ensemble_agents[0]
+    logger.info(f"통합 그래디언트 분석에 앙상블 중 첫 번째 에이전트(seed: {primary_agent.seed if hasattr(primary_agent, 'seed') else 'unknown'}) 사용")
+    
+    # EMA 모델 사용 여부 확인 및 로깅
+    is_using_ema = primary_agent.use_ema if hasattr(primary_agent, 'use_ema') else False
+    logger.info(f"통합 그래디언트 분석에 {'EMA 모델' if is_using_ema else '기본 모델'} 사용")
     
     # 각 샘플에 대한 통합 그래디언트 계산
     for i, sample in enumerate(test_samples):
@@ -2203,24 +2235,109 @@ def main():
     if ref_weights is not None:
         # ref_weights가 올바른 형태인지 확인
         if isinstance(ref_weights, np.ndarray):
-            # 필요시 형태 조정
-            if ref_weights.ndim > 1 and len(FEATURE_NAMES) == ref_weights.shape[1]:
+            # ref_weights 형태 조정
+            if ref_weights.ndim > 1:
                 ref_weights = np.mean(ref_weights, axis=0)  # 첫 번째 차원에 대해 평균 계산
+                logger.info(f"참조 모델 가중치 형태 변환: {ref_weights.shape}")
+            
+            # drl_weights_mean 형태 조정 (필요한 경우)
+            drl_weights_for_plot = drl_weights_mean
+            if drl_weights_mean.ndim > 1:
+                drl_weights_for_plot = np.mean(drl_weights_mean, axis=0)
+                logger.info(f"DRL 가중치 형태 변환 (비교용): {drl_weights_for_plot.shape}")
                 
             plot_feature_importance(
-                drl_weights_mean, ref_weights, plot_dir=run_dir,
+                drl_weights_for_plot, ref_weights, plot_dir=run_dir,
                 feature_names=FEATURE_NAMES, filename="feature_importance_comparison.png"
             )
             logger.info("특성 중요도 비교 시각화 완료")
         else:
             logger.warning("참조 모델 가중치가 None이거나 예상치 않은 형태입니다.")
     
+    # 1-1. DRL 에이전트 특성 중요도 단독 시각화 (추가)
+    if isinstance(drl_weights_mean, np.ndarray):
+        # DRL 에이전트 특성 중요도 별도 시각화
+        plt.figure(figsize=(12, 6))
+        
+        # 차원 변환 필요 시 처리 - compute_feature_weights_drl에서 이미 처리되었으므로 간소화
+        drl_feature_weights = drl_weights_mean
+        if drl_weights_mean.ndim > 1:
+            # 로그 추가
+            logger.info(f"DRL 특성 가중치 원본 형태: {drl_weights_mean.shape}")
+            # 샘플 차원에 대해 평균 계산
+            drl_feature_weights = np.mean(drl_weights_mean, axis=0)
+            logger.info(f"샘플 차원에 대한 평균 계산: {drl_feature_weights.shape}")
+            
+        # 길이 확인 및 자르기/패딩
+        if len(drl_feature_weights) > len(FEATURE_NAMES):
+            logger.warning(f"특성 가중치({len(drl_feature_weights)})가 이름({len(FEATURE_NAMES)})보다 많음. 자르기 실행")
+            drl_feature_weights = drl_feature_weights[:len(FEATURE_NAMES)]
+        elif len(drl_feature_weights) < len(FEATURE_NAMES):
+            logger.warning(f"특성 가중치({len(drl_feature_weights)})가 이름({len(FEATURE_NAMES)})보다 적음. 패딩 실행")
+            temp = np.zeros(len(FEATURE_NAMES))
+            temp[:len(drl_feature_weights)] = drl_feature_weights
+            drl_feature_weights = temp
+            
+        # NaN 값 확인 및 처리
+        if np.isnan(drl_feature_weights).any():
+            logger.warning("특성 가중치에 NaN 값 발견. 0으로 대체")
+            drl_feature_weights = np.nan_to_num(drl_feature_weights, nan=0.0)
+        
+        # plot_feature_importance 함수와 동일한 정규화 방식 적용
+        weights_abs = np.abs(drl_feature_weights)
+        median_abs = np.median(weights_abs)
+        mad = np.median(np.abs(weights_abs - median_abs))  # Median Absolute Deviation
+        threshold = median_abs + 10 * mad  # 보수적인 임계값
+        
+        # 이상치 제한
+        clipped_weights = np.clip(drl_feature_weights, -threshold, threshold)
+        
+        # 크기가 있는 데이터에 MinMax 스케일링
+        if np.max(np.abs(clipped_weights)) > 1e-10:
+            normalized_weights = clipped_weights / np.max(np.abs(clipped_weights))
+        else:
+            normalized_weights = clipped_weights
+            
+        # 데이터 최종 검증
+        normalized_weights = np.array(normalized_weights, dtype=np.float64)
+        
+        # 그래프 생성
+        try:
+            x = np.arange(len(FEATURE_NAMES))
+            bars = plt.bar(x, normalized_weights, color='skyblue')
+            plt.ylabel('Normalized Importance Score')
+            plt.title(f'DRL Agent Feature Importance\n(Clipped at {threshold:.2e})')
+            plt.xticks(x, FEATURE_NAMES, rotation=45, ha="right")
+            plt.grid(axis='y', linestyle='--')
+            plt.ylim(-1.1, 1.1)
+            
+            # 값 표시
+            for bar in bars:
+                yval = bar.get_height()
+                plt.text(bar.get_x() + bar.get_width()/2.0, yval, f'{yval:.2f}', 
+                        va='bottom' if yval >= 0 else 'top', ha='center', fontsize=8)
+                        
+            plt.tight_layout()
+            
+            # 저장
+            save_path = os.path.join(run_dir, "feature_importance.png")
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            logger.info("DRL 에이전트 특성 중요도 단독 시각화 완료: feature_importance.png")
+        except Exception as e:
+            logger.error(f"DRL 에이전트 특성 중요도 시각화 오류: {e}")
+            logger.error(traceback.format_exc())
+        finally:
+            plt.close()
+    
     # 2. 통합 그래디언트 시각화
     if isinstance(ig_values_mean, np.ndarray) and len(ig_values_mean) == len(FEATURE_NAMES):
         # 올바른 형태를 가진 경우에만 시각화
+        model_info = f"{'EMA' if is_using_ema else 'Base'} Model, Agent 1"
         plot_integrated_gradients(
             ig_values_mean, plot_dir=run_dir,
-            feature_names=FEATURE_NAMES, filename="integrated_gradients.png"
+            feature_names=FEATURE_NAMES, 
+            title=f"Mean Integrated Gradients ({model_info})",
+            filename="integrated_gradients.png"
         )
         logger.info("통합 그래디언트 시각화 완료")
     else:
