@@ -8,6 +8,7 @@ import torch.optim as optim
 import torch.nn.functional as F
 from sklearn.linear_model import LinearRegression
 import matplotlib.pyplot as plt
+from sklearn.preprocessing import StandardScaler
 import yfinance as yf
 from datetime import datetime
 import os
@@ -36,18 +37,26 @@ TEST_END_DATE = '2024-12-31'
 
 # 포트폴리오 초기 설정
 INITIAL_CASH = 1e6
-COMMISSION_RATE = 0.005
+COMMISSION_RATE = 0.0005  # 수수료 현실화 (0.005 → 0.0005)
+# 새로운 매개변수: 행동 변화 페널티 계수
+ACTION_PENALTY_COEF = 0.001
+
+# 새로운 행동 스케일링 계수
+DIRICHLET_SCALE_FACTOR = 10.0
+
+# 보상 누적 기간 (K-일)
+REWARD_ACCUMULATION_DAYS = 5
 
 # PPO 하이퍼파라미터 (기본값)
 DEFAULT_HIDDEN_DIM = 128
-DEFAULT_LR = 1e-4  # 학습률 조정됨
+DEFAULT_LR = 3e-5  # 학습률 하향 조정 (3e-5 ~ 5e-4 범위에서)
 DEFAULT_GAMMA = 0.99
 DEFAULT_K_EPOCHS = 10
-DEFAULT_EPS_CLIP = 0.2
-PPO_UPDATE_TIMESTEP = 2000 # PPO 업데이트 주기 (스텝 수)
+DEFAULT_EPS_CLIP = 0.1  # 안정성 위해 조정 (0.2 → 0.1)
+PPO_UPDATE_TIMESTEP = 4000 # PPO 업데이트 주기 증가 (2000 → 4000)
 
 # 환경 설정
-MAX_EPISODE_LENGTH = 200 # 환경의 기본 최대 에피소드 길이
+MAX_EPISODE_LENGTH = 504 # 환경의 최대 에피소드 길이 (200 → 504, 2년)
 
 # 상태/보상 정규화 설정
 NORMALIZE_STATES = True
@@ -182,13 +191,14 @@ class StockPortfolioEnv(gym.Env):
 
     - 관측(Observation): 각 자산의 기술적 지표 (10개 피처)
     - 행동(Action): 각 자산에 대한 투자 비중 (0~1 사이 값, 총합 1)
-    - 보상(Reward): 포트폴리오 가치의 로그 변화율
+    - 보상(Reward): 포트폴리오 가치의 선형 변화율 (tanh 클리핑 적용)
     - 상태 정규화(State Normalization): RunningMeanStd를 이용한 관측값 및 보상 정규화 기능 포함
     """
     metadata = {'render_modes': ['human']}
     
     def __init__(self, data: np.ndarray, initial_cash=INITIAL_CASH, commission_rate=COMMISSION_RATE,
-                 max_episode_length=MAX_EPISODE_LENGTH, normalize_states=NORMALIZE_STATES, gamma=DEFAULT_GAMMA):
+                 max_episode_length=MAX_EPISODE_LENGTH, normalize_states=NORMALIZE_STATES, gamma=DEFAULT_GAMMA,
+                 action_penalty_coef=ACTION_PENALTY_COEF):
         super(StockPortfolioEnv, self).__init__()
         self.data = data  # (n_steps, n_assets, n_features)
         self.initial_cash = initial_cash
@@ -196,6 +206,7 @@ class StockPortfolioEnv(gym.Env):
         self.max_episode_length = max_episode_length
         self.normalize_states = normalize_states
         self.gamma = gamma # 보상 정규화 시 사용
+        self.action_penalty_coef = action_penalty_coef
         
         self.n_steps, self.n_assets, self.n_features = data.shape
         
@@ -204,9 +215,9 @@ class StockPortfolioEnv(gym.Env):
             low=-np.inf, high=np.inf, shape=(self.n_assets, self.n_features), dtype=np.float32
         )
         
-        # 행동 공간 정의 (Dirichlet 분포 사용하므로, 각 자산 비중)
+        # 행동 공간 정의 (무위험 자산(현금) 포함 n_assets + 1)
         self.action_space = spaces.Box(
-            low=0, high=1, shape=(self.n_assets,), dtype=np.float32
+            low=0, high=1, shape=(self.n_assets + 1,), dtype=np.float32
         )
         
         # 상태/보상 정규화 객체 초기화
@@ -223,7 +234,11 @@ class StockPortfolioEnv(gym.Env):
         self.cash = 0.0
         self.holdings = np.zeros(self.n_assets, dtype=np.float32) # 보유 주식 수
         self.portfolio_value = 0.0 # 현재 포트폴리오 가치
-        self.weights = np.ones(self.n_assets) / self.n_assets # 현재 자산 비중
+        self.weights = np.ones(self.n_assets + 1) / (self.n_assets + 1) # 현재 자산 비중 (현금 포함)
+        self.prev_weights = np.ones(self.n_assets + 1) / (self.n_assets + 1) # 이전 자산 비중 (행동 변화 페널티용)
+        
+        # K-일 보상 누적을 위한 가치 이력
+        self.portfolio_value_history = []
     
     def _normalize_obs(self, obs):
         """ 관측값을 정규화합니다. """
@@ -267,11 +282,15 @@ class StockPortfolioEnv(gym.Env):
         self.cash = self.initial_cash
         self.holdings.fill(0)
         self.portfolio_value = self.cash
-        self.weights = np.ones(self.n_assets) / self.n_assets
+        self.weights = np.ones(self.n_assets + 1) / (self.n_assets + 1)  # 현금 포함 균등 비중
+        self.prev_weights = self.weights.copy()
         
         # 보상 정규화 관련 변수 초기화
         if self.normalize_states:
             self.returns_norm = np.zeros(1)
+            
+        # K-일 보상 누적 이력 초기화
+        self.portfolio_value_history = [self.portfolio_value]
 
         # 초기 관측값 반환
         observation = self._get_observation()
@@ -302,7 +321,7 @@ class StockPortfolioEnv(gym.Env):
         환경을 한 스텝 진행시킵니다.
 
         Args:
-            action (np.ndarray): 에이전트가 선택한 행동 (자산별 목표 비중).
+            action (np.ndarray): 에이전트가 선택한 행동 (자산별 목표 비중, 현금 포함).
 
         Returns:
             tuple: (next_observation, reward, terminated, truncated, info)
@@ -313,13 +332,19 @@ class StockPortfolioEnv(gym.Env):
                    - info (dict): 추가 정보 (포트폴리오 가치, 현금, 수익률 등).
         """
         logger = logging.getLogger('PortfolioRL')
+        # 행동 크기 확인 및 조정 (현금 슬롯 추가)
+        if len(action) == self.n_assets:  # 기존 호환성 유지
+            action_with_cash = np.append(action, 0.0)  # 현금 비중 0 추가
+        else:
+            action_with_cash = action
+            
         # 행동 정규화 (비중 합 1)
-        action = np.clip(action, 0, 1)
-        action_sum = action.sum()
+        action_with_cash = np.clip(action_with_cash, 0, 1)
+        action_sum = action_with_cash.sum()
         if action_sum > 1e-6:
-            action = action / action_sum
+            action_with_cash = action_with_cash / action_sum
         else: # 비중 합이 0에 가까우면 균등 분배
-            action = np.ones(self.n_assets) / self.n_assets
+            action_with_cash = np.ones(self.n_assets + 1) / (self.n_assets + 1)
             
         # 현재 가격 정보 (원본 데이터 사용)
         current_obs = self._get_observation()
@@ -327,6 +352,11 @@ class StockPortfolioEnv(gym.Env):
 
         # 이전 포트폴리오 가치
         prev_portfolio_value = self.cash + np.dot(self.holdings, current_prices)
+        self.portfolio_value_history.append(prev_portfolio_value)
+        
+        # 최근 K일 가치만 유지
+        if len(self.portfolio_value_history) > REWARD_ACCUMULATION_DAYS + 1:
+            self.portfolio_value_history.pop(0)
 
         # 파산 조건 확인
         if prev_portfolio_value <= 1e-6:
@@ -342,12 +372,21 @@ class StockPortfolioEnv(gym.Env):
             reward_norm = self._normalize_reward(raw_reward)
             return last_obs_norm.astype(np.float32), float(reward_norm), terminated, truncated, info
 
-        # 목표 자산 가치 계산
-        target_value_allocation = action * prev_portfolio_value
+        # 행동 변화에 따른 페널티 계산 (L1 거리)
+        action_change_penalty = self.action_penalty_coef * np.sum(np.abs(action_with_cash - self.prev_weights))
+        
+        # 목표 자산 가치 계산 (현금 제외한 주식 부분만)
+        stock_weights = action_with_cash[:-1]
+        cash_weight = action_with_cash[-1]
+        target_value_allocation = stock_weights * prev_portfolio_value
 
         # 실제 거래 실행 (매수/매도)
         self._execute_trades(target_value_allocation, current_prices)
-                
+        
+        # 현금 비중에 따라 현금 조정 (위 거래 후에 남은 현금 비율 조정)
+        target_cash = cash_weight * prev_portfolio_value
+        # 현재 현금이 목표보다 많으면 유지, 적으면 다른 자산 비중 줄여서 조정은 skip
+        
         # 다음 스텝으로 이동
         self.current_step += 1
         terminated = self.current_step >= self.n_steps # 종료 조건: 마지막 스텝 이후
@@ -364,19 +403,36 @@ class StockPortfolioEnv(gym.Env):
         next_prices = np.maximum(next_obs_raw[:, 3], 1e-6) # 다음 날 종가, 0 방지
         self.portfolio_value = self.cash + np.dot(self.holdings, next_prices)
 
-        # 가중치 업데이트 (0으로 나누기 방지)
+        # 가중치 업데이트 (0으로 나누기 방지), 현금 포함
         if self.portfolio_value > 1e-8:
-            self.weights = (self.holdings * next_prices) / self.portfolio_value
+            stock_weights = (self.holdings * next_prices) / self.portfolio_value  # 주식 비중
+            cash_weight = self.cash / self.portfolio_value  # 현금 비중
+            self.weights = np.append(stock_weights, cash_weight)
         else:
-            self.weights.fill(0)
+            self.weights = np.zeros(self.n_assets + 1)
+            
+        # 이전 가중치 저장 (다음 스텝의 변화 페널티 계산용)
+        self.prev_weights = self.weights.copy()
 
-        # 원본 보상 계산 (로그 수익률)
+        # 원본 보상 계산 (선형 수익률 + tanh 클리핑)
         prev_value_safe = max(prev_portfolio_value, 1e-8) # 이전 가치가 0에 가까울 때 대비
         current_value_safe = max(self.portfolio_value, 0.0) # 현재 가치는 0이 될 수 있음
-        raw_reward = np.log(current_value_safe / prev_value_safe + 1e-8) # log(0) 방지
-
+        
+        # K-일 누적 수익률 계산
+        if len(self.portfolio_value_history) > REWARD_ACCUMULATION_DAYS:
+            k_day_ago_value = self.portfolio_value_history[-REWARD_ACCUMULATION_DAYS-1]
+            if k_day_ago_value > 1e-8:
+                k_day_return = (current_value_safe / k_day_ago_value) - 1
+            else:
+                k_day_return = -1.0
+        else:
+            # K일치 데이터가 없으면 일간 수익률 사용
+            k_day_return = (current_value_safe / prev_value_safe) - 1
+            
+        # tanh 클리핑으로 보상 안정화 (-1~1 범위)
+        raw_reward = np.tanh(k_day_return) - action_change_penalty
+        
         if np.isnan(raw_reward) or np.isinf(raw_reward):
-            # logger.warning(f"보상 계산 중 NaN/Inf 발생. 이전 가치: {prev_portfolio_value}, 현재 가치: {self.portfolio_value}. 보상 -1.0으로 설정.")
             raw_reward = -1.0 # NaN/Inf 발생 시 페널티
 
         # 다음 상태 및 보상 정규화
@@ -390,7 +446,9 @@ class StockPortfolioEnv(gym.Env):
             "holdings": self.holdings.copy(),
             "weights": self.weights.copy(),
             "return": self.portfolio_value / prev_value_safe - 1 if prev_value_safe > 1e-8 else 0.0,
-            "raw_reward": raw_reward
+            "raw_reward": raw_reward,
+            "action_penalty": action_change_penalty,
+            "k_day_return": k_day_return if 'k_day_return' in locals() else 0.0
         }
 
         return next_obs_norm.astype(np.float32), float(reward_norm), terminated, truncated, info
@@ -464,16 +522,27 @@ class ActorCritic(nn.Module):
     PPO를 위한 액터-크리틱(Actor-Critic) 네트워크입니다.
 
     - 입력: 평탄화된 상태 (batch_size, n_assets * n_features)
+    - LSTM: 시계열 패턴 포착을 위한 순환 레이어
     - 액터 출력: Dirichlet 분포의 concentration 파라미터 (자산 비중 결정)
     - 크리틱 출력: 상태 가치 (State Value)
     """
     def __init__(self, n_assets, n_features, hidden_dim=DEFAULT_HIDDEN_DIM):
         super(ActorCritic, self).__init__()
         self.input_dim = n_assets * n_features
+        self.n_assets = n_assets + 1  # 현금 자산 추가
+        self.n_features = n_features
+        self.hidden_dim = hidden_dim
+        
+        # LSTM 레이어 (시계열 패턴 포착)
+        self.lstm = nn.LSTM(
+            input_size=n_features,
+            hidden_size=hidden_dim,
+            batch_first=True
+        ).to(DEVICE)
         
         # 공통 특징 추출 레이어
         self.actor_critic_base = nn.Sequential(
-            nn.Linear(self.input_dim, hidden_dim),
+            nn.Linear(hidden_dim * n_assets, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim // 2),
@@ -482,7 +551,7 @@ class ActorCritic(nn.Module):
         ).to(DEVICE)
         
         # 액터 헤드 (Dirichlet 분포 파라미터)
-        self.actor_head = nn.Linear(hidden_dim // 2, n_assets).to(DEVICE)
+        self.actor_head = nn.Linear(hidden_dim // 2, self.n_assets).to(DEVICE)
         
         # 크리틱 헤드 (상태 가치)
         self.critic_head = nn.Linear(hidden_dim // 2, 1).to(DEVICE)
@@ -497,6 +566,13 @@ class ActorCritic(nn.Module):
             nn.init.kaiming_uniform_(module.weight, a=0, mode='fan_in', nonlinearity='relu')
             if module.bias is not None:
                 nn.init.constant_(module.bias, 0.0) # 편향은 0으로 초기화
+        elif isinstance(module, nn.LSTM):
+            # LSTM 초기화
+            for name, param in module.named_parameters():
+                if 'weight' in name:
+                    nn.init.orthogonal_(param, 1.0)
+                elif 'bias' in name:
+                    nn.init.constant_(param, 0.0)
     
     def forward(self, states):
         """
@@ -511,27 +587,40 @@ class ActorCritic(nn.Module):
                    - concentration (torch.Tensor): 액터 헤드의 출력 (Dirichlet 파라미터).
                    - value (torch.Tensor): 크리틱 헤드의 출력 (상태 가치).
         """
-        # 상태 텐서 평탄화 (batch_size, n_assets * n_features)
-        original_shape = states.shape
-        if states.dim() == 3: # 배치 처리
-            states = states.reshape(states.size(0), -1) # 수정: reshape 사용
-        elif states.dim() == 2: # 단일 상태 처리 (추론 시)
-            states = states.reshape(1, -1) # 수정: reshape 사용
-        else:
-            raise ValueError(f"지원하지 않는 입력 상태 차원: {original_shape}")
-
+        batch_size = states.size(0) if states.dim() == 3 else 1
+        
+        # 단일 상태인 경우 배치 차원 추가
+        if states.dim() == 2:
+            states = states.unsqueeze(0)
+        
         # NaN/Inf 입력 방지 (안정성 강화)
         if torch.isnan(states).any() or torch.isinf(states).any():
-            # logger.warning(f"ActorCritic 입력에 NaN/Inf 발견. 0으로 대체합니다. Shape: {original_shape}")
+            # logger.warning(f"ActorCritic 입력에 NaN/Inf 발견. 0으로 대체합니다. Shape: {states.shape}")
             states = torch.nan_to_num(states, nan=0.0, posinf=0.0, neginf=0.0)
-
-        # 공통 베이스 네트워크 통과
-        base_output = self.actor_critic_base(states)
         
-        # 액터 출력: Concentration 계산 (Softplus + 안정성 위한 조정)
+        # LSTM 처리 
+        # 각 자산별로 피처 시퀀스를 LSTM에 통과시킴
+        lstm_outputs = []
+        # (batch_size, n_assets, n_features) → 각 자산별로 LSTM 통과
+        for i in range(states.size(1)):
+            asset_feats = states[:, i, :].view(batch_size, 1, -1)  # (batch, 1, n_features)
+            lstm_out, _ = self.lstm(asset_feats)  # (batch, 1, hidden_dim)
+            lstm_outputs.append(lstm_out[:, -1, :])  # 마지막 hidden state: (batch, hidden_dim)
+        
+        # 모든 자산의 LSTM 출력을 연결
+        lstm_concat = torch.cat(lstm_outputs, dim=1)  # (batch, n_assets*hidden_dim)
+        lstm_flat = lstm_concat.reshape(batch_size, -1)  # 평탄화
+        
+        # 공통 베이스 네트워크 통과
+        base_output = self.actor_critic_base(lstm_flat)
+        
+        # 액터 출력: Concentration 계산
         actor_output = self.actor_head(base_output)
-        # Softplus는 양수 값을 보장, 작은 값(1e-4)을 더해 0 방지
+        
+        # Softplus + 스케일링 적용 (행동 강화)
         concentration = F.softplus(actor_output) + 1e-4
+        concentration = concentration * DIRICHLET_SCALE_FACTOR
+        
         # 매우 크거나 작은 값 제한 (수치적 안정성)
         concentration = torch.clamp(concentration, min=1e-4, max=1e4)
 
@@ -562,7 +651,6 @@ class ActorCritic(nn.Module):
         # NumPy 배열을 Tensor로 변환하고 배치 차원 추가
         if isinstance(state, np.ndarray):
             # 올바른 형태로 변환 (n_assets, n_features) -> (1, n_assets, n_features) 가정?
-            # 모델 forward는 평탄화하므로 (n_assets, n_features) -> (1, n_assets * n_features) 로 변환 필요
             if state.ndim == 2: # (n_assets, n_features)
                  state_tensor = torch.from_numpy(state).float().unsqueeze(0).to(DEVICE)
             elif state.ndim == 1: # 이미 평탄화된 경우? (호환성 위해)
@@ -626,7 +714,8 @@ class PPO:
     def __init__(self, n_assets, n_features,
                  hidden_dim=DEFAULT_HIDDEN_DIM, lr=DEFAULT_LR, gamma=DEFAULT_GAMMA,
                  k_epochs=DEFAULT_K_EPOCHS, eps_clip=DEFAULT_EPS_CLIP,
-                 model_path=MODEL_SAVE_PATH, logger=None):
+                 model_path=MODEL_SAVE_PATH, logger=None,
+                 use_ema=True, ema_decay=0.99):
         
         self.gamma = gamma
         self.eps_clip = eps_clip
@@ -636,12 +725,24 @@ class PPO:
         self.n_assets = n_assets
         self.n_features = n_features # 추가
         
+        # EMA 가중치 옵션
+        self.use_ema = use_ema
+        self.ema_decay = ema_decay
+        
         os.makedirs(model_path, exist_ok=True)
         
         # 정책 네트워크 (현재 정책, 이전 정책)
         self.policy = ActorCritic(n_assets, n_features, hidden_dim).to(DEVICE)
         self.policy_old = ActorCritic(n_assets, n_features, hidden_dim).to(DEVICE)
         self.policy_old.load_state_dict(self.policy.state_dict()) # 가중치 복사
+        
+        # EMA 모델 (학습 안정성을 위한 Exponential Moving Average)
+        if self.use_ema:
+            self.policy_ema = ActorCritic(n_assets, n_features, hidden_dim).to(DEVICE)
+            self.policy_ema.load_state_dict(self.policy.state_dict())
+            # EMA 모델의 파라미터는 업데이트되지 않도록 설정
+            for param in self.policy_ema.parameters():
+                param.requires_grad = False
 
         # 옵티마이저 및 손실 함수
         self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=lr)
@@ -658,6 +759,18 @@ class PPO:
             # 행렬 곱셈 연산 정밀도 설정 (A100/H100 등 TensorFloat32 지원 시 유리)
             # torch.set_float32_matmul_precision('high') # 또는 'medium'
             
+    def update_ema_model(self):
+        """
+        EMA(Exponential Moving Average) 모델의 가중치를 업데이트합니다.
+        ema_weight = decay * ema_weight + (1 - decay) * current_weight
+        """
+        if not self.use_ema:
+            return
+            
+        with torch.no_grad():
+            for ema_param, current_param in zip(self.policy_ema.parameters(), self.policy.parameters()):
+                ema_param.data.mul_(self.ema_decay).add_(current_param.data, alpha=1.0 - self.ema_decay)
+            
     def save_model(self, episode, reward):
         """ 최고 성능 모델의 가중치와 옵티마이저 상태, obs_rms 통계를 저장합니다. """
         if reward > self.best_reward:
@@ -671,6 +784,12 @@ class PPO:
                 'optimizer_state_dict': self.optimizer.state_dict(),
                     'best_reward': self.best_reward,
                 }
+                
+                # EMA 모델이 있으면 EMA 상태도 저장
+                if self.use_ema:
+                    checkpoint['ema_model_state_dict'] = self.policy_ema.state_dict()
+                    checkpoint['ema_decay'] = self.ema_decay
+                
                 # obs_rms가 있으면 통계량 추가
                 if self.obs_rms is not None:
                     checkpoint.update({
@@ -698,6 +817,16 @@ class PPO:
 
             self.policy.load_state_dict(checkpoint['model_state_dict'])
             self.policy_old.load_state_dict(checkpoint['model_state_dict'])
+            
+            # EMA 모델 로드 (있는 경우)
+            if self.use_ema and 'ema_model_state_dict' in checkpoint:
+                self.policy_ema.load_state_dict(checkpoint['ema_model_state_dict'])
+                self.ema_decay = checkpoint.get('ema_decay', self.ema_decay)
+                self.logger.info(f"EMA 모델 로드 완료 (decay: {self.ema_decay})")
+            elif self.use_ema:
+                # EMA 모델이 저장되지 않았으면 일반 모델로 초기화
+                self.policy_ema.load_state_dict(checkpoint['model_state_dict'])
+                self.logger.info("EMA 모델이 저장되지 않아 일반 모델로 초기화됨")
 
             if 'optimizer_state_dict' in checkpoint:
                 self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
@@ -723,6 +852,8 @@ class PPO:
                 weights = torch.load(model_file, map_location=DEVICE, weights_only=True)
                 self.policy.load_state_dict(weights)
                 self.policy_old.load_state_dict(weights)
+                if self.use_ema:
+                    self.policy_ema.load_state_dict(weights)
                 self.logger.info(f"모델 가중치 로드 성공 (weights_only=True)! ({model_file})")
                 self.best_reward = -float('inf')
                 self.obs_rms = None
@@ -734,10 +865,21 @@ class PPO:
             self.logger.error(f"모델 로드 중 예상치 못한 오류 발생 ({model_file}): {e}")
             return False
 
-    def select_action(self, state):
-        """ 추론 시 이전 정책(policy_old)을 사용하여 행동을 결정합니다. """
-        action, _, _ = self.policy_old.act(state)
-        return action
+    def select_action(self, state, use_ema=True):
+        """ 
+        추론 시 액션 선택 (EMA 모델 사용 옵션 추가)
+        use_ema=True면 EMA 모델 사용, False면 일반 모델 사용
+        """
+        if self.use_ema and use_ema:
+            with torch.no_grad():
+                state_tensor = torch.from_numpy(state).float().unsqueeze(0).to(DEVICE)
+                concentration, _ = self.policy_ema(state_tensor)
+                dist = torch.distributions.Dirichlet(concentration)
+                action = dist.mean  # 평균값 사용 (샘플링 없이 결정론적)
+                return action.squeeze(0).cpu().numpy()
+        else:
+            action, _, _ = self.policy_old.act(state)
+            return action
 
     def compute_returns_and_advantages(self, rewards, is_terminals, values):
         """
@@ -837,6 +979,10 @@ class PPO:
                 torch.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=0.5)
                 self.optimizer.step()
                 total_loss_val += loss.item()
+                
+                # EMA 모델 가중치 업데이트
+                if self.use_ema:
+                    self.update_ema_model()
 
             if total_loss_val != 0.0 or self.k_epochs == 0:
                 self.policy_old.load_state_dict(self.policy.state_dict())
@@ -867,7 +1013,10 @@ def integrated_gradients(model, state, baseline=None, steps=INTEGRATED_GRADIENTS
     """
     logger = logging.getLogger('PortfolioRL')
     if baseline is None:
-        baseline = np.zeros_like(state)
+        # 이전: 0 벡터 / 변경: 현재 상태의 평균값 사용
+        # 가격·거래량과 같은 스케일링되지 않은 피처에 대해 더 의미 있는 기준점 제공
+        state_mean = np.mean(state, keepdims=True)
+        baseline = np.ones_like(state) * state_mean
     
     try:
         if state.shape != baseline.shape:
@@ -878,6 +1027,12 @@ def integrated_gradients(model, state, baseline=None, steps=INTEGRATED_GRADIENTS
         gradient_sum = torch.zeros_like(state_tensor)
         alphas = torch.linspace(0, 1, steps, device=DEVICE)
     
+        # 모델의 현재 모드 저장
+        was_training = model.training
+        
+        # cudNN RNN의 backward는 training 모드에서만 작동하므로 임시로 모드 변경
+        model.train()
+        
         for alpha in alphas:
             # 1. 원본 형태로 보간
             interpolated_state_orig = baseline_tensor + alpha * (state_tensor - baseline_tensor)
@@ -887,8 +1042,15 @@ def integrated_gradients(model, state, baseline=None, steps=INTEGRATED_GRADIENTS
             interpolated_state_input.requires_grad_(True)
 
             # 3. 모델 순전파 및 타겟 설정
-            concentration, _ = model.forward(interpolated_state_input)
-            target_output = concentration.mean()
+            # 중요: detach()나 torch.no_grad() 없이 순전파 진행
+            concentration, value = model(interpolated_state_input)
+            
+            # value에 대해 requires_grad 확인
+            if not value.requires_grad:
+                value = value.detach().requires_grad_(True)
+                
+            # 상태 가치(value)는 기대 반환과 직접적으로 연결되어 있으므로 IG 대상 스칼라로 사용
+            target_output = value.squeeze()
 
             # 4. 그래디언트 계산
             model.zero_grad()
@@ -905,6 +1067,10 @@ def integrated_gradients(model, state, baseline=None, steps=INTEGRATED_GRADIENTS
                      logger.warning(f"IG: 그래디언트 형태 불일치 발생. grad shape: {gradient.shape}, expected: {state_tensor.shape}. 해당 스텝 건너<0xEB><0x9A><0x8D>.")
             # else: # grad가 None인 경우, backward 실패 가능성
                 # logger.warning(f"IG: Alpha {alpha:.2f}에서 그래디언트가 None입니다.")
+        
+        # 원래의 모델 모드로 복원
+        if not was_training:
+            model.eval()
 
         # 6. 최종 IG 계산
         integrated_grads_tensor = (state_tensor - baseline_tensor) * (gradient_sum / steps)
@@ -931,6 +1097,24 @@ def linear_model_hindsight(features, returns):
     try:
         if not isinstance(features, np.ndarray) or not isinstance(returns, np.ndarray):
              raise TypeError("입력 데이터는 NumPy 배열이어야 합니다.")
+        
+        # 입력 형태 로깅
+        logger.info(f"선형 모델 입력 형태 - features: {features.shape}, returns: {returns.shape}")
+        
+        # features가 3차원인지 확인, 아닐 경우 변환 시도
+        if features.ndim == 2:
+            # 2차원 배열이면 (n_steps, n_assets*n_features) 형태로 가정
+            n_steps = features.shape[0]
+            # n_assets와 n_features 추정 (FEATURE_NAMES 길이로)
+            n_features_ = len(FEATURE_NAMES)
+            n_assets = features.shape[1] // n_features_
+            if n_assets * n_features_ != features.shape[1]:
+                logger.warning(f"특성 차원 불일치: {features.shape[1]} vs {n_assets}*{n_features_}")
+                # 강제로 변환 (데이터 손실 가능)
+                features = features[:, :n_assets*n_features_]
+            features = features.reshape(n_steps, n_assets, n_features_)
+            logger.info(f"특성 데이터 형태 변환: {features.shape}")
+        
         if features.shape[0] != len(returns):
             raise ValueError(f"features({features.shape[0]})와 returns({len(returns)})의 샘플 수가 일치하지 않습니다.")
         if features.ndim != 3 or returns.ndim != 1:
@@ -942,11 +1126,19 @@ def linear_model_hindsight(features, returns):
 
         model = LinearRegression()
         model.fit(X, y)
-        coefficients = model.coef_.reshape(n_assets, n_features_)
-        return coefficients
+
+        # 회귀 계수 (자산, 피처)
+        beta = model.coef_.reshape(n_assets, n_features_)
+
+        # 식 (18): 각 자산별 피처 평균에 대한 내적 후 합산해 글로벌 피처 가중치 계산
+        feature_weights = (beta * features.mean(axis=0)).sum(axis=0)
+        
+        logger.info(f"선형 모델 학습 완료. 결과 형태: {feature_weights.shape}")
+        return feature_weights
 
     except Exception as e:
         logger.error(f"Hindsight 선형 모델 학습 중 오류: {e}")
+        logger.error(traceback.format_exc())
         return None
 
 def compute_feature_weights_drl(ppo_agent, states):
@@ -958,7 +1150,7 @@ def compute_feature_weights_drl(ppo_agent, states):
         states (np.ndarray): 분석할 상태 데이터 (n_steps, n_assets, n_features).
 
     Returns:
-        np.ndarray: 각 스텝별 특성 가중치 (n_steps, n_assets, n_features).
+        np.ndarray: 각 스텝별 특성 가중치.
                     오류 발생 시 빈 배열 반환.
     """
     logger = logging.getLogger('PortfolioRL')
@@ -968,20 +1160,75 @@ def compute_feature_weights_drl(ppo_agent, states):
         if not isinstance(states, np.ndarray) or states.ndim != 3:
              raise ValueError("입력 states는 (n_steps, n_assets, n_features) 형태의 NumPy 배열이어야 합니다.")
 
-        for state in tqdm(states, desc="Calculating DRL Feature Weights", leave=False, ncols=100):
-            ig = integrated_gradients(ppo_agent.policy, state)
-            all_feature_weights.append(ig)
+        # 메모리 효율성을 위한 배치 처리
+        batch_size = 32  # 메모리 사용량과 속도의 균형을 위한 적절한 배치 크기
+        n_states = len(states)
+        n_assets = states.shape[1]
+        n_features = states.shape[2]
+        n_batches = (n_states + batch_size - 1) // batch_size  # 올림 나눗셈
+
+        logger.info(f"DRL 특성 가중치 계산 중: {n_states}개 샘플, 형태 {states.shape}")
+        
+        # 프로그레스 바 설정
+        pbar = tqdm(range(n_batches), desc="Calculating DRL Feature Weights", leave=False, ncols=100)
+
+        for batch_idx in pbar:
+            # 배치 범위 계산
+            start_idx = batch_idx * batch_size
+            end_idx = min((batch_idx + 1) * batch_size, n_states)
+            batch_states = states[start_idx:end_idx]
+            
+            # 배치 내 각 상태에 대해 IG 계산
+            batch_weights = []
+            for state in batch_states:
+                try:
+                    # integrated_gradients 함수는 내부적으로 그래디언트를 계산해야 하므로 no_grad 제거
+                    ig = integrated_gradients(ppo_agent.policy, state)
+                    
+                    # NaN 또는 Inf 값 확인
+                    if np.isnan(ig).any() or np.isinf(ig).any():
+                        logger.warning("특성 가중치에 NaN/Inf 값 발견. 0으로 대체")
+                        ig = np.nan_to_num(ig, nan=0.0, posinf=0.0, neginf=0.0)
+                    
+                    # 여기서 중요: 각 특성별 중요도 계산
+                    # 통합 그래디언트 결과는 (n_assets, n_features) 형태
+                    # 이를 특성별로 평균내어 전체 특성 중요도를 구함
+                    feature_importance = np.abs(ig).mean(axis=0)  # 자산에 대해 평균, 결과: (n_features,)
+                    
+                    batch_weights.append(feature_importance)
+                except Exception as e:
+                    logger.warning(f"샘플에 대한 통합 그래디언트 계산 중 오류: {e}")
+                    # 오류 발생 시 0으로 채운 배열 사용
+                    batch_weights.append(np.zeros(n_features))
+                    
+                # 메모리 관리를 위해 주기적으로 캐시 비우기
+                if torch.cuda.is_available() and (len(batch_weights) % 10 == 0):
+                    torch.cuda.empty_cache()
+            
+            # 배치 결과 누적
+            all_feature_weights.extend(batch_weights)
+            
+            # 배치 처리 후 메모리 정리
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
         if not all_feature_weights:
              logger.warning("DRL 특성 가중치 계산 결과가 비어있습니다.")
-             return np.array([])
+             return np.zeros((1, n_features))  # 비어있는 경우 0으로 채운 배열 반환
 
-        return np.stack(all_feature_weights, axis=0)
+        # 결과 형태 확인 및 로깅 - 각 샘플별 특성 중요도 (n_samples, n_features)
+        result = np.stack(all_feature_weights, axis=0)
+        logger.info(f"DRL 특성 가중치 계산 완료. 결과 형태: {result.shape}")
+        
+        return result
 
     except Exception as e:
         logger.error(f"DRL 특성 가중치 계산 중 오류: {e}")
         logger.error(traceback.format_exc())
-        return np.array([])
+        # 오류 발생 시 에이전트가 있다면 샘플 크기에 맞는 0 배열 반환
+        if isinstance(ppo_agent, PPO) and isinstance(states, np.ndarray) and states.ndim == 3:
+            return np.zeros((1, states.shape[2]))
+        return np.zeros((1, 10))  # 기본 형태로 0 배열 반환
 
 def compute_correlation(arr1, arr2):
     """
@@ -1182,7 +1429,8 @@ def calculate_performance_metrics(returns):
 
     Returns:
         dict: 계산된 성능 지표 딕셔너리.
-              {'annual_return', 'annual_volatility', 'sharpe_ratio', 'max_drawdown', 'calmar_ratio'}
+              {'annual_return', 'annual_volatility', 'sharpe_ratio', 'max_drawdown', 'calmar_ratio',
+               'total_return', 'daily_std'}
     """
     if not isinstance(returns, np.ndarray):
         daily_returns = np.array(returns)
@@ -1192,7 +1440,7 @@ def calculate_performance_metrics(returns):
     # 유효한 수익률 데이터가 없는 경우 기본값 반환
     if daily_returns.size == 0:
         return {'annual_return': 0.0, 'annual_volatility': 0.0, 'sharpe_ratio': 0.0,
-                'max_drawdown': 0.0, 'calmar_ratio': 0.0}
+                'max_drawdown': 0.0, 'calmar_ratio': 0.0, 'total_return': 0.0, 'daily_std': 0.0}
 
     # NaN/Inf 값 처리
     if np.isnan(daily_returns).any() or np.isinf(daily_returns).any():
@@ -1202,7 +1450,8 @@ def calculate_performance_metrics(returns):
     annual_return = np.mean(daily_returns) * 252
     
     # 연간 변동성 (일간 표준편차 * sqrt(252))
-    annual_volatility = np.std(daily_returns) * np.sqrt(252)
+    daily_std = np.std(daily_returns)
+    annual_volatility = daily_std * np.sqrt(252)
     
     # 샤프 비율 (무위험 이자율 0 가정)
     # 변동성이 0에 가까우면 샤프 비율은 정의되지 않거나 0으로 처리
@@ -1224,12 +1473,17 @@ def calculate_performance_metrics(returns):
     else:
         calmar_ratio = 0.0
     
+    # 총 수익률 계산
+    total_return = (cumulative_returns[-1] - 1) * 100 if len(cumulative_returns) > 0 else 0.0
+    
     return {
         'annual_return': annual_return,
         'annual_volatility': annual_volatility,
         'sharpe_ratio': sharpe_ratio,
         'max_drawdown': max_drawdown,
-        'calmar_ratio': calmar_ratio
+        'calmar_ratio': calmar_ratio,
+        'total_return': total_return,
+        'daily_std': daily_std
     }
     
 def plot_feature_importance(drl_weights_mean, ref_weights_mean, plot_dir, feature_names=FEATURE_NAMES, filename=None):
@@ -1248,33 +1502,68 @@ def plot_feature_importance(drl_weights_mean, ref_weights_mean, plot_dir, featur
             or len(drl_weights_mean) != len(feature_names):
         return
         
+    # 값 범위 정규화 - outlier 필터링 및 MinMax 스케일링 적용
+    def normalize_weights(weights):
+        # Volume 컬럼을 위한 이상치 처리 로직
+        weights_abs = np.abs(weights)
+        median_abs = np.median(weights_abs)
+        mad = np.median(np.abs(weights_abs - median_abs))  # Median Absolute Deviation
+        threshold = median_abs + 10 * mad  # 보수적인 임계값
+
+        # 이상치 제한
+        clipped_weights = np.clip(weights, -threshold, threshold)
+        
+        # 크기가 있는 데이터에 MinMax 스케일링
+        if np.max(np.abs(clipped_weights)) > 1e-10:
+            scaled_weights = clipped_weights / np.max(np.abs(clipped_weights))
+        else:
+            scaled_weights = clipped_weights
+        
+        return scaled_weights, threshold
+
+    # 공통 정규화: 두 모델 가중치의 절대적 크기 비교가 가능하도록 글로벌 최대값 사용
+    # 각 모델별 이상치 제거 후 동일 스케일 적용
+    drl_weights_clipped, drl_threshold = normalize_weights(drl_weights_mean)
+    ref_weights_clipped, ref_threshold = normalize_weights(ref_weights_mean)
+    
+    # 두 모델 가중치의 공통 최대값으로 정규화
+    global_max = np.max([np.max(np.abs(drl_weights_clipped)), np.max(np.abs(ref_weights_clipped))])
+    if global_max > 1e-10:
+        drl_weights_normalized = drl_weights_clipped / global_max
+        ref_weights_normalized = ref_weights_clipped / global_max
+    else:
+        drl_weights_normalized = drl_weights_clipped
+        ref_weights_normalized = ref_weights_clipped
+    
     plt.figure(figsize=(15, 7)) # 너비 증가
     num_features = len(feature_names)
     x = np.arange(num_features)
 
     # DRL 에이전트 중요도
     plt.subplot(1, 2, 1)
-    bars1 = plt.bar(x, drl_weights_mean, color='skyblue')
-    plt.ylabel('Importance Score')
-    plt.title('DRL Agent Mean Feature Importance')
+    bars1 = plt.bar(x, drl_weights_normalized, color='skyblue')
+    plt.ylabel('Normalized Importance Score')
+    plt.title(f'DRL Agent Feature Importance\n(Clipped at {drl_threshold:.2e}, Common Scale)')
     plt.xticks(x, feature_names, rotation=45, ha="right")
     plt.grid(axis='y', linestyle='--')
+    plt.ylim(-1.1, 1.1)  # 정규화된 값의 y 축 범위 고정
     # 막대 위에 값 표시 (소수점 2자리)
     for bar in bars1:
         yval = bar.get_height()
-        plt.text(bar.get_x() + bar.get_width()/2.0, yval, f'{yval:.2f}', va='bottom' if yval >= 0 else 'top', ha='center')
+        plt.text(bar.get_x() + bar.get_width()/2.0, yval, f'{yval:.2f}', va='bottom' if yval >= 0 else 'top', ha='center', fontsize=8)
 
     # 참조 모델 중요도
     plt.subplot(1, 2, 2)
-    bars2 = plt.bar(x, ref_weights_mean, color='lightcoral')
-    plt.ylabel('Importance Score')
-    plt.title('Reference Model Mean Feature Importance')
+    bars2 = plt.bar(x, ref_weights_normalized, color='lightcoral')
+    plt.ylabel('Normalized Importance Score')
+    plt.title(f'Reference Model Feature Importance\n(Clipped at {ref_threshold:.2e}, Common Scale)')
     plt.xticks(x, feature_names, rotation=45, ha="right")
     plt.grid(axis='y', linestyle='--')
+    plt.ylim(-1.1, 1.1)  # 정규화된 값의 y 축 범위 고정
     # 막대 위에 값 표시 (소수점 2자리)
     for bar in bars2:
         yval = bar.get_height()
-        plt.text(bar.get_x() + bar.get_width()/2.0, yval, f'{yval:.2f}', va='bottom' if yval >= 0 else 'top', ha='center')
+        plt.text(bar.get_x() + bar.get_width()/2.0, yval, f'{yval:.2f}', va='bottom' if yval >= 0 else 'top', ha='center', fontsize=8)
 
     
     plt.tight_layout()
@@ -1291,7 +1580,7 @@ def plot_feature_importance(drl_weights_mean, ref_weights_mean, plot_dir, featur
         pass # 오류 로깅은 주석 처리됨
     finally:
         plt.close()
-    
+     
 def plot_integrated_gradients(ig_values_mean, plot_dir, feature_names=FEATURE_NAMES, title="Mean Integrated Gradients", filename=None):
     """
     평균 통합 그래디언트 값을 막대 그래프로 시각화하고 지정된 디렉토리에 저장.
@@ -1306,35 +1595,76 @@ def plot_integrated_gradients(ig_values_mean, plot_dir, feature_names=FEATURE_NA
     if not isinstance(ig_values_mean, np.ndarray) or len(ig_values_mean) != len(feature_names):
         return # 데이터 오류 시 함수 종료
 
-    plt.figure(figsize=(12, 6))
-    num_features = len(feature_names)
-    x = np.arange(num_features)
-
-    bars = plt.bar(x, ig_values_mean, color='mediumpurple')
-    plt.ylabel('Mean Attribution Score')
-    plt.title(title)
-    plt.xticks(x, feature_names, rotation=45, ha="right")
-    plt.grid(axis='y', linestyle='--')
-
-    # 막대 위에 값 표시
-    for bar in bars:
-        yval = bar.get_height()
-        plt.text(bar.get_x() + bar.get_width()/2.0, yval, f'{yval:.2f}', va='bottom' if yval >= 0 else 'top', ha='center')
-
-    plt.tight_layout()
-
+    # 극단값을 제한하고 정규화하기
+    values_abs = np.abs(ig_values_mean)
+    median_abs = np.median(values_abs)
+    mad = np.median(np.abs(values_abs - median_abs))
+    threshold = median_abs + 10 * mad
+    
+    # 원본 값 보존 및 clipping
+    original_values = ig_values_mean.copy()
+    normalized_values = np.clip(ig_values_mean, -threshold, threshold)
+    
+    # 크기가 있는 데이터에 MinMax 스케일링 (-1~1 범위로)
+    if np.max(np.abs(normalized_values)) > 1e-10:
+        normalized_values = normalized_values / np.max(np.abs(normalized_values))
+    
+    # 파일 경로 생성
     if filename is None:
         current_time = datetime.now().strftime('%Y%m%d_%H%M%S')
-        filename = f'integrated_gradients_mean_{current_time}.png'
-    save_path = os.path.join(plot_dir, filename)
-
+        norm_filename = f'integrated_gradients_mean_{current_time}.png'
+        raw_filename = f'integrated_gradients_raw_{current_time}.png'
+    else:
+        file_base, file_ext = os.path.splitext(filename)
+        norm_filename = filename
+        raw_filename = f'{file_base}_raw{file_ext}'
+    
+    norm_save_path = os.path.join(plot_dir, norm_filename)
+    raw_save_path = os.path.join(plot_dir, raw_filename)
+    
+    num_features = len(feature_names)
+    x = np.arange(num_features)
+    
+    # 1. 원본 값 그래프 생성 및 저장
+    plt.figure(figsize=(12, 6))
+    plt.bar(x, original_values, color='lightsteelblue', alpha=0.7)
+    plt.ylabel('Raw Attribution Score')
+    plt.title(f'Original {title} (Unclipped)')
+    plt.xticks(x, feature_names, rotation=45, ha="right")
+    plt.grid(axis='y', linestyle='--')
+    plt.tight_layout()
+    
     try:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        plt.savefig(raw_save_path, dpi=300, bbox_inches='tight')
     except Exception as e:
-        pass # 오류 로깅은 주석 처리됨
+        pass
     finally:
         plt.close()
     
+    # 2. 정규화 값 그래프 생성 및 저장
+    plt.figure(figsize=(12, 6))
+    bars = plt.bar(x, normalized_values, color='mediumpurple')
+    plt.ylabel('Normalized Attribution Score')
+    plt.title(f'{title}\n(Normalized, clipped at {threshold:.2e})')
+    plt.xticks(x, feature_names, rotation=45, ha="right")
+    plt.grid(axis='y', linestyle='--')
+    plt.ylim(-1.1, 1.1)
+    
+    # 막대 위에 값 표시
+    for bar in bars:
+        yval = bar.get_height()
+        plt.text(bar.get_x() + bar.get_width()/2.0, yval, f'{yval:.2f}', 
+                va='bottom' if yval >= 0 else 'top', ha='center', fontsize=8)
+    
+    plt.tight_layout()
+    
+    try:
+        plt.savefig(norm_save_path, dpi=300, bbox_inches='tight')
+    except Exception as e:
+        pass  # 오류 로깅은 주석 처리됨
+    finally:
+        plt.close()
+     
 # --- 학습 및 평가 함수 ---
 def print_memory_stats(logger):
     """ 현재 GPU 메모리 사용량 및 캐시 상태를 로깅합니다. """
@@ -1457,23 +1787,14 @@ def evaluate_ppo_agent(env: StockPortfolioEnv, ppo_agent: PPO, max_test_timestep
                 (state - ppo_agent.obs_rms.mean) / np.sqrt(ppo_agent.obs_rms.var + RMS_EPSILON),
                 -CLIP_OBS, CLIP_OBS)
 
-        with torch.no_grad():
-            state_tensor = torch.from_numpy(normalized_state).float().unsqueeze(0).to(DEVICE)
-            if state_tensor.dim() == 2: state_tensor = state_tensor.unsqueeze(0)
-            action = np.ones(env.n_assets) / env.n_assets # 기본값
-            try:
-                 if state_tensor.dim() != 3:
-                      raise ValueError(f"예상치 못한 상태 텐서 형태: {state_tensor.shape}")
-                 concentration, _ = ppo_agent.policy.forward(state_tensor)
-                 action = torch.distributions.Dirichlet(concentration).mean.squeeze(0).cpu().numpy()
-            except Exception as forward_err:
-                 logger.error(f"평가 중 모델 forward 오류: {forward_err}")
-
+        # EMA 모델 사용하여 액션 선택 (결정론적)
+        action = ppo_agent.select_action(normalized_state, use_ema=True)
+            
         chosen_actions.append(action)
         next_state, _, terminated, truncated_env, info = env.step(action)
         portfolio_values.append(info['portfolio_value'])
         daily_returns.append(info['return'])
-        asset_weights.append(info.get('weights', np.zeros(env.n_assets)))
+        asset_weights.append(info.get('weights', np.zeros(env.action_space.shape[0])))
         total_raw_reward += info.get('raw_reward', 0.0)
         state = next_state
         step_count += 1
@@ -1491,24 +1812,109 @@ def evaluate_ppo_agent(env: StockPortfolioEnv, ppo_agent: PPO, max_test_timestep
         'actions': chosen_actions
     }
 
+def evaluate_ensemble(env: StockPortfolioEnv, agents: list, max_test_timesteps: int, load_best_model=True):
+    """
+    앙상블 에이전트 평가 - 여러 에이전트의 평균 행동을 사용
+    
+    Args:
+        env: 평가 환경
+        agents: PPO 에이전트 리스트
+        max_test_timesteps: 최대 평가 스텝 수
+        load_best_model: 각 에이전트의 베스트 모델 로드 여부
+        
+    Returns:
+        dict: 평가 결과
+    """
+    logger = agents[0].logger if agents else logging.getLogger('PortfolioRL')
+    
+    if not agents:
+        logger.error("앙상블 평가를 위한 에이전트가 없음.")
+        return None
+    
+    # 각 에이전트의 모델 로드
+    if load_best_model:
+        for i, agent in enumerate(agents):
+            if not agent.load_model():
+                logger.warning(f"앙상블 에이전트 {i+1} 모델 로드 실패. 스킵됨.")
+                return None
+
+    # 평가 환경 리셋
+    state, info_init = env.reset(start_index=0)
+    total_raw_reward = 0.0
+    portfolio_values = [info_init['portfolio_value']]
+    daily_returns = []
+    asset_weights = [info_init['weights']]
+    chosen_actions = []
+
+    terminated, truncated = False, False
+    step_count = 0
+
+    logger.info(f"앙상블 평가 시작 ({len(agents)}개 에이전트)...")
+    pbar_eval = tqdm(total=max_test_timesteps, desc="Evaluating Ensemble", file=sys.stdout, ncols=100)
+
+    while not terminated and not truncated and step_count < max_test_timesteps:
+        # 각 에이전트별 정규화된 상태 준비
+        agent_actions = []
+        for agent in agents:
+            normalized_state = state
+            if agent.obs_rms is not None and agent.obs_rms.count > RMS_EPSILON:
+                normalized_state = np.clip(
+                    (state - agent.obs_rms.mean) / np.sqrt(agent.obs_rms.var + RMS_EPSILON),
+                    -CLIP_OBS, CLIP_OBS)
+            
+            # 각 에이전트의 결정론적 액션 선택 (EMA 사용)
+            action = agent.select_action(normalized_state, use_ema=True)
+            agent_actions.append(action)
+        
+        # 앙상블 액션 - 단순 평균
+        ensemble_action = np.mean(agent_actions, axis=0)
+        
+        # 정규화 (합이 1이 되도록)
+        if ensemble_action.sum() > 1e-6:
+            ensemble_action = ensemble_action / ensemble_action.sum()
+        else:
+            ensemble_action = np.ones_like(ensemble_action) / len(ensemble_action)
+        
+        chosen_actions.append(ensemble_action)
+        next_state, _, terminated, truncated_env, info = env.step(ensemble_action)
+        portfolio_values.append(info['portfolio_value'])
+        daily_returns.append(info['return'])
+        asset_weights.append(info.get('weights', np.zeros(env.action_space.shape[0])))
+        total_raw_reward += info.get('raw_reward', 0.0)
+        state = next_state
+        step_count += 1
+        pbar_eval.update(1)
+        if step_count >= max_test_timesteps: truncated = True
+
+    pbar_eval.close()
+    logger.info(f"앙상블 평가 종료. 총 스텝: {step_count}")
+
+    return {
+        'episode_reward': total_raw_reward,
+        'portfolio_values': portfolio_values,
+        'returns': daily_returns,
+        'weights': asset_weights,
+        'actions': chosen_actions
+    }
+
 # --- 메인 실행 함수 ---
 def main():
     """ 메인 실행 함수: 데이터 로드, 학습, 평가, 결과 분석 및 시각화 수행 """
-    current_time_seed = int(time.time())
-    np.random.seed(current_time_seed)
-    torch.manual_seed(current_time_seed)
-    if torch.cuda.is_available(): torch.cuda.manual_seed_all(current_time_seed)
-
-    # --- 실행 시점 기준 결과 저장 디렉토리 생성 ---
+    # 다중 시드 학습 설정
+    n_seeds = 3  # 학습할 시드 수
+    seeds = [int(time.time()) + i * 1000 for i in range(n_seeds)]
+    
+    # 결과 저장 디렉토리 생성
     run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = os.path.join(RESULTS_BASE_PATH, run_timestamp) # 기본 경로 사용
+    run_dir = os.path.join(RESULTS_BASE_PATH, run_timestamp)
     os.makedirs(run_dir, exist_ok=True)
 
-    # 로거 설정 (생성된 run_dir 전달)
+    # 로거 설정
     logger = setup_logger(run_dir)
     logger.info(f"결과 저장 폴더: {run_dir}")
+    logger.info(f"다중 시드 학습 설정: {n_seeds}개 모델, 시드: {seeds}")
 
-    # --- 시스템 환경 확인 (INFO 레벨 유지) ---
+    # --- 시스템 환경 확인 ---
     logger.info("\n" + "="*15 + " 시스템 환경 확인 " + "="*15)
     logger.info(f" 사용 디바이스: {DEVICE}")
     if torch.cuda.is_available():
@@ -1527,12 +1933,14 @@ def main():
         logger.warning(" CUDA 사용 불가능. CPU로 실행됩니다.")
     logger.info("="*48)
 
-    # --- 데이터 준비 (INFO 레벨 유지) ---
+    # --- 데이터 준비 ---
     logger.info("\n" + "="*18 + " 데이터 준비 " + "="*18)
     data_array, common_dates = fetch_and_preprocess_data(
         TRAIN_START_DATE, TEST_END_DATE, STOCK_TICKERS
     )
     if data_array is None: logger.error("데이터 준비 실패. 종료."); return
+    
+    # 데이터 분할
     split_date = pd.Timestamp(TEST_START_DATE).tz_localize(None)
     if not isinstance(common_dates, pd.DatetimeIndex): common_dates = pd.to_datetime(common_dates)
     common_dates_naive = common_dates.tz_localize(None)
@@ -1545,7 +1953,8 @@ def main():
         split_idx = split_idx_arr[0]
     if not (0 < split_idx < len(common_dates)):
         logger.error(f"데이터 분할 오류: 분할 인덱스({split_idx}) 유효하지 않음. 종료.")
-        return # return 들여쓰기 수정
+        return
+        
     train_data = data_array[:split_idx]
     test_data = data_array[split_idx:]
     test_dates = common_dates[split_idx:]
@@ -1553,89 +1962,390 @@ def main():
     logger.info(f" 테스트 데이터: {test_data.shape} ({test_dates[0].date()} ~ {test_dates[-1].date()})")
     logger.info("="*48)
 
-    # --- 환경 및 에이전트 설정 (INFO 레벨 유지) ---
-    logger.info("\n" + "="*14 + " 환경 및 에이전트 설정 " + "="*14)
+    # --- 피처 스케일링 (z-score) 적용 ---
+    # 기술 지표(Volume 제외) 인덱스만 스케일링하고 가격 관련 지표는 원래 스케일 유지
+    n_features_data = data_array.shape[2]
+    tech_start_idx = 5  # FEATURE_NAMES 기준 MACD부터
+    if n_features_data > tech_start_idx:
+        idx_to_scale = np.arange(tech_start_idx, n_features_data)
+
+        scaler = StandardScaler()
+        scaler.fit(train_data[:, :, idx_to_scale].reshape(-1, len(idx_to_scale)))
+
+        # 변환 적용
+        train_scaled_slice = scaler.transform(train_data[:, :, idx_to_scale].reshape(-1, len(idx_to_scale)))
+        test_scaled_slice  = scaler.transform(test_data[:,  :, idx_to_scale].reshape(-1, len(idx_to_scale)))
+
+        train_data[:, :, idx_to_scale] = train_scaled_slice.reshape(train_data.shape[0], train_data.shape[1], len(idx_to_scale))
+        test_data[:,  :, idx_to_scale] = test_scaled_slice.reshape(test_data.shape[0],  test_data.shape[1],  len(idx_to_scale))
+
+    # --- 다중 시드 기반 학습 및 앙상블 에이전트 생성 ---
+    logger.info("\n" + "="*14 + " 다중 시드 학습 시작 " + "="*14)
+    
     train_env = StockPortfolioEnv(train_data, normalize_states=True)
     n_assets, n_features = train_env.n_assets, train_env.n_features
-    logger.info(f" 환경 설정: 자산 수={n_assets}, 피처 수={n_features}")
-    ppo_agent = PPO(n_assets, n_features, logger=logger, lr=DEFAULT_LR)
-    logger.info(f" PPO 에이전트 생성 완료 (lr={DEFAULT_LR})")
-    logger.info("="*48)
-
-    logger.info("\n" + "="*16 + " PPO 에이전트 학습 " + "="*16)
+    
+    # EMA 가중치 사용 설정
+    use_ema = True
+    ema_decay = 0.99
+    
+    # 에피소드 및 스텝 설정
     max_episodes_train = 500
     max_timesteps_train = train_env.max_episode_length
-    training_rewards = train_ppo_agent(
-        train_env, ppo_agent, max_episodes_train, max_timesteps_train, PPO_UPDATE_TIMESTEP, logger
-    )
-    logger.info(" PPO 학습 완료!")
-    logger.info("="*48)
-
-    logger.info("\n" + "="*16 + " PPO 에이전트 평가 " + "="*16)
+    
+    # 앙상블 구성을 위한 에이전트 리스트
+    ensemble_agents = []
+    
+    # 각 시드별 모델 학습
+    for seed_idx, seed in enumerate(seeds):
+        logger.info(f"\n--- 시드 {seed_idx+1}/{n_seeds} (seed={seed}) 학습 시작 ---")
+        
+        # 시드 설정
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available(): torch.cuda.manual_seed_all(seed)
+        
+        # 에이전트 생성 (시드별 모델 저장 경로 분리)
+        seed_model_path = os.path.join(run_dir, f'model_seed_{seed}')
+        os.makedirs(seed_model_path, exist_ok=True)
+        
+        ppo_agent = PPO(
+            n_assets, n_features, logger=logger, lr=DEFAULT_LR, 
+            use_ema=use_ema, ema_decay=ema_decay, model_path=seed_model_path
+        )
+        
+        logger.info(f"PPO 에이전트 생성 완료 (lr={DEFAULT_LR}, use_ema={use_ema}, seed={seed})")
+        
+        # 환경 리셋 (시드 설정)
+        train_env.reset(seed=seed)
+        
+        # 모델 학습
+        training_rewards = train_ppo_agent(
+            train_env, ppo_agent, max_episodes_train, max_timesteps_train, PPO_UPDATE_TIMESTEP, logger
+        )
+        
+        # 앙상블을 위해 에이전트 저장
+        ensemble_agents.append(ppo_agent)
+        
+        logger.info(f"시드 {seed_idx+1}/{n_seeds} 학습 완료!")
+    
+    logger.info("\n" + "="*16 + " 앙상블 에이전트 평가 " + "="*16)
+    
+    # 테스트 환경 생성
     test_env = StockPortfolioEnv(test_data, normalize_states=False)
     max_test_timesteps = len(test_data) - 1
-    test_results = evaluate_ppo_agent(test_env, ppo_agent, max_test_timesteps, load_best_model=True)
-    if test_results is None: logger.error("테스트 실패. 성능 분석 생략."); return
-    logger.info(" 테스트 완료!")
-    logger.info("="*48)
-
+    
+    # 1. 개별 에이전트 평가
+    individual_results = []
+    for i, agent in enumerate(ensemble_agents):
+        logger.info(f"\n--- 개별 에이전트 {i+1}/{n_seeds} 평가 ---")
+        result = evaluate_ppo_agent(test_env, agent, max_test_timesteps, load_best_model=True)
+        if result:
+            individual_results.append(result)
+            metrics = calculate_performance_metrics(result['returns'])
+            logger.info(f"에이전트 {i+1} - 최종 가치: {result['portfolio_values'][-1]:.2f}, 총 수익률: {metrics['total_return']:.2f}%")
+    
+    # 2. 앙상블 에이전트 평가
+    logger.info("\n--- 앙상블 에이전트 평가 ---")
+    ensemble_result = evaluate_ensemble(test_env, ensemble_agents, max_test_timesteps, load_best_model=True)
+    
+    if ensemble_result is None:
+        logger.error("앙상블 평가 실패")
+        return
+    
+    # --- 성능 분석 및 시각화 ---
     logger.info("\n" + "="*13 + " 성능 분석 및 시각화 " + "="*13)
-    metrics = calculate_performance_metrics(test_results['returns'])
-    logger.info("--- 포트폴리오 성능 지표 ---")
-    logger.info(f" 연간 수익률: {metrics['annual_return']:.2%}")
-    logger.info(f" 연간 변동성: {metrics['annual_volatility']:.2%}")
-    logger.info(f" 샤프 비율: {metrics['sharpe_ratio']:.2f}")
-    logger.info(f" 최대 낙폭: {metrics['max_drawdown']:.2%}")
-    logger.info(f" 칼마 비율: {metrics['calmar_ratio']:.2f}")
-    logger.info(f" 테스트 기간 총 Raw 보상: {test_results['episode_reward']:.4f}")
-
-    # 그래프 저장
+    
+    # 앙상블 성능 지표 계산
+    ens_metrics = calculate_performance_metrics(ensemble_result['returns'])
+    logger.info("--- 앙상블 포트폴리오 성능 지표 ---")
+    logger.info(f" 최종 가치: {ensemble_result['portfolio_values'][-1]:.2f}")
+    logger.info(f" 총 수익률: {ens_metrics['total_return']:.2f}%")
+    logger.info(f" 일간 표준편차: {ens_metrics['daily_std']:.4f}")
+    logger.info(f" 연간 수익률: {ens_metrics['annual_return']:.2%}")
+    logger.info(f" 연간 변동성: {ens_metrics['annual_volatility']:.2%}")
+    logger.info(f" 샤프 비율: {ens_metrics['sharpe_ratio']:.2f}")
+    logger.info(f" 최대 낙폭: {ens_metrics['max_drawdown']:.2%}")
+    logger.info(f" 칼마 비율: {ens_metrics['calmar_ratio']:.2f}")
+    
+    # 앙상블 vs 개별 모델 성능 비교
+    if individual_results:
+        ind_returns = [np.mean([calculate_performance_metrics(r['returns'])['total_return'] for r in individual_results])]
+        ind_sharpes = [np.mean([calculate_performance_metrics(r['returns'])['sharpe_ratio'] for r in individual_results])]
+        ind_volatility = [np.mean([calculate_performance_metrics(r['returns'])['annual_volatility'] for r in individual_results])]
+        
+        logger.info("\n--- 앙상블 vs 개별 모델 평균 성능 ---")
+        logger.info(f" 개별 모델 평균 수익률: {ind_returns[0]:.2f}%")
+        logger.info(f" 앙상블 수익률: {ens_metrics['total_return']:.2f}%")
+        logger.info(f" 개별 모델 평균 샤프 비율: {ind_sharpes[0]:.2f}")
+        logger.info(f" 앙상블 샤프 비율: {ens_metrics['sharpe_ratio']:.2f}")
+        logger.info(f" 개별 모델 평균 변동성: {ind_volatility[0]:.2%}")
+        logger.info(f" 앙상블 변동성: {ens_metrics['annual_volatility']:.2%}")
+        
+        # 변동성 감소율 계산
+        vol_reduction = 1 - (ens_metrics['annual_volatility'] / ind_volatility[0])
+        logger.info(f" 앙상블의 변동성 감소율: {vol_reduction:.2%}")
+    
+    # 성능 그래프 생성
     plot_performance(
-        test_results['portfolio_values'], dates=test_dates,
-        title="PPO Portfolio Performance (Evaluation)", filename=f"PPO_performance.png",
+        ensemble_result['portfolio_values'], dates=test_dates,
+        title="Ensemble Portfolio Performance (Evaluation)", 
+        filename=f"ensemble_performance.png",
         plot_dir=run_dir
     )
+    
+    # 샘플 개별 에이전트 그래프 (첫 번째만)
+    if individual_results:
+        plot_performance(
+            individual_results[0]['portfolio_values'], dates=test_dates,
+            title="Individual Agent Performance (First Agent)", 
+            filename=f"individual_performance.png",
+            plot_dir=run_dir
+        )
+    
     logger.info("="*48)
+    logger.info("\n===== 프로그램 종료 =====")
 
-    # --- 설명 가능한 AI (XAI) 분석 (INFO 레벨 유지) ---
-    logger.info("\n" + "="*12 + " 설명 가능한 AI (XAI) 분석 " + "="*12)
+    # --- XAI 분석: 특성 중요도 및 통합 그래디언트 분석 ---
+    logger.info("\n" + "="*15 + " XAI 분석 및 시각화 " + "="*15)
+    
+    # 테스트 데이터 샘플 추출 (통합 그래디언트 및 특성 중요도 분석용)
+    test_sample_indices = np.linspace(0, len(test_data)-1, XAI_SAMPLE_COUNT, dtype=int)
+    test_samples = test_data[test_sample_indices]
+    
+    # 1. DRL 모델 특성 중요도 분석
+    logger.info("DRL 모델 특성 중요도 분석 중...")
+    drl_weights = []
+    
+    for agent_idx, agent in enumerate(ensemble_agents):
+        agent_weights = compute_feature_weights_drl(agent, test_samples)
+        drl_weights.append(agent_weights)
+        logger.info(f"에이전트 {agent_idx+1} 특성 중요도 분석 완료")
+    
+    # 모든 에이전트의 평균 특성 중요도
+    drl_weights_mean = np.mean(drl_weights, axis=0)
+    
+    # 2. 선형 참조 모델 분석 (사후 분석)
+    logger.info("선형 참조 모델 분석 중...")
+    
+    # 테스트 데이터에서 보상 계산 (일간 수익률)
+    ref_features = test_data[:-1]  # 마지막 날은 포함하지 않음 (returns가 n-1개이므로)
+    ref_returns = np.array(ensemble_result['returns'])
+    
+    # 데이터 형태 확인
+    logger.info(f"참조 모델 입력 데이터 형태 - features: {ref_features.shape}, returns: {len(ref_returns)}")
+    
+    # 데이터 차원 확인 및 조정
+    if ref_features.shape[1] != len(STOCK_TICKERS) or ref_features.shape[2] != len(FEATURE_NAMES):
+        logger.warning(f"참조 모델 데이터 차원 불일치: shape={ref_features.shape}, 티커={len(STOCK_TICKERS)}, 특성={len(FEATURE_NAMES)}")
+    
+    # 샘플 수 확인 후 조정
+    if ref_features.shape[0] != len(ref_returns):
+        logger.warning(f"특성({ref_features.shape[0]})과 반환({len(ref_returns)}) 길이 불일치. 특성 데이터 조정.")
+        # 더 짧은 길이에 맞춤
+        min_len = min(ref_features.shape[0], len(ref_returns))
+        ref_features = ref_features[:min_len]
+        ref_returns = ref_returns[:min_len]
+    
+    # 선형 회귀 모델로 중요도 계산
     try:
-        num_test_steps = len(test_results['returns'])
-        if num_test_steps == 0: raise ValueError("테스트 결과 수익률 없음")
-        test_data_aligned = test_data[:num_test_steps]
-        returns_aligned = np.array(test_results['returns'])
-
-        logger.info(" DRL 에이전트 특성 가중치 계산 중...")
-        drl_weights_ts = compute_feature_weights_drl(ppo_agent, test_data_aligned)
-        if drl_weights_ts.size == 0:
-            logger.error("DRL 가중치 계산 실패. XAI 분석 일부 생략.")
+        ref_weights = linear_model_hindsight(ref_features, ref_returns)
+        if ref_weights is None:
+            logger.warning("참조 모델 가중치 계산 실패, 더미 데이터 사용")
+            # 더미 데이터 생성
+            ref_weights = np.zeros(len(FEATURE_NAMES))
         else:
-            drl_weights_mean = drl_weights_ts.mean(axis=(0, 1))
-            logger.info(" 참조 모델(선형 회귀) 특성 가중치 계산 중...")
-            ref_weights = linear_model_hindsight(test_data_aligned, returns_aligned)
-            if ref_weights is None:
-                logger.error("참조 모델 가중치 계산 실패. 비교 분석 생략.")
-            else:
-                ref_weights_mean = ref_weights.mean(axis=0)
-                plot_feature_importance(drl_weights_mean, ref_weights_mean, plot_dir=run_dir,
-                                        filename='feature_importance.png')
-                # 상관관계는 평균 가중치의 절댓값으로 계산
-                drl_weights_mean_abs = np.abs(drl_weights_mean)
-                ref_weights_mean_abs = np.abs(ref_weights_mean)
-                correlation = compute_correlation(drl_weights_mean_abs, ref_weights_mean_abs)
-                logger.info(f" DRL과 참조 모델 평균 특성 중요도 **절댓값** 상관계수: {correlation:.4f}") # 로그 메시지 수정
-
-            plot_integrated_gradients(
-                drl_weights_mean, plot_dir=run_dir, # 시각화는 원래 값 사용
-                title="DRL Agent Mean Integrated Gradients", filename='integrated_gradients_mean.png'
-            )
-        logger.info(" XAI 분석 완료!")
-
+            # 가중치 로깅
+            logger.info("참조 모델 특성 중요도:")
+            for i, feature_name in enumerate(FEATURE_NAMES):
+                if i < len(ref_weights):
+                    logger.info(f"  {feature_name}: {ref_weights[i]:.4f}")
     except Exception as e:
-        logger.error(f" XAI 분석 중 오류 발생: {e}")
+        logger.error(f"참조 모델 분석 중 예외 발생: {e}")
         logger.error(traceback.format_exc())
+        ref_weights = np.zeros(len(FEATURE_NAMES))
+    
+    # 3. 통합 그래디언트 분석
+    logger.info("통합 그래디언트 분석 중...")
+    ig_values = []
+    
+    # 첫 번째 에이전트만 사용 (계산 비용 절감)
+    primary_agent = ensemble_agents[0]
+    logger.info(f"통합 그래디언트 분석에 앙상블 중 첫 번째 에이전트(seed: {primary_agent.seed if hasattr(primary_agent, 'seed') else 'unknown'}) 사용")
+    
+    # EMA 모델 사용 여부 확인 및 로깅
+    is_using_ema = primary_agent.use_ema if hasattr(primary_agent, 'use_ema') else False
+    logger.info(f"통합 그래디언트 분석에 {'EMA 모델' if is_using_ema else '기본 모델'} 사용")
+    
+    # 각 샘플에 대한 통합 그래디언트 계산
+    for i, sample in enumerate(test_samples):
+        normalized_sample = sample.copy()
+        if primary_agent.obs_rms is not None and primary_agent.obs_rms.count > RMS_EPSILON:
+            normalized_sample = np.clip(
+                (sample - primary_agent.obs_rms.mean) / np.sqrt(primary_agent.obs_rms.var + RMS_EPSILON),
+                -CLIP_OBS, CLIP_OBS)
+        
+        # 기본 샘플을 0으로 설정
+        baseline = np.zeros_like(normalized_sample)
+        
+        # 통합 그래디언트 계산
+        ig_result = integrated_gradients(
+            primary_agent.policy_ema if primary_agent.use_ema else primary_agent.policy,
+            normalized_sample
+        )
+        ig_values.append(ig_result)
+        logger.info(f"샘플 {i+1}/{len(test_samples)} 통합 그래디언트 분석 완료")
+    
+    # 모든 샘플의 평균 통합 그래디언트
+    ig_values_mean = np.mean(ig_values, axis=0)
+    
+    # 차원 확인 및 처리 (필요한 경우 평탄화)
+    logger.info(f"통합 그래디언트 원본 형태: {ig_values_mean.shape}")
+    
+    # 차원 변환 처리
+    if ig_values_mean.shape == (len(STOCK_TICKERS), len(FEATURE_NAMES)):
+        # 올바른 형태: (n_assets, n_features) -> 자산별 평균 계산
+        logger.info("통합 그래디언트: 각 자산별 특성 기여도를 평균하여 전체 특성 중요도 계산")
+        # 자산 차원에 대해 평균 계산하여 특성당 하나의 값으로 만듦
+        ig_feature_importance = np.mean(ig_values_mean, axis=0)
+        
+        # 통합 그래디언트 특성 중요도 로깅
+        for i, feature_name in enumerate(FEATURE_NAMES):
+            logger.info(f"  {feature_name}: {ig_feature_importance[i]:.4f}")
+            
+        ig_values_mean = ig_feature_importance
+    else:
+        logger.warning(f"예상치 못한 통합 그래디언트 형태: {ig_values_mean.shape}")
+        # 강제 재구성 시도
+        if ig_values_mean.ndim > 1:
+            n_features = len(FEATURE_NAMES)
+            if ig_values_mean.size >= n_features:
+                # 일부 데이터 손실을 감수하고 첫 n_features 개 요소 사용
+                ig_values_mean = ig_values_mean.flatten()[:n_features]
+                logger.info(f"통합 그래디언트 강제 변환: {ig_values_mean.shape}")
+            else:
+                # 데이터가 부족하면 0으로 패딩
+                temp = np.zeros(n_features)
+                temp[:ig_values_mean.size] = ig_values_mean.flatten()
+                ig_values_mean = temp
+                logger.info(f"통합 그래디언트 패딩 추가: {ig_values_mean.shape}")
+    
+    # --- 결과 시각화 및 저장 ---
+    # 1. 특성 중요도 비교 (DRL vs 선형 참조 모델)
+    if ref_weights is not None:
+        # ref_weights가 올바른 형태인지 확인
+        if isinstance(ref_weights, np.ndarray):
+            # ref_weights 형태 조정
+            if ref_weights.ndim > 1:
+                ref_weights = np.mean(ref_weights, axis=0)  # 첫 번째 차원에 대해 평균 계산
+                logger.info(f"참조 모델 가중치 형태 변환: {ref_weights.shape}")
+            
+            # drl_weights_mean 형태 조정 (필요한 경우)
+            drl_weights_for_plot = drl_weights_mean
+            if drl_weights_mean.ndim > 1:
+                drl_weights_for_plot = np.mean(drl_weights_mean, axis=0)
+                logger.info(f"DRL 가중치 형태 변환 (비교용): {drl_weights_for_plot.shape}")
+                
+            plot_feature_importance(
+                drl_weights_for_plot, ref_weights, plot_dir=run_dir,
+                feature_names=FEATURE_NAMES, filename="feature_importance_comparison.png"
+            )
+            logger.info("특성 중요도 비교 시각화 완료")
+        else:
+            logger.warning("참조 모델 가중치가 None이거나 예상치 않은 형태입니다.")
+    
+    # 1-1. DRL 에이전트 특성 중요도 단독 시각화 (추가)
+    if isinstance(drl_weights_mean, np.ndarray):
+        # DRL 에이전트 특성 중요도 별도 시각화
+        plt.figure(figsize=(12, 6))
+        
+        # 차원 변환 필요 시 처리 - compute_feature_weights_drl에서 이미 처리되었으므로 간소화
+        drl_feature_weights = drl_weights_mean
+        if drl_weights_mean.ndim > 1:
+            # 로그 추가
+            logger.info(f"DRL 특성 가중치 원본 형태: {drl_weights_mean.shape}")
+            # 샘플 차원에 대해 평균 계산
+            drl_feature_weights = np.mean(drl_weights_mean, axis=0)
+            logger.info(f"샘플 차원에 대한 평균 계산: {drl_feature_weights.shape}")
+            
+        # 길이 확인 및 자르기/패딩
+        if len(drl_feature_weights) > len(FEATURE_NAMES):
+            logger.warning(f"특성 가중치({len(drl_feature_weights)})가 이름({len(FEATURE_NAMES)})보다 많음. 자르기 실행")
+            drl_feature_weights = drl_feature_weights[:len(FEATURE_NAMES)]
+        elif len(drl_feature_weights) < len(FEATURE_NAMES):
+            logger.warning(f"특성 가중치({len(drl_feature_weights)})가 이름({len(FEATURE_NAMES)})보다 적음. 패딩 실행")
+            temp = np.zeros(len(FEATURE_NAMES))
+            temp[:len(drl_feature_weights)] = drl_feature_weights
+            drl_feature_weights = temp
+            
+        # NaN 값 확인 및 처리
+        if np.isnan(drl_feature_weights).any():
+            logger.warning("특성 가중치에 NaN 값 발견. 0으로 대체")
+            drl_feature_weights = np.nan_to_num(drl_feature_weights, nan=0.0)
+        
+        # plot_feature_importance 함수와 동일한 정규화 방식 적용
+        weights_abs = np.abs(drl_feature_weights)
+        median_abs = np.median(weights_abs)
+        mad = np.median(np.abs(weights_abs - median_abs))  # Median Absolute Deviation
+        threshold = median_abs + 10 * mad  # 보수적인 임계값
+        
+        # 이상치 제한
+        clipped_weights = np.clip(drl_feature_weights, -threshold, threshold)
+        
+        # 크기가 있는 데이터에 MinMax 스케일링
+        if np.max(np.abs(clipped_weights)) > 1e-10:
+            normalized_weights = clipped_weights / np.max(np.abs(clipped_weights))
+        else:
+            normalized_weights = clipped_weights
+            
+        # 데이터 최종 검증
+        normalized_weights = np.array(normalized_weights, dtype=np.float64)
+        
+        # 그래프 생성
+        try:
+            x = np.arange(len(FEATURE_NAMES))
+            bars = plt.bar(x, normalized_weights, color='skyblue')
+            plt.ylabel('Normalized Importance Score')
+            plt.title(f'DRL Agent Feature Importance\n(Clipped at {threshold:.2e})')
+            plt.xticks(x, FEATURE_NAMES, rotation=45, ha="right")
+            plt.grid(axis='y', linestyle='--')
+            plt.ylim(-1.1, 1.1)
+            
+            # 값 표시
+            for bar in bars:
+                yval = bar.get_height()
+                plt.text(bar.get_x() + bar.get_width()/2.0, yval, f'{yval:.2f}', 
+                        va='bottom' if yval >= 0 else 'top', ha='center', fontsize=8)
+                        
+            plt.tight_layout()
+            
+            # 저장
+            save_path = os.path.join(run_dir, "feature_importance.png")
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            logger.info("DRL 에이전트 특성 중요도 단독 시각화 완료: feature_importance.png")
+        except Exception as e:
+            logger.error(f"DRL 에이전트 특성 중요도 시각화 오류: {e}")
+            logger.error(traceback.format_exc())
+        finally:
+            plt.close()
+    
+    # 2. 통합 그래디언트 시각화
+    if isinstance(ig_values_mean, np.ndarray) and len(ig_values_mean) == len(FEATURE_NAMES):
+        # 올바른 형태를 가진 경우에만 시각화
+        model_info = f"{'EMA' if is_using_ema else 'Base'} Model, Agent 1"
+        plot_integrated_gradients(
+            ig_values_mean, plot_dir=run_dir,
+            feature_names=FEATURE_NAMES, 
+            title=f"Mean Integrated Gradients ({model_info})",
+            filename="integrated_gradients.png"
+        )
+        logger.info("통합 그래디언트 시각화 완료")
+    else:
+        logger.warning(f"통합 그래디언트 형태 불일치로 시각화 불가: {ig_values_mean.shape if isinstance(ig_values_mean, np.ndarray) else 'None'}")
+    
+    logger.info("XAI 분석 및 시각화 완료")
+    
     logger.info("="*48)
-
     logger.info("\n===== 프로그램 종료 =====")
 
 if __name__ == "__main__":
