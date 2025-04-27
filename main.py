@@ -1229,7 +1229,8 @@ def calculate_performance_metrics(returns):
 
     Returns:
         dict: 계산된 성능 지표 딕셔너리.
-              {'annual_return', 'annual_volatility', 'sharpe_ratio', 'max_drawdown', 'calmar_ratio'}
+              {'annual_return', 'annual_volatility', 'sharpe_ratio', 'max_drawdown', 'calmar_ratio',
+               'total_return', 'daily_std'}
     """
     if not isinstance(returns, np.ndarray):
         daily_returns = np.array(returns)
@@ -1239,7 +1240,7 @@ def calculate_performance_metrics(returns):
     # 유효한 수익률 데이터가 없는 경우 기본값 반환
     if daily_returns.size == 0:
         return {'annual_return': 0.0, 'annual_volatility': 0.0, 'sharpe_ratio': 0.0,
-                'max_drawdown': 0.0, 'calmar_ratio': 0.0}
+                'max_drawdown': 0.0, 'calmar_ratio': 0.0, 'total_return': 0.0, 'daily_std': 0.0}
 
     # NaN/Inf 값 처리
     if np.isnan(daily_returns).any() or np.isinf(daily_returns).any():
@@ -1249,7 +1250,8 @@ def calculate_performance_metrics(returns):
     annual_return = np.mean(daily_returns) * 252
     
     # 연간 변동성 (일간 표준편차 * sqrt(252))
-    annual_volatility = np.std(daily_returns) * np.sqrt(252)
+    daily_std = np.std(daily_returns)
+    annual_volatility = daily_std * np.sqrt(252)
     
     # 샤프 비율 (무위험 이자율 0 가정)
     # 변동성이 0에 가까우면 샤프 비율은 정의되지 않거나 0으로 처리
@@ -1271,12 +1273,17 @@ def calculate_performance_metrics(returns):
     else:
         calmar_ratio = 0.0
     
+    # 총 수익률 계산
+    total_return = (cumulative_returns[-1] - 1) * 100 if len(cumulative_returns) > 0 else 0.0
+    
     return {
         'annual_return': annual_return,
         'annual_volatility': annual_volatility,
         'sharpe_ratio': sharpe_ratio,
         'max_drawdown': max_drawdown,
-        'calmar_ratio': calmar_ratio
+        'calmar_ratio': calmar_ratio,
+        'total_return': total_return,
+        'daily_std': daily_std
     }
     
 def plot_feature_importance(drl_weights_mean, ref_weights_mean, plot_dir, feature_names=FEATURE_NAMES, filename=None):
@@ -1724,6 +1731,9 @@ def main():
     logger.info("\n" + "="*13 + " 성능 분석 및 시각화 " + "="*13)
     metrics = calculate_performance_metrics(test_results['returns'])
     logger.info("--- 포트폴리오 성능 지표 ---")
+    logger.info(f" 최종 가치: {test_results['portfolio_values'][-1]:.2f}")
+    logger.info(f" 총 수익률: {metrics['total_return']:.2f}%")
+    logger.info(f" 일간 표준편차: {metrics['daily_std']:.4f}")
     logger.info(f" 연간 수익률: {metrics['annual_return']:.2%}")
     logger.info(f" 연간 변동성: {metrics['annual_volatility']:.2%}")
     logger.info(f" 샤프 비율: {metrics['sharpe_ratio']:.2f}")
