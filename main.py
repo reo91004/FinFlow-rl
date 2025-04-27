@@ -868,7 +868,10 @@ def integrated_gradients(model, state, baseline=None, steps=INTEGRATED_GRADIENTS
     """
     logger = logging.getLogger('PortfolioRL')
     if baseline is None:
-        baseline = np.zeros_like(state)
+        # 이전: 0 벡터 / 변경: 현재 상태의 평균값 사용
+        # 가격·거래량과 같은 스케일링되지 않은 피처에 대해 더 의미 있는 기준점 제공
+        state_mean = np.mean(state, keepdims=True)
+        baseline = np.ones_like(state) * state_mean
     
     try:
         if state.shape != baseline.shape:
@@ -888,7 +891,15 @@ def integrated_gradients(model, state, baseline=None, steps=INTEGRATED_GRADIENTS
             interpolated_state_input.requires_grad_(True)
 
             # 3. 모델 순전파 및 타겟 설정
-            concentration, value = model.forward(interpolated_state_input)
+            # 모델을 eval 모드로 설정하고 그래디언트 계산 활성화
+            model.eval()
+            # 중요: detach()나 torch.no_grad() 없이 순전파 진행
+            concentration, value = model(interpolated_state_input)
+            
+            # value에 대해 requires_grad 확인
+            if not value.requires_grad:
+                value = value.detach().requires_grad_(True)
+                
             # 상태 가치(value)는 기대 반환과 직접적으로 연결되어 있으므로 IG 대상 스칼라로 사용
             target_output = value.squeeze()
 
@@ -976,9 +987,37 @@ def compute_feature_weights_drl(ppo_agent, states):
         if not isinstance(states, np.ndarray) or states.ndim != 3:
              raise ValueError("입력 states는 (n_steps, n_assets, n_features) 형태의 NumPy 배열이어야 합니다.")
 
-        for state in tqdm(states, desc="Calculating DRL Feature Weights", leave=False, ncols=100):
-            ig = integrated_gradients(ppo_agent.policy, state)
-            all_feature_weights.append(ig)
+        # 메모리 효율성을 위한 배치 처리
+        batch_size = 32  # 메모리 사용량과 속도의 균형을 위한 적절한 배치 크기
+        n_states = len(states)
+        n_batches = (n_states + batch_size - 1) // batch_size  # 올림 나눗셈
+
+        # 프로그레스 바 설정
+        pbar = tqdm(range(n_batches), desc="Calculating DRL Feature Weights", leave=False, ncols=100)
+
+        for batch_idx in pbar:
+            # 배치 범위 계산
+            start_idx = batch_idx * batch_size
+            end_idx = min((batch_idx + 1) * batch_size, n_states)
+            batch_states = states[start_idx:end_idx]
+            
+            # 배치 내 각 상태에 대해 IG 계산
+            batch_weights = []
+            for state in batch_states:
+                # integrated_gradients 함수는 내부적으로 그래디언트를 계산해야 하므로 no_grad 제거
+                ig = integrated_gradients(ppo_agent.policy, state)
+                batch_weights.append(ig)
+                    
+                # 메모리 관리를 위해 주기적으로 캐시 비우기
+                if torch.cuda.is_available() and (len(batch_weights) % 10 == 0):
+                    torch.cuda.empty_cache()
+            
+            # 배치 결과 누적
+            all_feature_weights.extend(batch_weights)
+            
+            # 배치 처리 후 메모리 정리
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
         if not all_feature_weights:
              logger.warning("DRL 특성 가중치 계산 결과가 비어있습니다.")
@@ -1275,9 +1314,19 @@ def plot_feature_importance(drl_weights_mean, ref_weights_mean, plot_dir, featur
         
         return scaled_weights, threshold
 
-    # DRL 가중치와 참조 모델 가중치 모두에 동일한 정규화 적용
-    drl_weights_normalized, drl_threshold = normalize_weights(drl_weights_mean)
-    ref_weights_normalized, ref_threshold = normalize_weights(ref_weights_mean)
+    # 공통 정규화: 두 모델 가중치의 절대적 크기 비교가 가능하도록 글로벌 최대값 사용
+    # 각 모델별 이상치 제거 후 동일 스케일 적용
+    drl_weights_clipped, drl_threshold = normalize_weights(drl_weights_mean)
+    ref_weights_clipped, ref_threshold = normalize_weights(ref_weights_mean)
+    
+    # 두 모델 가중치의 공통 최대값으로 정규화
+    global_max = np.max([np.max(np.abs(drl_weights_clipped)), np.max(np.abs(ref_weights_clipped))])
+    if global_max > 1e-10:
+        drl_weights_normalized = drl_weights_clipped / global_max
+        ref_weights_normalized = ref_weights_clipped / global_max
+    else:
+        drl_weights_normalized = drl_weights_clipped
+        ref_weights_normalized = ref_weights_clipped
     
     plt.figure(figsize=(15, 7)) # 너비 증가
     num_features = len(feature_names)
@@ -1287,7 +1336,7 @@ def plot_feature_importance(drl_weights_mean, ref_weights_mean, plot_dir, featur
     plt.subplot(1, 2, 1)
     bars1 = plt.bar(x, drl_weights_normalized, color='skyblue')
     plt.ylabel('Normalized Importance Score')
-    plt.title(f'DRL Agent Feature Importance\n(Clipped at {drl_threshold:.2e})')
+    plt.title(f'DRL Agent Feature Importance\n(Clipped at {drl_threshold:.2e}, Common Scale)')
     plt.xticks(x, feature_names, rotation=45, ha="right")
     plt.grid(axis='y', linestyle='--')
     plt.ylim(-1.1, 1.1)  # 정규화된 값의 y 축 범위 고정
@@ -1300,7 +1349,7 @@ def plot_feature_importance(drl_weights_mean, ref_weights_mean, plot_dir, featur
     plt.subplot(1, 2, 2)
     bars2 = plt.bar(x, ref_weights_normalized, color='lightcoral')
     plt.ylabel('Normalized Importance Score')
-    plt.title(f'Reference Model Feature Importance\n(Clipped at {ref_threshold:.2e})')
+    plt.title(f'Reference Model Feature Importance\n(Clipped at {ref_threshold:.2e}, Common Scale)')
     plt.xticks(x, feature_names, rotation=45, ha="right")
     plt.grid(axis='y', linestyle='--')
     plt.ylim(-1.1, 1.1)  # 정규화된 값의 y 축 범위 고정
@@ -1663,6 +1712,8 @@ def main():
     logger.info("="*48)
 
     logger.info("\n" + "="*16 + " PPO 에이전트 평가 " + "="*16)
+    # 평가 환경에서는 명시적으로 normalize_states=False로 설정한다.
+    # 필요한 정규화는 PPO 에이전트 내부의 obs_rms를 통해 수행된다.
     test_env = StockPortfolioEnv(test_data, normalize_states=False)
     max_test_timesteps = len(test_data) - 1
     test_results = evaluate_ppo_agent(test_env, ppo_agent, max_test_timesteps, load_best_model=True)
