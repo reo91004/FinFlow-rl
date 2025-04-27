@@ -8,6 +8,7 @@ import torch.optim as optim
 import torch.nn.functional as F
 from sklearn.linear_model import LinearRegression
 import matplotlib.pyplot as plt
+from sklearn.preprocessing import StandardScaler
 import yfinance as yf
 from datetime import datetime
 import os
@@ -887,8 +888,9 @@ def integrated_gradients(model, state, baseline=None, steps=INTEGRATED_GRADIENTS
             interpolated_state_input.requires_grad_(True)
 
             # 3. 모델 순전파 및 타겟 설정
-            concentration, _ = model.forward(interpolated_state_input)
-            target_output = concentration.mean()
+            concentration, value = model.forward(interpolated_state_input)
+            # 상태 가치(value)는 기대 반환과 직접적으로 연결되어 있으므로 IG 대상 스칼라로 사용
+            target_output = value.squeeze()
 
             # 4. 그래디언트 계산
             model.zero_grad()
@@ -942,8 +944,15 @@ def linear_model_hindsight(features, returns):
 
         model = LinearRegression()
         model.fit(X, y)
-        coefficients = model.coef_.reshape(n_assets, n_features_)
-        return coefficients
+
+        # 회귀 계수 (자산, 피처)
+        beta = model.coef_.reshape(n_assets, n_features_)
+
+        # 식 (18): 각 자산별 피처 평균에 대한 내적 후 합산해 글로벌 피처 가중치 계산
+        feature_means_per_asset = features.mean(axis=0)  # shape (n_assets, n_features_)
+        feature_weights = (beta * feature_means_per_asset).sum(axis=0)  # shape (n_features_,)
+
+        return feature_weights
 
     except Exception as e:
         logger.error(f"Hindsight 선형 모델 학습 중 오류: {e}")
@@ -1464,7 +1473,7 @@ def evaluate_ppo_agent(env: StockPortfolioEnv, ppo_agent: PPO, max_test_timestep
             try:
                  if state_tensor.dim() != 3:
                       raise ValueError(f"예상치 못한 상태 텐서 형태: {state_tensor.shape}")
-                 concentration, _ = ppo_agent.policy.forward(state_tensor)
+                 concentration, value = ppo_agent.policy.forward(state_tensor)
                  action = torch.distributions.Dirichlet(concentration).mean.squeeze(0).cpu().numpy()
             except Exception as forward_err:
                  logger.error(f"평가 중 모델 forward 오류: {forward_err}")
@@ -1553,6 +1562,15 @@ def main():
     logger.info(f" 테스트 데이터: {test_data.shape} ({test_dates[0].date()} ~ {test_dates[-1].date()})")
     logger.info("="*48)
 
+    # --- 피처 스케일링 (z-score) 적용 ---
+    # 표준화를 위해 자산 차원을 유지한 채 (n_steps * n_assets, n_features) 형태로 변환한다.
+    n_features_data = data_array.shape[2]
+    scaler = StandardScaler()
+    scaler.fit(train_data.reshape(-1, n_features_data))
+
+    train_data = scaler.transform(train_data.reshape(-1, n_features_data)).reshape(train_data.shape)
+    test_data = scaler.transform(test_data.reshape(-1, n_features_data)).reshape(test_data.shape)
+
     # --- 환경 및 에이전트 설정 (INFO 레벨 유지) ---
     logger.info("\n" + "="*14 + " 환경 및 에이전트 설정 " + "="*14)
     train_env = StockPortfolioEnv(train_data, normalize_states=True)
@@ -1616,7 +1634,8 @@ def main():
             if ref_weights is None:
                 logger.error("참조 모델 가중치 계산 실패. 비교 분석 생략.")
             else:
-                ref_weights_mean = ref_weights.mean(axis=0)
+                # linear_model_hindsight가 (n_features,) 벡터를 반환하도록 수정되었음
+                ref_weights_mean = ref_weights if ref_weights.ndim == 1 else ref_weights.mean(axis=0)
                 plot_feature_importance(drl_weights_mean, ref_weights_mean, plot_dir=run_dir,
                                         filename='feature_importance.png')
                 # 상관관계는 평균 가중치의 절댓값으로 계산
