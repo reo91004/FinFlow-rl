@@ -21,6 +21,10 @@ from tqdm import tqdm
 import traceback # 오류 로깅을 위해 추가
 
 # --- 상수 정의 ---
+# 학습 및 앙상블 설정
+NUM_EPISODES = 5000  # 학습 에피소드 수 
+ENSEMBLE_SIZE = 10   # 앙상블 에이전트 수
+
 # GPU 사용 가능 여부 확인
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -1901,7 +1905,7 @@ def evaluate_ensemble(env: StockPortfolioEnv, agents: list, max_test_timesteps: 
 def main():
     """ 메인 실행 함수: 데이터 로드, 학습, 평가, 결과 분석 및 시각화 수행 """
     # 다중 시드 학습 설정
-    n_seeds = 3  # 학습할 시드 수
+    n_seeds = ENSEMBLE_SIZE  # 학습할 시드 수
     seeds = [int(time.time()) + i * 1000 for i in range(n_seeds)]
     
     # 결과 저장 디렉토리 생성
@@ -1990,7 +1994,7 @@ def main():
     ema_decay = 0.99
     
     # 에피소드 및 스텝 설정
-    max_episodes_train = 500
+    max_episodes_train = NUM_EPISODES
     max_timesteps_train = train_env.max_episode_length
     
     # 앙상블 구성을 위한 에이전트 리스트
