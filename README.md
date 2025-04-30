@@ -23,7 +23,9 @@
 | `/main.py`              | 전체 학습–평가–XAI를 관리하는 메인 스크립트           |
 | `/data/`                | 주가 데이터 (Yahoo Finance) 다운로드 및 전처리 캐시   |
 | `/models/`              | 시드별로 저장된 학습된 모델 가중치                    |
-| `/results/<timestamp>/` | 학습 로그, 평가 결과 그래프, XAI 시각화 저장 디렉토리 |
+| `/results/`             | 학습 로그, 평가 결과 그래프, XAI 시각화 저장 디렉토리 |
+| `/tmp/`                 | 임시 파일 저장 디렉토리                               |
+| `/pdf/`                 | 관련 논문 및 문서 저장 디렉토리                       |
 | `/requirements.txt`     | 필요한 Python 패키지 목록                             |
 
 ---
@@ -137,7 +139,7 @@ pip install -r requirements.txt
 python main.py
 ```
 
-실행 후 /results/<timestamp>/ 폴더에 다음 결과물이 저장된다:
+실행 후 `/results/` 폴더에 다음 결과물이 저장된다:
 
 - training.log : 학습 및 평가 로그
 - ensemble_performance.png : 앙상블 평가 결과 그래프
