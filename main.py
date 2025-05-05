@@ -1419,6 +1419,20 @@ def apply_lime_explanation(model, state, n_samples=1000, kernel_width=0.25, feat
         
         n_assets, n_features = state.shape
         
+        # 최적화: 가장 큰 가중치를 가진 상위 5개 자산만 분석
+        # 이렇게 하면 메모리 사용량과 계산량을 줄일 수 있음
+        TOP_ASSETS_TO_ANALYZE = min(5, n_assets)  # 분석할 최대 자산 수
+        
+        # 현금 자산을 제외한 실제 자산 중 가중치가 큰 순서대로 인덱스 정렬
+        top_asset_indices = np.argsort(original_action[:n_assets])[-TOP_ASSETS_TO_ANALYZE:][::-1]
+        
+        # 항상 현금 자산도 포함 (인덱스 = n_assets)
+        assets_to_analyze = list(top_asset_indices)
+        if n_assets in range(len(original_action)):  # 현금 자산이 있는 경우
+            assets_to_analyze.append(n_assets)
+        
+        logger.info(f"LIME 분석: 가중치가 높은 상위 {len(assets_to_analyze)}개 자산만 분석")
+        
         # 샘플 생성 (특성 교란)
         # 각 특성을 일정 비율로 랜덤하게 변경
         samples = []
@@ -1443,23 +1457,42 @@ def apply_lime_explanation(model, state, n_samples=1000, kernel_width=0.25, feat
             
             samples.append((binary_mask, perturbed_sample))
         
+        # 메모리 관리: 배치 크기 제한
+        batch_size = 50  # 메모리 사용량 제한
+        n_batches = (n_samples + batch_size - 1) // batch_size
+        
         # 샘플별 예측 및 유사도 계산
         predictions = []
         distances = []
         
-        for _, perturbed in samples:
-            # 예측
-            with torch.no_grad():
-                perturbed_tensor = torch.from_numpy(perturbed).float().unsqueeze(0).to(DEVICE)
-                perturbed_action_probs, _ = model(perturbed_tensor)
-                perturbed_action = perturbed_action_probs.squeeze(0).cpu().numpy()
+        for batch_idx in range(n_batches):
+            start_idx = batch_idx * batch_size
+            end_idx = min((batch_idx + 1) * batch_size, n_samples)
+            batch_samples = samples[start_idx:end_idx]
             
-            # 예측 결과 저장
-            predictions.append(perturbed_action)
+            batch_predictions = []
+            batch_distances = []
             
-            # 유클리드 거리 계산
-            distance = np.sqrt(np.sum((perturbed_action - original_action) ** 2))
-            distances.append(distance)
+            for _, perturbed in batch_samples:
+                # 예측
+                with torch.no_grad():
+                    perturbed_tensor = torch.from_numpy(perturbed).float().unsqueeze(0).to(DEVICE)
+                    perturbed_action_probs, _ = model(perturbed_tensor)
+                    perturbed_action = perturbed_action_probs.squeeze(0).cpu().numpy()
+                
+                # 예측 결과 저장
+                batch_predictions.append(perturbed_action)
+                
+                # 유클리드 거리 계산
+                distance = np.sqrt(np.sum((perturbed_action - original_action) ** 2))
+                batch_distances.append(distance)
+            
+            predictions.extend(batch_predictions)
+            distances.extend(batch_distances)
+            
+            # 배치 처리 후 메모리 정리
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
         
         # 커널 가중치 계산
         kernel_weights = np.sqrt(np.exp(-(np.array(distances) ** 2) / kernel_width ** 2))
@@ -1467,7 +1500,7 @@ def apply_lime_explanation(model, state, n_samples=1000, kernel_width=0.25, feat
         # 자산별 LIME 설명 생성
         explanations = {}
         
-        for asset_idx in range(n_assets + 1):  # +1은 현금 자산 포함
+        for asset_idx in assets_to_analyze:  # 선택된 자산만 분석
             # 설명할 타겟 자산 가중치
             if asset_idx < n_assets:
                 asset_name = f"Asset_{asset_idx}"
@@ -1567,54 +1600,70 @@ def plot_lime_explanation(lime_explanation, feature_names=FEATURE_NAMES, plot_di
     plt.style.use('seaborn-v0_8-darkgrid')
     
     n_assets = len(lime_explanation)
-    fig, axes = plt.subplots(n_assets, 1, figsize=(12, 4 * n_assets), dpi=100)
     
-    if n_assets == 1:
-        axes = [axes]
+    # 이미지 크기 제한: 자산 수가 많을 경우 여러 이미지로 분할
+    MAX_ASSETS_PER_FIGURE = 10  # 한 이미지당 최대 자산 수
     
-    for idx, (asset_name, importance) in enumerate(lime_explanation.items()):
-        ax = axes[idx]
+    # 자산을 그룹으로 나누기
+    asset_groups = [list(lime_explanation.items())[i:i+MAX_ASSETS_PER_FIGURE] 
+                   for i in range(0, n_assets, MAX_ASSETS_PER_FIGURE)]
+    
+    for group_idx, asset_group in enumerate(asset_groups):
+        n_assets_in_group = len(asset_group)
+        fig, axes = plt.subplots(n_assets_in_group, 1, figsize=(12, min(4 * n_assets_in_group, 40)), dpi=100)
         
-        # 중요도 행렬이 2D인 경우 (자산, 특성)
-        if importance.ndim == 2:
-            # 자산별 평균 중요도 계산
-            avg_importance = np.mean(np.abs(importance), axis=0)
+        if n_assets_in_group == 1:
+            axes = [axes]
+        
+        for idx, (asset_name, importance) in enumerate(asset_group):
+            ax = axes[idx]
             
-            # 히트맵 생성
-            im = ax.bar(range(len(feature_names)), avg_importance, color='skyblue')
-            ax.set_xticks(range(len(feature_names)))
-            ax.set_xticklabels(feature_names, rotation=45, ha='right')
-            ax.set_title(f'{asset_name} Feature Importance')
-            ax.set_ylabel('Absolute Importance')
-            
-            # 값 표시
-            for i, v in enumerate(avg_importance):
-                ax.text(i, v + 0.01, f'{v:.3f}', ha='center', va='bottom', fontsize=8)
+            # 중요도 행렬이 2D인 경우 (자산, 특성)
+            if importance.ndim == 2:
+                # 자산별 평균 중요도 계산
+                avg_importance = np.mean(np.abs(importance), axis=0)
                 
-        else:
-            # 1D 중요도 (특성만)
-            im = ax.bar(range(len(feature_names)), np.abs(importance), color='skyblue')
-            ax.set_xticks(range(len(feature_names)))
-            ax.set_xticklabels(feature_names, rotation=45, ha='right')
-            ax.set_title(f'{asset_name} Feature Importance')
-            ax.set_ylabel('Absolute Importance')
-            
-            # 값 표시
-            for i, v in enumerate(importance):
-                ax.text(i, abs(v) + 0.01, f'{v:.3f}', ha='center', va='bottom', fontsize=8)
-    
-    plt.tight_layout()
-    
-    # 저장
-    if plot_dir and filename:
-        save_path = os.path.join(plot_dir, filename)
-        try:
-            plt.savefig(save_path, bbox_inches='tight')
-            logger.info(f"LIME 시각화 저장 완료: {save_path}")
-        except Exception as e:
-            logger.error(f"LIME 시각화 저장 오류: {e}")
-    
-    plt.close()
+                # 히트맵 생성
+                im = ax.bar(range(len(feature_names)), avg_importance, color='skyblue')
+                ax.set_xticks(range(len(feature_names)))
+                ax.set_xticklabels(feature_names, rotation=45, ha='right')
+                ax.set_title(f'{asset_name} Feature Importance')
+                ax.set_ylabel('Absolute Importance')
+                
+                # 값 표시
+                for i, v in enumerate(avg_importance):
+                    ax.text(i, v + 0.01, f'{v:.3f}', ha='center', va='bottom', fontsize=8)
+                    
+            else:
+                # 1D 중요도 (특성만)
+                im = ax.bar(range(len(feature_names)), np.abs(importance), color='skyblue')
+                ax.set_xticks(range(len(feature_names)))
+                ax.set_xticklabels(feature_names, rotation=45, ha='right')
+                ax.set_title(f'{asset_name} Feature Importance')
+                ax.set_ylabel('Absolute Importance')
+                
+                # 값 표시
+                for i, v in enumerate(importance):
+                    ax.text(i, abs(v) + 0.01, f'{v:.3f}', ha='center', va='bottom', fontsize=8)
+        
+        plt.tight_layout()
+        
+        # 저장
+        if plot_dir and filename:
+            # 여러 그룹이 있는 경우 파일명에 그룹 인덱스 추가
+            group_filename = filename
+            if len(asset_groups) > 1:
+                base, ext = os.path.splitext(filename)
+                group_filename = f"{base}_group{group_idx+1}{ext}"
+                
+            save_path = os.path.join(plot_dir, group_filename)
+            try:
+                plt.savefig(save_path, bbox_inches='tight')
+                logger.info(f"LIME 시각화 저장 완료: {save_path}")
+            except Exception as e:
+                logger.error(f"LIME 시각화 저장 오류: {e}")
+        
+        plt.close()
 
 def linear_model_hindsight(features, returns):
     """
@@ -1656,17 +1705,55 @@ def linear_model_hindsight(features, returns):
              raise ValueError(f"입력 데이터 차원 오류. Features: {features.ndim}D, Returns: {returns.ndim}D")
 
         n_steps, n_assets, n_features_ = features.shape
-        X = features.reshape(n_steps, -1)
+        
+        # 데이터 플랫 버전
+        X_flat = features.reshape(n_steps, -1)
         y = returns
-
-        model = LinearRegression()
-        model.fit(X, y)
-
+        
+        # 피처 스케일링: 각 피처의 표준편차 계산
+        feature_std = np.std(X_flat, axis=0)
+        # 0에 가까운 표준편차 확인 (제로 방지)
+        feature_std[feature_std < 1e-10] = 1.0
+        
+        # 데이터 스케일링 (정규화)
+        X_scaled = X_flat / feature_std
+        
+        # NaN 값 체크 및 처리
+        if np.isnan(X_scaled).any() or np.isinf(X_scaled).any():
+            logger.warning("X 데이터에 NaN/Inf 값 발견, 0으로 대체")
+            X_scaled = np.nan_to_num(X_scaled, nan=0.0, posinf=0.0, neginf=0.0)
+            
+        if np.isnan(y).any() or np.isinf(y).any():
+            logger.warning("y 데이터에 NaN/Inf 값 발견, 0으로 대체")
+            y = np.nan_to_num(y, nan=0.0, posinf=0.0, neginf=0.0)
+            
+        # 회귀 모델 학습
+        model = LinearRegression(fit_intercept=True, normalize=False)
+        model.fit(X_scaled, y)
+        
+        # 원본 스케일로 계수 변환 (중요)
+        scaled_coef = model.coef_ / feature_std
+        
         # 회귀 계수 (자산, 피처)
-        beta = model.coef_.reshape(n_assets, n_features_)
-
-        # 식 (18): 각 자산별 피처 평균에 대한 내적 후 합산해 글로벌 피처 가중치 계산
-        feature_weights = (beta * features.mean(axis=0)).sum(axis=0)
+        beta = scaled_coef.reshape(n_assets, n_features_)
+        
+        # 계수 크기 확인 및 로깅
+        logger.info(f"계수 크기 통계 - 평균: {np.mean(np.abs(beta)):.6f}, 최대: {np.max(np.abs(beta)):.6f}, 최소: {np.min(np.abs(beta)):.6f}")
+        
+        # 크기가 너무 작은 경우 스케일링 (가독성 향상)
+        max_abs_beta = np.max(np.abs(beta))
+        if max_abs_beta < 0.01:
+            # 계수가 너무 작을 때 스케일링 (최대 절대값을 0.1로)
+            scaling_factor = 0.1 / max_abs_beta
+            beta *= scaling_factor
+            logger.info(f"계수가 너무 작아 {scaling_factor:.2f}배 스케일링 적용. 새 최대값: {np.max(np.abs(beta)):.6f}")
+        
+        # 피처 중요도 계산 방법 개선: 절대값 평균을 사용하여 방향 무시
+        feature_weights = np.mean(np.abs(beta), axis=0)
+        
+        # 결과 정규화: 합이 1이 되도록
+        if np.sum(feature_weights) > 1e-10:
+            feature_weights = feature_weights / np.sum(feature_weights)
         
         logger.info(f"선형 모델 학습 완료. 결과 형태: {feature_weights.shape}")
         return feature_weights
@@ -3158,20 +3245,32 @@ def main():
         lime_exp = apply_lime_explanation(
             primary_agent.policy_ema if primary_agent.use_ema else primary_agent.policy,
             normalized_sample,
-            n_samples=500,  # 샘플 수 감소 (성능 향상을 위해)
+            n_samples=300,  # 샘플 수 추가 감소 (메모리 사용량 줄이기)
             feature_names=FEATURE_NAMES
         )
         
         if lime_exp:
             lime_explanations.append(lime_exp)
             # LIME 시각화
-            plot_lime_explanation(
-                lime_exp,
-                feature_names=FEATURE_NAMES,
-                plot_dir=run_dir,
-                filename=f"lime_explanation_sample{i+1}.png"
-            )
-            logger.info(f"샘플 {i+1}/{len(lime_samples)} LIME 분석 완료")
+            try:
+                plot_lime_explanation(
+                    lime_exp,
+                    feature_names=FEATURE_NAMES,
+                    plot_dir=run_dir,
+                    filename=f"lime_explanation_sample{i+1}.png"
+                )
+                logger.info(f"샘플 {i+1}/{len(lime_samples)} LIME 분석 완료")
+            except Exception as viz_err:
+                logger.error(f"LIME 시각화 오류: {viz_err}")
+            
+            # 메모리 정리
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        
+        # 샘플 간 처리 사이에 메모리 정리
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
     
     # LIME 결과 요약
     if lime_explanations:
