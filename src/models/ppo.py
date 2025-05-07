@@ -30,13 +30,26 @@ from src.constants import (
     LR_SCHEDULER_ETA_MIN,
     LAMBDA_GAE,
     RMS_EPSILON,
-    CLIP_OBS
+    CLIP_OBS,
+    DEFAULT_ENTROPY_COEF,
+    DEFAULT_CRITIC_COEF,
+    DEFAULT_GAE_LAMBDA,
+    DEFAULT_MAX_GRAD_NORM,
+    PPO_BATCH_SIZE,
 )
 
 class PPO:
     """
-    Proximal Policy Optimization (PPO) 알고리즘 클래스입니다.
-    Actor-Critic 모델을 사용하여 포트폴리오 관리 문제를 학습합니다.
+    PPO(Proximal Policy Optimization) 알고리즘 구현.
+    
+    참고: https://arxiv.org/abs/1707.06347
+    
+    주요 기능:
+    - 정책 네트워크와 가치 네트워크 공유 (actor-critic architecture)
+    - 다중 에폭 업데이트
+    - GAE(Generalized Advantage Estimation) 사용
+    - 입력값 스케일링 및 정규화
+    - EMA(Exponential Moving Average) 모델 사용 가능
     """
 
     def __init__(
@@ -48,64 +61,77 @@ class PPO:
         gamma=DEFAULT_GAMMA,
         k_epochs=DEFAULT_K_EPOCHS,
         eps_clip=DEFAULT_EPS_CLIP,
-        model_path=MODEL_SAVE_PATH,
-        logger=None,
+        entropy_coef=DEFAULT_ENTROPY_COEF,
+        critic_coef=DEFAULT_CRITIC_COEF,
+        gae_lambda=DEFAULT_GAE_LAMBDA,
+        max_grad_norm=DEFAULT_MAX_GRAD_NORM,
+        batch_size=PPO_BATCH_SIZE,
         use_ema=True,
-        ema_decay=0.99,
-        use_lr_scheduler=True,
-        use_early_stopping=True,
+        ema_decay=0.995,
+        use_scheduler=True,
+        checkpoint_dir=None,
     ):
-
+        """
+        초기화 함수.
+        
+        Args:
+            n_assets: 자산 개수
+            n_features: 입력 특성 개수
+            hidden_dim: 은닉층의 뉴런 수
+            lr: 학습률
+            gamma: 할인율
+            k_epochs: 각 업데이트마다 에폭 수
+            eps_clip: PPO 클리핑 파라미터
+            use_ema: EMA 모델 사용 여부
+            ema_decay: EMA 모델의 감쇠율
+            use_scheduler: 학습률 스케줄러 사용 여부
+            checkpoint_dir: 체크포인트 저장 디렉토리
+        """
+        self.n_assets = n_assets
+        self.n_features = n_features
+        self.lr = lr
         self.gamma = gamma
         self.eps_clip = eps_clip
         self.k_epochs = k_epochs
-        self.model_path = model_path
-        self.logger = logger or logging.getLogger("PortfolioRL")  # 로거 없으면 기본 설정 사용
-        self.n_assets = n_assets
-        self.n_features = n_features  # 추가
-
-        # EMA 가중치 옵션
+        self.entropy_coef = entropy_coef
+        self.critic_coef = critic_coef
+        self.gae_lambda = gae_lambda
+        self.max_grad_norm = max_grad_norm
+        self.batch_size = batch_size
         self.use_ema = use_ema
         self.ema_decay = ema_decay
+        self.use_scheduler = use_scheduler
+        self.checkpoint_dir = checkpoint_dir
+        self.best_reward = -float("inf")
+        self.model_path = checkpoint_dir or os.path.join(os.getcwd(), "models")
+        
+        if not os.path.exists(self.model_path):
+            os.makedirs(self.model_path)
 
-        # 학습률 스케줄러 및 Early Stopping 설정
-        self.use_lr_scheduler = use_lr_scheduler
-        self.use_early_stopping = use_early_stopping
-        self.early_stopping_patience = EARLY_STOPPING_PATIENCE
+        # 정책과 가치 네트워크
+        self.policy = ActorCritic(n_assets, n_features, hidden_dim=hidden_dim).to(device)
+        
+        # EMA 모델 (사용 시)
+        if self.use_ema:
+            self.policy_ema = ActorCritic(n_assets, n_features, hidden_dim=hidden_dim).to(device)
+            # 가중치 복사
+            for ema_param, param in zip(self.policy_ema.parameters(), self.policy.parameters()):
+                ema_param.data.copy_(param.data)
+            # 기울기 계산 비활성화
+            for param in self.policy_ema.parameters():
+                param.requires_grad = False
+        
+        # 옵티마이저
+        self.optimizer = optim.Adam(self.policy.parameters(), lr=lr)
+        
+        # 학습률 스케줄러 (사용 시)
+        if self.use_scheduler:
+            self.scheduler = optim.lr_scheduler.StepLR(self.optimizer, step_size=500, gamma=0.95)
+
         self.best_validation_reward = -float("inf")
         self.no_improvement_episodes = 0
         self.should_stop_early = False
-
-        os.makedirs(model_path, exist_ok=True)
-
-        # 정책 네트워크 (현재 정책, 이전 정책)
-        self.policy = ActorCritic(n_assets, n_features, hidden_dim).to(DEVICE)
-        self.policy_old = ActorCritic(n_assets, n_features, hidden_dim).to(DEVICE)
-        self.policy_old.load_state_dict(self.policy.state_dict())  # 가중치 복사
-
-        # EMA 모델 (학습 안정성을 위한 Exponential Moving Average)
-        if self.use_ema:
-            self.policy_ema = ActorCritic(n_assets, n_features, hidden_dim).to(DEVICE)
-            self.policy_ema.load_state_dict(self.policy.state_dict())
-            # EMA 모델의 파라미터는 업데이트되지 않도록 설정
-            for param in self.policy_ema.parameters():
-                param.requires_grad = False
-
-        # 옵티마이저 및 손실 함수
-        self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=lr)
-        self.MseLoss = nn.MSELoss()  # 크리틱 손실용
-
-        # 학습률 스케줄러 (Cosine Annealing)
-        if self.use_lr_scheduler:
-            self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                self.optimizer, T_max=LR_SCHEDULER_T_MAX, eta_min=LR_SCHEDULER_ETA_MIN
-            )
-            self.logger.info(
-                f"Cosine Annealing LR 스케줄러 설정: T_max={LR_SCHEDULER_T_MAX}, eta_min={LR_SCHEDULER_ETA_MIN}"
-            )
-
-        self.best_reward = -float("inf")  # 최고 성능 모델 저장을 위한 변수
-        self.obs_rms = None  # 학습된 상태 정규화 통계 저장용
+        self.obs_rms = None
 
         # GPU 설정 (성능 향상 최적화 옵션)
         if torch.cuda.is_available():
@@ -115,7 +141,7 @@ class PPO:
 
     def update_lr_scheduler(self):
         """학습률 스케줄러를 업데이트합니다."""
-        if self.use_lr_scheduler and self.scheduler:
+        if self.use_scheduler and self.scheduler:
             self.scheduler.step()
             current_lr = self.scheduler.get_last_lr()[0]
             return current_lr
@@ -190,7 +216,7 @@ class PPO:
         Returns:
             bool: True면 학습 중단, False면 계속 진행
         """
-        if not self.use_early_stopping:
+        if not self.use_scheduler:
             return False
 
         if validation_reward > self.best_validation_reward:
@@ -205,13 +231,13 @@ class PPO:
             # 로깅
             self.logger.info(
                 f"최고 검증 보상 {self.best_validation_reward:.4f} 대비 향상 없음. "
-                f"인내심 카운터: {self.no_improvement_episodes}/{self.early_stopping_patience}"
+                f"인내심 카운터: {self.no_improvement_episodes}/{EARLY_STOPPING_PATIENCE}"
             )
 
             # 인내심 카운터가 임계값을 넘으면 학습 중단
-            if self.no_improvement_episodes >= self.early_stopping_patience:
+            if self.no_improvement_episodes >= EARLY_STOPPING_PATIENCE:
                 self.logger.warning(
-                    f"Early Stopping 조건 충족! {self.early_stopping_patience} 에피소드 동안 "
+                    f"Early Stopping 조건 충족! {EARLY_STOPPING_PATIENCE} 에피소드 동안 "
                     f"성능 향상 없음. 최고 검증 보상: {self.best_validation_reward:.4f}"
                 )
                 self.should_stop_early = True
@@ -408,82 +434,119 @@ class PPO:
         return returns_tensor, advantages_tensor
 
     def update(self, memory):
-        """메모리에 저장된 경험을 사용하여 정책(policy)을 업데이트합니다."""
-        if not memory.states:
-            self.logger.warning("업데이트 시도: 메모리가 비어있습니다.")
+        """
+        PPO 정책을 메모리에 있는 트랜지션을 사용하여 업데이트합니다.
+        
+        Args:
+            memory: 학습에 사용할 경험 저장 객체
+            
+        Returns:
+            평균 정책 손실
+        """
+        # 메모리에서 트랜지션 추출
+        old_states = memory.states.to(device).detach()
+        old_actions = memory.actions.to(device).detach()
+        old_logprobs = memory.logprobs.to(device).detach()
+        old_rewards = memory.rewards.to(device).detach()
+        old_dones = memory.dones.to(device).detach()
+
+        # 메모리가 충분히 채워지지 않았을 경우
+        if len(old_states) < 10:  # 최소 배치 크기
             return 0.0
 
-        total_loss_val = 0.0
+        # GAE(Generalized Advantage Estimation) 계산
+        advantages = []
+        gae = 0
+        with torch.no_grad():
+            values = self.policy.critic(old_states).squeeze()
+            next_value = values[-1].item()  # 마지막 상태의 가치
 
-        try:
-            old_states = torch.stack(
-                [torch.from_numpy(s).float() for s in memory.states]
-            ).to(DEVICE)
-            old_actions = torch.stack(
-                [torch.from_numpy(a).float() for a in memory.actions]
-            ).to(DEVICE)
-            old_logprobs = torch.tensor(memory.logprobs, dtype=torch.float32).to(DEVICE)
-            old_values = torch.tensor(memory.values, dtype=torch.float32).to(DEVICE)
+            for i in reversed(range(len(old_rewards))):
+                if old_dones[i]:
+                    next_value = 0  # 에피소드 종료 시 다음 가치는 0
+                
+                # 델타 = 보상 + 감마 * 다음 가치 - 현재 가치
+                delta = old_rewards[i] + self.gamma * next_value * (1 - old_dones[i]) - values[i]
+                
+                # GAE = 델타 + 감마 * 감쇠 계수 * 다음 GAE (에피소드 종료 시 0)
+                gae = delta + self.gamma * self.gae_lambda * (1 - old_dones[i]) * gae
+                advantages.insert(0, gae)
+                
+                next_value = values[i].item()
+                
+        advantages = torch.tensor(advantages, dtype=torch.float32).to(device)
+        
+        # Returns = Advantages + Values
+        returns = advantages + values
+        
+        # 정규화 (평균 0, 분산 1)
+        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
-            old_values_np = old_values.cpu().numpy()
-            returns, advantages = self.compute_returns_and_advantages(
-                memory.rewards, memory.is_terminals, old_values_np
-            )
-
-            if returns.numel() == 0 or advantages.numel() == 0:
-                self.logger.error("GAE 계산 실패로 PPO 업데이트 중단.")
-                return 0.0
-
-            adv_mean = advantages.mean()
-            adv_std = advantages.std()
-            advantages = (advantages - adv_mean) / (adv_std + 1e-8)
-
-            if torch.isnan(advantages).any() or torch.isinf(advantages).any():
-                self.logger.warning("Advantage 정규화 후 NaN/Inf 발견. 0으로 대체.")
-                advantages = torch.nan_to_num(advantages, nan=0.0)
-
-            for _ in range(self.k_epochs):
-                logprobs, entropy, state_values = self.policy.evaluate(
-                    old_states, old_actions
-                )
-                ratios = torch.exp(logprobs - old_logprobs.detach())
-                surr1 = ratios * advantages
-                surr2 = (
-                    torch.clamp(ratios, 1 - self.eps_clip, 1 + self.eps_clip)
-                    * advantages
-                )
+        # 미니배치 업데이트
+        loss_epochs = 0
+        num_samples = len(old_states)
+        num_batches = max(num_samples // self.batch_size, 1)
+        
+        for _ in range(self.k_epochs):
+            # 데이터 셔플
+            perm = torch.randperm(num_samples)
+            
+            for i in range(num_batches):
+                # 미니배치 인덱스
+                start_idx = i * self.batch_size
+                end_idx = min((i + 1) * self.batch_size, num_samples)
+                idx = perm[start_idx:end_idx]
+                
+                # 미니배치 데이터
+                batch_states = old_states[idx]
+                batch_actions = old_actions[idx]
+                batch_logprobs = old_logprobs[idx]
+                batch_advantages = advantages[idx]
+                batch_returns = returns[idx]
+                
+                # 현재 정책에서의 로그 확률 및 엔트로피 계산
+                mu, sigma = self.policy.actor(batch_states)
+                dist = torch.distributions.Normal(mu, sigma)
+                curr_logprobs = dist.log_prob(batch_actions).sum(1)
+                entropy = dist.entropy().sum(1).mean()
+                
+                # 현재 가치 함수값 계산
+                curr_values = self.policy.critic(batch_states).squeeze()
+                
+                # PPO 비율 계산
+                ratios = torch.exp(curr_logprobs - batch_logprobs)
+                
+                # 서로게이트 손실 계산
+                surr1 = ratios * batch_advantages
+                surr2 = torch.clamp(ratios, 1-self.eps_clip, 1+self.eps_clip) * batch_advantages
                 actor_loss = -torch.min(surr1, surr2).mean()
-                critic_loss = self.MseLoss(state_values, returns)
-                entropy_loss = entropy.mean()
-                loss = actor_loss + 0.5 * critic_loss - 0.01 * entropy_loss
-
-                if torch.isnan(loss) or torch.isinf(loss):
-                    self.logger.error(
-                        f"손실 계산 중 NaN/Inf 발생! Actor: {actor_loss.item()}, Critic: {critic_loss.item()}, Entropy: {entropy_loss.item()}. 해당 배치 업데이트 건너뛰었습니다."
-                    )
-                    total_loss_val = 0.0
-                    break
-
+                
+                # 가치 함수 손실 계산
+                critic_loss = F.mse_loss(curr_values, batch_returns)
+                
+                # 전체 손실 계산 (액터, 크리틱, 엔트로피)
+                loss = actor_loss + self.critic_coef * critic_loss - self.entropy_coef * entropy
+                
+                # 그래디언트 계산 및 업데이트
                 self.optimizer.zero_grad()
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=0.5)
+                
+                # 그래디언트 클리핑
+                if self.max_grad_norm > 0:
+                    torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+                    
                 self.optimizer.step()
-                total_loss_val += loss.item()
-
-                # 온도 파라미터 업데이트
-                self.policy.update_temperature()
-
-                # EMA 모델 가중치 업데이트
-                if self.use_ema:
-                    self.update_ema_model()
-
-            if total_loss_val != 0.0 or self.k_epochs == 0:
-                self.policy_old.load_state_dict(self.policy.state_dict())
-                return total_loss_val / self.k_epochs if self.k_epochs > 0 else 0.0
-            else:
-                return 0.0
-
-        except Exception as e:
-            self.logger.error(f"PPO 업데이트 중 예상치 못한 오류 발생: {e}")
-            self.logger.error(traceback.format_exc())
-            return 0.0 
+                
+                loss_epochs += loss.item()
+                
+        # EMA 모델 업데이트
+        if self.use_ema:
+            self.update_ema_model()
+        
+        # 학습률 스케줄러 업데이트
+        if self.use_scheduler:
+            self.scheduler.step()
+            
+        # 평균 손실 반환
+        avg_loss = loss_epochs / (self.k_epochs * num_batches)
+        return avg_loss 

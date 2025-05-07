@@ -56,7 +56,7 @@ TRAIN_TEST_SPLIT_RATIO = 0.8  # 학습/테스트 데이터 분할 비율
 INITIAL_CASH = 1e6
 COMMISSION_RATE = 0.0005  # 수수료 현실화 (0.005 → 0.0005)
 # 새로운 매개변수: 행동 변화 페널티 계수
-ACTION_PENALTY_COEF = 0.001
+ACTION_PENALTY_COEF = 0.005
 
 # 새로운 행동 스케일링 계수
 DIRICHLET_SCALE_FACTOR = 10.0
@@ -74,24 +74,29 @@ REWARD_SHARPE_WINDOW = 20  # Sharpe ratio 계산 윈도우
 REWARD_RETURN_WEIGHT = 0.6  # 수익률 가중치
 REWARD_SHARPE_WEIGHT = 0.4  # Sharpe ratio 가중치
 REWARD_DRAWDOWN_PENALTY = 0.2  # 드로우다운 페널티 계수
-REWARD_VOL_SCALE_MIN = 0.5  # 변동성 기반 클리핑 최소값
-REWARD_VOL_SCALE_MAX = 2.0  # 변동성 기반 클리핑 최대값
+REWARD_VOL_SCALE_MIN = 0.8  # 변동성 기반 클리핑 최소값 (0.5 → 0.8)
+REWARD_VOL_SCALE_MAX = 1.2  # 변동성 기반 클리핑 최대값 (2.0 → 1.2)
 
 # PPO 하이퍼파라미터 (기본값)
-DEFAULT_HIDDEN_DIM = 128
-DEFAULT_LR = 3e-5  # 과거 코드와 일치하도록 학습률 조정 (1e-4 → 3e-5)
-DEFAULT_GAMMA = 0.99
-DEFAULT_K_EPOCHS = 10
-DEFAULT_EPS_CLIP = 0.1  # 안정성 위해 조정 (0.2 → 0.1)
-PPO_UPDATE_TIMESTEP = 500  # PPO 업데이트 주기 조정
+DEFAULT_HIDDEN_DIM = 256  # 모델 용량 증가 (128 → 256)
+DEFAULT_LR = 1e-5  # 학습률 감소 (3e-5 → 1e-5)
+DEFAULT_GAMMA = 0.995  # 할인율 증가 (0.99 → 0.995)
+DEFAULT_K_EPOCHS = 5  # PPO 에폭 감소 (10 → 5)
+DEFAULT_EPS_CLIP = 0.1  # PPO 클리핑 파라미터
+DEFAULT_ENTROPY_COEF = 0.01  # 엔트로피 계수 추가
+DEFAULT_CRITIC_COEF = 0.5  # 크리틱 계수 추가
+DEFAULT_GAE_LAMBDA = 0.95  # GAE 람다 추가
+DEFAULT_MAX_GRAD_NORM = 0.5  # 그래디언트 클리핑 추가
+PPO_UPDATE_TIMESTEP = 1000  # PPO 업데이트 주기 증가 (500 → 1000)
+PPO_BATCH_SIZE = 128  # 배치 크기 설정
 
 # 환경 설정
-MAX_EPISODE_LENGTH = 504  # 환경의 최대 에피소드 길이 (200 → 504, 2년)
+MAX_EPISODE_LENGTH = 504  # 환경의 최대 에피소드 길이
 
 # 상태/보상 정규화 설정
 NORMALIZE_STATES = True
 CLIP_OBS = 10.0
-CLIP_REWARD = 10.0
+CLIP_REWARD = 7.0  # 보상 클리핑 범위 조정 (10.0 → 7.0)
 RMS_EPSILON = 1e-8
 
 # GAE 설정

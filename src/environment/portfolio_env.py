@@ -436,11 +436,9 @@ class StockPortfolioEnv(gym.Env):
 
         # --- 개선된 보상 계산 방식 ---
 
-        # 1. K-일 누적 수익률 계산 (중요도 증가)
+        # 1. K-일 누적 수익률 계산
         if len(self.portfolio_value_history) > REWARD_ACCUMULATION_DAYS:
-            k_day_ago_value = self.portfolio_value_history[
-                -REWARD_ACCUMULATION_DAYS - 1
-            ]
+            k_day_ago_value = self.portfolio_value_history[-REWARD_ACCUMULATION_DAYS-1]
             if k_day_ago_value > 1e-8:
                 k_day_return = (current_value_safe / k_day_ago_value) - 1
             else:
@@ -449,29 +447,27 @@ class StockPortfolioEnv(gym.Env):
             # K일치 데이터가 없으면 일간 수익률 사용
             k_day_return = daily_return
 
-        # 2. Sharpe ratio 계산 (중요도 증가)
+        # 2. Sharpe ratio 계산
         sharpe_ratio = self._calculate_sharpe_ratio()
 
-        # 3. 드로우다운 페널티 계산 (드로우다운 페널티 강화)
+        # 3. 드로우다운 페널티 계산
         drawdown = self._calculate_drawdown()
-        drawdown_penalty = 0.3 * drawdown  # 페널티 가중치 증가 (0.2 → 0.3)
+        drawdown_penalty = REWARD_DRAWDOWN_PENALTY * drawdown
 
-        # 4. 최종 보상 계산 (가중치 조정)
-        # - 수익률 요소: 변동성 스케일링된 tanh(k_day_return), 가중치 증가
-        # - Sharpe ratio 요소: sharpe_ratio를 -1~1 범위로 클리핑, 가중치 증가
-        # - 드로우다운 페널티: 페널티 강화
+        # 4. 최종 보상 계산
+        # - 수익률 요소: 변동성 스케일링된 tanh(k_day_return)
+        # - Sharpe ratio 요소: sharpe_ratio를 -1~1 범위로 클리핑
+        # - 드로우다운 페널티
         # - 행동 변화 페널티: 이미 앞에서 계산됨
 
         # 변동성 스케일링 적용 (높은 변동성 = 낮은 클리핑)
         scaled_return = k_day_return * self.volatility_scaling
 
         # 수익률 기여도 (tanh로 비선형 클리핑)
-        return_weight = 0.7  # 수익률 가중치 증가 (0.6 → 0.7)
-        return_component = np.tanh(scaled_return) * return_weight
+        return_component = np.tanh(scaled_return) * REWARD_RETURN_WEIGHT
 
         # Sharpe ratio 기여도 (-1~1 범위로 클리핑)
-        sharpe_weight = 0.5  # Sharpe 가중치 증가 (0.4 → 0.5)
-        sharpe_component = np.clip(sharpe_ratio / 3.0, -1, 1) * sharpe_weight
+        sharpe_component = np.clip(sharpe_ratio / 2.0, -1, 1) * REWARD_SHARPE_WEIGHT
 
         # 최종 보상 계산
         raw_reward = (
@@ -483,15 +479,18 @@ class StockPortfolioEnv(gym.Env):
 
         # 장기 보상 증폭: 누적 리턴이 양수일 때 추가 보상
         if k_day_return > 0:
-            long_term_bonus = np.sqrt(k_day_return) * 0.3  # 양수 리턴에 대한 보너스
+            long_term_bonus = np.sqrt(k_day_return) * 0.1  # 양수 리턴에 대한 보너스 (0.3 → 0.1)
             raw_reward += long_term_bonus
 
-        # 음수 보상에 대한 가중치 증가 (손실에 더 민감하게)
+        # 음수 보상에 대한 가중치 (손실에 더 민감하게)
         if raw_reward < 0:
-            raw_reward *= 1.2  # 손실에 대한 보상 가중치 20% 증가
+            raw_reward *= 1.1  # 손실에 대한 보상 가중치 (1.2 → 1.1)
 
         if np.isnan(raw_reward) or np.isinf(raw_reward):
             raw_reward = -1.0  # NaN/Inf 발생 시 페널티
+
+        # 보상 클리핑 추가 (극단적 보상 방지)
+        raw_reward = np.clip(raw_reward, -5.0, 5.0)
 
         # 다음 상태 및 보상 정규화
         next_obs_norm = self._normalize_obs(next_obs_raw)
