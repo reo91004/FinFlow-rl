@@ -920,7 +920,7 @@ def integrated_gradients(
         save_dir = os.path.join(RESULTS_BASE_PATH, f"integrated_gradients_{timestamp}")
         os.makedirs(save_dir, exist_ok=True)
     
-    logger.info(f"통합 그래디언트 분석 시작: samples={n_samples}, steps={n_steps}")
+    logger.info(f"Integrated gradients analysis started: samples={n_samples}, steps={n_steps}")
     
     # 테스트 환경 생성 및 샘플 수집
     env = StockPortfolioEnv(test_data)
@@ -934,13 +934,11 @@ def integrated_gradients(
         sample_indices = np.arange(len(test_dates) - 1)
         n_samples = len(sample_indices)
     
-    logger.info(f"선택된 샘플 수: {n_samples}")
-    
     # 상태, 날짜 샘플 수집
     states = []
     dates_sampled = []
     
-    for i in tqdm(sample_indices, desc="샘플 수집"):
+    for i in tqdm(sample_indices, desc="Collecting samples"):
         state, _ = env.reset(start_index=i)
         states.append(state)
         dates_sampled.append(test_dates[i])
@@ -970,7 +968,7 @@ def integrated_gradients(
             logger.error(f"모델이 PyTorch 모듈이 아님: {type(model)}")
             return None
         
-        # 모델의 현재 모드를 저장하고 학습 모드로 설정 (LSTM backward 동작을 위해 필요)
+        # 모델 모드 저장 및 훈련 모드로 설정 (LSTM backward 동작을 위해 필요)
         was_training = model.training
         model.train()  # cudNN RNN의 backward는 training 모드에서만 작동
         logger.info(f"모델 평가 모드 설정: {model.__class__.__name__}")
@@ -980,7 +978,7 @@ def integrated_gradients(
         success_count = 0  # 성공적으로 처리된 샘플 수 추적
         
         # 각 샘플에 대한 통합 그래디언트 계산
-        for s_idx, state in enumerate(tqdm(states, desc="통합 그래디언트 계산 중")):
+        for s_idx, state in enumerate(tqdm(states, desc="Computing integrated gradients")):
             try:
                 # 기준선(baseline) 설정 - 상태의 평균값으로 초기화
                 state_mean = np.mean(state, keepdims=True)
@@ -1002,7 +1000,7 @@ def integrated_gradients(
 
                     # 3. 모델 순전파 및 타겟 설정
                     # 중요: detach()나 torch.no_grad() 없이 순전파 진행
-                    action_probs, value = model(interpolated_state_input)
+                    concentration, value = model(interpolated_state_input)
                     
                     # value에 대해 requires_grad 확인
                     if not value.requires_grad:
@@ -1013,7 +1011,7 @@ def integrated_gradients(
 
                     # 4. 그래디언트 계산
                     model.zero_grad()
-                    target_output.backward(retain_graph=True)  # retain_graph 추가
+                    target_output.backward()
 
                     # 5. 입력에 대한 그래디언트 추출 및 누적
                     if interpolated_state_input.grad is not None:
@@ -1023,17 +1021,13 @@ def integrated_gradients(
                              gradient_sum += gradient
                         else:
                              # 형태가 예상과 다를 경우 경고 로깅
-                             logger.warning(f"IG: 그래디언트 형태 불일치 발생. grad shape: {gradient.shape}, expected: {state_tensor.shape}. 해당 스텝 건너뜁니다.")
+                             logger.warning(f"IG: 그래디언트 형태 불일치 발생. grad shape: {gradient.shape}, expected: {state_tensor.shape}. 해당 스텝 건너뛰기.")
                     else: 
                         logger.warning(f"IG: Alpha {alpha:.2f}에서 그래디언트가 None입니다.")
-                    
-                    # 메모리 관리: 그래디언트 계산 후 삭제
-                    if interpolated_state_input.grad is not None:
-                        interpolated_state_input.grad.zero_()
                 
                 # 6. 최종 IG 계산
                 integrated_grads_tensor = (state_tensor - baseline_tensor) * (gradient_sum / n_steps)
-                integrated_grad_np = integrated_grads_tensor.detach().cpu().numpy()
+                integrated_grad_np = integrated_grads_tensor.cpu().numpy()
                 
                 # 7. 누적 및 개별 시각화
                 integrated_grads_total += np.abs(integrated_grad_np)
@@ -1107,8 +1101,8 @@ def integrated_gradients(
         plt.figure(figsize=(10, 6))
         plt.bar(range(len(asset_importance)), asset_importance)
         plt.xticks(range(len(asset_importance)), STOCK_TICKERS[:min(n_assets, len(STOCK_TICKERS))])
-        plt.title("Integrated Gradients - Asset Importance", fontsize=16)
-        plt.xlabel("Asset")
+        plt.title("Asset Importance by Integrated Gradients", fontsize=16)
+        plt.xlabel("Assets")
         plt.ylabel("Importance Score")
         plt.tight_layout()
         plt.savefig(os.path.join(save_dir, "integrated_gradients_asset_importance.png"), dpi=300, bbox_inches='tight')
@@ -1149,7 +1143,6 @@ def integrated_gradients(
         })
         features_df.to_csv(os.path.join(save_dir, "feature_importance.csv"), index=False)
         
-        logger.info(f"통합 그래디언트 분석 완료: 결과 저장 경로 = {save_dir}")
         return result
         
     except Exception as e:
@@ -1205,7 +1198,7 @@ def compute_integrated_gradients_for_single_state(model, state, baseline=None, s
 
             # 3. 모델 순전파 및 타겟 설정
             # 중요: detach()나 torch.no_grad() 없이 순전파 진행
-            action_probs, value = model(interpolated_state_input)
+            concentration, value = model(interpolated_state_input)
             
             # value에 대해 requires_grad 확인
             if not value.requires_grad:
@@ -1216,7 +1209,7 @@ def compute_integrated_gradients_for_single_state(model, state, baseline=None, s
 
             # 4. 그래디언트 계산
             model.zero_grad()
-            target_output.backward(retain_graph=True)  # retain_graph 추가
+            target_output.backward()
 
             # 5. 입력에 대한 그래디언트 추출 및 누적
             if interpolated_state_input.grad is not None:
@@ -1226,13 +1219,9 @@ def compute_integrated_gradients_for_single_state(model, state, baseline=None, s
                      gradient_sum += gradient
                 else:
                      # 형태가 예상과 다를 경우 경고 로깅
-                     logger.warning(f"IG: 그래디언트 형태 불일치 발생. grad shape: {gradient.shape}, expected: {state_tensor.shape}. 해당 스텝 건너뜁니다.")
+                     logger.warning(f"IG: 그래디언트 형태 불일치 발생. grad shape: {gradient.shape}, expected: {state_tensor.shape}. 해당 스텝 건너뛰기.")
             else: 
                 logger.warning(f"IG: Alpha {alpha:.2f}에서 그래디언트가 None입니다.")
-                
-            # 메모리 관리: 그래디언트 계산 후 삭제
-            if interpolated_state_input.grad is not None:
-                interpolated_state_input.grad.zero_()
         
         # 원래의 모델 모드로 복원
         if not was_training:
@@ -1240,7 +1229,7 @@ def compute_integrated_gradients_for_single_state(model, state, baseline=None, s
 
         # 6. 최종 IG 계산
         integrated_grads_tensor = (state_tensor - baseline_tensor) * (gradient_sum / steps)
-        return integrated_grads_tensor.detach().cpu().numpy()
+        return integrated_grads_tensor.cpu().numpy()
 
     except Exception as e:
         logger.error(f"Integrated Gradients 계산 중 오류: {e}")
@@ -1398,16 +1387,11 @@ def run_model_interpretability(
         ig_dir = os.path.join(save_dir, "integrated_gradients")
         os.makedirs(ig_dir, exist_ok=True)
         
-        # 샘플 수가 0이면 XAI_SAMPLE_COUNT로 설정
-        ig_samples = max(samples, XAI_SAMPLE_COUNT) if samples <= 0 else samples
-        # 통합 그래디언트는 계산량이 많으므로 샘플 수 제한 (최소 3개는 보장)
-        ig_samples = min(ig_samples, max(3, samples // 2))
-        
         ig_result = integrated_gradients(
             agent=agent,
             test_data=test_data,
             test_dates=test_dates,
-            n_samples=ig_samples,  # 실제 사용할 샘플 수
+            n_samples=samples // 2,  # 통합 그래디언트는 계산량이 많아 샘플 수 줄임
             n_steps=INTEGRATED_GRADIENTS_STEPS,
             save_dir=ig_dir,
             logger=logger,
