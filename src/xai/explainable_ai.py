@@ -5,6 +5,7 @@
 특성 중요도 계산, 민감도 분석, 의사결정 요인 시각화 등의 함수를 포함합니다.
 """
 
+import logging
 import os
 import time
 import numpy as np
