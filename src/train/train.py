@@ -102,13 +102,14 @@ def train_agent(
     
     # 환경 상태 정규화 관련 변수
     if NORMALIZE_STATES and env.obs_rms is not None:
-        ppo_agent.obs_rms = env.obs_rms  # 정규화 상태 공유
-    
-    # 탐색(exploration) 매개변수
-    epsilon_start = 0.3  # 초기 탐색 확률
-    epsilon_final = 0.01  # 최종 탐색 확률
-    epsilon_decay = 0.995  # 탐색 확률 감쇠율
-    current_epsilon = epsilon_start  # 현재 탐색 확률
+        # 학습 시작 시 에이전트에 환경의 obs_rms를 제공
+        # (이미 에이전트가 로드된 obs_rms를 가지고 있을 수 있음)
+        if ppo_agent.obs_rms is None:
+            ppo_agent.obs_rms = env.obs_rms
+        # 이미 로드된 경우 로드된 통계 유지 (학습 환경에 적용)
+        else:
+            env.obs_rms = ppo_agent.obs_rms
+            logger.info("에이전트에서 로드된 obs_rms 통계를 환경에 적용")
     
     # 학습 시작 로그
     logger.info(f"학습 시작: {num_episodes} 에피소드")
@@ -137,18 +138,8 @@ def train_agent(
                 truncated = True
                 break
                 
-            # 액션 선택 (입실론-그리디 탐색 적용)
-            if np.random.random() < current_epsilon:
-                # 임의 행동 샘플링 (탐색)
-                random_action = np.random.random(env.action_space.shape)
-                random_action /= random_action.sum()  # 합이 1이 되도록 정규화
-                action = random_action
-                
-                # 메모리에 저장하기 위한 log_prob과 value 계산
-                _, log_prob, value = ppo_agent.policy_old.act(state)
-            else:
-                # 정책에 따른 행동 선택 (활용)
-                action, log_prob, value = ppo_agent.policy_old.act(state)
+            # 에이전트의 정책에 따라 행동 선택 (PPO의 기본 탐색 사용)
+            action, log_prob, value = ppo_agent.policy_old.act(state)
             
             # 환경에서 한 스텝 진행
             next_state, reward, terminated, truncated, info = env.step(action)
@@ -195,9 +186,6 @@ def train_agent(
         reward_history.append(current_episode_reward)
         portfolio_value_history.append(portfolio_values)
         
-        # 탐색 확률 감소
-        current_epsilon = max(epsilon_final, current_epsilon * epsilon_decay)
-        
         # 에피소드가 끝났지만 메모리에 데이터가 충분하고 일정 주기가 지났으면 추가 업데이트
         if episode % 5 == 0 and len(memory.states) > 200:
             logger.debug(f"에피소드 종료 후 추가 PPO 업데이트 (에피소드: {episode})")
@@ -213,12 +201,14 @@ def train_agent(
             f"(보상: {current_episode_reward:.4f}, "
             f"포트폴리오: {portfolio_values[-1]:.2f}, "
             f"스텝: {step_count}, "
-            f"탐색: {current_epsilon:.3f}, "
             f"시간: {episode_time:.2f}초)"
         )
         
         # 주기적 검증 수행
         if validate_env is not None and episode % VALIDATION_INTERVAL == 0:
+            # 검증 환경의 training 속성을 False로 설정 (obs_rms 업데이트 방지)
+            validate_env.training = False
+            
             validation_reward = ppo_agent.validate(validate_env)
             validation_reward_history.append((episode, validation_reward))
             
@@ -248,16 +238,26 @@ def train_agent(
     minutes, seconds = divmod(remainder, 60)
     logger.info(
         f"학습 완료! 총 소요 시간: {int(hours)}시간 {int(minutes)}분 {seconds:.2f}초, "
-        f"총 업데이트 횟수: {update_step}회"
+        f"평균 에피소드 시간: {total_training_time / episode:.2f}초"
     )
+    
+    # 마지막 모델 저장
+    model_file = os.path.join(run_dir, "final_model.pth")
+    
+    # 최종 상태 정규화 통계 업데이트
+    if NORMALIZE_STATES and env.obs_rms is not None:
+        ppo_agent.obs_rms = env.obs_rms
+    
+    ppo_agent.save_model(num_episodes, reward_history[-1] if reward_history else -float("inf"))
+    logger.info(f"최종 모델 저장 완료: {model_file}")
     
     # 학습 결과 저장
     try:
         results = {
             "reward_history": reward_history,
-            "portfolio_value_history": portfolio_value_history,
+            "portfolio_values": portfolio_value_history,
             "loss_history": loss_history,
-            "validation_reward_history": validation_reward_history,
+            "validation_rewards": validation_reward_history,
             "episode_lengths": episode_lengths,
             "total_training_time": total_training_time,
             "update_count": update_step,
@@ -269,22 +269,16 @@ def train_agent(
         logger.info(f"학습 결과 저장 완료: {run_dir}/training_results.pkl")
         
         # 학습 곡선 저장
-        plot_training_curves(reward_history, loss_history, validation_reward_history, run_dir)
+        plot_training_curves(reward_history, loss_history, validation_reward_history, save_dir=run_dir)
         logger.info(f"학습 곡선 저장 완료: {run_dir}/learning_curves.png")
     except Exception as e:
         logger.error(f"결과 저장 중 오류 발생: {e}")
-    
-    # 마지막 모델 저장
-    model_file = os.path.join(run_dir, "final_model.pth")
-    ppo_agent.save_model(num_episodes, reward_history[-1] if reward_history else -float("inf"))
-    logger.info(f"최종 모델 저장 완료: {model_file}")
-    
+
     # 메모리 정리
-    del memory
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-        
+
     return results
 
 def train_ensemble(

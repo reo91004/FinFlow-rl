@@ -63,7 +63,8 @@ def backtest(
     # 테스트 환경 생성
     env = StockPortfolioEnv(
         data=test_data,
-        initial_cash=INITIAL_CASH
+        initial_cash=INITIAL_CASH,
+        training=False  # 평가 모드로 설정하여 obs_rms 업데이트를 방지
     )
     
     # 초기 상태 설정 (시작 인덱스 0)
@@ -85,7 +86,7 @@ def backtest(
     
     # 백테스팅 루프
     done = False
-    while not done and day_index < days - 1:
+    while not done:
         # 에이전트로 액션 선택
         if hasattr(ppo_agent, 'select_action'):
             action = ppo_agent.select_action(state, use_ema=use_ema)
@@ -98,17 +99,17 @@ def backtest(
         # 결과 기록
         day_index += 1
         
-        if day_index < days:
-            portfolio_values[day_index] = info["portfolio_value"]
-            portfolio_weights[day_index] = info["weights"]
-            returns[day_index] = info["return"]
-            actions_history.append(action)
+        # 모든 날짜에 대해 포트폴리오 가치와 가중치 기록
+        portfolio_values[day_index] = info["portfolio_value"]
+        portfolio_weights[day_index] = info["weights"]
+        returns[day_index] = info["return"]
+        actions_history.append(action)
         
         # 다음 상태로 업데이트
         state = next_state
         
         # 종료 조건 체크
-        done = terminated or truncated
+        done = terminated or truncated or day_index >= days - 1
     
     # 포트폴리오 가치의 일별 수익률 계산
     daily_returns = np.zeros_like(portfolio_values)
@@ -181,6 +182,10 @@ def calculate_performance_metrics(returns):
     Returns:
         dict: 계산된 성능 지표들
     """
+    # 첫 번째 수익률이 0인 경우 (일반적으로 초기값), 이를 제외하고 계산
+    if returns[0] == 0 and len(returns) > 1:
+        returns = returns[1:]
+    
     # 기본 통계치
     total_return = np.prod(1 + returns) - 1
     annualized_return = (1 + total_return) ** (252 / len(returns)) - 1
@@ -302,7 +307,8 @@ def ensemble_backtest(
     # 테스트 환경 생성
     env = StockPortfolioEnv(
         data=test_data,
-        initial_cash=INITIAL_CASH
+        initial_cash=INITIAL_CASH,
+        training=False  # 평가 모드로 설정하여 obs_rms 업데이트를 방지
     )
     
     # 초기 상태 설정
@@ -325,7 +331,7 @@ def ensemble_backtest(
     
     # 백테스팅 루프
     done = False
-    while not done and day_index < days - 1:
+    while not done:
         # 각 에이전트에서 액션 수집
         actions = []
         for agent in ensemble_agents:
@@ -361,18 +367,18 @@ def ensemble_backtest(
         # 결과 기록
         day_index += 1
         
-        if day_index < days:
-            portfolio_values[day_index] = info["portfolio_value"]
-            portfolio_weights[day_index] = info["weights"]
-            returns[day_index] = info["return"]
-            individual_actions.append(actions)
-            ensemble_actions.append(ensemble_action)
+        # 모든 날짜에 대해 포트폴리오 가치와 가중치 기록
+        portfolio_values[day_index] = info["portfolio_value"]
+        portfolio_weights[day_index] = info["weights"]
+        returns[day_index] = info["return"]
+        individual_actions.append(actions)
+        ensemble_actions.append(ensemble_action)
         
         # 다음 상태로 업데이트
         state = next_state
         
         # 종료 조건 체크
-        done = terminated or truncated
+        done = terminated or truncated or day_index >= days - 1
     
     # 포트폴리오 가치의 일별 수익률 계산
     daily_returns = np.zeros_like(portfolio_values)

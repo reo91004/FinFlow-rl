@@ -272,76 +272,67 @@ class PPO:
                 self.logger.error(f"모델 저장 중 오류 발생: {e}")
 
     def load_model(self, model_file=None):
-        """저장된 모델 가중치와 옵티마이저 상태, 상태 정규화 통계를 불러옵니다."""
+        """훈련된 모델 가중치와 옵티마이저 상태, obs_rms 통계를 로드합니다."""
         if model_file is None:
             model_file = os.path.join(self.model_path, "best_model.pth")
 
         if not os.path.exists(model_file):
-            self.logger.warning(f"저장된 모델 파일 없음: {model_file}")
+            self.logger.warning(f"모델 파일이 존재하지 않음: {model_file}")
             return False
 
         try:
-            checkpoint = torch.load(model_file, map_location=DEVICE, weights_only=False)
+            # GPU/CPU 환경에 맞춰 모델 로드
+            if torch.cuda.is_available():
+                checkpoint = torch.load(model_file)
+            else:
+                checkpoint = torch.load(model_file, map_location=torch.device("cpu"))
 
             self.policy.load_state_dict(checkpoint["model_state_dict"])
             self.policy_old.load_state_dict(checkpoint["model_state_dict"])
 
-            # EMA 모델 로드 (있는 경우)
-            if self.use_ema and "ema_model_state_dict" in checkpoint:
-                self.policy_ema.load_state_dict(checkpoint["ema_model_state_dict"])
-                self.ema_decay = checkpoint.get("ema_decay", self.ema_decay)
-                self.logger.info(f"EMA 모델 로드 완료 (decay: {self.ema_decay})")
-            elif self.use_ema:
-                # EMA 모델이 저장되지 않았으면 일반 모델로 초기화
-                self.policy_ema.load_state_dict(checkpoint["model_state_dict"])
-                self.logger.info("EMA 모델이 저장되지 않아 일반 모델로 초기화됨")
+            if self.use_ema and "ema_state_dict" in checkpoint:
+                # EMA 모델 가중치가 저장되어 있으면 로드
+                self.policy_ema.load_state_dict(checkpoint["ema_state_dict"])
+                self.logger.info("EMA 모델 가중치 로드 완료")
 
             if "optimizer_state_dict" in checkpoint:
                 self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
 
-            self.best_reward = checkpoint.get("best_reward", -float("inf"))
-
-            if "obs_rms_mean" in checkpoint and checkpoint["obs_rms_mean"] is not None:
+            # 상태 정규화 통계 로드 (존재하는 경우)
+            if "obs_rms_mean" in checkpoint and "obs_rms_var" in checkpoint and "obs_rms_count" in checkpoint:
                 from src.models.running_mean_std import RunningMeanStd
-                if self.obs_rms is None:
-                    self.obs_rms = RunningMeanStd(
-                        shape=(self.n_assets, self.n_features)
+                
+                # 모델이 저장된 시점의 obs_rms shape 확인
+                saved_shape = checkpoint["obs_rms_mean"].shape
+                expected_shape = (self.n_assets, self.n_features)
+                
+                if saved_shape != expected_shape:
+                    self.logger.error(
+                        f"저장된 obs_rms shape({saved_shape})이 현재 모델의 expected shape({expected_shape})과 일치하지 않음. "
+                        f"이로 인해 정규화가 부정확할 수 있음."
                     )
+                    return False
+                
+                # 상태 정규화 통계 복원
+                self.obs_rms = RunningMeanStd(shape=expected_shape)
                 self.obs_rms.mean = checkpoint["obs_rms_mean"]
                 self.obs_rms.var = checkpoint["obs_rms_var"]
                 self.obs_rms.count = checkpoint["obs_rms_count"]
-                self.logger.info("저장된 상태 정규화(obs_rms) 통계 로드 완료.")
-            else:
-                self.obs_rms = None
+                self.logger.info("상태 정규화 통계(obs_rms) 로드 완료")
 
-            self.logger.info(
-                f"모델 로드 성공! ({model_file}), 최고 보상: {self.best_reward:.4f}"
-            )
+            self.logger.info(f"모델 로드 완료: {model_file}")
+
+            # 로드된 best_reward 값이 있으면 업데이트
+            if "best_reward" in checkpoint:
+                self.best_reward = checkpoint["best_reward"]
+                self.logger.info(f"최고 보상값 로드됨: {self.best_reward:.4f}")
+
             return True
 
-        except (KeyError, TypeError) as load_err:
-            self.logger.warning(
-                f"모델 파일 로드 중 오류 ({model_file}): {load_err}. 가중치만 로드 시도합니다."
-            )
-            try:
-                weights = torch.load(model_file, map_location=DEVICE, weights_only=True)
-                self.policy.load_state_dict(weights)
-                self.policy_old.load_state_dict(weights)
-                if self.use_ema:
-                    self.policy_ema.load_state_dict(weights)
-                self.logger.info(
-                    f"모델 가중치 로드 성공 (weights_only=True)! ({model_file})"
-                )
-                self.best_reward = -float("inf")
-                self.obs_rms = None
-                return True
-            except Exception as e_inner:
-                self.logger.error(
-                    f"weights_only=True 로도 모델 로드 실패 ({model_file}): {e_inner}"
-                )
-                return False
         except Exception as e:
-            self.logger.error(f"모델 로드 중 예상치 못한 오류 발생 ({model_file}): {e}")
+            self.logger.error(f"모델 로드 중 오류 발생: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())
             return False
 
     def select_action(self, state, use_ema=True):

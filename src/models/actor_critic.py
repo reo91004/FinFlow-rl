@@ -21,7 +21,7 @@ from src.constants import (
 class SelfAttention(nn.Module):
     """
     시계열 데이터를 위한 자기 주의(Self-Attention) 메커니즘입니다.
-    LSTM 출력에 적용하여 중요한 패턴에 가중치를 부여합니다.
+    각 자산의 특징들 간의 관계를 포착합니다.
     """
     def __init__(self, hidden_dim):
         super(SelfAttention, self).__init__()
@@ -31,19 +31,22 @@ class SelfAttention(nn.Module):
         self.scale = np.sqrt(hidden_dim)
         
     def forward(self, x):
-        # x: (batch, seq_len, hidden_dim)
-        q = self.query(x)  # (batch, seq_len, hidden_dim)
-        k = self.key(x)    # (batch, seq_len, hidden_dim)
-        v = self.value(x)  # (batch, seq_len, hidden_dim)
+        # x: (batch, n_assets, hidden_dim)
+        batch_size, n_assets, hidden_dim = x.size()
         
-        # 어텐션 점수 계산
-        scores = torch.matmul(q, k.transpose(-2, -1)) / self.scale  # (batch, seq_len, seq_len)
+        # 선형 변환 적용
+        q = self.query(x)  # (batch, n_assets, hidden_dim)
+        k = self.key(x)    # (batch, n_assets, hidden_dim)
+        v = self.value(x)  # (batch, n_assets, hidden_dim)
+        
+        # 어텐션 점수 계산 (자산 간의 관계)
+        scores = torch.matmul(q, k.transpose(-2, -1)) / self.scale  # (batch, n_assets, n_assets)
         
         # 소프트맥스로 어텐션 가중치 계산
-        attention_weights = F.softmax(scores, dim=-1)  # (batch, seq_len, seq_len)
+        attention_weights = F.softmax(scores, dim=-1)  # (batch, n_assets, n_assets)
         
         # 가중합 계산
-        context = torch.matmul(attention_weights, v)  # (batch, seq_len, hidden_dim)
+        context = torch.matmul(attention_weights, v)  # (batch, n_assets, hidden_dim)
         
         return context, attention_weights
 
@@ -174,36 +177,39 @@ class ActorCritic(nn.Module):
             # logger.warning(f"ActorCritic 입력에 NaN/Inf 발견. 0으로 대체합니다. Shape: {states.shape}")
             states = torch.nan_to_num(states, nan=0.0, posinf=0.0, neginf=0.0)
 
-        # LSTM 처리 및 어텐션 적용
+        # 각 자산별로 LSTM 통과시켜 특징 추출
         lstm_outputs = []
         
-        # 각 자산별로 피처 시퀀스를 LSTM에 통과시킴
         for i in range(states.size(1)):
             # (batch_size, 1, n_features) 형태로 재구성
             asset_feats = states[:, i, :].view(batch_size, 1, -1)
             
             # LSTM으로 처리
-            # (batch, 1, lstm_output_dim)
             lstm_out, _ = self.lstm(asset_feats)
             
-            # 어텐션 메커니즘 적용
-            # (batch, 1, lstm_output_dim)
-            context, _ = self.attention(lstm_out)
-            
             # 마지막 시퀀스 출력 추출 (batch, lstm_output_dim)
-            asset_out = context[:, -1, :]
+            asset_out = lstm_out[:, -1, :]
             
-            # 자산별 특징 압축
-            compressed = self.asset_compression(asset_out)
-            
-            lstm_outputs.append(compressed)
+            lstm_outputs.append(asset_out)
 
+        # 모든 자산의 LSTM 출력을 스택하여 자산 간 어텐션 적용
+        lstm_stacked = torch.stack(lstm_outputs, dim=1)  # (batch, n_assets, lstm_output_dim)
+        
+        # 자기 주의 메커니즘 적용 (자산 간의 관계 포착)
+        context, _ = self.attention(lstm_stacked)  # (batch, n_assets, lstm_output_dim)
+        
+        # 각 자산의 특징 압축
+        compressed_features = []
+        for i in range(context.size(1)):
+            asset_context = context[:, i, :]
+            compressed = self.asset_compression(asset_context)
+            compressed_features.append(compressed)
+        
         # 모든 자산의 특징을 연결
-        lstm_concat = torch.cat(lstm_outputs, dim=1)  # (batch, n_assets*hidden_dim)
-        lstm_flat = lstm_concat.reshape(batch_size, -1)  # 평탄화
+        lstm_concat = torch.cat(compressed_features, dim=1)  # (batch, n_assets*hidden_dim)
 
         # 공통 베이스 네트워크 통과
-        base_output = self.actor_critic_base(lstm_flat)
+        base_output = self.actor_critic_base(lstm_concat)
 
         # 액터 출력: 로짓 계산
         logits = self.actor_head(base_output)
