@@ -480,6 +480,11 @@ def create_performance_table(result, benchmark_results=None, save_path=None, tit
     # 헤더 준비
     headers = ["지표", "포트폴리오"]
     
+    # 벤치마크 헤더 미리 추가 (중복 방지)
+    if benchmark_results:
+        for ticker in benchmark_results.keys():
+            headers.append(ticker)
+    
     # 행 준비
     rows = []
     
@@ -503,8 +508,10 @@ def create_performance_table(result, benchmark_results=None, save_path=None, tit
     
     # 각 지표별 행 추가
     for name, value, unit in metrics_info:
+        # 포트폴리오 값 서식 지정
         if "%" in unit:
-            row = [name, f"{value:.2f}{unit}"]
+            # 백분율 값에는 100을 곱함
+            row = [name, f"{value*100:.2f}{unit}"]
         elif value > 100:
             row = [name, f"{value:.2f}{unit}"]
         else:
@@ -512,13 +519,27 @@ def create_performance_table(result, benchmark_results=None, save_path=None, tit
         
         # 벤치마크 지표 추가 (있는 경우)
         if benchmark_results:
-            for idx, (ticker, data) in enumerate(benchmark_results.items()):
-                if idx == 0:  # 첫 번째 벤치마크에서 헤더 추가
-                    headers.append(ticker)
+            for ticker, data in benchmark_results.items():
+                # 벤치마크 값 가져오기 (키 이름 매핑)
+                metric_key = name.lower().replace(" ", "_").replace("/", "_")
                 
-                benchmark_value = data["metrics"].get(name.lower().replace(" ", "_").replace("/", "_"), 0)
+                # 가능한 키 변형들을 시도 (total_return, totalreturn 등)
+                possible_keys = [
+                    metric_key,
+                    metric_key.replace("_", ""),
+                    name.lower().replace(" ", "").replace("/", "_")
+                ]
                 
+                # 가능한 키 중 존재하는 키 찾기
+                benchmark_value = 0
+                for key in possible_keys:
+                    if key in data["metrics"]:
+                        benchmark_value = data["metrics"][key]
+                        break
+                
+                # 벤치마크 값 서식 지정
                 if "%" in unit:
+                    # 벤치마크도 백분율 값에는 100을 곱함
                     row.append(f"{benchmark_value*100:.2f}{unit}")
                 elif benchmark_value > 100:
                     row.append(f"{benchmark_value:.2f}{unit}")
