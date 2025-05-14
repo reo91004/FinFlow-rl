@@ -457,6 +457,74 @@ def ensemble_backtest(
     except Exception as e:
         logger.error(f"결과 저장 중 오류: {e}")
     
+    # 개별 모델 수익률 통계 계산 및 로깅
+    if individual_actions and len(individual_actions) > 0:
+        logger.info("\n" + "="*15 + " 앙상블 개별 모델 통계 " + "="*15)
+        
+        # 개별 모델의 수익률 평가
+        individual_returns = []
+        
+        # 각 에이전트별로 별도 백테스트 수행 없이 백테스트 결과에서 개별 행동을 이용해 수익률 추정
+        # 간략화를 위해 누적 수익률만 계산
+        
+        # 백테스트와 동일한 초기 환경 설정
+        test_env = StockPortfolioEnv(
+            data=test_data,
+            initial_cash=INITIAL_CASH,
+            training=False
+        )
+        
+        # 모든 에이전트에 대해 백테스트 실행
+        for agent_idx, agent in enumerate(ensemble_agents):
+            test_env.reset(start_index=0)
+            agent_portfolio_values = [INITIAL_CASH]
+            
+            # day_index+1을 통해 마지막 날까지 반영 (truncation 방지)
+            for day in range(min(len(individual_actions), day_index+1)):
+                # 해당 에이전트의 행동 가져오기
+                agent_action = individual_actions[day][agent_idx]
+                
+                # 행동 실행
+                _, _, terminated, truncated, info = test_env.step(agent_action)
+                agent_portfolio_values.append(info["portfolio_value"])
+                
+                if terminated or truncated:
+                    break
+            
+            # 최종 수익률 계산
+            final_return = (agent_portfolio_values[-1] / agent_portfolio_values[0]) - 1
+            individual_returns.append(final_return)
+        
+        # 통계 계산
+        mean_return = np.mean(individual_returns)
+        std_return = np.std(individual_returns)
+        cv = std_return / abs(mean_return) if abs(mean_return) > 1e-8 else 0
+        
+        # 결과에 통계 추가
+        result["individual_stats"] = {
+            "mean_return": float(mean_return),
+            "std_return": float(std_return),
+            "cv": float(cv),
+            "individual_returns": [float(r) for r in individual_returns]
+        }
+        
+        # 통계 로깅
+        logger.info(f"Mean Return: {mean_return:.4f}")
+        logger.info(f"Std Return: {std_return:.4f}")
+        logger.info(f"CV (Std/Mean): {cv:.4f}")
+        
+        # 개별 모델 수익률 저장
+        try:
+            with open(os.path.join(log_dir, "individual_model_returns.json"), "w") as f:
+                json.dump({
+                    "mean_return": float(mean_return),
+                    "std_return": float(std_return),
+                    "cv": float(cv),
+                    "individual_returns": [float(r) for r in individual_returns]
+                }, f, indent=4)
+        except Exception as e:
+            logger.error(f"개별 모델 수익률 저장 중 오류: {e}")
+    
     return result
 
 def create_performance_table(result, benchmark_results=None, save_path=None, title="Performance Metrics Comparison"):
@@ -505,6 +573,14 @@ def create_performance_table(result, benchmark_results=None, save_path=None, tit
         ("정보 비율", result["metrics"].get("information_ratio", 0), ""),
         ("칼마 비율", result["metrics"].get("calmar_ratio", 0), ""),
     ]
+    
+    # 개별 모델 통계가 있으면 추가
+    if "individual_stats" in result:
+        metrics_info.extend([
+            ("개별 모델 평균 수익률", result["individual_stats"]["mean_return"], ""),
+            ("개별 모델 수익률 표준편차", result["individual_stats"]["std_return"], ""),
+            ("CV (변동계수)", result["individual_stats"]["cv"], ""),
+        ])
     
     # 각 지표별 행 추가
     for name, value, unit in metrics_info:
