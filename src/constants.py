@@ -10,8 +10,8 @@ import os
 
 # --- 상수 정의 ---
 # 학습 및 앙상블 설정
-NUM_EPISODES = 5000  # 학습 에피소드 수
-ENSEMBLE_SIZE = 5  # 앙상블 에이전트 수
+NUM_EPISODES = 1  # 학습 에피소드 수
+ENSEMBLE_SIZE = 1  # 앙상블 에이전트 수
 
 # 학습 스케줄 및 Early Stopping 설정
 EARLY_STOPPING_PATIENCE = 100  # 성능 향상이 없는 최대 에피소드 수
@@ -70,12 +70,22 @@ SOFTMAX_TEMPERATURE_DECAY = 0.999
 REWARD_ACCUMULATION_DAYS = 5  # 논문 기반 보상 함수에서 사용하지 않음
 
 # 보상 함수 관련 설정
-REWARD_SHARPE_WINDOW = 20  # Sharpe ratio 계산 윈도우 - 논문 기반 보상 함수에서 사용하지 않음
+REWARD_SHARPE_WINDOW = (
+    20  # Sharpe ratio 계산 윈도우 - 논문 기반 보상 함수에서 사용하지 않음
+)
 REWARD_RETURN_WEIGHT = 0.7  # 수익률 가중치 - 논문 기반 보상 함수에서 사용하지 않음
-REWARD_SHARPE_WEIGHT = 0.3  # Sharpe ratio 가중치 - 논문 기반 보상 함수에서 사용하지 않음
-REWARD_DRAWDOWN_PENALTY = 0.2  # 드로우다운 페널티 계수 - 논문 기반 보상 함수에서 사용하지 않음
-REWARD_VOL_SCALE_MIN = 1.0  # 변동성 기반 클리핑 최소값 - 논문 기반 보상 함수에서 사용하지 않음
-REWARD_VOL_SCALE_MAX = 1.0  # 변동성 기반 클리핑 최대값 - 논문 기반 보상 함수에서 사용하지 않음
+REWARD_SHARPE_WEIGHT = (
+    0.3  # Sharpe ratio 가중치 - 논문 기반 보상 함수에서 사용하지 않음
+)
+REWARD_DRAWDOWN_PENALTY = (
+    0.2  # 드로우다운 페널티 계수 - 논문 기반 보상 함수에서 사용하지 않음
+)
+REWARD_VOL_SCALE_MIN = (
+    1.0  # 변동성 기반 클리핑 최소값 - 논문 기반 보상 함수에서 사용하지 않음
+)
+REWARD_VOL_SCALE_MAX = (
+    1.0  # 변동성 기반 클리핑 최대값 - 논문 기반 보상 함수에서 사용하지 않음
+)
 
 # PPO 하이퍼파라미터 (기본값)
 DEFAULT_HIDDEN_DIM = 128
@@ -104,9 +114,11 @@ RESULTS_BASE_PATH = "results"  # 새로운 결과 저장 기본 경로
 
 # 설명 가능한 AI (XAI) 관련 설정
 INTEGRATED_GRADIENTS_STEPS = 50
-# XAI_SAMPLE_COUNT는 통합 그래디언트, SHAP 등 계산 비용이 높은 
+# XAI_SAMPLE_COUNT는 통합 그래디언트, SHAP 등 계산 비용이 높은
 # XAI 방법을 위한 기본 샘플 수입니다. 계산 시간과 정확도 간 균형을 맞춥니다.
 XAI_SAMPLE_COUNT = 5
+# XAI 분석에서 사용할 기본 방법들
+XAI_METHODS = ["shap", "sensitivity", "decision", "integrated_gradients", "rulefit"]
 
 # 피처 이름 정의 (데이터 처리 순서와 일치)
 FEATURE_NAMES = [
@@ -120,4 +132,4 @@ FEATURE_NAMES = [
     "MA14",
     "MA21",
     "MA100",
-] 
+]

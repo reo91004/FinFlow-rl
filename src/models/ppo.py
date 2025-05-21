@@ -30,8 +30,9 @@ from src.constants import (
     LR_SCHEDULER_ETA_MIN,
     LAMBDA_GAE,
     RMS_EPSILON,
-    CLIP_OBS
+    CLIP_OBS,
 )
+
 
 class PPO:
     """
@@ -60,7 +61,9 @@ class PPO:
         self.eps_clip = eps_clip
         self.k_epochs = k_epochs
         self.model_path = model_path
-        self.logger = logger or logging.getLogger("PortfolioRL")  # 로거 없으면 기본 설정 사용
+        self.logger = logger or logging.getLogger(
+            "PortfolioRL"
+        )  # 로거 없으면 기본 설정 사용
         self.n_assets = n_assets
         self.n_features = n_features  # 추가
 
@@ -299,20 +302,24 @@ class PPO:
                 self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
 
             # 상태 정규화 통계 로드 (존재하는 경우)
-            if "obs_rms_mean" in checkpoint and "obs_rms_var" in checkpoint and "obs_rms_count" in checkpoint:
+            if (
+                "obs_rms_mean" in checkpoint
+                and "obs_rms_var" in checkpoint
+                and "obs_rms_count" in checkpoint
+            ):
                 from src.models.running_mean_std import RunningMeanStd
-                
+
                 # 모델이 저장된 시점의 obs_rms shape 확인
                 saved_shape = checkpoint["obs_rms_mean"].shape
                 expected_shape = (self.n_assets, self.n_features)
-                
+
                 if saved_shape != expected_shape:
                     self.logger.error(
                         f"저장된 obs_rms shape({saved_shape})이 현재 모델의 expected shape({expected_shape})과 일치하지 않음. "
                         f"이로 인해 정규화가 부정확할 수 있음."
                     )
                     return False
-                
+
                 # 상태 정규화 통계 복원
                 self.obs_rms = RunningMeanStd(shape=expected_shape)
                 self.obs_rms.mean = checkpoint["obs_rms_mean"]
@@ -332,6 +339,7 @@ class PPO:
         except Exception as e:
             self.logger.error(f"모델 로드 중 오류 발생: {e}")
             import traceback
+
             self.logger.error(traceback.format_exc())
             return False
 
@@ -477,4 +485,4 @@ class PPO:
         except Exception as e:
             self.logger.error(f"PPO 업데이트 중 예상치 못한 오류 발생: {e}")
             self.logger.error(traceback.format_exc())
-            return 0.0 
+            return 0.0

@@ -40,6 +40,7 @@ from src.constants import (
     DEFAULT_EPS_CLIP,
     DEFAULT_K_EPOCHS,
     NORMALIZE_STATES,
+    XAI_METHODS,
 )
 
 from src.utils.data_utils import fetch_and_preprocess_data, fetch_benchmark_data
@@ -173,8 +174,8 @@ def parse_args():
         "--xai_methods",
         type=str,
         nargs="+",
-        default=["shap", "sensitivity", "decision", "integrated_gradients"],
-        help="XAI 분석 방법 (여러 개 지정 가능: shap, sensitivity, decision, integrated_gradients)",
+        default=XAI_METHODS,
+        help="XAI 분석 방법 (여러 개 지정 가능: shap, sensitivity, decision, integrated_gradients, rulefit)",
     )
     parser.add_argument(
         "--xai_samples", type=int, default=50, help="XAI 분석에 사용할 샘플 수"
