@@ -11,11 +11,11 @@ import gymnasium as gym
 from gymnasium import spaces
 from src.models.running_mean_std import RunningMeanStd
 from src.constants import (
-    INITIAL_CASH, 
-    COMMISSION_RATE, 
-    MAX_EPISODE_LENGTH, 
+    INITIAL_CASH,
+    COMMISSION_RATE,
+    MAX_EPISODE_LENGTH,
     NORMALIZE_STATES,
-    DEFAULT_GAMMA, 
+    DEFAULT_GAMMA,
     ACTION_PENALTY_COEF,
     REWARD_SHARPE_WINDOW,
     REWARD_RETURN_WEIGHT,
@@ -26,8 +26,9 @@ from src.constants import (
     REWARD_ACCUMULATION_DAYS,
     RMS_EPSILON,
     CLIP_OBS,
-    CLIP_REWARD
+    CLIP_REWARD,
 )
+
 
 class StockPortfolioEnv(gym.Env):
     """
@@ -115,12 +116,12 @@ class StockPortfolioEnv(gym.Env):
         """관측값을 정규화합니다."""
         if not self.normalize_states or self.obs_rms is None:
             return obs
-            
+
         # 학습 모드일 때만 RunningMeanStd 업데이트
         if self.training:
             # RunningMeanStd 업데이트 (차원 맞추기)
             self.obs_rms.update(obs.reshape(1, self.n_assets, self.n_features))
-            
+
         # 정규화 및 클리핑
         return np.clip(
             (obs - self.obs_rms.mean) / np.sqrt(self.obs_rms.var + RMS_EPSILON),
@@ -132,14 +133,14 @@ class StockPortfolioEnv(gym.Env):
         """보상을 정규화합니다."""
         if not self.normalize_states or self.ret_rms is None:
             return reward
-            
+
         # 학습 모드일 때만 RunningMeanStd 업데이트
         if self.training:
             # 누적 할인 보상 업데이트
             self.returns_norm = self.gamma * self.returns_norm + reward
             # RunningMeanStd 업데이트
             self.ret_rms.update(self.returns_norm)
-            
+
         # 정규화 및 클리핑
         return np.clip(
             reward / np.sqrt(self.ret_rms.var + RMS_EPSILON), -CLIP_REWARD, CLIP_REWARD
@@ -233,6 +234,7 @@ class StockPortfolioEnv(gym.Env):
         """환경을 초기 상태로 리셋합니다."""
         super().reset(seed=seed)
         import logging
+
         logger = logging.getLogger("PortfolioRL")
 
         # 에피소드 시작 인덱스 설정 (데이터 길이 내 무작위 또는 0)
@@ -318,6 +320,7 @@ class StockPortfolioEnv(gym.Env):
                    - info (dict): 추가 정보 (포트폴리오 가치, 현금, 수익률 등).
         """
         import logging
+
         logger = logging.getLogger("PortfolioRL")
         # 행동 크기 확인 및 조정 (현금 슬롯 추가)
         if len(action) == self.n_assets:  # 기존 호환성 유지
@@ -375,13 +378,15 @@ class StockPortfolioEnv(gym.Env):
         # 행동 변화에 따른 페널티 계산 (L1 거리, 페널티 강화)
         # 작은 변화는 무시하고, 큰 변화에 대해서만 페널티 적용 (실제 거래에 맞게)
         weight_changes = np.abs(action_with_cash - self.prev_weights)
-        
+
         # 임계값 이하의 작은 변화는 무시
         threshold = 0.02  # 2% 이하의 변화는 무시
         significant_changes = np.where(weight_changes > threshold, weight_changes, 0.0)
-        
+
         # 정의된 action_penalty_coef 사용
-        action_change_penalty = self.action_penalty_coef * 2.0 * np.sum(significant_changes)
+        action_change_penalty = (
+            self.action_penalty_coef * 2.0 * np.sum(significant_changes)
+        )
         # 2.0 계수는 기존의 0.002 페널티가 0.001 기본값의 2배였으므로 해당 비율 유지
 
         # 목표 자산 가치 계산 (현금 제외한 주식 부분만)
@@ -445,25 +450,61 @@ class StockPortfolioEnv(gym.Env):
             # 변동성 기반 클리핑 스케일 업데이트
             self.volatility_scaling = self._calculate_volatility_scaling()
 
-        # --- 논문 기반 보상 계산 ---
-        
-        # 수익률 벡터 y(t) 계산 (다음 가격 / 현재 가격)
-        y_t = next_prices / current_prices
-        
-        # w^T(t) 포트폴리오 가중치 벡터 (현금 제외한 주식 부분만)
-        # 현재 포트폴리오 가치에서 각 자산이 차지하는 비중
-        if prev_portfolio_value > 1e-8:
-            w_t = (self.holdings * current_prices) / prev_portfolio_value
+        # --- 개선된 보상 계산 방식 ---
+
+        # 1. K-일 누적 수익률 계산
+        if len(self.portfolio_value_history) > REWARD_ACCUMULATION_DAYS:
+            k_day_ago_value = self.portfolio_value_history[
+                -REWARD_ACCUMULATION_DAYS - 1
+            ]
+            if k_day_ago_value > 1e-8:
+                k_day_return = (current_value_safe / k_day_ago_value) - 1
+            else:
+                k_day_return = -1.0
         else:
-            w_t = np.zeros_like(self.holdings)
-        
-        # 내적 계산: w^T(t) · y(t)
-        portfolio_return_factor = np.dot(w_t, y_t)
-        
-        # 로그 수익률 계산: ln(w^T(t) · y(t))
-        # 0이나 음수 방지를 위한 작은 값 추가
-        raw_reward = np.log(portfolio_return_factor + 1e-8)
-        
+            k_day_return = daily_return
+
+        # 2. Sharpe ratio 계산
+        sharpe_ratio = self._calculate_sharpe_ratio()
+
+        # 3. 드로우다운 페널티
+        drawdown = self._calculate_drawdown()
+
+        # 4. 보상 컴포넌트 계산
+        # - 수익률: 기본 가중치 REWARD_RETURN_WEIGHT(상수로 정의됨)
+        # - Sharpe ratio: 기본 가중치 REWARD_SHARPE_WEIGHT(상수로 정의됨)
+        # - 드로우다운 페널티: 기본 가중치 REWARD_DRAWDOWN_PENALTY(상수로 정의됨)
+
+        # 수익률 기여도 (tanh로 비선형 클리핑)
+        return_component = np.tanh(k_day_return) * REWARD_RETURN_WEIGHT
+
+        # Sharpe ratio 기여도
+        sharpe_component = np.clip(sharpe_ratio / 2.0, -1, 1) * REWARD_SHARPE_WEIGHT
+
+        # 드로우다운 페널티
+        drawdown_penalty = REWARD_DRAWDOWN_PENALTY * drawdown
+
+        # 액션 페널티는 이미 계산되었음 (action_change_penalty)
+
+        # 최종 보상 계산
+        raw_reward = (
+            return_component
+            + sharpe_component
+            - drawdown_penalty
+            - action_change_penalty
+        )
+
+        # 장기 보상 증폭 (양수 보상에 대한 추가 보너스)
+        if k_day_return > 0:
+            long_term_bonus = (
+                np.sqrt(k_day_return) * 0.3
+            )  # 양의 장기 수익률에 대한 보너스
+            raw_reward += long_term_bonus
+
+        # 음수 보상에 대한 가중치 증가 (손실 회피 학습 강화)
+        if raw_reward < 0:
+            raw_reward *= 1.2  # 음수 보상 20% 증폭
+
         # NaN/Inf 처리
         if np.isnan(raw_reward) or np.isinf(raw_reward):
             raw_reward = -1.0
@@ -481,10 +522,10 @@ class StockPortfolioEnv(gym.Env):
             "return": daily_return,
             "raw_reward": raw_reward,
             "action_penalty": action_change_penalty,
-            # "k_day_return": k_day_return if "k_day_return" in locals() else 0.0,
-            # "sharpe_ratio": sharpe_ratio,
-            # "drawdown": drawdown,
-            # "volatility_scaling": self.volatility_scaling,
+            "k_day_return": k_day_return if "k_day_return" in locals() else 0.0,
+            "sharpe_ratio": sharpe_ratio,
+            "drawdown": drawdown,
+            "volatility_scaling": self.volatility_scaling,
         }
 
         return (
@@ -512,10 +553,12 @@ class StockPortfolioEnv(gym.Env):
         # 임계값을 더 세밀하게 조정 (1% -> 0.5%)
         portfolio_value = self.cash + np.sum(current_values)
         rebalance_threshold = 0.005 * portfolio_value  # 포트폴리오 가치의 0.5%
-        
+
         # 임계값은 수수료 비율과 조화를 이루어야 함
         # 수수료가 높은 경우 임계값도 높여야 함
-        min_threshold = self.commission_rate * 10 * portfolio_value  # 수수료의 10배 이상
+        min_threshold = (
+            self.commission_rate * 10 * portfolio_value
+        )  # 수수료의 10배 이상
         rebalance_threshold = max(rebalance_threshold, min_threshold)
 
         # 매도부터 실행 (현금 확보)
@@ -524,19 +567,19 @@ class StockPortfolioEnv(gym.Env):
             if delta_value < -rebalance_threshold:  # 임계값보다 크게 매도할 경우만 실행
                 # 매도할 수량 계산 (소수점 이하 잘라내기)
                 sell_amount = np.floor(abs(delta_value) / current_prices[i])
-                
+
                 # 실제 매도 가능한 수량은 보유량을 초과할 수 없음
                 sell_amount = min(sell_amount, self.holdings[i])
-                
+
                 # 매도 실행 및 현금 증가
                 if sell_amount > 0:  # 0보다 큰 수량만 매도
                     # 수수료 계산: 매도 금액의 일정 비율
                     sell_value = sell_amount * current_prices[i]
                     commission = sell_value * self.commission_rate
-                    
+
                     # 실제 매도 금액 (수수료 차감)
                     actual_sell_value = sell_value - commission
-                    
+
                     # 현금 및 보유량 업데이트
                     self.cash += actual_sell_value
                     self.holdings[i] -= sell_amount
@@ -547,18 +590,20 @@ class StockPortfolioEnv(gym.Env):
             if delta_value > rebalance_threshold:  # 임계값보다 크게 매수할 경우만 실행
                 # 현재 보유 현금으로 매수 가능한 금액 계산 (모든 자산에 공평하게 분배)
                 max_buy_value = min(delta_value, self.cash)
-                
+
                 # 수수료를 고려한 실제 매수 가능 금액
                 # 매수 금액 = 총금액 / (1 + 수수료율)
                 actual_buy_value = max_buy_value / (1 + self.commission_rate)
-                
+
                 # 매수 수량 계산 (소수점 이하 잘라내기, 소수주 매수 불가)
                 buy_amount = np.floor(actual_buy_value / current_prices[i])
-                
+
                 if buy_amount > 0:  # 0보다 큰 수량만 매수
                     # 수수료 포함 총 매수 비용
-                    total_cost = buy_amount * current_prices[i] * (1 + self.commission_rate)
-                    
+                    total_cost = (
+                        buy_amount * current_prices[i] * (1 + self.commission_rate)
+                    )
+
                     # 현금 및 보유량 업데이트
                     self.cash -= total_cost
                     self.holdings[i] += buy_amount
@@ -577,4 +622,4 @@ class StockPortfolioEnv(gym.Env):
 
     def close(self):
         """환경 관련 리소스를 정리합니다 (현재는 불필요)."""
-        pass 
+        pass

@@ -67,25 +67,15 @@ SOFTMAX_TEMPERATURE_MIN = 0.1
 SOFTMAX_TEMPERATURE_DECAY = 0.999
 
 # 보상 누적 기간 (K-일)
-REWARD_ACCUMULATION_DAYS = 5  # 논문 기반 보상 함수에서 사용하지 않음
+REWARD_ACCUMULATION_DAYS = 5
 
 # 보상 함수 관련 설정
-REWARD_SHARPE_WINDOW = (
-    20  # Sharpe ratio 계산 윈도우 - 논문 기반 보상 함수에서 사용하지 않음
-)
-REWARD_RETURN_WEIGHT = 0.7  # 수익률 가중치 - 논문 기반 보상 함수에서 사용하지 않음
-REWARD_SHARPE_WEIGHT = (
-    0.3  # Sharpe ratio 가중치 - 논문 기반 보상 함수에서 사용하지 않음
-)
-REWARD_DRAWDOWN_PENALTY = (
-    0.2  # 드로우다운 페널티 계수 - 논문 기반 보상 함수에서 사용하지 않음
-)
-REWARD_VOL_SCALE_MIN = (
-    1.0  # 변동성 기반 클리핑 최소값 - 논문 기반 보상 함수에서 사용하지 않음
-)
-REWARD_VOL_SCALE_MAX = (
-    1.0  # 변동성 기반 클리핑 최대값 - 논문 기반 보상 함수에서 사용하지 않음
-)
+REWARD_SHARPE_WINDOW = 20  # Sharpe ratio 계산 윈도우
+REWARD_RETURN_WEIGHT = 0.7  # 수익률 가중치
+REWARD_SHARPE_WEIGHT = 0.3  # Sharpe ratio 가중치
+REWARD_DRAWDOWN_PENALTY = 0.2  # 드로우다운 페널티 계수
+REWARD_VOL_SCALE_MIN = 1.0  # 변동성 기반 클리핑 최소값
+REWARD_VOL_SCALE_MAX = 1.0  # 변동성 기반 클리핑 최대값
 
 # PPO 하이퍼파라미터 (기본값)
 DEFAULT_HIDDEN_DIM = 128
