@@ -6,6 +6,22 @@ T-Cell과 B-Cell의 동적 상호작용과 적응적 학습 과정을 시각화
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
+import matplotlib.font_manager as fm
+
+# 한글 폰트 설정
+# 시스템에 'Malgun Gothic' 폰트가 없을 경우 다른 폰트 (예: 'AppleGothic', 'NanumGothic')를 시도하거나 설치해야 합니다.
+try:
+    plt.rcParams['font.family'] = 'Malgun Gothic'
+except:
+    # Fallback for other OS or if Malgun Gothic is not found
+    if 'AppleGothic' in [f.name for f in fm.fontManager.ttflist]:
+        plt.rcParams['font.family'] = 'AppleGothic'
+    elif 'NanumGothic' in [f.name for f in fm.fontManager.ttflist]:
+        plt.rcParams['font.family'] = 'NanumGothic'
+    else:
+        print("Warning: No suitable Korean font found. Please install 'Malgun Gothic', 'AppleGothic', or 'NanumGothic'.")
+
+plt.rcParams['axes.unicode_minus'] = False # 음수 부호 깨짐 방지
 from matplotlib.patches import Circle, FancyBboxPatch
 from matplotlib.collections import LineCollection
 import matplotlib.patches as mpatches

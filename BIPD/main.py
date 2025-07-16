@@ -22,6 +22,24 @@ import seaborn as sns
 from html_dashboard import generate_enhanced_dashboard
 from immune_visualization import create_paper_ready_visualizations
 from typing import Dict, List, Tuple, Any, Optional
+import matplotlib.font_manager as fm
+
+# 한글 폰트 설정
+# 시스템에 'Malgun Gothic' 폰트가 없을 경우 다른 폰트 (예: 'AppleGothic', 'NanumGothic')를 시도하거나 설치해야 합니다.
+try:
+    plt.rcParams["font.family"] = "Malgun Gothic"
+except:
+    # Fallback for other OS or if Malgun Gothic is not found
+    if "AppleGothic" in [f.name for f in fm.fontManager.ttflist]:
+        plt.rcParams["font.family"] = "AppleGothic"
+    elif "NanumGothic" in [f.name for f in fm.fontManager.ttflist]:
+        plt.rcParams["font.family"] = "NanumGothic"
+    else:
+        print(
+            "Warning: No suitable Korean font found. Please install 'Malgun Gothic', 'AppleGothic', or 'NanumGothic'."
+        )
+
+plt.rcParams["axes.unicode_minus"] = False  # 음수 부호 깨짐 방지
 
 warnings.filterwarnings("ignore")
 
@@ -3618,24 +3636,30 @@ class ImmunePortfolioBacktester:
 
             # HTML 대시보드 생성
             dashboard_paths = generate_enhanced_dashboard(
-                analysis_report, 
-                output_dir=os.path.dirname(json_path) if json_path else "."
+                analysis_report,
+                output_dir=os.path.dirname(json_path) if json_path else ".",
             )
 
             # 논문용 면역 시스템 시각화 생성
             immune_viz = create_paper_ready_visualizations(
-                self, start_date, end_date,
-                output_dir=os.path.dirname(json_path) if json_path else "."
+                self,
+                start_date,
+                end_date,
+                output_dir=os.path.dirname(json_path) if json_path else ".",
             )
 
             print(f"분석 결과 저장 완료:")
             print(f"  JSON: {json_path}")
             print(f"  Markdown: {md_path}")
             print(f"  HTML Dashboard: {dashboard_paths['html_dashboard']}")
-            print(f"\n🎯 HTML 대시보드에서 T-Cell/B-Cell 판단 근거를 직관적으로 확인할 수 있습니다!")
-            print(f"🧬 면역 시스템 반응 패턴 시각화로 기존 연구와의 차별점을 강조할 수 있습니다!")
+            print(
+                f"\n🎯 HTML 대시보드에서 T-Cell/B-Cell 판단 근거를 직관적으로 확인할 수 있습니다!"
+            )
+            print(
+                f"🧬 면역 시스템 반응 패턴 시각화로 기존 연구와의 차별점을 강조할 수 있습니다!"
+            )
 
-            return json_path, md_path, dashboard_paths['html_dashboard']
+            return json_path, md_path, dashboard_paths["html_dashboard"]
 
         except Exception as e:
             print(f"분석 결과 저장 오류: {e}")
