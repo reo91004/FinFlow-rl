@@ -34,6 +34,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(MODELS_DIR, exist_ok=True)
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
+
 def create_timestamped_directory(base_dir, prefix="run"):
     """타임스탬프 기반 디렉토리 생성"""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -48,6 +49,66 @@ class DecisionAnalyzer:
     def __init__(self):
         self.decision_log = []
         self.risk_thresholds = {"low": 0.3, "medium": 0.5, "high": 0.7, "critical": 0.9}
+        self.crisis_detection_log = []  # 상세 위기 감지 로그
+
+    def _process_detailed_tcell_analysis(
+        self, tcell_analysis, dominant_risk, risk_features, dominant_risk_idx
+    ):
+        """상세 T-cell 분석 처리"""
+        # 기본 T-cell 분석 정보 (기존 형식 유지)
+        basic_analysis = {
+            "crisis_level": float(tcell_analysis.get("crisis_level", 0.0)),
+            "dominant_risk": dominant_risk,
+            "risk_intensity": float(risk_features[dominant_risk_idx]),
+            "overall_threat": self._assess_threat_level(
+                tcell_analysis.get("crisis_level", 0.0)
+            ),
+        }
+
+        # 상세 위기 감지 로그가 있는 경우 추가
+        if (
+            isinstance(tcell_analysis, dict)
+            and "detailed_crisis_logs" in tcell_analysis
+        ):
+            detailed_logs = tcell_analysis["detailed_crisis_logs"]
+            enhanced_analysis = basic_analysis.copy()
+            enhanced_analysis["detailed_crisis_detection"] = {
+                "active_tcells": len(detailed_logs),
+                "crisis_detections": [],
+            }
+
+            for tcell_log in detailed_logs:
+                if tcell_log.get("activation_level", 0.0) > 0.15:  # 위기 감지 임계값
+                    crisis_detection = {
+                        "tcell_id": tcell_log.get("tcell_id", "unknown"),
+                        "timestamp": tcell_log.get("timestamp", ""),
+                        "activation_level": tcell_log.get("activation_level", 0.0),
+                        "crisis_level_classification": tcell_log.get(
+                            "crisis_level", "normal"
+                        ),
+                        "crisis_indicators": tcell_log.get("crisis_indicators", []),
+                        "decision_reasoning": tcell_log.get("decision_reasoning", []),
+                        "feature_contributions": tcell_log.get(
+                            "feature_contributions", {}
+                        ),
+                        "market_state_analysis": tcell_log.get("market_state", {}),
+                    }
+                    enhanced_analysis["detailed_crisis_detection"][
+                        "crisis_detections"
+                    ].append(crisis_detection)
+
+                    # 위기 감지 로그에 추가
+                    self.crisis_detection_log.append(
+                        {
+                            "timestamp": tcell_log.get("timestamp", ""),
+                            "tcell_id": tcell_log.get("tcell_id", "unknown"),
+                            "crisis_info": crisis_detection,
+                        }
+                    )
+
+            return enhanced_analysis
+
+        return basic_analysis
 
     def log_decision(
         self,
@@ -73,6 +134,11 @@ class DecisionAnalyzer:
         }
         dominant_risk = risk_map.get(dominant_risk_idx, "volatility")
 
+        # 향상된 T-cell 분석 처리
+        enhanced_tcell_analysis = self._process_detailed_tcell_analysis(
+            tcell_analysis, dominant_risk, risk_features, dominant_risk_idx
+        )
+
         decision_record = {
             "date": (
                 date.strftime("%Y-%m-%d") if hasattr(date, "strftime") else str(date)
@@ -82,12 +148,7 @@ class DecisionAnalyzer:
                 if hasattr(market_features, "tolist")
                 else list(market_features)
             ),
-            "tcell_analysis": {
-                "crisis_level": float(crisis_level),
-                "dominant_risk": dominant_risk,
-                "risk_intensity": float(risk_features[dominant_risk_idx]),
-                "overall_threat": self._assess_threat_level(crisis_level),
-            },
+            "tcell_analysis": enhanced_tcell_analysis,
             "bcell_decisions": self._serialize_bcell_decisions(bcell_decisions),
             "final_weights": (
                 final_weights.tolist()
@@ -101,7 +162,7 @@ class DecisionAnalyzer:
         self.decision_log.append(decision_record)
 
     def _serialize_bcell_decisions(self, bcell_decisions):
-        """B-cell 결정 정보 직렬화"""
+        """B-cell 결정 정보 직렬화 (상세 분석 포함)"""
         if not bcell_decisions:
             return []
 
@@ -113,9 +174,97 @@ class DecisionAnalyzer:
                     serialized_bcell[key] = value
                 else:
                     serialized_bcell[key] = str(value)
+
+            # B-cell 전문성 및 의사결정 근거 분석 추가
+            if "risk_type" in bcell:
+                serialized_bcell["specialization_analysis"] = (
+                    self._analyze_bcell_specialization(bcell)
+                )
+
             serialized.append(serialized_bcell)
 
         return serialized
+
+    def _analyze_bcell_specialization(self, bcell_decision):
+        """B-cell 전문성 및 의사결정 근거 분석"""
+        risk_type = bcell_decision.get("risk_type", "unknown")
+        activation_level = bcell_decision.get("activation_level", 0.0)
+        antibody_strength = bcell_decision.get("antibody_strength", 0.0)
+
+        # 전문성 평가
+        specialization_score = bcell_decision.get("strategy_contribution", 0.0)
+
+        # 의사결정 근거 생성
+        decision_reasoning = []
+
+        # 활성화 근거
+        if activation_level > 0.7:
+            decision_reasoning.append(
+                f"높은 활성화 레벨({activation_level:.3f})로 인한 강력한 대응 필요"
+            )
+        elif activation_level > 0.5:
+            decision_reasoning.append(
+                f"중간 활성화 레벨({activation_level:.3f})로 인한 적극적 대응"
+            )
+        elif activation_level > 0.3:
+            decision_reasoning.append(
+                f"낮은 활성화 레벨({activation_level:.3f})로 인한 보수적 대응"
+            )
+
+        # 위험 유형별 전문성 근거
+        risk_reasoning = {
+            "volatility": f"시장 변동성 위험에 특화된 안전 자산 중심 포트폴리오 구성",
+            "correlation": f"상관관계 위험에 특화된 분산 투자 전략 적용",
+            "momentum": f"모멘텀 위험에 특화된 추세 추종 전략 활용",
+            "liquidity": f"유동성 위험에 특화된 대형주 중심 포트폴리오 구성",
+            "memory_recall": f"과거 위기 경험을 바탕으로 한 검증된 대응 전략 적용",
+        }
+
+        if risk_type in risk_reasoning:
+            decision_reasoning.append(risk_reasoning[risk_type])
+
+        # 항체 강도 근거
+        if antibody_strength > 0.8:
+            decision_reasoning.append(
+                f"높은 항체 강도({antibody_strength:.3f})로 강력한 방어 전략 수행"
+            )
+        elif antibody_strength > 0.5:
+            decision_reasoning.append(
+                f"중간 항체 강도({antibody_strength:.3f})로 균형잡힌 방어 전략 수행"
+            )
+
+        # 전문화 정도 평가
+        if specialization_score > 0.8:
+            specialization_level = "매우 높음"
+        elif specialization_score > 0.6:
+            specialization_level = "높음"
+        elif specialization_score > 0.4:
+            specialization_level = "중간"
+        else:
+            specialization_level = "낮음"
+
+        return {
+            "risk_type": risk_type,
+            "specialization_level": specialization_level,
+            "specialization_score": specialization_score,
+            "decision_reasoning": decision_reasoning,
+            "activation_analysis": {
+                "level": activation_level,
+                "category": (
+                    "high"
+                    if activation_level > 0.7
+                    else "medium" if activation_level > 0.3 else "low"
+                ),
+            },
+            "antibody_analysis": {
+                "strength": antibody_strength,
+                "effectiveness": (
+                    "high"
+                    if antibody_strength > 0.8
+                    else "medium" if antibody_strength > 0.5 else "low"
+                ),
+            },
+        }
 
     def _assess_threat_level(self, crisis_level):
         """위기 수준 평가"""
@@ -160,6 +309,18 @@ class DecisionAnalyzer:
         # 평균 수익률
         avg_return = np.mean([r["portfolio_return"] for r in period_records])
 
+        # T-cell 위기 감지 상세 분석
+        tcell_analysis = self._analyze_tcell_crisis_detection()
+
+        # B-cell 전문가 분석
+        bcell_analysis = self._analyze_bcell_expert_responses()
+
+        # 특성 기여도 분석
+        feature_attribution = self._analyze_feature_attribution()
+
+        # 시간별 위기 진행 분석
+        temporal_analysis = self._analyze_temporal_crisis_patterns()
+
         report = {
             "period": {"start": start_date, "end": end_date},
             "basic_stats": {
@@ -176,12 +337,406 @@ class DecisionAnalyzer:
                 "learning_activation_rate": memory_activations / total_days,
                 "system_stability": "high" if avg_return > 0 else "normal",
             },
+            "tcell_crisis_analysis": tcell_analysis,
+            "bcell_expert_analysis": bcell_analysis,
+            "feature_attribution": feature_attribution,
+            "temporal_analysis": temporal_analysis,
+            "explainability_summary": {
+                "total_crisis_detections": len(self.crisis_detection_log),
+                "total_decisions_logged": len(self.decision_log),
+                "analysis_completeness": "comprehensive",
+                "xai_features_implemented": [
+                    "detailed_crisis_detection_reasoning",
+                    "tcell_specific_analysis",
+                    "feature_attribution_analysis",
+                    "temporal_pattern_tracking",
+                    "bcell_expert_reasoning",
+                    "decision_explanation_logging",
+                ],
+            },
         }
 
         return report
 
+    def _analyze_tcell_crisis_detection(self):
+        """T-cell 위기 감지 상세 분석"""
+        if not self.crisis_detection_log:
+            return {"total_detections": 0, "tcell_details": {}}
+
+        tcell_details = {}
+        total_detections = 0
+        feature_contributions = {}
+
+        for crisis_log in self.crisis_detection_log:
+            tcell_id = crisis_log["tcell_id"]
+            crisis_info = crisis_log["crisis_info"]
+
+            if tcell_id not in tcell_details:
+                tcell_details[tcell_id] = {
+                    "detections": 0,
+                    "avg_activation": 0.0,
+                    "crisis_types": {},
+                    "indicators": {},
+                    "reasoning_patterns": [],
+                    "feature_contributions": {},
+                }
+
+            tcell_details[tcell_id]["detections"] += 1
+            tcell_details[tcell_id]["avg_activation"] += crisis_info["activation_level"]
+
+            # 위기 유형 분석
+            crisis_level = crisis_info["crisis_level_classification"]
+            tcell_details[tcell_id]["crisis_types"][crisis_level] = (
+                tcell_details[tcell_id]["crisis_types"].get(crisis_level, 0) + 1
+            )
+
+            # 지표 분석
+            for indicator in crisis_info["crisis_indicators"]:
+                indicator_type = indicator["type"]
+                tcell_details[tcell_id]["indicators"][indicator_type] = (
+                    tcell_details[tcell_id]["indicators"].get(indicator_type, 0) + 1
+                )
+
+            # 특성 기여도 분석
+            for feature, contribution in crisis_info["feature_contributions"].items():
+                if feature not in tcell_details[tcell_id]["feature_contributions"]:
+                    tcell_details[tcell_id]["feature_contributions"][feature] = []
+                tcell_details[tcell_id]["feature_contributions"][feature].append(
+                    contribution
+                )
+
+                # 전체 특성 기여도 누적
+                if feature not in feature_contributions:
+                    feature_contributions[feature] = []
+                feature_contributions[feature].append(contribution)
+
+            # 의사결정 근거 패턴 분석 (최대 3개만 저장)
+            if len(tcell_details[tcell_id]["reasoning_patterns"]) < 3:
+                tcell_details[tcell_id]["reasoning_patterns"].extend(
+                    crisis_info["decision_reasoning"]
+                )
+
+            total_detections += 1
+
+        # 평균 계산
+        for tcell_id in tcell_details:
+            if tcell_details[tcell_id]["detections"] > 0:
+                tcell_details[tcell_id]["avg_activation"] /= tcell_details[tcell_id][
+                    "detections"
+                ]
+
+                # 특성 기여도 평균 계산
+                for feature in tcell_details[tcell_id]["feature_contributions"]:
+                    contributions = tcell_details[tcell_id]["feature_contributions"][
+                        feature
+                    ]
+                    tcell_details[tcell_id]["feature_contributions"][feature] = {
+                        "avg": sum(contributions) / len(contributions),
+                        "max": max(contributions),
+                        "min": min(contributions),
+                    }
+
+        # 전체 특성 기여도 분석
+        global_feature_analysis = {}
+        for feature, contributions in feature_contributions.items():
+            global_feature_analysis[feature] = {
+                "avg_contribution": sum(contributions) / len(contributions),
+                "max_contribution": max(contributions),
+                "detection_frequency": len(contributions),
+            }
+
+        return {
+            "total_detections": total_detections,
+            "active_tcells": len(tcell_details),
+            "tcell_details": tcell_details,
+            "global_feature_analysis": global_feature_analysis,
+        }
+
+    def _analyze_bcell_expert_responses(self):
+        """B-cell 전문가 대응 분석"""
+        if not self.decision_log:
+            return {"total_experts": 0, "expert_details": {}}
+
+        expert_analysis = {}
+        total_activations = 0
+
+        for record in self.decision_log:
+            for bcell_decision in record.get("bcell_decisions", []):
+                if "specialization_analysis" in bcell_decision:
+                    analysis = bcell_decision["specialization_analysis"]
+                    risk_type = analysis["risk_type"]
+
+                    if risk_type not in expert_analysis:
+                        expert_analysis[risk_type] = {
+                            "activations": 0,
+                            "avg_activation_level": 0.0,
+                            "avg_antibody_strength": 0.0,
+                            "avg_specialization_score": 0.0,
+                            "decision_patterns": {},
+                            "performance_metrics": {
+                                "positive_outcomes": 0,
+                                "negative_outcomes": 0,
+                                "avg_return_when_active": 0.0,
+                                "returns": [],
+                            },
+                        }
+
+                    expert_analysis[risk_type]["activations"] += 1
+                    expert_analysis[risk_type]["avg_activation_level"] += analysis[
+                        "activation_analysis"
+                    ]["level"]
+                    expert_analysis[risk_type]["avg_antibody_strength"] += analysis[
+                        "antibody_analysis"
+                    ]["strength"]
+                    expert_analysis[risk_type]["avg_specialization_score"] += analysis[
+                        "specialization_score"
+                    ]
+
+                    # 의사결정 패턴 분석
+                    for reasoning in analysis["decision_reasoning"]:
+                        pattern_key = (
+                            reasoning.split("로 인한")[0]
+                            if "로 인한" in reasoning
+                            else reasoning[:50]
+                        )
+                        expert_analysis[risk_type]["decision_patterns"][pattern_key] = (
+                            expert_analysis[risk_type]["decision_patterns"].get(
+                                pattern_key, 0
+                            )
+                            + 1
+                        )
+
+                    # 성과 분석
+                    portfolio_return = record.get("portfolio_return", 0.0)
+                    expert_analysis[risk_type]["performance_metrics"]["returns"].append(
+                        portfolio_return
+                    )
+
+                    if portfolio_return > 0:
+                        expert_analysis[risk_type]["performance_metrics"][
+                            "positive_outcomes"
+                        ] += 1
+                    else:
+                        expert_analysis[risk_type]["performance_metrics"][
+                            "negative_outcomes"
+                        ] += 1
+
+                    total_activations += 1
+
+        # 평균 계산
+        for risk_type in expert_analysis:
+            analysis = expert_analysis[risk_type]
+            if analysis["activations"] > 0:
+                analysis["avg_activation_level"] /= analysis["activations"]
+                analysis["avg_antibody_strength"] /= analysis["activations"]
+                analysis["avg_specialization_score"] /= analysis["activations"]
+
+                # 성과 메트릭 계산
+                if analysis["performance_metrics"]["returns"]:
+                    analysis["performance_metrics"]["avg_return_when_active"] = sum(
+                        analysis["performance_metrics"]["returns"]
+                    ) / len(analysis["performance_metrics"]["returns"])
+
+                    total_outcomes = (
+                        analysis["performance_metrics"]["positive_outcomes"]
+                        + analysis["performance_metrics"]["negative_outcomes"]
+                    )
+                    analysis["performance_metrics"]["success_rate"] = (
+                        (
+                            analysis["performance_metrics"]["positive_outcomes"]
+                            / total_outcomes
+                        )
+                        * 100
+                        if total_outcomes > 0
+                        else 0
+                    )
+
+        return {
+            "total_activations": total_activations,
+            "active_experts": len(expert_analysis),
+            "expert_details": expert_analysis,
+        }
+
+    def _analyze_feature_attribution(self):
+        """특성 기여도 분석"""
+        if not self.crisis_detection_log:
+            return {"total_features": 0, "feature_importance": {}}
+
+        feature_contributions = {}
+        feature_combinations = {}
+
+        for crisis_log in self.crisis_detection_log:
+            crisis_info = crisis_log["crisis_info"]
+
+            # 개별 특성 기여도 분석
+            for feature, contribution in crisis_info["feature_contributions"].items():
+                if feature not in feature_contributions:
+                    feature_contributions[feature] = []
+                feature_contributions[feature].append(contribution)
+
+            # 특성 조합 분석
+            active_features = [
+                f for f, c in crisis_info["feature_contributions"].items() if c > 0.1
+            ]
+            if len(active_features) > 1:
+                combination = tuple(sorted(active_features))
+                feature_combinations[combination] = (
+                    feature_combinations.get(combination, 0) + 1
+                )
+
+        # 특성 중요도 계산
+        feature_importance = {}
+        for feature, contributions in feature_contributions.items():
+            feature_importance[feature] = {
+                "avg_contribution": sum(contributions) / len(contributions),
+                "max_contribution": max(contributions),
+                "min_contribution": min(contributions),
+                "detection_frequency": len(contributions),
+                "importance_level": self._classify_importance(
+                    sum(contributions) / len(contributions)
+                ),
+            }
+
+        # 상위 특성 조합
+        top_combinations = sorted(
+            feature_combinations.items(), key=lambda x: x[1], reverse=True
+        )[:5]
+
+        return {
+            "total_features": len(feature_importance),
+            "feature_importance": feature_importance,
+            "top_feature_combinations": [
+                {
+                    "features": list(combo),
+                    "frequency": freq,
+                    "percentage": (freq / len(self.crisis_detection_log)) * 100,
+                }
+                for combo, freq in top_combinations
+            ],
+        }
+
+    def _analyze_temporal_crisis_patterns(self):
+        """시간별 위기 진행 패턴 분석"""
+        if not self.crisis_detection_log:
+            return {"total_events": 0, "patterns": {}}
+
+        time_sorted_crises = sorted(
+            self.crisis_detection_log, key=lambda x: x["timestamp"]
+        )
+
+        # 위기 클러스터 분석
+        crisis_clusters = []
+        current_cluster = []
+
+        for crisis_log in time_sorted_crises:
+            crisis_time = datetime.fromisoformat(crisis_log["timestamp"])
+
+            if current_cluster:
+                last_crisis_time = datetime.fromisoformat(
+                    current_cluster[-1]["timestamp"]
+                )
+                time_diff = (crisis_time - last_crisis_time).total_seconds() / 3600
+
+                if time_diff <= 6:  # 6시간 이내
+                    current_cluster.append(crisis_log)
+                else:
+                    if len(current_cluster) > 1:
+                        crisis_clusters.append(current_cluster)
+                    current_cluster = [crisis_log]
+            else:
+                current_cluster = [crisis_log]
+
+        if len(current_cluster) > 1:
+            crisis_clusters.append(current_cluster)
+
+        # 에스컬레이션 패턴 분석
+        escalation_patterns = []
+        for i in range(len(time_sorted_crises) - 1):
+            current_activation = time_sorted_crises[i]["crisis_info"][
+                "activation_level"
+            ]
+            next_activation = time_sorted_crises[i + 1]["crisis_info"][
+                "activation_level"
+            ]
+
+            time_diff = (
+                datetime.fromisoformat(time_sorted_crises[i + 1]["timestamp"])
+                - datetime.fromisoformat(time_sorted_crises[i]["timestamp"])
+            ).total_seconds() / 3600
+
+            if time_diff <= 6:
+                change = next_activation - current_activation
+                escalation_patterns.append(
+                    {
+                        "time_diff": time_diff,
+                        "activation_change": change,
+                        "pattern": (
+                            "escalation"
+                            if change > 0.1
+                            else "de-escalation" if change < -0.1 else "stable"
+                        ),
+                    }
+                )
+
+        # 시간대별 분석
+        hourly_patterns = {}
+        for crisis_log in time_sorted_crises:
+            crisis_time = datetime.fromisoformat(crisis_log["timestamp"])
+            hour = crisis_time.hour
+            hourly_patterns[hour] = hourly_patterns.get(hour, 0) + 1
+
+        return {
+            "total_events": len(time_sorted_crises),
+            "crisis_clusters": {
+                "total_clusters": len(crisis_clusters),
+                "cluster_details": [
+                    {
+                        "duration_hours": (
+                            datetime.fromisoformat(cluster[-1]["timestamp"])
+                            - datetime.fromisoformat(cluster[0]["timestamp"])
+                        ).total_seconds()
+                        / 3600,
+                        "events_count": len(cluster),
+                        "max_activation": max(
+                            c["crisis_info"]["activation_level"] for c in cluster
+                        ),
+                        "avg_activation": sum(
+                            c["crisis_info"]["activation_level"] for c in cluster
+                        )
+                        / len(cluster),
+                    }
+                    for cluster in crisis_clusters
+                ],
+            },
+            "escalation_patterns": {
+                "total_patterns": len(escalation_patterns),
+                "pattern_distribution": {
+                    pattern: sum(
+                        1 for p in escalation_patterns if p["pattern"] == pattern
+                    )
+                    for pattern in ["escalation", "de-escalation", "stable"]
+                },
+            },
+            "hourly_distribution": hourly_patterns,
+        }
+
+    def _classify_importance(self, avg_contribution):
+        """중요도 분류"""
+        if avg_contribution > 0.3:
+            return "very_high"
+        elif avg_contribution > 0.2:
+            return "high"
+        elif avg_contribution > 0.1:
+            return "medium"
+        else:
+            return "low"
+
     def save_analysis_to_file(
-        self, start_date: str, end_date: str, filename: str = None, output_dir: str = None
+        self,
+        start_date: str,
+        end_date: str,
+        filename: str = None,
+        output_dir: str = None,
     ):
         """분석 결과를 파일로 저장"""
 
@@ -242,6 +797,664 @@ class DecisionAnalyzer:
 - 위기 대응률: {efficiency['crisis_response_rate']:.1%}
 - 학습 활성화율: {efficiency['learning_activation_rate']:.1%}
 - 시스템 안정성: {efficiency['system_stability']}
+
+## T-cell 상세 위기 감지 분석"""
+
+        # T-cell 위기 감지 상세 분석
+        if self.crisis_detection_log:
+            crisis_by_tcell = {}
+            total_crisis_detections = 0
+
+            for crisis_log in self.crisis_detection_log:
+                tcell_id = crisis_log["tcell_id"]
+                crisis_info = crisis_log["crisis_info"]
+
+                if tcell_id not in crisis_by_tcell:
+                    crisis_by_tcell[tcell_id] = {
+                        "detections": 0,
+                        "avg_activation": 0.0,
+                        "crisis_types": {},
+                        "main_indicators": {},
+                    }
+
+                crisis_by_tcell[tcell_id]["detections"] += 1
+                crisis_by_tcell[tcell_id]["avg_activation"] += crisis_info[
+                    "activation_level"
+                ]
+
+                # 위기 유형 분석
+                crisis_level = crisis_info["crisis_level_classification"]
+                crisis_by_tcell[tcell_id]["crisis_types"][crisis_level] = (
+                    crisis_by_tcell[tcell_id]["crisis_types"].get(crisis_level, 0) + 1
+                )
+
+                # 주요 지표 분석
+                for indicator in crisis_info["crisis_indicators"]:
+                    indicator_type = indicator["type"]
+                    crisis_by_tcell[tcell_id]["main_indicators"][indicator_type] = (
+                        crisis_by_tcell[tcell_id]["main_indicators"].get(
+                            indicator_type, 0
+                        )
+                        + 1
+                    )
+
+                total_crisis_detections += 1
+
+            # 평균 활성화 레벨 계산
+            for tcell_id in crisis_by_tcell:
+                if crisis_by_tcell[tcell_id]["detections"] > 0:
+                    crisis_by_tcell[tcell_id]["avg_activation"] /= crisis_by_tcell[
+                        tcell_id
+                    ]["detections"]
+
+            if total_crisis_detections > 0:
+                md_content += f"""
+### 위기 감지 통계
+- 총 위기 감지 건수: {total_crisis_detections}건
+- 참여 T-cell 수: {len(crisis_by_tcell)}개
+
+### T-cell별 위기 감지 상세 분석
+"""
+
+                for tcell_id, tcell_data in sorted(
+                    crisis_by_tcell.items(),
+                    key=lambda x: x[1]["detections"],
+                    reverse=True,
+                ):
+                    md_content += f"""
+#### T-cell {tcell_id}
+- 위기 감지 횟수: {tcell_data['detections']}회
+- 평균 활성화 레벨: {tcell_data['avg_activation']:.3f}
+- 위기 유형 분포:
+"""
+                    for crisis_type, count in tcell_data["crisis_types"].items():
+                        percentage = (count / tcell_data["detections"]) * 100
+                        md_content += (
+                            f"  - {crisis_type}: {count}회 ({percentage:.1f}%)\n"
+                        )
+
+                    md_content += "- 주요 감지 지표:\n"
+                    for indicator, count in sorted(
+                        tcell_data["main_indicators"].items(),
+                        key=lambda x: x[1],
+                        reverse=True,
+                    ):
+                        percentage = (count / tcell_data["detections"]) * 100
+                        md_content += (
+                            f"  - {indicator}: {count}회 ({percentage:.1f}%)\n"
+                        )
+            else:
+                md_content += "\n\n분석 기간 중 위기 감지 사례가 없습니다."
+        else:
+            md_content += "\n\n위기 감지 로그가 없습니다."
+
+        # 특성별 기여도 분석
+        if self.crisis_detection_log:
+            md_content += """
+
+## 특성별 기여도 분석 (Feature Attribution)
+
+### 글로벌 특성 기여도 분석
+"""
+            # 전체 특성 기여도 분석
+            global_features = {}
+            for crisis_log in self.crisis_detection_log:
+                crisis_info = crisis_log["crisis_info"]
+                for feature, contribution in crisis_info[
+                    "feature_contributions"
+                ].items():
+                    if feature not in global_features:
+                        global_features[feature] = []
+                    global_features[feature].append(contribution)
+
+            if global_features:
+                # 특성별 통계 계산
+                feature_stats = {}
+                for feature, contributions in global_features.items():
+                    feature_stats[feature] = {
+                        "avg": sum(contributions) / len(contributions),
+                        "max": max(contributions),
+                        "min": min(contributions),
+                        "count": len(contributions),
+                    }
+
+                # 평균 기여도 순으로 정렬
+                sorted_features = sorted(
+                    feature_stats.items(), key=lambda x: x[1]["avg"], reverse=True
+                )
+
+                md_content += "위기 감지에서 각 특성의 기여도를 분석한 결과:\n\n"
+
+                for feature, stats in sorted_features:
+                    md_content += f"#### {feature}\n"
+                    md_content += f"- 평균 기여도: {stats['avg']:.3f}\n"
+                    md_content += f"- 최대 기여도: {stats['max']:.3f}\n"
+                    md_content += f"- 최소 기여도: {stats['min']:.3f}\n"
+                    md_content += f"- 기여 횟수: {stats['count']}회\n"
+
+                    # 기여도 수준 분류
+                    if stats["avg"] > 0.3:
+                        importance = "매우 높음"
+                    elif stats["avg"] > 0.2:
+                        importance = "높음"
+                    elif stats["avg"] > 0.1:
+                        importance = "중간"
+                    else:
+                        importance = "낮음"
+
+                    md_content += f"- 중요도 평가: {importance}\n\n"
+
+                # 특성간 상관관계 분석
+                md_content += """
+### 특성간 상호작용 분석
+"""
+
+                # 자주 함께 나타나는 특성 조합 분석
+                feature_combinations = {}
+                for crisis_log in self.crisis_detection_log:
+                    crisis_info = crisis_log["crisis_info"]
+                    active_features = [
+                        f
+                        for f, c in crisis_info["feature_contributions"].items()
+                        if c > 0.1
+                    ]
+
+                    if len(active_features) > 1:
+                        combination = tuple(sorted(active_features))
+                        feature_combinations[combination] = (
+                            feature_combinations.get(combination, 0) + 1
+                        )
+
+                if feature_combinations:
+                    top_combinations = sorted(
+                        feature_combinations.items(), key=lambda x: x[1], reverse=True
+                    )[:5]
+
+                    md_content += "자주 함께 나타나는 특성 조합:\n\n"
+                    for combination, count in top_combinations:
+                        md_content += f"- {' + '.join(combination)}: {count}회\n"
+
+                # 임계값 분석
+                md_content += """
+
+### 위기 감지 임계값 분석
+"""
+
+                # 각 특성별 위기 감지 임계값 패턴 분석
+                threshold_analysis = {}
+                for crisis_log in self.crisis_detection_log:
+                    crisis_info = crisis_log["crisis_info"]
+                    for indicator in crisis_info["crisis_indicators"]:
+                        indicator_type = indicator["type"]
+                        if indicator_type not in threshold_analysis:
+                            threshold_analysis[indicator_type] = {
+                                "values": [],
+                                "thresholds": [],
+                                "contributions": [],
+                            }
+
+                        threshold_analysis[indicator_type]["values"].append(
+                            indicator["value"]
+                        )
+                        threshold_analysis[indicator_type]["thresholds"].append(
+                            indicator["threshold"]
+                        )
+                        threshold_analysis[indicator_type]["contributions"].append(
+                            indicator["contribution"]
+                        )
+
+                if threshold_analysis:
+                    md_content += "각 지표별 임계값 분석:\n\n"
+                    for indicator_type, data in threshold_analysis.items():
+                        avg_value = sum(data["values"]) / len(data["values"])
+                        avg_threshold = sum(data["thresholds"]) / len(
+                            data["thresholds"]
+                        )
+                        avg_contribution = sum(data["contributions"]) / len(
+                            data["contributions"]
+                        )
+
+                        md_content += f"#### {indicator_type}\n"
+                        md_content += f"- 평균 감지값: {avg_value:.3f}\n"
+                        md_content += f"- 평균 임계값: {avg_threshold:.3f}\n"
+                        md_content += f"- 평균 기여도: {avg_contribution:.3f}\n"
+                        md_content += f"- 감지 횟수: {len(data['values'])}회\n\n"
+
+        # 시간별 위기 진행 과정 추적
+        if self.crisis_detection_log:
+            md_content += """
+
+## 시간별 위기 진행 과정 추적
+
+### 위기 패턴 분석
+"""
+
+            # 시간순 정렬된 위기 이벤트 분석
+            time_sorted_crises = sorted(
+                self.crisis_detection_log, key=lambda x: x["timestamp"]
+            )
+
+            if time_sorted_crises:
+                # 위기 클러스터 분석 (연속된 위기 이벤트)
+                crisis_clusters = []
+                current_cluster = []
+
+                for i, crisis_log in enumerate(time_sorted_crises):
+                    crisis_time = datetime.fromisoformat(crisis_log["timestamp"])
+
+                    if current_cluster:
+                        last_crisis_time = datetime.fromisoformat(
+                            current_cluster[-1]["timestamp"]
+                        )
+                        time_diff = (
+                            crisis_time - last_crisis_time
+                        ).total_seconds() / 3600  # 시간 단위
+
+                        # 6시간 이내의 위기는 같은 클러스터로 간주
+                        if time_diff <= 6:
+                            current_cluster.append(crisis_log)
+                        else:
+                            if len(current_cluster) > 1:
+                                crisis_clusters.append(current_cluster)
+                            current_cluster = [crisis_log]
+                    else:
+                        current_cluster = [crisis_log]
+
+                # 마지막 클러스터 추가
+                if len(current_cluster) > 1:
+                    crisis_clusters.append(current_cluster)
+
+                if crisis_clusters:
+                    md_content += f"식별된 위기 클러스터: {len(crisis_clusters)}개\n\n"
+
+                    for i, cluster in enumerate(crisis_clusters, 1):
+                        start_time = datetime.fromisoformat(cluster[0]["timestamp"])
+                        end_time = datetime.fromisoformat(cluster[-1]["timestamp"])
+                        duration = (end_time - start_time).total_seconds() / 3600
+
+                        md_content += f"#### 위기 클러스터 {i}\n"
+                        md_content += f"- 기간: {start_time.strftime('%Y-%m-%d %H:%M')} ~ {end_time.strftime('%Y-%m-%d %H:%M')}\n"
+                        md_content += f"- 지속 시간: {duration:.1f}시간\n"
+                        md_content += f"- 위기 이벤트 수: {len(cluster)}개\n"
+
+                        # 클러스터 내 위기 진행 패턴 분석
+                        activation_levels = [
+                            c["crisis_info"]["activation_level"] for c in cluster
+                        ]
+                        avg_activation = sum(activation_levels) / len(activation_levels)
+                        max_activation = max(activation_levels)
+
+                        md_content += f"- 평균 활성화 레벨: {avg_activation:.3f}\n"
+                        md_content += f"- 최대 활성화 레벨: {max_activation:.3f}\n"
+
+                        # 참여 T-cell 분석
+                        involved_tcells = set(c["tcell_id"] for c in cluster)
+                        md_content += f"- 참여 T-cell: {len(involved_tcells)}개 ({', '.join(sorted(involved_tcells))})\n"
+
+                        # 주요 위기 지표
+                        cluster_indicators = {}
+                        for crisis_log in cluster:
+                            for indicator in crisis_log["crisis_info"][
+                                "crisis_indicators"
+                            ]:
+                                indicator_type = indicator["type"]
+                                cluster_indicators[indicator_type] = (
+                                    cluster_indicators.get(indicator_type, 0) + 1
+                                )
+
+                        if cluster_indicators:
+                            top_indicators = sorted(
+                                cluster_indicators.items(),
+                                key=lambda x: x[1],
+                                reverse=True,
+                            )[:3]
+                            md_content += f"- 주요 위기 지표: {', '.join([f'{ind}({count})' for ind, count in top_indicators])}\n\n"
+
+                # 위기 에스컬레이션 패턴 분석
+                md_content += """
+### 위기 에스컬레이션 패턴
+"""
+
+                # 연속된 위기 이벤트에서 활성화 레벨 변화 분석
+                escalation_patterns = []
+                for i in range(len(time_sorted_crises) - 1):
+                    current_activation = time_sorted_crises[i]["crisis_info"][
+                        "activation_level"
+                    ]
+                    next_activation = time_sorted_crises[i + 1]["crisis_info"][
+                        "activation_level"
+                    ]
+
+                    time_diff = (
+                        datetime.fromisoformat(time_sorted_crises[i + 1]["timestamp"])
+                        - datetime.fromisoformat(time_sorted_crises[i]["timestamp"])
+                    ).total_seconds() / 3600
+
+                    if time_diff <= 6:  # 6시간 이내의 연속 이벤트
+                        change = next_activation - current_activation
+                        escalation_patterns.append(
+                            {
+                                "time_diff": time_diff,
+                                "activation_change": change,
+                                "pattern": (
+                                    "escalation"
+                                    if change > 0.1
+                                    else "de-escalation" if change < -0.1 else "stable"
+                                ),
+                            }
+                        )
+
+                if escalation_patterns:
+                    pattern_counts = {}
+                    for pattern in escalation_patterns:
+                        pattern_type = pattern["pattern"]
+                        pattern_counts[pattern_type] = (
+                            pattern_counts.get(pattern_type, 0) + 1
+                        )
+
+                    total_patterns = len(escalation_patterns)
+                    md_content += "위기 에스컬레이션 패턴 분석:\n\n"
+
+                    for pattern_type, count in pattern_counts.items():
+                        percentage = (count / total_patterns) * 100
+                        md_content += (
+                            f"- {pattern_type}: {count}회 ({percentage:.1f}%)\n"
+                        )
+
+                    # 평균 에스컬레이션 속도
+                    escalations = [
+                        p for p in escalation_patterns if p["pattern"] == "escalation"
+                    ]
+                    if escalations:
+                        avg_escalation_speed = sum(
+                            p["activation_change"] / p["time_diff"] for p in escalations
+                        ) / len(escalations)
+                        md_content += f"- 평균 에스컬레이션 속도: {avg_escalation_speed:.3f}/시간\n"
+
+                    de_escalations = [
+                        p
+                        for p in escalation_patterns
+                        if p["pattern"] == "de-escalation"
+                    ]
+                    if de_escalations:
+                        avg_de_escalation_speed = abs(
+                            sum(
+                                p["activation_change"] / p["time_diff"]
+                                for p in de_escalations
+                            )
+                        ) / len(de_escalations)
+                        md_content += (
+                            f"- 평균 완화 속도: {avg_de_escalation_speed:.3f}/시간\n"
+                        )
+
+                # 위기 예측 정확도 분석
+                md_content += """
+
+### 위기 예측 및 조기 경고 분석
+"""
+
+                # 위기 감지 후 실제 시장 변화 분석 (간단한 패턴)
+                prediction_accuracy = []
+                for i, crisis_log in enumerate(time_sorted_crises):
+                    if i < len(time_sorted_crises) - 1:
+                        current_activation = crisis_log["crisis_info"][
+                            "activation_level"
+                        ]
+                        next_activation = time_sorted_crises[i + 1]["crisis_info"][
+                            "activation_level"
+                        ]
+
+                        # 현재 위기 감지가 다음 위기를 예측했는지 평가
+                        prediction_accuracy.append(
+                            {
+                                "predicted_high": current_activation > 0.5,
+                                "actual_high": next_activation > 0.5,
+                            }
+                        )
+
+                if prediction_accuracy:
+                    correct_predictions = sum(
+                        1
+                        for p in prediction_accuracy
+                        if p["predicted_high"] == p["actual_high"]
+                    )
+                    accuracy = (correct_predictions / len(prediction_accuracy)) * 100
+
+                    md_content += f"위기 예측 정확도: {accuracy:.1f}% ({correct_predictions}/{len(prediction_accuracy)})\n\n"
+
+                # 시간대별 위기 발생 패턴
+                md_content += """
+### 시간대별 위기 발생 패턴
+"""
+
+                hourly_crisis_count = {}
+                for crisis_log in time_sorted_crises:
+                    crisis_time = datetime.fromisoformat(crisis_log["timestamp"])
+                    hour = crisis_time.hour
+                    hourly_crisis_count[hour] = hourly_crisis_count.get(hour, 0) + 1
+
+                if hourly_crisis_count:
+                    sorted_hours = sorted(
+                        hourly_crisis_count.items(), key=lambda x: x[1], reverse=True
+                    )
+                    md_content += "시간대별 위기 발생 빈도:\n\n"
+
+                    for hour, count in sorted_hours[:5]:  # 상위 5개 시간대
+                        percentage = (count / len(time_sorted_crises)) * 100
+                        md_content += f"- {hour:02d}시: {count}회 ({percentage:.1f}%)\n"
+
+        # B-cell 전문가 대응 분석
+        if self.decision_log:
+            md_content += """
+
+## B-cell 전문가 대응 분석
+
+### 전문가별 활성화 패턴
+"""
+
+            # B-cell 활성화 통계 수집
+            bcell_stats = {}
+            total_activations = 0
+
+            for record in self.decision_log:
+                for bcell_decision in record.get("bcell_decisions", []):
+                    if "specialization_analysis" in bcell_decision:
+                        analysis = bcell_decision["specialization_analysis"]
+                        risk_type = analysis["risk_type"]
+
+                        if risk_type not in bcell_stats:
+                            bcell_stats[risk_type] = {
+                                "activations": 0,
+                                "avg_activation_level": 0.0,
+                                "avg_antibody_strength": 0.0,
+                                "avg_specialization_score": 0.0,
+                                "decision_patterns": {},
+                                "activation_levels": [],
+                                "antibody_strengths": [],
+                                "specialization_scores": [],
+                            }
+
+                        bcell_stats[risk_type]["activations"] += 1
+                        bcell_stats[risk_type]["activation_levels"].append(
+                            analysis["activation_analysis"]["level"]
+                        )
+                        bcell_stats[risk_type]["antibody_strengths"].append(
+                            analysis["antibody_analysis"]["strength"]
+                        )
+                        bcell_stats[risk_type]["specialization_scores"].append(
+                            analysis["specialization_score"]
+                        )
+
+                        # 의사결정 패턴 분석
+                        for reasoning in analysis["decision_reasoning"]:
+                            pattern_key = (
+                                reasoning.split("로 인한")[0]
+                                if "로 인한" in reasoning
+                                else reasoning[:50]
+                            )
+                            bcell_stats[risk_type]["decision_patterns"][pattern_key] = (
+                                bcell_stats[risk_type]["decision_patterns"].get(
+                                    pattern_key, 0
+                                )
+                                + 1
+                            )
+
+                        total_activations += 1
+
+            # 평균 계산
+            for risk_type in bcell_stats:
+                stats = bcell_stats[risk_type]
+                if stats["activations"] > 0:
+                    stats["avg_activation_level"] = sum(
+                        stats["activation_levels"]
+                    ) / len(stats["activation_levels"])
+                    stats["avg_antibody_strength"] = sum(
+                        stats["antibody_strengths"]
+                    ) / len(stats["antibody_strengths"])
+                    stats["avg_specialization_score"] = sum(
+                        stats["specialization_scores"]
+                    ) / len(stats["specialization_scores"])
+
+            if bcell_stats:
+                # 전문가별 활성화 통계
+                sorted_bcells = sorted(
+                    bcell_stats.items(), key=lambda x: x[1]["activations"], reverse=True
+                )
+
+                for risk_type, stats in sorted_bcells:
+                    activation_percentage = (
+                        stats["activations"] / total_activations
+                    ) * 100
+
+                    md_content += f"""
+#### {risk_type} 전문가
+- 활성화 횟수: {stats['activations']}회 ({activation_percentage:.1f}%)
+- 평균 활성화 레벨: {stats['avg_activation_level']:.3f}
+- 평균 항체 강도: {stats['avg_antibody_strength']:.3f}
+- 평균 전문화 점수: {stats['avg_specialization_score']:.3f}
+"""
+
+                    # 성과 평가
+                    if stats["avg_specialization_score"] > 0.8:
+                        performance = "매우 우수"
+                    elif stats["avg_specialization_score"] > 0.6:
+                        performance = "우수"
+                    elif stats["avg_specialization_score"] > 0.4:
+                        performance = "보통"
+                    else:
+                        performance = "개선 필요"
+
+                    md_content += f"- 성과 평가: {performance}\n"
+
+                    # 주요 의사결정 패턴
+                    if stats["decision_patterns"]:
+                        top_patterns = sorted(
+                            stats["decision_patterns"].items(),
+                            key=lambda x: x[1],
+                            reverse=True,
+                        )[:3]
+                        md_content += "- 주요 의사결정 패턴:\n"
+                        for pattern, count in top_patterns:
+                            pattern_percentage = (count / stats["activations"]) * 100
+                            md_content += f"  - {pattern}: {count}회 ({pattern_percentage:.1f}%)\n"
+
+                    md_content += "\n"
+
+                # 전문가간 협력 분석
+                md_content += """
+### 전문가간 협력 패턴
+"""
+
+                # 동시 활성화 패턴 분석
+                collaboration_patterns = {}
+                for record in self.decision_log:
+                    active_experts = []
+                    for bcell_decision in record.get("bcell_decisions", []):
+                        if "specialization_analysis" in bcell_decision:
+                            risk_type = bcell_decision["specialization_analysis"][
+                                "risk_type"
+                            ]
+                            active_experts.append(risk_type)
+
+                    if len(active_experts) > 1:
+                        collaboration_key = " + ".join(sorted(active_experts))
+                        collaboration_patterns[collaboration_key] = (
+                            collaboration_patterns.get(collaboration_key, 0) + 1
+                        )
+
+                if collaboration_patterns:
+                    top_collaborations = sorted(
+                        collaboration_patterns.items(), key=lambda x: x[1], reverse=True
+                    )[:5]
+                    md_content += "자주 함께 활성화되는 전문가 조합:\n\n"
+
+                    for collaboration, count in top_collaborations:
+                        percentage = (count / len(self.decision_log)) * 100
+                        md_content += (
+                            f"- {collaboration}: {count}회 ({percentage:.1f}%)\n"
+                        )
+
+                # 전문가 효율성 분석
+                md_content += """
+
+### 전문가 효율성 분석
+"""
+
+                # 각 전문가별 효율성 지표
+                efficiency_analysis = {}
+                for record in self.decision_log:
+                    portfolio_return = record.get("portfolio_return", 0.0)
+
+                    for bcell_decision in record.get("bcell_decisions", []):
+                        if "specialization_analysis" in bcell_decision:
+                            risk_type = bcell_decision["specialization_analysis"][
+                                "risk_type"
+                            ]
+                            contribution = bcell_decision.get(
+                                "strategy_contribution", 0.0
+                            )
+
+                            if risk_type not in efficiency_analysis:
+                                efficiency_analysis[risk_type] = {
+                                    "total_contribution": 0.0,
+                                    "positive_outcomes": 0,
+                                    "negative_outcomes": 0,
+                                    "avg_return_when_active": 0.0,
+                                    "returns_when_active": [],
+                                }
+
+                            efficiency_analysis[risk_type][
+                                "total_contribution"
+                            ] += contribution
+                            efficiency_analysis[risk_type][
+                                "returns_when_active"
+                            ].append(portfolio_return)
+
+                            if portfolio_return > 0:
+                                efficiency_analysis[risk_type]["positive_outcomes"] += 1
+                            else:
+                                efficiency_analysis[risk_type]["negative_outcomes"] += 1
+
+                for risk_type, analysis in efficiency_analysis.items():
+                    if analysis["returns_when_active"]:
+                        analysis["avg_return_when_active"] = sum(
+                            analysis["returns_when_active"]
+                        ) / len(analysis["returns_when_active"])
+                        total_outcomes = (
+                            analysis["positive_outcomes"]
+                            + analysis["negative_outcomes"]
+                        )
+                        success_rate = (
+                            (analysis["positive_outcomes"] / total_outcomes) * 100
+                            if total_outcomes > 0
+                            else 0
+                        )
+
+                        md_content += f"""
+#### {risk_type} 전문가 효율성
+- 평균 기여도: {analysis['total_contribution'] / len(analysis['returns_when_active']):.3f}
+- 활성화 시 평균 수익률: {analysis['avg_return_when_active']:+.3%}
+- 성공률: {success_rate:.1f}% ({analysis['positive_outcomes']}/{total_outcomes})
 """
 
         return md_content
@@ -276,84 +1489,254 @@ class TCell(ImmuneCell):
         # 입력 특성 크기 확인 및 조정
         if len(market_features.shape) == 1:
             market_features = market_features.reshape(1, -1)
-        
+
         # 훈련 데이터 축적
         self.training_data.append(market_features[0])
-        
+
         if not self.is_trained:
             if len(self.training_data) >= 50:  # 충분한 데이터가 쌓인 후 훈련
                 training_matrix = np.array(list(self.training_data))
                 self.detector.fit(training_matrix)
                 self.is_trained = True
                 self.expected_features = training_matrix.shape[1]
-                print(f"[정보] T-cell {self.cell_id} 훈련 완료 (데이터: {len(self.training_data)}개)")
+                print(
+                    f"[정보] T-cell {self.cell_id} 훈련 완료 (데이터: {len(self.training_data)}개)"
+                )
             return 0.0
 
         # 특성 크기 확인
         if market_features.shape[1] != self.expected_features:
-            print(f"[경고] T-cell 특성 크기 불일치: 기대 {self.expected_features}, 실제 {market_features.shape[1]}")
+            print(
+                f"[경고] T-cell 특성 크기 불일치: 기대 {self.expected_features}, 실제 {market_features.shape[1]}"
+            )
             min_features = min(self.expected_features, market_features.shape[1])
             market_features = market_features[:, :min_features]
-            
+
             if market_features.shape[1] < self.expected_features:
-                padding = np.zeros((market_features.shape[0], self.expected_features - market_features.shape[1]))
+                padding = np.zeros(
+                    (
+                        market_features.shape[0],
+                        self.expected_features - market_features.shape[1],
+                    )
+                )
                 market_features = np.hstack([market_features, padding])
 
         # 이상 점수 계산
         anomaly_scores = self.detector.decision_function(market_features)
         current_score = np.mean(anomaly_scores)
-        
+
         # 시장 상태 분석
         market_state = self._analyze_market_state(market_features[0])
         self.market_state_history.append(market_state)
-        
+
         # 히스토리 업데이트
         self.historical_scores.append(current_score)
-        
-        # 위기 감지 로직 (더 민감하게 조정)
+
+        # 위기 감지 로직 및 상세 분석
+        crisis_detection = self._detailed_crisis_analysis(current_score, market_state)
+        self.activation_level = crisis_detection["activation_level"]
+
+        # 위기 감지 로그 저장 (활성화 레벨이 0.15 이상일 때)
+        if self.activation_level > 0.15:
+            self.last_crisis_detection = crisis_detection
+
+        return self.activation_level
+
+    def _detailed_crisis_analysis(self, current_score, market_state):
+        """위기 감지 상세 분석"""
+        crisis_info = {
+            "tcell_id": self.cell_id,
+            "timestamp": datetime.now().isoformat(),
+            "raw_anomaly_score": current_score,
+            "market_state": market_state,
+            "activation_level": 0.0,
+            "crisis_indicators": [],
+            "feature_contributions": {},
+            "decision_reasoning": [],
+        }
+
         if len(self.historical_scores) >= 10:
             historical_mean = np.mean(self.historical_scores)
             historical_std = np.std(self.historical_scores)
-            
-            # Z-score 기반 이상 탐지 (더 민감하게)
-            z_score = (current_score - historical_mean) / (historical_std + 1e-8)
-            
-            # 시장 상태 기반 조정
-            market_volatility = market_state['volatility']
-            market_stress = market_state['stress']
-            
-            # 기본 활성화 레벨 계산
-            base_activation = 0.0
-            if z_score < -1.5:  # 매우 이상한 상황
-                base_activation = 0.8
-            elif z_score < -1.0:  # 상당히 이상한 상황
-                base_activation = 0.6
-            elif z_score < -0.5:  # 약간 이상한 상황
-                base_activation = 0.4
-            elif z_score < 0.0:  # 주의 상황
-                base_activation = 0.2
-            else:  # 정상 상황
-                base_activation = 0.0
-            
-            # 시장 상태 기반 조정
-            if market_volatility > 0.3:  # 높은 변동성
-                base_activation += 0.2
-            if market_stress > 0.5:  # 높은 스트레스
-                base_activation += 0.15
-            
-            # 최근 시장 상태 변화 고려
-            if len(self.market_state_history) >= 5:
-                recent_volatility_change = np.mean([s['volatility'] for s in list(self.market_state_history)[-5:]])
-                if recent_volatility_change > 0.4:
-                    base_activation += 0.1
-            
-            self.activation_level = np.clip(base_activation, 0.0, 1.0)
-        else:
-            # 초기 학습 기간 - 더 민감하게 설정
-            raw_score = max(0, min(1, (1 - current_score) / 1.5))
-            self.activation_level = raw_score * 0.5  # 초기에는 보수적으로
 
-        return self.activation_level
+            # Z-score 기반 이상 탐지
+            z_score = (current_score - historical_mean) / (historical_std + 1e-8)
+
+            # 시장 상태 기반 조정
+            market_volatility = market_state["volatility"]
+            market_stress = market_state["stress"]
+            market_correlation = market_state["correlation"]
+
+            # 기본 활성화 레벨 계산 및 근거 기록
+            base_activation = 0.0
+            if z_score < -1.5:
+                base_activation = 0.8
+                crisis_info["crisis_indicators"].append(
+                    {
+                        "type": "extreme_anomaly",
+                        "value": z_score,
+                        "threshold": -1.5,
+                        "contribution": 0.8,
+                        "description": f"매우 이상한 이상 점수 (Z-score: {z_score:.3f})",
+                    }
+                )
+                crisis_info["decision_reasoning"].append(
+                    f"이상 점수가 과거 평균보다 {abs(z_score):.1f} 표준편차 낮음 (매우 이상)"
+                )
+            elif z_score < -1.0:
+                base_activation = 0.6
+                crisis_info["crisis_indicators"].append(
+                    {
+                        "type": "high_anomaly",
+                        "value": z_score,
+                        "threshold": -1.0,
+                        "contribution": 0.6,
+                        "description": f"상당히 이상한 이상 점수 (Z-score: {z_score:.3f})",
+                    }
+                )
+                crisis_info["decision_reasoning"].append(
+                    f"이상 점수가 과거 평균보다 {abs(z_score):.1f} 표준편차 낮음 (상당히 이상)"
+                )
+            elif z_score < -0.5:
+                base_activation = 0.4
+                crisis_info["crisis_indicators"].append(
+                    {
+                        "type": "moderate_anomaly",
+                        "value": z_score,
+                        "threshold": -0.5,
+                        "contribution": 0.4,
+                        "description": f"약간 이상한 이상 점수 (Z-score: {z_score:.3f})",
+                    }
+                )
+                crisis_info["decision_reasoning"].append(
+                    f"이상 점수가 과거 평균보다 {abs(z_score):.1f} 표준편차 낮음 (약간 이상)"
+                )
+            elif z_score < 0.0:
+                base_activation = 0.2
+                crisis_info["crisis_indicators"].append(
+                    {
+                        "type": "mild_anomaly",
+                        "value": z_score,
+                        "threshold": 0.0,
+                        "contribution": 0.2,
+                        "description": f"주의 수준 이상 점수 (Z-score: {z_score:.3f})",
+                    }
+                )
+                crisis_info["decision_reasoning"].append(
+                    f"이상 점수가 과거 평균보다 낮음 (주의 필요)"
+                )
+
+            # 시장 상태 기반 조정 및 근거 기록
+            volatility_boost = 0.0
+            if market_volatility > 0.3:
+                volatility_boost = 0.2
+                base_activation += volatility_boost
+                crisis_info["crisis_indicators"].append(
+                    {
+                        "type": "high_volatility",
+                        "value": market_volatility,
+                        "threshold": 0.3,
+                        "contribution": volatility_boost,
+                        "description": f"높은 시장 변동성 ({market_volatility:.3f})",
+                    }
+                )
+                crisis_info["decision_reasoning"].append(
+                    f"시장 변동성이 임계값 0.3을 초과함 ({market_volatility:.3f})"
+                )
+
+            stress_boost = 0.0
+            if market_stress > 0.5:
+                stress_boost = 0.15
+                base_activation += stress_boost
+                crisis_info["crisis_indicators"].append(
+                    {
+                        "type": "high_stress",
+                        "value": market_stress,
+                        "threshold": 0.5,
+                        "contribution": stress_boost,
+                        "description": f"높은 시장 스트레스 ({market_stress:.3f})",
+                    }
+                )
+                crisis_info["decision_reasoning"].append(
+                    f"시장 스트레스 지수가 임계값 0.5를 초과함 ({market_stress:.3f})"
+                )
+
+            # 상관관계 위험 분석
+            corr_boost = 0.0
+            if market_correlation > 0.8:
+                corr_boost = 0.1
+                base_activation += corr_boost
+                crisis_info["crisis_indicators"].append(
+                    {
+                        "type": "high_correlation",
+                        "value": market_correlation,
+                        "threshold": 0.8,
+                        "contribution": corr_boost,
+                        "description": f"높은 시장 상관관계 ({market_correlation:.3f})",
+                    }
+                )
+                crisis_info["decision_reasoning"].append(
+                    f"시장 상관관계가 과도하게 높음 ({market_correlation:.3f}) - 시스템적 위험"
+                )
+
+            # 최근 시장 상태 변화 고려
+            trend_boost = 0.0
+            if len(self.market_state_history) >= 5:
+                recent_volatility_change = np.mean(
+                    [s["volatility"] for s in list(self.market_state_history)[-5:]]
+                )
+                if recent_volatility_change > 0.4:
+                    trend_boost = 0.1
+                    base_activation += trend_boost
+                    crisis_info["crisis_indicators"].append(
+                        {
+                            "type": "volatility_trend",
+                            "value": recent_volatility_change,
+                            "threshold": 0.4,
+                            "contribution": trend_boost,
+                            "description": f"지속적인 높은 변동성 ({recent_volatility_change:.3f})",
+                        }
+                    )
+                    crisis_info["decision_reasoning"].append(
+                        f"최근 5일 평균 변동성이 지속적으로 높음 ({recent_volatility_change:.3f})"
+                    )
+
+            # 특성별 기여도 분석
+            crisis_info["feature_contributions"] = {
+                "z_score_base": base_activation
+                - volatility_boost
+                - stress_boost
+                - trend_boost
+                - corr_boost,
+                "volatility_boost": volatility_boost,
+                "stress_boost": stress_boost,
+                "correlation_boost": corr_boost,
+                "trend_boost": trend_boost,
+                "total_score": base_activation,
+            }
+
+            crisis_info["activation_level"] = np.clip(base_activation, 0.0, 1.0)
+
+            # 위기 수준 분류
+            if crisis_info["activation_level"] > 0.7:
+                crisis_info["crisis_level"] = "severe"
+            elif crisis_info["activation_level"] > 0.5:
+                crisis_info["crisis_level"] = "high"
+            elif crisis_info["activation_level"] > 0.3:
+                crisis_info["crisis_level"] = "moderate"
+            elif crisis_info["activation_level"] > 0.15:
+                crisis_info["crisis_level"] = "mild"
+            else:
+                crisis_info["crisis_level"] = "normal"
+
+        else:
+            # 초기 학습 기간
+            raw_score = max(0, min(1, (1 - current_score) / 1.5))
+            crisis_info["activation_level"] = raw_score * 0.5
+            crisis_info["crisis_level"] = "learning"
+            crisis_info["decision_reasoning"].append("초기 학습 기간 - 보수적 설정")
+
+        return crisis_info
 
     def _analyze_market_state(self, features):
         """시장 상태 분석"""
@@ -361,7 +1744,7 @@ class TCell(ImmuneCell):
         volatility = features[0] if len(features) > 0 else 0.0
         correlation = features[1] if len(features) > 1 else 0.0
         returns = features[2] if len(features) > 2 else 0.0
-        
+
         # 스트레스 지수 계산
         stress_indicators = []
         if len(features) > 4:
@@ -370,14 +1753,14 @@ class TCell(ImmuneCell):
             stress_indicators.append(abs(features[5]))  # 첨도
         if len(features) > 6:
             stress_indicators.append(features[6])  # 하락일 비율
-        
+
         stress_level = np.mean(stress_indicators) if stress_indicators else 0.0
-        
+
         return {
-            'volatility': abs(volatility),
-            'correlation': abs(correlation),
-            'returns': returns,
-            'stress': stress_level
+            "volatility": abs(volatility),
+            "correlation": abs(correlation),
+            "returns": returns,
+            "stress": stress_level,
         }
 
 
@@ -595,7 +1978,9 @@ class BCell(ImmuneCell):
                     specialized_strategy[idx] *= 1.0 + self.specialization_strength
 
         elif self.risk_type == "correlation" and market_features[1] > 0.7:
-            uniform_weight = torch.ones_like(specialized_strategy) / len(specialized_strategy)
+            uniform_weight = torch.ones_like(specialized_strategy) / len(
+                specialized_strategy
+            )
             blend_ratio = 0.3 + self.specialization_strength * 0.2
             specialized_strategy = (
                 1 - blend_ratio
@@ -1064,14 +2449,14 @@ class ImmunePortfolioSystem:
 
     def _extract_technical_features(self, market_data, lookback=20):
         """기술적 지표 기반 특성 추출"""
-        if not hasattr(self, 'train_features') or not hasattr(self, 'test_features'):
+        if not hasattr(self, "train_features") or not hasattr(self, "test_features"):
             # 기술적 지표 데이터가 없는 경우 기본 방식 사용
             basic_features = self._extract_basic_features(market_data, lookback)
             return self._expand_to_12_features(basic_features)
-        
+
         # 현재 날짜 기준으로 특성 데이터 선택
         current_date = market_data.index[-1]
-        
+
         # 훈련 또는 테스트 데이터에서 특성 추출
         if current_date in self.train_features.index:
             feature_data = self.train_features.loc[current_date]
@@ -1080,34 +2465,42 @@ class ImmunePortfolioSystem:
         else:
             basic_features = self._extract_basic_features(market_data, lookback)
             return self._expand_to_12_features(basic_features)
-        
+
         # 핵심 시장 지표 선택 (위기 감지에 중요한 지표들)
         selected_features = []
-        
+
         # 1. 시장 전체 변동성 (가장 중요한 위기 지표)
-        market_volatility = feature_data.get('market_volatility', 0.0)
-        selected_features.append(np.clip(market_volatility * 5, 0, 1))  # 증폭하여 민감도 증가
-        
+        market_volatility = feature_data.get("market_volatility", 0.0)
+        selected_features.append(
+            np.clip(market_volatility * 5, 0, 1)
+        )  # 증폭하여 민감도 증가
+
         # 2. 시장 상관관계 (시스템적 위험 지표)
-        market_correlation = feature_data.get('market_correlation', 0.5)
+        market_correlation = feature_data.get("market_correlation", 0.5)
         selected_features.append(np.clip(abs(market_correlation), 0, 1))
-        
+
         # 3. 시장 수익률 (방향성 지표)
-        market_return = feature_data.get('market_return', 0.0)
+        market_return = feature_data.get("market_return", 0.0)
         selected_features.append(np.clip(market_return * 10, -1, 1))  # 증폭
-        
+
         # 4. VIX 대용 지표 (변동성의 변동성)
-        vix_proxy = feature_data.get('vix_proxy', 0.1)
+        vix_proxy = feature_data.get("vix_proxy", 0.1)
         selected_features.append(np.clip(vix_proxy * 3, 0, 1))  # 증폭
-        
+
         # 5. 시장 스트레스 지수
-        market_stress = feature_data.get('market_stress', 0.0)
+        market_stress = feature_data.get("market_stress", 0.0)
         selected_features.append(np.clip(market_stress / 10, 0, 1))  # 정규화
-        
+
         # 6. 평균 RSI (과매수/과매도 지표)
-        rsi_cols = [col for col in feature_data.index if '_rsi' in col]
+        rsi_cols = [col for col in feature_data.index if "_rsi" in col]
         if rsi_cols:
-            avg_rsi = np.mean([feature_data[col] for col in rsi_cols if not pd.isna(feature_data[col])])
+            avg_rsi = np.mean(
+                [
+                    feature_data[col]
+                    for col in rsi_cols
+                    if not pd.isna(feature_data[col])
+                ]
+            )
             # RSI 50에서 벗어날수록 위험 증가
             rsi_risk = abs(avg_rsi - 50) / 50
             selected_features.append(np.clip(rsi_risk, 0, 1))
@@ -1115,17 +2508,25 @@ class ImmunePortfolioSystem:
             selected_features.append(0.0)
 
         # 7. 모멘텀 지표
-        momentum_cols = [col for col in feature_data.index if '_momentum' in col]
+        momentum_cols = [col for col in feature_data.index if "_momentum" in col]
         if momentum_cols:
-            avg_momentum = np.mean([feature_data[col] for col in momentum_cols if not pd.isna(feature_data[col])])
+            avg_momentum = np.mean(
+                [
+                    feature_data[col]
+                    for col in momentum_cols
+                    if not pd.isna(feature_data[col])
+                ]
+            )
             selected_features.append(np.clip(abs(avg_momentum), 0, 1))
         else:
             selected_features.append(0.0)
 
         # 8. 볼린저 밴드 위치 (극단적 위치일수록 위험)
-        bb_cols = [col for col in feature_data.index if '_bb_position' in col]
+        bb_cols = [col for col in feature_data.index if "_bb_position" in col]
         if bb_cols:
-            avg_bb_position = np.mean([feature_data[col] for col in bb_cols if not pd.isna(feature_data[col])])
+            avg_bb_position = np.mean(
+                [feature_data[col] for col in bb_cols if not pd.isna(feature_data[col])]
+            )
             # 0.5에서 벗어날수록 위험
             bb_risk = abs(avg_bb_position - 0.5) * 2
             selected_features.append(np.clip(bb_risk, 0, 1))
@@ -1133,9 +2534,15 @@ class ImmunePortfolioSystem:
             selected_features.append(0.0)
 
         # 9. 거래량 이상 지표
-        volume_cols = [col for col in feature_data.index if '_volume_ratio' in col]
+        volume_cols = [col for col in feature_data.index if "_volume_ratio" in col]
         if volume_cols:
-            avg_volume_ratio = np.mean([feature_data[col] for col in volume_cols if not pd.isna(feature_data[col])])
+            avg_volume_ratio = np.mean(
+                [
+                    feature_data[col]
+                    for col in volume_cols
+                    if not pd.isna(feature_data[col])
+                ]
+            )
             # 정상 거래량(1.0)에서 벗어날수록 위험
             volume_risk = abs(avg_volume_ratio - 1.0) / 2
             selected_features.append(np.clip(volume_risk, 0, 1))
@@ -1143,17 +2550,29 @@ class ImmunePortfolioSystem:
             selected_features.append(0.0)
 
         # 10. 가격 범위 확장 지표
-        range_cols = [col for col in feature_data.index if '_price_range' in col]
+        range_cols = [col for col in feature_data.index if "_price_range" in col]
         if range_cols:
-            avg_range = np.mean([feature_data[col] for col in range_cols if not pd.isna(feature_data[col])])
+            avg_range = np.mean(
+                [
+                    feature_data[col]
+                    for col in range_cols
+                    if not pd.isna(feature_data[col])
+                ]
+            )
             selected_features.append(np.clip(avg_range * 2, 0, 1))
         else:
             selected_features.append(0.1)
 
         # 11. 이동평균 이탈도
-        sma_cols = [col for col in feature_data.index if '_price_sma20_ratio' in col]
+        sma_cols = [col for col in feature_data.index if "_price_sma20_ratio" in col]
         if sma_cols:
-            avg_sma_ratio = np.mean([feature_data[col] for col in sma_cols if not pd.isna(feature_data[col])])
+            avg_sma_ratio = np.mean(
+                [
+                    feature_data[col]
+                    for col in sma_cols
+                    if not pd.isna(feature_data[col])
+                ]
+            )
             # 1.0에서 벗어날수록 위험
             sma_risk = abs(avg_sma_ratio - 1.0)
             selected_features.append(np.clip(sma_risk, 0, 1))
@@ -1161,9 +2580,15 @@ class ImmunePortfolioSystem:
             selected_features.append(0.0)
 
         # 12. 종합 변동성 지표
-        vol_cols = [col for col in feature_data.index if '_volatility' in col]
+        vol_cols = [col for col in feature_data.index if "_volatility" in col]
         if vol_cols:
-            avg_volatility = np.mean([feature_data[col] for col in vol_cols if not pd.isna(feature_data[col])])
+            avg_volatility = np.mean(
+                [
+                    feature_data[col]
+                    for col in vol_cols
+                    if not pd.isna(feature_data[col])
+                ]
+            )
             selected_features.append(np.clip(avg_volatility * 5, 0, 1))  # 증폭
         else:
             selected_features.append(0.1)
@@ -1171,7 +2596,7 @@ class ImmunePortfolioSystem:
         # 12개 특성 보장
         while len(selected_features) < 12:
             selected_features.append(0.0)
-        
+
         # 최종 특성 배열 생성 (정확히 12개)
         features = np.array(selected_features[:12])
         features = np.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
@@ -1182,10 +2607,10 @@ class ImmunePortfolioSystem:
         """8개 기본 특성을 12개로 확장"""
         if len(basic_features) >= 12:
             return basic_features[:12]
-        
+
         # 기본 8개 특성에 추가 특성 4개 추가
         expanded_features = list(basic_features)
-        
+
         # 추가 특성들 (기본값으로 설정)
         additional_features = [
             0.5,  # RSI 중립값
@@ -1193,14 +2618,14 @@ class ImmunePortfolioSystem:
             0.5,  # 볼린저 밴드 중립값
             1.0,  # 거래량 비율 중립값
         ]
-        
+
         # 필요한 만큼 추가
         for i in range(12 - len(expanded_features)):
             if i < len(additional_features):
                 expanded_features.append(additional_features[i])
             else:
                 expanded_features.append(0.0)
-        
+
         return np.array(expanded_features[:12])
 
     def _get_dominant_risk(self, market_features):
@@ -1219,13 +2644,25 @@ class ImmunePortfolioSystem:
     def immune_response(self, market_features, training=False):
         """면역 반응 실행"""
 
-        # T-세포 활성화
+        # T-세포 활성화 및 상세 위기 감지 로그 수집
         tcell_activations = []
+        detailed_crisis_logs = []
+
         for tcell in self.tcells:
             activation = tcell.detect_anomaly(market_features)
             tcell_activations.append(activation)
 
+            # 상세 위기 감지 로그 수집 (활성화 레벨이 임계값 이상인 경우)
+            if hasattr(tcell, "last_crisis_detection") and tcell.last_crisis_detection:
+                detailed_crisis_logs.append(tcell.last_crisis_detection)
+
         self.crisis_level = np.mean(tcell_activations)
+
+        # 상세 T-cell 분석 정보 저장
+        self.detailed_tcell_analysis = {
+            "crisis_level": self.crisis_level,
+            "detailed_crisis_logs": detailed_crisis_logs,
+        }
 
         # 기억 세포 확인
         recalled_memory, memory_strength = self.memory_cell.recall_memory(
@@ -1463,7 +2900,7 @@ class ImmunePortfolioBacktester:
             raw_data = yf.download(
                 symbols, start="2007-12-01", end="2025-01-01", progress=True
             )
-            
+
             # 다중 지표 데이터 처리
             self.data = self._process_comprehensive_data(raw_data, symbols)
 
@@ -1477,11 +2914,11 @@ class ImmunePortfolioBacktester:
             print(f"데이터 구조: {list(self.data.keys())}")
 
         # 데이터 분할
-        self.train_data = self.data['prices'][train_start:train_end]
-        self.test_data = self.data['prices'][test_start:test_end]
-        self.train_features = self.data['features'][train_start:train_end]
-        self.test_features = self.data['features'][test_start:test_end]
-        
+        self.train_data = self.data["prices"][train_start:train_end]
+        self.test_data = self.data["prices"][test_start:test_end]
+        self.train_features = self.data["features"][train_start:train_end]
+        self.test_features = self.data["features"][test_start:test_end]
+
         # 기존 코드 호환성을 위한 추가 정리
         self.train_data = self._clean_data(self.train_data)
         self.test_data = self._clean_data(self.test_data)
@@ -1489,7 +2926,7 @@ class ImmunePortfolioBacktester:
     def _process_comprehensive_data(self, raw_data, symbols):
         """포괄적인 시장 데이터 처리"""
         print("다중 지표 데이터 처리 중...")
-        
+
         # 기본 가격 데이터 추출
         if len(symbols) == 1:
             if "Adj Close" in raw_data.columns:
@@ -1521,76 +2958,116 @@ class ImmunePortfolioBacktester:
 
         # 추가 지표 계산
         features = self._calculate_technical_indicators(raw_data, symbols)
-        
+
         # 데이터 정리
         prices = self._clean_data(prices)
         features = self._clean_data(features)
-        
-        return {
-            'prices': prices,
-            'features': features,
-            'raw_data': raw_data
-        }
+
+        return {"prices": prices, "features": features, "raw_data": raw_data}
 
     def _calculate_technical_indicators(self, raw_data, symbols):
         """기술적 지표 계산"""
         print("기술적 지표 계산 중...")
-        
+
         features = {}
-        
+
         for symbol in symbols:
             try:
                 # 가격 데이터 추출
                 if len(symbols) == 1:
-                    high = raw_data['High'] if 'High' in raw_data.columns else raw_data['Close']
-                    low = raw_data['Low'] if 'Low' in raw_data.columns else raw_data['Close']
-                    close = raw_data['Adj Close'] if 'Adj Close' in raw_data.columns else raw_data['Close']
-                    volume = raw_data['Volume'] if 'Volume' in raw_data.columns else pd.Series(1, index=raw_data.index)
+                    high = (
+                        raw_data["High"]
+                        if "High" in raw_data.columns
+                        else raw_data["Close"]
+                    )
+                    low = (
+                        raw_data["Low"]
+                        if "Low" in raw_data.columns
+                        else raw_data["Close"]
+                    )
+                    close = (
+                        raw_data["Adj Close"]
+                        if "Adj Close" in raw_data.columns
+                        else raw_data["Close"]
+                    )
+                    volume = (
+                        raw_data["Volume"]
+                        if "Volume" in raw_data.columns
+                        else pd.Series(1, index=raw_data.index)
+                    )
                 else:
-                    high = raw_data['High'][symbol] if 'High' in raw_data.columns else raw_data['Close'][symbol]
-                    low = raw_data['Low'][symbol] if 'Low' in raw_data.columns else raw_data['Close'][symbol]
-                    close = raw_data['Adj Close'][symbol] if 'Adj Close' in raw_data.columns else raw_data['Close'][symbol]
-                    volume = raw_data['Volume'][symbol] if 'Volume' in raw_data.columns else pd.Series(1, index=raw_data.index)
-                
+                    high = (
+                        raw_data["High"][symbol]
+                        if "High" in raw_data.columns
+                        else raw_data["Close"][symbol]
+                    )
+                    low = (
+                        raw_data["Low"][symbol]
+                        if "Low" in raw_data.columns
+                        else raw_data["Close"][symbol]
+                    )
+                    close = (
+                        raw_data["Adj Close"][symbol]
+                        if "Adj Close" in raw_data.columns
+                        else raw_data["Close"][symbol]
+                    )
+                    volume = (
+                        raw_data["Volume"][symbol]
+                        if "Volume" in raw_data.columns
+                        else pd.Series(1, index=raw_data.index)
+                    )
+
                 # 기술적 지표 계산
                 symbol_features = pd.DataFrame(index=close.index)
-                
+
                 # 1. 가격 기반 지표
-                symbol_features[f'{symbol}_returns'] = close.pct_change()
-                symbol_features[f'{symbol}_volatility'] = symbol_features[f'{symbol}_returns'].rolling(20).std()
-                symbol_features[f'{symbol}_sma_20'] = close.rolling(20).mean()
-                symbol_features[f'{symbol}_sma_50'] = close.rolling(50).mean()
-                symbol_features[f'{symbol}_price_sma20_ratio'] = close / symbol_features[f'{symbol}_sma_20']
-                symbol_features[f'{symbol}_price_sma50_ratio'] = close / symbol_features[f'{symbol}_sma_50']
-                
+                symbol_features[f"{symbol}_returns"] = close.pct_change()
+                symbol_features[f"{symbol}_volatility"] = (
+                    symbol_features[f"{symbol}_returns"].rolling(20).std()
+                )
+                symbol_features[f"{symbol}_sma_20"] = close.rolling(20).mean()
+                symbol_features[f"{symbol}_sma_50"] = close.rolling(50).mean()
+                symbol_features[f"{symbol}_price_sma20_ratio"] = (
+                    close / symbol_features[f"{symbol}_sma_20"]
+                )
+                symbol_features[f"{symbol}_price_sma50_ratio"] = (
+                    close / symbol_features[f"{symbol}_sma_50"]
+                )
+
                 # 2. 모멘텀 지표
-                symbol_features[f'{symbol}_rsi'] = self._calculate_rsi(close, 14)
-                symbol_features[f'{symbol}_momentum'] = close / close.shift(10) - 1
-                
+                symbol_features[f"{symbol}_rsi"] = self._calculate_rsi(close, 14)
+                symbol_features[f"{symbol}_momentum"] = close / close.shift(10) - 1
+
                 # 3. 볼린저 밴드
                 bb_upper, bb_lower = self._calculate_bollinger_bands(close, 20, 2)
-                symbol_features[f'{symbol}_bb_position'] = (close - bb_lower) / (bb_upper - bb_lower)
-                
+                symbol_features[f"{symbol}_bb_position"] = (close - bb_lower) / (
+                    bb_upper - bb_lower
+                )
+
                 # 4. 거래량 지표
-                symbol_features[f'{symbol}_volume_sma'] = volume.rolling(20).mean()
-                symbol_features[f'{symbol}_volume_ratio'] = volume / symbol_features[f'{symbol}_volume_sma']
-                
+                symbol_features[f"{symbol}_volume_sma"] = volume.rolling(20).mean()
+                symbol_features[f"{symbol}_volume_ratio"] = (
+                    volume / symbol_features[f"{symbol}_volume_sma"]
+                )
+
                 # 5. 변동성 지표
-                symbol_features[f'{symbol}_high_low_ratio'] = (high - low) / close
-                symbol_features[f'{symbol}_price_range'] = (high - low) / close.rolling(20).mean()
-                
+                symbol_features[f"{symbol}_high_low_ratio"] = (high - low) / close
+                symbol_features[f"{symbol}_price_range"] = (high - low) / close.rolling(
+                    20
+                ).mean()
+
                 features[symbol] = symbol_features
-                
+
             except Exception as e:
                 print(f"[경고] {symbol} 기술적 지표 계산 중 오류 발생: {e}")
                 continue
-        
+
         # 전체 특성 데이터프레임 생성
         all_features = pd.concat(features.values(), axis=1)
-        
+
         # 시장 전체 지표 추가
         all_features = self._add_market_indicators(all_features, symbols)
-        
+
         return all_features
 
     def _calculate_rsi(self, prices, period=14):
@@ -1613,63 +3090,75 @@ class ImmunePortfolioBacktester:
     def _add_market_indicators(self, features, symbols):
         """시장 전체 지표 추가"""
         print("시장 전체 지표 계산 중...")
-        
+
         try:
             # 시장 전체 수익률 (동일 가중)
-            return_cols = [col for col in features.columns if '_returns' in col]
+            return_cols = [col for col in features.columns if "_returns" in col]
             if return_cols:
-                features['market_return'] = features[return_cols].mean(axis=1)
-                features['market_volatility'] = features[return_cols].std(axis=1)
+                features["market_return"] = features[return_cols].mean(axis=1)
+                features["market_volatility"] = features[return_cols].std(axis=1)
                 # 상관계수 계산 개선
                 corr_values = []
                 for i in range(len(features)):
                     try:
-                        window_data = features[return_cols].iloc[max(0, i-19):i+1]
+                        window_data = features[return_cols].iloc[max(0, i - 19) : i + 1]
                         if len(window_data) >= 2:
                             corr_matrix = window_data.corr()
-                            upper_tri = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
+                            upper_tri = corr_matrix.where(
+                                np.triu(np.ones(corr_matrix.shape), k=1).astype(bool)
+                            )
                             corr_values.append(upper_tri.stack().mean())
                         else:
                             corr_values.append(0.0)
                     except:
                         corr_values.append(0.0)
-                features['market_correlation'] = pd.Series(corr_values, index=features.index)
-            
+                features["market_correlation"] = pd.Series(
+                    corr_values, index=features.index
+                )
+
             # VIX 대용 지표 (변동성의 변동성)
-            vol_cols = [col for col in features.columns if '_volatility' in col]
+            vol_cols = [col for col in features.columns if "_volatility" in col]
             if vol_cols:
-                features['vix_proxy'] = features[vol_cols].mean(axis=1).rolling(10).std()
-            
+                features["vix_proxy"] = (
+                    features[vol_cols].mean(axis=1).rolling(10).std()
+                )
+
             # 시장 스트레스 지수
-            rsi_cols = [col for col in features.columns if '_rsi' in col]
+            rsi_cols = [col for col in features.columns if "_rsi" in col]
             if rsi_cols:
-                features['market_stress'] = features[rsi_cols].apply(
+                features["market_stress"] = features[rsi_cols].apply(
                     lambda x: (x < 30).sum() + (x > 70).sum(), axis=1
                 )
             else:
-                features['market_stress'] = 0
-            
+                features["market_stress"] = 0
+
             # 결측값 처리
-            market_cols = ['market_return', 'market_volatility', 'market_correlation', 'vix_proxy', 'market_stress']
+            market_cols = [
+                "market_return",
+                "market_volatility",
+                "market_correlation",
+                "vix_proxy",
+                "market_stress",
+            ]
             for col in market_cols:
                 if col in features.columns:
                     features[col] = features[col].fillna(0)
-            
+
         except Exception as e:
             print(f"[경고] 시장 전체 지표 계산 중 오류 발생: {e}")
             # 기본값 설정
-            features['market_return'] = 0.0
-            features['market_volatility'] = 0.1
-            features['market_correlation'] = 0.5
-            features['vix_proxy'] = 0.1
-            features['market_stress'] = 0.0
-        
+            features["market_return"] = 0.0
+            features["market_volatility"] = 0.1
+            features["market_correlation"] = 0.5
+            features["vix_proxy"] = 0.1
+            features["market_stress"] = 0.0
+
         return features
 
     def _clean_data(self, data):
         """데이터 정리"""
         print("데이터 전처리 중...")
-        
+
         if data.isnull().values.any():
             print("결측값 발견, 전방향/후방향 채우기 적용")
             data = data.fillna(method="ffill").fillna(method="bfill")
@@ -1689,7 +3178,7 @@ class ImmunePortfolioBacktester:
                 index=data.index,
                 columns=data.columns,
             )
-        
+
         return data
 
     def calculate_metrics(self, returns, initial_capital=1e6):
@@ -1774,7 +3263,11 @@ class ImmunePortfolioBacktester:
                 immune_system.analyzer.log_decision(
                     date=current_date,
                     market_features=market_features,
-                    tcell_analysis={"crisis_level": immune_system.crisis_level},
+                    tcell_analysis=getattr(
+                        immune_system,
+                        "detailed_tcell_analysis",
+                        {"crisis_level": immune_system.crisis_level},
+                    ),
                     bcell_decisions=bcell_decisions,
                     final_weights=weights,
                     portfolio_return=portfolio_return,
@@ -1878,7 +3371,11 @@ class ImmunePortfolioBacktester:
                     immune_system.analyzer.log_decision(
                         date=current_date,
                         market_features=market_features,
-                        tcell_analysis={"crisis_level": immune_system.crisis_level},
+                        tcell_analysis=getattr(
+                            immune_system,
+                            "detailed_tcell_analysis",
+                            {"crisis_level": immune_system.crisis_level},
+                        ),
                         bcell_decisions=bcell_decisions,
                         final_weights=weights,
                         portfolio_return=portfolio_return,
@@ -1930,12 +3427,18 @@ class ImmunePortfolioBacktester:
         return analysis_result
 
     def save_comprehensive_analysis(
-        self, start_date: str, end_date: str, filename: str = None, output_dir: str = None
+        self,
+        start_date: str,
+        end_date: str,
+        filename: str = None,
+        output_dir: str = None,
     ):
         """통합 분석 결과 저장 (의사결정 분석 + 전문성 분석)"""
 
         if output_dir is None:
-            output_dir = create_timestamped_directory(RESULTS_DIR, "comprehensive_analysis")
+            output_dir = create_timestamped_directory(
+                RESULTS_DIR, "comprehensive_analysis"
+            )
 
         if filename is None:
             filename = f"bipd_comprehensive_{start_date}_{end_date}"
