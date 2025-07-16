@@ -14,6 +14,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
+from tqdm import tqdm
 
 warnings.filterwarnings("ignore")
 
@@ -392,7 +393,7 @@ class ImmunePortfolioSystem:
                 GenerativeBCell("GB4", "liquidity", input_size, n_assets),
                 GenerativeBCell("GB5", "macro", input_size, n_assets),
             ]
-            print("🧬 생성형 B-세포 시스템 활성화됨")
+            print("생성형 B-세포 시스템 활성화됨")
         else:
             # 기존 하드코딩 B-세포 사용
             self.bcells = [
@@ -402,7 +403,7 @@ class ImmunePortfolioSystem:
                 BCell("B4", "liquidity", self._liquidity_response),
                 BCell("B5", "macro", self._macro_response),
             ]
-            print("📊 레거시 B-세포 시스템 활성화됨")
+            print("레거시 B-세포 시스템 활성화됨")
 
         # 기억 세포
         self.memory_cell = MemoryCell()
@@ -551,15 +552,12 @@ class ImmunePortfolioSystem:
         if not self.use_generative_bcells:
             return
         
-        print(f"🧠 생성형 B-세포 사전 훈련 시작 ({episodes} 에피소드)")
+        print(f"생성형 B-세포 사전 훈련 시작 ({episodes} 에피소드)")
         
         # 훈련 데이터 준비
         returns = market_data.pct_change().dropna()
         
-        for episode in range(episodes):
-            if episode % 10 == 0:
-                print(f"  에피소드 {episode+1}/{episodes}")
-            
+        for episode in tqdm(range(episodes), desc="사전 훈련 에피소드"):
             # 에피소드 시작
             episode_length = min(50, len(returns) - 20)  # 최대 50일
             start_idx = np.random.randint(20, len(returns) - episode_length)
@@ -594,7 +592,7 @@ class ImmunePortfolioSystem:
             for bcell in self.bcells:
                 bcell.end_episode()
         
-        print("✅ 사전 훈련 완료")
+        print("사전 훈련 완료")
 
     def immune_response(self, market_features, training=False):
         """면역 반응 실행 (생성형 B-세포 지원)"""
@@ -844,15 +842,15 @@ class ImmunePortfolioBacktester:
 
         # 사전 훈련 단계 (생성형 B-세포만)
         if use_generative_bcells:
-            print("🏋️ 사전 훈련 단계...")
+            print("사전 훈련 단계...")
             immune_system.pretrain_bcells(self.train_data, episodes=100)
         
         # 훈련 단계 (면역 시스템 훈련)
-        print("📈 온라인 학습 단계...")
+        print("온라인 학습 단계...")
         train_returns = self.train_data.pct_change().dropna()
         portfolio_values = [1.0]
 
-        for i in range(len(train_returns)):
+        for i in tqdm(range(len(train_returns)), desc="훈련 진행"):
             current_data = self.train_data.iloc[: i + 1]
 
             # 시장 특성 추출
@@ -886,16 +884,16 @@ class ImmunePortfolioBacktester:
 
         # 훈련 완료 후 에피소드 종료
         if use_generative_bcells:
-            print("🎓 훈련 완료, 모델 최종 업데이트...")
+            print("훈련 완료, 모델 최종 업데이트...")
             for bcell in immune_system.bcells:
                 bcell.end_episode()
 
         # 테스트 단계 (평가 모드)
-        print("🧪 테스트 단계...")
+        print("테스트 단계...")
         test_returns = self.test_data.pct_change().dropna()
         test_portfolio_returns = []
 
-        for i in range(len(test_returns)):
+        for i in tqdm(range(len(test_returns)), desc="테스트 진행"):
             current_data = self.test_data.iloc[: i + 1]
 
             # 시장 특성 추출
@@ -1035,11 +1033,11 @@ class ImmunePortfolioBacktester:
         best_immune_system = None
         best_sharpe = -np.inf
 
-        print(f"\n🧬 BIPD 백테스트 {n_runs}회 실행 중...")
+        print(f"\nBIPD 백테스트 {n_runs}회 실행 중...")
         if use_generative_bcells:
-            print("🔬 생성형 B-세포 시스템 사용")
+            print("생성형 B-세포 시스템 사용")
         else:
-            print("📊 레거시 B-세포 시스템 사용")
+            print("레거시 B-세포 시스템 사용")
 
         for run in range(n_runs):
             print(f"Run {run + 1}/{n_runs}")
@@ -1108,7 +1106,7 @@ if __name__ == "__main__":
     
     # 생성형 B-세포 시스템 테스트
     print("\n" + "="*60)
-    print("🚀 BIPD 생성형 B-세포 시스템 테스트")
+    print("BIPD 생성형 B-세포 시스템 테스트")
     print("="*60)
     
     try:
@@ -1118,11 +1116,11 @@ if __name__ == "__main__":
             use_generative_bcells=True
         )
         
-        print("\n✅ 생성형 B-세포 시스템 테스트 완료!")
+        print("\n생성형 B-세포 시스템 테스트 완료!")
         
         # 옵션: 레거시 시스템과 비교
         print("\n" + "="*60)
-        print("📊 레거시 시스템과 성능 비교")
+        print("레거시 시스템과 성능 비교")
         print("="*60)
         
         legacy_results = backtester.run_multiple_backtests(
@@ -1132,7 +1130,7 @@ if __name__ == "__main__":
         )
         
         # 성능 비교 출력
-        print("\n🔬 성능 비교 결과:")
+        print("\n성능 비교 결과:")
         print(f"생성형 B-세포 Sharpe Ratio: {generative_results['Sharpe Ratio'].mean():.3f}")
         print(f"레거시 B-세포 Sharpe Ratio: {legacy_results['Sharpe Ratio'].mean():.3f}")
         
