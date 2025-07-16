@@ -155,20 +155,23 @@ class BCell(ImmuneCell):
             # 신경망을 통한 전략 생성
             with torch.no_grad():
                 raw_strategy = self.strategy_network(combined_input.unsqueeze(0))
-                strategy = raw_strategy.squeeze(0)
+                strategy_tensor = raw_strategy.squeeze(0)
             
             # 탐험/활용 (ε-greedy)
             if training and np.random.random() < self.epsilon:
                 # 탐험: 랜덤 노이즈 추가
-                noise = torch.randn_like(strategy) * 0.1
-                strategy = strategy + noise
-                strategy = F.softmax(strategy, dim=0)  # 재정규화
+                noise = torch.randn_like(strategy_tensor) * 0.1
+                strategy_tensor = strategy_tensor + noise
+                strategy_tensor = F.softmax(strategy_tensor, dim=0)  # 재정규화
             
+            # 마지막 행동 저장
+            self.last_strategy = strategy_tensor
+
             # 항체 강도 계산 (전략의 확신도)
-            confidence = 1.0 - float(torch.std(strategy))  # 분산이 낮을수록 확신도 높음
+            confidence = 1.0 - float(torch.std(strategy_tensor))  # 분산이 낮을수록 확신도 높음
             self.antibody_strength = max(0.1, confidence)
             
-            return strategy.numpy(), self.antibody_strength
+            return strategy_tensor.numpy(), self.antibody_strength
             
         except Exception as e:
             print(f"항체 생성 오류 ({self.risk_type}): {e}")
@@ -864,30 +867,42 @@ class ImmunePortfolioBacktester:
             # 면역 시스템 효과성 평가 및 학습
             if len(portfolio_values) > 20:
                 # --- 정교한 보상 함수 설계 (Reward Shaping) ---
-                # 1. 기본 보상: 일일 수익률
-                reward = portfolio_return * 100  # Scale up
-
-                # 2. 손실 회피 페널티: 음의 수익률에 더 큰 페널티 부과
+                # 1. 공유된 성과 보상 계산
+                base_reward = portfolio_return * 100
                 if portfolio_return < 0:
-                    reward -= (portfolio_return * 150)**2
-
-                # 3. 최대 낙폭 (MDD) 페널티: 자산 하락에 대한 페널티
+                    base_reward -= (portfolio_return * 150)**2
+                
                 running_max = np.maximum.accumulate(portfolio_values)
                 drawdown = (portfolio_values[-1] - running_max[-1]) / (running_max[-1] + 1e-8)
                 if drawdown < 0:
-                    reward += drawdown * 50 # Drawdown is negative
+                    base_reward += drawdown * 50
 
-                # 최종 보상을 -1 ~ 1 사이로 클리핑
-                final_reward = np.clip(reward, -1, 1)
+                # 2. B-세포별 개별 보상 계산 (경쟁적 특화)
+                if use_learning_bcells:
+                    # 각 B-세포가 제안했던 전략들을 가져옴
+                    individual_strategies = [bcell.last_strategy for bcell in immune_system.bcells if hasattr(bcell, 'last_strategy')]
+                    
+                    for bcell in immune_system.bcells:
+                        if hasattr(bcell, 'last_strategy'):
+                            # 2-1. 독창성 보너스 계산 (다른 세포와의 유사도)
+                            uniqueness_bonus = 0
+                            if len(individual_strategies) > 1:
+                                similarities = [F.cosine_similarity(bcell.last_strategy, other_strategy, dim=0) 
+                                                for other_strategy in individual_strategies if other_strategy is not bcell.last_strategy]
+                                if similarities:
+                                    uniqueness_bonus = -torch.mean(torch.stack(similarities)) * 0.1
+                                    uniqueness_bonus = uniqueness_bonus.item()
+
+                            # 2-2. 최종 개별 보상 = 공유 성과 + 독창성 보너스
+                            final_reward = base_reward + uniqueness_bonus
+                            final_reward = np.clip(final_reward, -1, 1)
+                            
+                            bcell.add_experience(market_features, immune_system.crisis_level, bcell.last_strategy.numpy(), final_reward)
 
                 # 위기 상황에서는 기억 세포에만 저장
                 if immune_system.crisis_level > 0.3:
-                    immune_system.update_memory(market_features, weights, final_reward)
-
-                # B-세포는 모든 상황에서 학습
-                if use_learning_bcells:
-                    for bcell in immune_system.bcells:
-                        bcell.add_experience(market_features, immune_system.crisis_level, weights, final_reward)
+                    # 기억세포에는 최종 앙상블 전략을 저장
+                    immune_system.update_memory(market_features, weights, np.clip(base_reward, -1, 1))
 
         # 훈련 완료 후 에피소드 종료
         if use_learning_bcells:
