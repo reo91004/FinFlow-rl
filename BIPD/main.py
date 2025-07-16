@@ -392,7 +392,7 @@ class ImmunePortfolioSystem:
                 BCell("B4-Liq", "liquidity", input_size, n_assets),
                 BCell("B5-Macro", "macro", input_size, n_assets),
             ]
-            print("  [정보] 시스템 유형: 학습 모델 (B-세포)")
+            print("  [정보] 시스템 유형: 학습 기반 정책 모델 (B-세포)")
         else:
             # 규칙 기반 레거시 B-세포 사용
             self.bcells = [
@@ -402,7 +402,7 @@ class ImmunePortfolioSystem:
                 LegacyBCell("LB4-Liq", "liquidity", self._liquidity_response),
                 LegacyBCell("LB5-Macro", "macro", self._macro_response),
             ]
-            print("  [정보] 시스템 유형: 규칙 기반 모델 (레거시 B-세포)")
+            print("  [정보] 시스템 유형: 규칙 기반 정책 모델 (레거시 B-세포)")
 
         # 기억 세포
         self.memory_cell = MemoryCell()
@@ -547,51 +547,51 @@ class ImmunePortfolioSystem:
         return weights / np.sum(weights)
 
     def pretrain_bcells(self, market_data, episodes=50):
-        """B-세포 사전 훈련"""
+        """B-세포 사전 훈련 (전문가 정책 모방)"""
         if not self.use_learning_bcells:
             return
         
-        print(f"B-세포 사전 훈련 시작 ({episodes} 에피소드)")
+        print("  -> 1단계: 규칙 기반 전문가 정책을 모방하여 사전 훈련을 시작합니다...")
         
-        # 훈련 데이터 준비
-        returns = market_data.pct_change().dropna()
-        
-        for episode in tqdm(range(episodes), desc="사전 훈련 에피소드"):
-            # 에피소드 시작
-            episode_length = min(50, len(returns) - 20)  # 최대 50일
-            start_idx = np.random.randint(20, len(returns) - episode_length)
-            
-            for step in range(episode_length):
-                current_idx = start_idx + step
-                
-                # 현재 시점까지의 데이터로 특성 추출
-                current_data = market_data.iloc[:current_idx+1]
-                market_features = self.extract_market_features(current_data)
-                
-                # T-세포 위험 탐지
-                crisis_level = np.random.uniform(0.2, 0.8)  # 다양한 위험 수준 시뮬레이션
-                
-                # 각 B-세포에서 전략 생성 (훈련 모드)
-                for bcell in self.bcells:
-                    strategy, _ = bcell.produce_antibody(market_features, crisis_level, training=True)
-                    
-                    # 실제 수익률로 보상 계산
-                    if current_idx + 1 < len(returns):
-                        actual_returns = returns.iloc[current_idx + 1]
-                        portfolio_return = np.sum(strategy * actual_returns)
-                        
-                        # 보상 계산 (수익률 + 위험 조정)
-                        reward = portfolio_return - 0.5 * abs(portfolio_return)  # 변동성 페널티
-                        reward = max(-1, min(1, reward * 10))  # -1 ~ 1 범위로 정규화
-                        
-                        # 경험 추가
-                        bcell.add_experience(market_features, crisis_level, strategy, reward)
-            
-            # 에피소드 종료 및 학습
+        # 모방 학습을 위한 전문가(규칙 기반) 정책 함수 정의
+        expert_policy_functions = {
+            "volatility": self._volatility_response,
+            "correlation": self._correlation_response,
+            "momentum": self._momentum_response,
+            "liquidity": self._liquidity_response,
+            "macro": self._macro_response
+        }
+
+        # 손실 함수 (Mean Squared Error)
+        loss_function = nn.MSELoss()
+
+        for episode in tqdm(range(episodes), desc="  사전 훈련 진행률"):
+            # 다양한 시장 상황 샘플링
+            start_idx = np.random.randint(20, len(market_data.pct_change().dropna()) - 50)
+            current_data = market_data.iloc[:start_idx]
+            market_features = self.extract_market_features(current_data)
+            crisis_level = np.random.uniform(0.2, 0.8)
+
             for bcell in self.bcells:
-                bcell.end_episode()
+                if bcell.risk_type in expert_policy_functions:
+                    # 1. 전문가 정책에 따른 목표 행동(가중치) 생성
+                    expert_action = expert_policy_functions[bcell.risk_type](crisis_level)
+                    target_policy = torch.FloatTensor(expert_action)
+
+                    # 2. 현재 학습 정책의 행동 예측
+                    features_tensor = torch.FloatTensor(market_features)
+                    crisis_tensor = torch.FloatTensor([crisis_level])
+                    specialization_tensor = bcell.specialization_weights
+                    combined_input = torch.cat([features_tensor, crisis_tensor, specialization_tensor])
+                    current_policy = bcell.strategy_network(combined_input.unsqueeze(0)).squeeze(0)
+
+                    # 3. 목표 정책과 현재 정책의 오차(Loss)를 기반으로 신경망 업데이트
+                    bcell.optimizer.zero_grad()
+                    loss = loss_function(current_policy, target_policy)
+                    loss.backward()
+                    bcell.optimizer.step()
         
-        print("사전 훈련 완료")
+        print("  [완료] 사전 훈련이 완료되었습니다.")
 
     def immune_response(self, market_features, training=False):
         """면역 반응 실행 (B-세포 지원)"""
@@ -863,22 +863,31 @@ class ImmunePortfolioBacktester:
 
             # 면역 시스템 효과성 평가 및 학습
             if len(portfolio_values) > 20:
-                recent_returns = (
-                    np.diff(portfolio_values[-21:]) / portfolio_values[-21:-1]
-                )
-                effectiveness = np.mean(recent_returns) / (
-                    np.std(recent_returns) + 1e-6
-                )
-                effectiveness = max(0, min(1, (effectiveness + 1) / 2))  # 0~1 정규화
+                # --- 정교한 보상 함수 설계 (Reward Shaping) ---
+                # 1. 기본 보상: 일일 수익률
+                reward = portfolio_return * 100  # Scale up
+
+                # 2. 손실 회피 페널티: 음의 수익률에 더 큰 페널티 부과
+                if portfolio_return < 0:
+                    reward -= (portfolio_return * 150)**2
+
+                # 3. 최대 낙폭 (MDD) 페널티: 자산 하락에 대한 페널티
+                running_max = np.maximum.accumulate(portfolio_values)
+                drawdown = (portfolio_values[-1] - running_max[-1]) / (running_max[-1] + 1e-8)
+                if drawdown < 0:
+                    reward += drawdown * 50 # Drawdown is negative
+
+                # 최종 보상을 -1 ~ 1 사이로 클리핑
+                final_reward = np.clip(reward, -1, 1)
 
                 # 위기 상황에서는 기억 세포에만 저장
                 if immune_system.crisis_level > 0.3:
-                    immune_system.update_memory(market_features, weights, effectiveness)
+                    immune_system.update_memory(market_features, weights, final_reward)
 
                 # B-세포는 모든 상황에서 학습
                 if use_learning_bcells:
                     for bcell in immune_system.bcells:
-                        bcell.add_experience(market_features, immune_system.crisis_level, weights, effectiveness)
+                        bcell.add_experience(market_features, immune_system.crisis_level, weights, final_reward)
 
         # 훈련 완료 후 에피소드 종료
         if use_learning_bcells:
@@ -1100,9 +1109,9 @@ if __name__ == "__main__":
         symbols, train_start, train_end, test_start, test_end
     )
 
-    # --- 1단계: 학습 모델 (B-세포 시스템) 성능 평가 ---
+    # --- 1단계: 학습 기반 정책 모델 (B-세포 시스템) 성능 평가 ---
     print("\n" + "="*70)
-    print(" 1단계: 학습 모델 (B-세포 시스템) 성능 평가")
+    print(" 1단계: 학습 기반 정책 모델 (B-세포 시스템) 성능 평가")
     print("="*70)
 
     try:
@@ -1111,11 +1120,11 @@ if __name__ == "__main__":
             save_results=True,
             use_learning_bcells=True
         )
-        print("\n[성공] 1단계 평가가 완료되었습니다.")
+        print("\n[완료] 1단계 평가가 완료되었습니다.")
 
-        # --- 2단계: 규칙 기반 모델 (레거시 B-세포 시스템) 성능 평가 ---
+        # --- 2단계: 규칙 기반 정책 모델 (레거시 B-세포 시스템) 성능 평가 ---
         print("\n" + "="*70)
-        print(" 2단계: 규칙 기반 모델 (레거시 B-세포 시스템) 성능 평가")
+        print(" 2단계: 규칙 기반 정책 모델 (레거시 B-세포 시스템) 성능 평가")
         print("="*70)
 
         legacy_results = backtester.run_multiple_backtests(
@@ -1123,7 +1132,7 @@ if __name__ == "__main__":
             save_results=True,
             use_learning_bcells=False
         )
-        print("\n[성공] 2단계 평가가 완료되었습니다.")
+        print("\n[완료] 2단계 평가가 완료되었습니다.")
 
         # --- 3단계: 최종 성능 비교 ---
         print("\n" + "="*70)
