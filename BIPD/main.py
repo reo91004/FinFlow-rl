@@ -3941,6 +3941,11 @@ if __name__ == "__main__":
             "2021-01-01", "2021-06-30"
         )
 
+        # 향상된 분석 결과 저장 (HTML 대시보드 + 면역 시스템 시각화)
+        analysis_json, analysis_md, dashboard_html = backtester.save_analysis_results(
+            "2021-01-01", "2021-06-30"
+        )
+
         print(f"\n=== BIPD 시스템 성능 평가 완료 ===")
 
         # 다중 실행 성능 검증 (다양한 시드로 안정성 확인)
