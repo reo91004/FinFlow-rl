@@ -1357,28 +1357,8 @@ class ImmunePortfolioBacktester:
             # 다중 지표 데이터 처리
             self.data = self._process_comprehensive_data(raw_data, symbols)
 
-            # 결측값 처리
-            print("데이터 전처리 중...")
-
-            if self.data.isnull().values.any():
-                print("결측값 발견, 전방향/후방향 채우기 적용")
-                self.data = self.data.fillna(method="ffill").fillna(method="bfill")
-
-            if self.data.isnull().values.any():
-                print("잔여 결측값을 0으로 채움")
-                self.data = self.data.fillna(0)
-
-            if np.isinf(self.data.values).any():
-                print("무한대 값 발견, 유한값으로 변환")
-                self.data = self.data.replace([np.inf, -np.inf], 0)
-
-            if self.data.isnull().values.any() or np.isinf(self.data.values).any():
-                print("최종 데이터 정리 중...")
-                self.data = pd.DataFrame(
-                    np.nan_to_num(self.data.values, nan=0.0, posinf=0.0, neginf=0.0),
-                    index=self.data.index,
-                    columns=self.data.columns,
-                )
+            # 데이터 전처리는 _process_comprehensive_data에서 이미 완료됨
+            print("데이터 전처리 완료")
 
             # 데이터 저장
             with open(self.data_path, "wb") as f:
@@ -1391,6 +1371,10 @@ class ImmunePortfolioBacktester:
         self.test_data = self.data['prices'][test_start:test_end]
         self.train_features = self.data['features'][train_start:train_end]
         self.test_features = self.data['features'][test_start:test_end]
+        
+        # 기존 코드 호환성을 위한 추가 정리
+        self.train_data = self._clean_data(self.train_data)
+        self.test_data = self._clean_data(self.test_data)
 
     def _process_comprehensive_data(self, raw_data, symbols):
         """포괄적인 시장 데이터 처리"""
@@ -1520,22 +1504,55 @@ class ImmunePortfolioBacktester:
         """시장 전체 지표 추가"""
         print("시장 전체 지표 계산 중...")
         
-        # 시장 전체 수익률 (동일 가중)
-        return_cols = [col for col in features.columns if '_returns' in col]
-        if return_cols:
-            features['market_return'] = features[return_cols].mean(axis=1)
-            features['market_volatility'] = features[return_cols].std(axis=1)
-            features['market_correlation'] = features[return_cols].rolling(20).corr().mean().mean()
-        
-        # VIX 대용 지표 (변동성의 변동성)
-        vol_cols = [col for col in features.columns if '_volatility' in col]
-        if vol_cols:
-            features['vix_proxy'] = features[vol_cols].mean(axis=1).rolling(10).std()
-        
-        # 시장 스트레스 지수
-        features['market_stress'] = features[[col for col in features.columns if '_rsi' in col]].apply(
-            lambda x: (x < 30).sum() + (x > 70).sum(), axis=1
-        )
+        try:
+            # 시장 전체 수익률 (동일 가중)
+            return_cols = [col for col in features.columns if '_returns' in col]
+            if return_cols:
+                features['market_return'] = features[return_cols].mean(axis=1)
+                features['market_volatility'] = features[return_cols].std(axis=1)
+                # 상관계수 계산 개선
+                corr_values = []
+                for i in range(len(features)):
+                    try:
+                        window_data = features[return_cols].iloc[max(0, i-19):i+1]
+                        if len(window_data) >= 2:
+                            corr_matrix = window_data.corr()
+                            upper_tri = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
+                            corr_values.append(upper_tri.stack().mean())
+                        else:
+                            corr_values.append(0.0)
+                    except:
+                        corr_values.append(0.0)
+                features['market_correlation'] = pd.Series(corr_values, index=features.index)
+            
+            # VIX 대용 지표 (변동성의 변동성)
+            vol_cols = [col for col in features.columns if '_volatility' in col]
+            if vol_cols:
+                features['vix_proxy'] = features[vol_cols].mean(axis=1).rolling(10).std()
+            
+            # 시장 스트레스 지수
+            rsi_cols = [col for col in features.columns if '_rsi' in col]
+            if rsi_cols:
+                features['market_stress'] = features[rsi_cols].apply(
+                    lambda x: (x < 30).sum() + (x > 70).sum(), axis=1
+                )
+            else:
+                features['market_stress'] = 0
+            
+            # 결측값 처리
+            market_cols = ['market_return', 'market_volatility', 'market_correlation', 'vix_proxy', 'market_stress']
+            for col in market_cols:
+                if col in features.columns:
+                    features[col] = features[col].fillna(0)
+            
+        except Exception as e:
+            print(f"[경고] 시장 전체 지표 계산 중 오류 발생: {e}")
+            # 기본값 설정
+            features['market_return'] = 0.0
+            features['market_volatility'] = 0.1
+            features['market_correlation'] = 0.5
+            features['vix_proxy'] = 0.1
+            features['market_stress'] = 0.0
         
         return features
 
