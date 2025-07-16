@@ -272,10 +272,28 @@ class TCell(ImmuneCell):
 
     def detect_anomaly(self, market_features):
         """시장 이상 상황 탐지 (개선된 동적 임계값)"""
+        # 입력 특성 크기 확인 및 조정
+        if len(market_features.shape) == 1:
+            # 1D 배열인 경우 2D로 변환
+            market_features = market_features.reshape(1, -1)
+        
         if not self.is_trained:
             self.detector.fit(market_features)
             self.is_trained = True
+            self.expected_features = market_features.shape[1]
             return 0.0
+
+        # 특성 크기 확인
+        if market_features.shape[1] != self.expected_features:
+            print(f"[경고] T-cell 특성 크기 불일치: 기대 {self.expected_features}, 실제 {market_features.shape[1]}")
+            # 기본 동작: 최소 크기에 맞춤
+            min_features = min(self.expected_features, market_features.shape[1])
+            market_features = market_features[:, :min_features]
+            
+            # 부족한 특성은 0으로 채움
+            if market_features.shape[1] < self.expected_features:
+                padding = np.zeros((market_features.shape[0], self.expected_features - market_features.shape[1]))
+                market_features = np.hstack([market_features, padding])
 
         anomaly_scores = self.detector.decision_function(market_features)
         current_score = np.mean(anomaly_scores)
@@ -866,7 +884,7 @@ class ImmunePortfolioSystem:
 
         # B-세포 초기화
         if use_learning_bcells:
-            feature_size = 8
+            feature_size = 12  # 향상된 특성 크기
             input_size = feature_size + 1 + n_assets
 
             self.bcells = [
@@ -997,8 +1015,9 @@ class ImmunePortfolioSystem:
     def _extract_enhanced_features(self, market_data, lookback=20):
         """향상된 특성 추출 (기술적 지표 활용)"""
         if not hasattr(self, 'train_features') or not hasattr(self, 'test_features'):
-            # 향상된 특성 데이터가 없는 경우 기본 방식 사용
-            return self._extract_basic_features(market_data, lookback)
+            # 향상된 특성 데이터가 없는 경우 기본 방식 사용하고 12개로 확장
+            basic_features = self._extract_basic_features(market_data, lookback)
+            return self._expand_to_12_features(basic_features)
         
         # 현재 날짜 기준으로 특성 데이터 선택
         current_date = market_data.index[-1]
@@ -1009,9 +1028,10 @@ class ImmunePortfolioSystem:
         elif current_date in self.test_features.index:
             feature_data = self.test_features.loc[current_date]
         else:
-            return self._extract_basic_features(market_data, lookback)
+            basic_features = self._extract_basic_features(market_data, lookback)
+            return self._expand_to_12_features(basic_features)
         
-        # 주요 특성 선택 및 정규화
+        # 주요 특성 선택 및 정규화 (12개 특성 확보)
         key_features = [
             'market_volatility',
             'market_correlation', 
@@ -1087,11 +1107,40 @@ class ImmunePortfolioSystem:
         else:
             selected_features.append(0.1)
 
-        # 최종 특성 배열 생성
-        features = np.array(selected_features)
+        # 12개 특성 보장
+        while len(selected_features) < 12:
+            selected_features.append(0.0)
+        
+        # 최종 특성 배열 생성 (정확히 12개)
+        features = np.array(selected_features[:12])
         features = np.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
 
         return features
+
+    def _expand_to_12_features(self, basic_features):
+        """8개 기본 특성을 12개로 확장"""
+        if len(basic_features) >= 12:
+            return basic_features[:12]
+        
+        # 기본 8개 특성에 추가 특성 4개 추가
+        expanded_features = list(basic_features)
+        
+        # 추가 특성들 (기본값으로 설정)
+        additional_features = [
+            0.5,  # RSI 중립값
+            0.0,  # 모멘텀 중립값
+            0.5,  # 볼린저 밴드 중립값
+            1.0,  # 거래량 비율 중립값
+        ]
+        
+        # 필요한 만큼 추가
+        for i in range(12 - len(expanded_features)):
+            if i < len(additional_features):
+                expanded_features.append(additional_features[i])
+            else:
+                expanded_features.append(0.0)
+        
+        return np.array(expanded_features[:12])
 
     def _get_dominant_risk(self, market_features):
         """지배적 위험 유형 계산"""
@@ -1112,7 +1161,7 @@ class ImmunePortfolioSystem:
         # T-세포 활성화
         tcell_activations = []
         for tcell in self.tcells:
-            activation = tcell.detect_anomaly(market_features.reshape(1, -1))
+            activation = tcell.detect_anomaly(market_features)
             tcell_activations.append(activation)
 
         self.crisis_level = np.mean(tcell_activations)
