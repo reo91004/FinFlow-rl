@@ -97,9 +97,18 @@ class GenerativeBCell(ImmuneCell):
         self.strategy_network = StrategyNetwork(input_size, n_assets)
         self.optimizer = optim.Adam(self.strategy_network.parameters(), lr=learning_rate)
         
-        # 학습 기록
+        # 강화학습 파라미터
         self.experience_buffer = []
+        self.episode_buffer = []  # 현재 에피소드 경험
         self.antibody_strength = 0.1
+        self.epsilon = 0.3  # 탐험 확률
+        self.epsilon_decay = 0.995
+        self.min_epsilon = 0.05
+        
+        # 학습 설정
+        self.batch_size = 32
+        self.update_frequency = 10  # N번의 경험마다 학습
+        self.experience_count = 0
         
         # 특화 가중치 (각 B-세포의 전문성)
         self.specialization_weights = self._initialize_specialization(risk_type, n_assets)
@@ -129,8 +138,8 @@ class GenerativeBCell(ImmuneCell):
         
         return weights
 
-    def produce_antibody(self, market_features, crisis_level):
-        """신경망을 통한 항체(전략) 생성"""
+    def produce_antibody(self, market_features, crisis_level, training=True):
+        """신경망을 통한 항체(전략) 생성 (탐험/활용 포함)"""
         try:
             # 입력 준비
             features_tensor = torch.FloatTensor(market_features)
@@ -147,8 +156,16 @@ class GenerativeBCell(ImmuneCell):
                 raw_strategy = self.strategy_network(combined_input.unsqueeze(0))
                 strategy = raw_strategy.squeeze(0)
             
+            # 탐험/활용 (ε-greedy)
+            if training and np.random.random() < self.epsilon:
+                # 탐험: 랜덤 노이즈 추가
+                noise = torch.randn_like(strategy) * 0.1
+                strategy = strategy + noise
+                strategy = F.softmax(strategy, dim=0)  # 재정규화
+            
             # 항체 강도 계산 (전략의 확신도)
-            self.antibody_strength = float(torch.max(strategy) - torch.min(strategy))
+            confidence = 1.0 - float(torch.std(strategy))  # 분산이 낮을수록 확신도 높음
+            self.antibody_strength = max(0.1, confidence)
             
             return strategy.numpy(), self.antibody_strength
             
@@ -158,45 +175,104 @@ class GenerativeBCell(ImmuneCell):
             default_strategy = np.ones(self.n_assets) / self.n_assets
             return default_strategy, 0.1
 
-    def learn_from_experience(self, market_features, crisis_level, effectiveness):
-        """경험으로부터 학습"""
+    def add_experience(self, market_features, crisis_level, action, reward):
+        """에피소드 경험 추가"""
+        experience = {
+            'state': market_features.copy(),
+            'crisis_level': crisis_level,
+            'action': action.copy(),
+            'reward': reward,
+            'timestamp': datetime.now()
+        }
+        self.episode_buffer.append(experience)
+        self.experience_count += 1
+
+    def learn_from_batch(self):
+        """배치 학습 수행"""
+        if len(self.episode_buffer) < self.batch_size:
+            return
+        
         try:
-            # 입력 준비
-            features_tensor = torch.FloatTensor(market_features)
-            crisis_tensor = torch.FloatTensor([crisis_level])
-            specialization_tensor = self.specialization_weights
-            combined_input = torch.cat([features_tensor, crisis_tensor, specialization_tensor])
+            # 배치 샘플링
+            batch_size = min(self.batch_size, len(self.episode_buffer))
+            batch = np.random.choice(self.episode_buffer, batch_size, replace=False)
+            
+            states = []
+            actions = []
+            rewards = []
+            
+            for exp in batch:
+                # 상태 구성
+                features_tensor = torch.FloatTensor(exp['state'])
+                crisis_tensor = torch.FloatTensor([exp['crisis_level']])
+                combined_state = torch.cat([features_tensor, crisis_tensor, self.specialization_weights])
+                states.append(combined_state)
+                
+                # 액션과 보상
+                actions.append(torch.FloatTensor(exp['action']))
+                rewards.append(exp['reward'])
+            
+            # 텐서로 변환
+            states = torch.stack(states)
+            actions = torch.stack(actions)
+            rewards = torch.FloatTensor(rewards)
+            
+            # 보상 정규화 (-1 ~ 1)
+            if len(rewards) > 1:
+                rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-8)
             
             # 순전파
-            strategy_probs = self.strategy_network(combined_input.unsqueeze(0))
+            predicted_actions = self.strategy_network(states)
             
-            # 보상 계산 (effectiveness를 -1~1 범위로 정규화)
-            reward = torch.FloatTensor([effectiveness * 2 - 1])
+            # Policy Gradient 손실
+            log_probs = torch.log(predicted_actions + 1e-8)
+            policy_loss = -torch.mean(log_probs * actions.unsqueeze(1) * rewards.unsqueeze(1))
             
-            # Policy Gradient 손실 계산
-            log_probs = torch.log(strategy_probs + 1e-8)
-            loss = -torch.mean(log_probs) * reward
+            # 엔트로피 보너스 (탐험 장려)
+            entropy = -torch.mean(predicted_actions * torch.log(predicted_actions + 1e-8))
+            entropy_bonus = 0.01 * entropy
             
-            # 역전파 및 가중치 업데이트
+            total_loss = policy_loss - entropy_bonus
+            
+            # 역전파
             self.optimizer.zero_grad()
-            loss.backward()
+            total_loss.backward()
             torch.nn.utils.clip_grad_norm_(self.strategy_network.parameters(), 0.5)
             self.optimizer.step()
             
-            # 경험 저장
-            self.experience_buffer.append({
-                'features': market_features.copy(),
-                'crisis_level': crisis_level,
-                'effectiveness': effectiveness,
-                'timestamp': datetime.now()
-            })
+            # ε 감소
+            self.epsilon = max(self.min_epsilon, self.epsilon * self.epsilon_decay)
+            
+        except Exception as e:
+            print(f"배치 학습 오류 ({self.risk_type}): {e}")
+
+    def end_episode(self):
+        """에피소드 종료 및 학습"""
+        if len(self.episode_buffer) > 0:
+            # 에피소드 경험을 전체 버퍼에 추가
+            self.experience_buffer.extend(self.episode_buffer)
+            
+            # 배치 학습 수행
+            if len(self.episode_buffer) >= self.batch_size:
+                self.learn_from_batch()
+            
+            # 에피소드 버퍼 초기화
+            self.episode_buffer = []
             
             # 버퍼 크기 제한
-            if len(self.experience_buffer) > 100:
-                self.experience_buffer.pop(0)
-                
-        except Exception as e:
-            print(f"학습 오류 ({self.risk_type}): {e}")
+            if len(self.experience_buffer) > 1000:
+                self.experience_buffer = self.experience_buffer[-1000:]
+
+    def learn_from_experience(self, market_features, crisis_level, effectiveness):
+        """레거시 호환성을 위한 래퍼"""
+        # 단순화된 학습 (즉시 학습)
+        if len(market_features) >= 8:
+            dummy_action = np.ones(self.n_assets) / self.n_assets
+            self.add_experience(market_features, crisis_level, dummy_action, effectiveness)
+            
+            # 주기적 배치 학습
+            if self.experience_count % self.update_frequency == 0:
+                self.learn_from_batch()
 
     def adapt_response(self, antigen_pattern, effectiveness):
         """기존 인터페이스 호환성을 위한 래퍼"""
@@ -470,7 +546,57 @@ class ImmunePortfolioSystem:
                 weights[idx] += defensive_boost / len(defensive_indices)
         return weights / np.sum(weights)
 
-    def immune_response(self, market_features):
+    def pretrain_bcells(self, market_data, episodes=50):
+        """생성형 B-세포 사전 훈련"""
+        if not self.use_generative_bcells:
+            return
+        
+        print(f"🧠 생성형 B-세포 사전 훈련 시작 ({episodes} 에피소드)")
+        
+        # 훈련 데이터 준비
+        returns = market_data.pct_change().dropna()
+        
+        for episode in range(episodes):
+            if episode % 10 == 0:
+                print(f"  에피소드 {episode+1}/{episodes}")
+            
+            # 에피소드 시작
+            episode_length = min(50, len(returns) - 20)  # 최대 50일
+            start_idx = np.random.randint(20, len(returns) - episode_length)
+            
+            for step in range(episode_length):
+                current_idx = start_idx + step
+                
+                # 현재 시점까지의 데이터로 특성 추출
+                current_data = market_data.iloc[:current_idx+1]
+                market_features = self.extract_market_features(current_data)
+                
+                # T-세포 위험 탐지
+                crisis_level = np.random.uniform(0.2, 0.8)  # 다양한 위험 수준 시뮬레이션
+                
+                # 각 B-세포에서 전략 생성 (훈련 모드)
+                for bcell in self.bcells:
+                    strategy, _ = bcell.produce_antibody(market_features, crisis_level, training=True)
+                    
+                    # 실제 수익률로 보상 계산
+                    if current_idx + 1 < len(returns):
+                        actual_returns = returns.iloc[current_idx + 1]
+                        portfolio_return = np.sum(strategy * actual_returns)
+                        
+                        # 보상 계산 (수익률 + 위험 조정)
+                        reward = portfolio_return - 0.5 * abs(portfolio_return)  # 변동성 페널티
+                        reward = max(-1, min(1, reward * 10))  # -1 ~ 1 범위로 정규화
+                        
+                        # 경험 추가
+                        bcell.add_experience(market_features, crisis_level, strategy, reward)
+            
+            # 에피소드 종료 및 학습
+            for bcell in self.bcells:
+                bcell.end_episode()
+        
+        print("✅ 사전 훈련 완료")
+
+    def immune_response(self, market_features, training=False):
         """면역 반응 실행 (생성형 B-세포 지원)"""
         # 1. T-세포 활성화 (위험 탐지)
         tcell_activations = []
@@ -499,7 +625,9 @@ class ImmunePortfolioSystem:
                 antibody_strengths = []
 
                 for bcell in self.bcells:
-                    strategy, antibody_strength = bcell.produce_antibody(market_features, self.crisis_level)
+                    strategy, antibody_strength = bcell.produce_antibody(
+                        market_features, self.crisis_level, training=training
+                    )
                     response_weights.append(strategy)
                     antibody_strengths.append(antibody_strength)
 
@@ -714,7 +842,13 @@ class ImmunePortfolioBacktester:
             use_generative_bcells=use_generative_bcells
         )
 
+        # 사전 훈련 단계 (생성형 B-세포만)
+        if use_generative_bcells:
+            print("🏋️ 사전 훈련 단계...")
+            immune_system.pretrain_bcells(self.train_data, episodes=100)
+        
         # 훈련 단계 (면역 시스템 훈련)
+        print("📈 온라인 학습 단계...")
         train_returns = self.train_data.pct_change().dropna()
         portfolio_values = [1.0]
 
@@ -724,8 +858,8 @@ class ImmunePortfolioBacktester:
             # 시장 특성 추출
             market_features = immune_system.extract_market_features(current_data)
 
-            # 면역 반응 실행
-            weights, response_type = immune_system.immune_response(market_features)
+            # 면역 반응 실행 (훈련 모드)
+            weights, response_type = immune_system.immune_response(market_features, training=True)
 
             # 포트폴리오 수익률 계산
             portfolio_return = np.sum(weights * train_returns.iloc[i])
@@ -744,8 +878,20 @@ class ImmunePortfolioBacktester:
                 # 위기 상황에서의 대응 효과를 기억에 저장
                 if immune_system.crisis_level > 0.3:
                     immune_system.update_memory(market_features, weights, effectiveness)
+                    
+                    # 생성형 B-세포 추가 학습
+                    if use_generative_bcells:
+                        for bcell in immune_system.bcells:
+                            bcell.add_experience(market_features, immune_system.crisis_level, weights, effectiveness)
 
-        # 테스트 단계
+        # 훈련 완료 후 에피소드 종료
+        if use_generative_bcells:
+            print("🎓 훈련 완료, 모델 최종 업데이트...")
+            for bcell in immune_system.bcells:
+                bcell.end_episode()
+
+        # 테스트 단계 (평가 모드)
+        print("🧪 테스트 단계...")
         test_returns = self.test_data.pct_change().dropna()
         test_portfolio_returns = []
 
@@ -755,8 +901,8 @@ class ImmunePortfolioBacktester:
             # 시장 특성 추출
             market_features = immune_system.extract_market_features(current_data)
 
-            # 면역 반응 실행
-            weights, response_type = immune_system.immune_response(market_features)
+            # 면역 반응 실행 (평가 모드, 탐험 없음)
+            weights, response_type = immune_system.immune_response(market_features, training=False)
 
             # 포트폴리오 수익률 계산
             portfolio_return = np.sum(weights * test_returns.iloc[i])
@@ -967,7 +1113,7 @@ if __name__ == "__main__":
     
     try:
         generative_results = backtester.run_multiple_backtests(
-            n_runs=10, 
+            n_runs=3,  # 사전 훈련 때문에 적은 횟수로 테스트
             save_results=True, 
             use_generative_bcells=True
         )
@@ -980,7 +1126,7 @@ if __name__ == "__main__":
         print("="*60)
         
         legacy_results = backtester.run_multiple_backtests(
-            n_runs=5,  # 비교용으로 더 적은 횟수
+            n_runs=3,  # 공정한 비교를 위해 동일한 횟수
             save_results=True,
             use_generative_bcells=False
         )
