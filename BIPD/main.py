@@ -144,10 +144,10 @@ class DecisionAnalyzer:
         if not period_records:
             return {"error": f"No data found for period {start_date} to {end_date}"}
 
-        # 통계 계산
+        # 통계 계산 (더 민감한 임계값)
         total_days = len(period_records)
         crisis_days = sum(
-            1 for r in period_records if r["tcell_analysis"]["crisis_level"] > 0.3
+            1 for r in period_records if r["tcell_analysis"]["crisis_level"] > 0.15
         )
         memory_activations = sum(1 for r in period_records if r["memory_activated"])
 
@@ -267,64 +267,118 @@ class TCell(ImmuneCell):
             contamination=sensitivity, random_state=random_state
         )
         self.is_trained = False
-        self.baseline_threshold = 0.3  # 동적 기준점
+        self.training_data = deque(maxlen=200)  # 훈련 데이터 저장
         self.historical_scores = deque(maxlen=100)
+        self.market_state_history = deque(maxlen=50)  # 시장 상태 히스토리
 
     def detect_anomaly(self, market_features):
-        """시장 이상 상황 탐지 (개선된 동적 임계값)"""
+        """시장 이상 상황 탐지"""
         # 입력 특성 크기 확인 및 조정
         if len(market_features.shape) == 1:
-            # 1D 배열인 경우 2D로 변환
             market_features = market_features.reshape(1, -1)
         
+        # 훈련 데이터 축적
+        self.training_data.append(market_features[0])
+        
         if not self.is_trained:
-            self.detector.fit(market_features)
-            self.is_trained = True
-            self.expected_features = market_features.shape[1]
+            if len(self.training_data) >= 50:  # 충분한 데이터가 쌓인 후 훈련
+                training_matrix = np.array(list(self.training_data))
+                self.detector.fit(training_matrix)
+                self.is_trained = True
+                self.expected_features = training_matrix.shape[1]
+                print(f"[정보] T-cell {self.cell_id} 훈련 완료 (데이터: {len(self.training_data)}개)")
             return 0.0
 
         # 특성 크기 확인
         if market_features.shape[1] != self.expected_features:
             print(f"[경고] T-cell 특성 크기 불일치: 기대 {self.expected_features}, 실제 {market_features.shape[1]}")
-            # 기본 동작: 최소 크기에 맞춤
             min_features = min(self.expected_features, market_features.shape[1])
             market_features = market_features[:, :min_features]
             
-            # 부족한 특성은 0으로 채움
             if market_features.shape[1] < self.expected_features:
                 padding = np.zeros((market_features.shape[0], self.expected_features - market_features.shape[1]))
                 market_features = np.hstack([market_features, padding])
 
+        # 이상 점수 계산
         anomaly_scores = self.detector.decision_function(market_features)
         current_score = np.mean(anomaly_scores)
+        
+        # 시장 상태 분석
+        market_state = self._analyze_market_state(market_features[0])
+        self.market_state_history.append(market_state)
         
         # 히스토리 업데이트
         self.historical_scores.append(current_score)
         
-        # 동적 임계값 계산
-        if len(self.historical_scores) >= 20:
+        # 위기 감지 로직 (더 민감하게 조정)
+        if len(self.historical_scores) >= 10:
             historical_mean = np.mean(self.historical_scores)
             historical_std = np.std(self.historical_scores)
             
-            # Z-score 기반 이상 탐지
+            # Z-score 기반 이상 탐지 (더 민감하게)
             z_score = (current_score - historical_mean) / (historical_std + 1e-8)
             
-            # 임계값 동적 조정
-            if z_score < -2.0:  # 매우 이상한 상황
-                self.activation_level = 0.9
-            elif z_score < -1.5:  # 상당히 이상한 상황
-                self.activation_level = 0.7
-            elif z_score < -1.0:  # 약간 이상한 상황
-                self.activation_level = 0.5
-            elif z_score < -0.5:  # 주의 상황
-                self.activation_level = 0.3
+            # 시장 상태 기반 조정
+            market_volatility = market_state['volatility']
+            market_stress = market_state['stress']
+            
+            # 기본 활성화 레벨 계산
+            base_activation = 0.0
+            if z_score < -1.5:  # 매우 이상한 상황
+                base_activation = 0.8
+            elif z_score < -1.0:  # 상당히 이상한 상황
+                base_activation = 0.6
+            elif z_score < -0.5:  # 약간 이상한 상황
+                base_activation = 0.4
+            elif z_score < 0.0:  # 주의 상황
+                base_activation = 0.2
             else:  # 정상 상황
-                self.activation_level = 0.1
+                base_activation = 0.0
+            
+            # 시장 상태 기반 조정
+            if market_volatility > 0.3:  # 높은 변동성
+                base_activation += 0.2
+            if market_stress > 0.5:  # 높은 스트레스
+                base_activation += 0.15
+            
+            # 최근 시장 상태 변화 고려
+            if len(self.market_state_history) >= 5:
+                recent_volatility_change = np.mean([s['volatility'] for s in list(self.market_state_history)[-5:]])
+                if recent_volatility_change > 0.4:
+                    base_activation += 0.1
+            
+            self.activation_level = np.clip(base_activation, 0.0, 1.0)
         else:
-            # 초기 학습 기간
-            self.activation_level = max(0, min(1, (1 - current_score) / 2))
+            # 초기 학습 기간 - 더 민감하게 설정
+            raw_score = max(0, min(1, (1 - current_score) / 1.5))
+            self.activation_level = raw_score * 0.5  # 초기에는 보수적으로
 
         return self.activation_level
+
+    def _analyze_market_state(self, features):
+        """시장 상태 분석"""
+        # 특성 기반 시장 상태 분석
+        volatility = features[0] if len(features) > 0 else 0.0
+        correlation = features[1] if len(features) > 1 else 0.0
+        returns = features[2] if len(features) > 2 else 0.0
+        
+        # 스트레스 지수 계산
+        stress_indicators = []
+        if len(features) > 4:
+            stress_indicators.append(abs(features[4]))  # 왜도
+        if len(features) > 5:
+            stress_indicators.append(abs(features[5]))  # 첨도
+        if len(features) > 6:
+            stress_indicators.append(features[6])  # 하락일 비율
+        
+        stress_level = np.mean(stress_indicators) if stress_indicators else 0.0
+        
+        return {
+            'volatility': abs(volatility),
+            'correlation': abs(correlation),
+            'returns': returns,
+            'stress': stress_level
+        }
 
 
 class StrategyNetwork(nn.Module):
@@ -497,7 +551,7 @@ class BCell(ImmuneCell):
             is_specialty = self.is_my_specialty_situation(market_features, crisis_level)
 
             if is_specialty:
-                strategy_tensor = self._apply_specialist_enhancement(
+                strategy_tensor = self._apply_specialist_strategy(
                     strategy_tensor, market_features, crisis_level
                 )
                 confidence_multiplier = 1.0 + self.specialization_strength
@@ -527,39 +581,39 @@ class BCell(ImmuneCell):
             default_strategy = np.ones(self.n_assets) / self.n_assets
             return default_strategy, 0.1
 
-    def _apply_specialist_enhancement(
+    def _apply_specialist_strategy(
         self, strategy_tensor, market_features, crisis_level
     ):
-        """전문가 전략 강화"""
+        """전문가 전략 적용"""
 
-        enhanced_strategy = strategy_tensor.clone()
+        specialized_strategy = strategy_tensor.clone()
 
         if self.risk_type == "volatility" and crisis_level > 0.5:
             safe_indices = [6, 7, 8]
             for idx in safe_indices:
-                if idx < len(enhanced_strategy):
-                    enhanced_strategy[idx] *= 1.0 + self.specialization_strength
+                if idx < len(specialized_strategy):
+                    specialized_strategy[idx] *= 1.0 + self.specialization_strength
 
         elif self.risk_type == "correlation" and market_features[1] > 0.7:
-            uniform_weight = torch.ones_like(enhanced_strategy) / len(enhanced_strategy)
+            uniform_weight = torch.ones_like(specialized_strategy) / len(specialized_strategy)
             blend_ratio = 0.3 + self.specialization_strength * 0.2
-            enhanced_strategy = (
+            specialized_strategy = (
                 1 - blend_ratio
-            ) * enhanced_strategy + blend_ratio * uniform_weight
+            ) * specialized_strategy + blend_ratio * uniform_weight
 
         elif self.risk_type == "momentum" and abs(market_features[2]) > 0.3:
             if market_features[2] > 0:
                 growth_indices = [0, 1, 4]
                 for idx in growth_indices:
-                    if idx < len(enhanced_strategy):
-                        enhanced_strategy[idx] *= (
+                    if idx < len(specialized_strategy):
+                        specialized_strategy[idx] *= (
                             1.0 + self.specialization_strength * 0.5
                         )
             else:
                 defensive_indices = [6, 7, 8]
                 for idx in defensive_indices:
-                    if idx < len(enhanced_strategy):
-                        enhanced_strategy[idx] *= (
+                    if idx < len(specialized_strategy):
+                        specialized_strategy[idx] *= (
                             1.0 + self.specialization_strength * 0.8
                         )
 
@@ -567,18 +621,18 @@ class BCell(ImmuneCell):
             large_cap_indices = [0, 1, 2, 3]
             boost_factor = 1.0 + self.specialization_strength * 0.6
             for idx in large_cap_indices:
-                if idx < len(enhanced_strategy):
-                    enhanced_strategy[idx] *= boost_factor
+                if idx < len(specialized_strategy):
+                    specialized_strategy[idx] *= boost_factor
 
         elif self.risk_type == "macro":
             defensive_indices = [7, 8, 9]
             boost_factor = 1.0 + self.specialization_strength * 0.7
             for idx in defensive_indices:
-                if idx < len(enhanced_strategy):
-                    enhanced_strategy[idx] *= boost_factor
+                if idx < len(specialized_strategy):
+                    specialized_strategy[idx] *= boost_factor
 
-        enhanced_strategy = F.softmax(enhanced_strategy, dim=0)
-        return enhanced_strategy
+        specialized_strategy = F.softmax(specialized_strategy, dim=0)
+        return specialized_strategy
 
     def _apply_conservative_adjustment(self, strategy_tensor):
         """보수적 조정"""
@@ -884,7 +938,7 @@ class ImmunePortfolioSystem:
 
         # B-세포 초기화
         if use_learning_bcells:
-            feature_size = 12  # 향상된 특성 크기
+            feature_size = 12  # 특성 크기
             input_size = feature_size + 1 + n_assets
 
             self.bcells = [
@@ -930,17 +984,13 @@ class ImmunePortfolioSystem:
         else:
             print("분석 시스템이 활성화되었습니다.")
 
-    def extract_market_features(self, market_data, lookback=20, use_enhanced_features=True):
-        """시장 특성 추출 (개선된 버전)"""
+    def extract_market_features(self, market_data, lookback=20):
+        """시장 특성 추출"""
         if len(market_data) < lookback:
-            return np.zeros(12)  # 확장된 특성 수
+            return np.zeros(12)
 
-        # 기존 방식 (가격 데이터만 사용)
-        if not use_enhanced_features:
-            return self._extract_basic_features(market_data, lookback)
-        
-        # 향상된 방식 (기술적 지표 활용)
-        return self._extract_enhanced_features(market_data, lookback)
+        # 현재 날짜 기준으로 기술적 지표 데이터 활용
+        return self._extract_technical_features(market_data, lookback)
 
     def _extract_basic_features(self, market_data, lookback=20):
         """기본 특성 추출 (기존 방식)"""
@@ -1012,10 +1062,10 @@ class ImmunePortfolioSystem:
 
         return features
 
-    def _extract_enhanced_features(self, market_data, lookback=20):
-        """향상된 특성 추출 (기술적 지표 활용)"""
+    def _extract_technical_features(self, market_data, lookback=20):
+        """기술적 지표 기반 특성 추출"""
         if not hasattr(self, 'train_features') or not hasattr(self, 'test_features'):
-            # 향상된 특성 데이터가 없는 경우 기본 방식 사용하고 12개로 확장
+            # 기술적 지표 데이터가 없는 경우 기본 방식 사용
             basic_features = self._extract_basic_features(market_data, lookback)
             return self._expand_to_12_features(basic_features)
         
@@ -1031,79 +1081,90 @@ class ImmunePortfolioSystem:
             basic_features = self._extract_basic_features(market_data, lookback)
             return self._expand_to_12_features(basic_features)
         
-        # 주요 특성 선택 및 정규화 (12개 특성 확보)
-        key_features = [
-            'market_volatility',
-            'market_correlation', 
-            'market_return',
-            'vix_proxy',
-            'market_stress'
-        ]
-        
-        # 사용 가능한 특성만 선택
+        # 핵심 시장 지표 선택 (위기 감지에 중요한 지표들)
         selected_features = []
-        for feature in key_features:
-            if feature in feature_data.index:
-                value = feature_data[feature]
-                if pd.isna(value) or np.isinf(value):
-                    selected_features.append(0.0)
-                else:
-                    selected_features.append(float(value))
-            else:
-                selected_features.append(0.0)
         
-        # 추가 특성 (RSI, 모멘텀 등의 평균)
+        # 1. 시장 전체 변동성 (가장 중요한 위기 지표)
+        market_volatility = feature_data.get('market_volatility', 0.0)
+        selected_features.append(np.clip(market_volatility * 5, 0, 1))  # 증폭하여 민감도 증가
+        
+        # 2. 시장 상관관계 (시스템적 위험 지표)
+        market_correlation = feature_data.get('market_correlation', 0.5)
+        selected_features.append(np.clip(abs(market_correlation), 0, 1))
+        
+        # 3. 시장 수익률 (방향성 지표)
+        market_return = feature_data.get('market_return', 0.0)
+        selected_features.append(np.clip(market_return * 10, -1, 1))  # 증폭
+        
+        # 4. VIX 대용 지표 (변동성의 변동성)
+        vix_proxy = feature_data.get('vix_proxy', 0.1)
+        selected_features.append(np.clip(vix_proxy * 3, 0, 1))  # 증폭
+        
+        # 5. 시장 스트레스 지수
+        market_stress = feature_data.get('market_stress', 0.0)
+        selected_features.append(np.clip(market_stress / 10, 0, 1))  # 정규화
+        
+        # 6. 평균 RSI (과매수/과매도 지표)
         rsi_cols = [col for col in feature_data.index if '_rsi' in col]
         if rsi_cols:
             avg_rsi = np.mean([feature_data[col] for col in rsi_cols if not pd.isna(feature_data[col])])
-            selected_features.append(avg_rsi / 100.0)  # 0-1 범위로 정규화
-        else:
-            selected_features.append(0.5)  # 중립값
-
-        momentum_cols = [col for col in feature_data.index if '_momentum' in col]
-        if momentum_cols:
-            avg_momentum = np.mean([feature_data[col] for col in momentum_cols if not pd.isna(feature_data[col])])
-            selected_features.append(np.clip(avg_momentum, -1, 1))  # -1~1 범위로 클리핑
+            # RSI 50에서 벗어날수록 위험 증가
+            rsi_risk = abs(avg_rsi - 50) / 50
+            selected_features.append(np.clip(rsi_risk, 0, 1))
         else:
             selected_features.append(0.0)
 
-        # 볼린저 밴드 위치 평균
+        # 7. 모멘텀 지표
+        momentum_cols = [col for col in feature_data.index if '_momentum' in col]
+        if momentum_cols:
+            avg_momentum = np.mean([feature_data[col] for col in momentum_cols if not pd.isna(feature_data[col])])
+            selected_features.append(np.clip(abs(avg_momentum), 0, 1))
+        else:
+            selected_features.append(0.0)
+
+        # 8. 볼린저 밴드 위치 (극단적 위치일수록 위험)
         bb_cols = [col for col in feature_data.index if '_bb_position' in col]
         if bb_cols:
             avg_bb_position = np.mean([feature_data[col] for col in bb_cols if not pd.isna(feature_data[col])])
-            selected_features.append(np.clip(avg_bb_position, 0, 1))
+            # 0.5에서 벗어날수록 위험
+            bb_risk = abs(avg_bb_position - 0.5) * 2
+            selected_features.append(np.clip(bb_risk, 0, 1))
         else:
-            selected_features.append(0.5)
+            selected_features.append(0.0)
 
-        # 거래량 비율 평균
+        # 9. 거래량 이상 지표
         volume_cols = [col for col in feature_data.index if '_volume_ratio' in col]
         if volume_cols:
             avg_volume_ratio = np.mean([feature_data[col] for col in volume_cols if not pd.isna(feature_data[col])])
-            selected_features.append(np.clip(avg_volume_ratio, 0, 5))  # 0~5 범위로 클리핑
+            # 정상 거래량(1.0)에서 벗어날수록 위험
+            volume_risk = abs(avg_volume_ratio - 1.0) / 2
+            selected_features.append(np.clip(volume_risk, 0, 1))
         else:
-            selected_features.append(1.0)
+            selected_features.append(0.0)
 
-        # 가격 범위 평균
+        # 10. 가격 범위 확장 지표
         range_cols = [col for col in feature_data.index if '_price_range' in col]
         if range_cols:
             avg_range = np.mean([feature_data[col] for col in range_cols if not pd.isna(feature_data[col])])
-            selected_features.append(np.clip(avg_range, 0, 1))
+            selected_features.append(np.clip(avg_range * 2, 0, 1))
         else:
             selected_features.append(0.1)
 
-        # 추가 시장 지표 (SMA 비율 등)
+        # 11. 이동평균 이탈도
         sma_cols = [col for col in feature_data.index if '_price_sma20_ratio' in col]
         if sma_cols:
             avg_sma_ratio = np.mean([feature_data[col] for col in sma_cols if not pd.isna(feature_data[col])])
-            selected_features.append(np.clip(avg_sma_ratio, 0.5, 1.5))
+            # 1.0에서 벗어날수록 위험
+            sma_risk = abs(avg_sma_ratio - 1.0)
+            selected_features.append(np.clip(sma_risk, 0, 1))
         else:
-            selected_features.append(1.0)
+            selected_features.append(0.0)
 
-        # 변동성 지표 평균
+        # 12. 종합 변동성 지표
         vol_cols = [col for col in feature_data.index if '_volatility' in col]
         if vol_cols:
             avg_volatility = np.mean([feature_data[col] for col in vol_cols if not pd.isna(feature_data[col])])
-            selected_features.append(np.clip(avg_volatility, 0, 0.5))
+            selected_features.append(np.clip(avg_volatility * 5, 0, 1))  # 증폭
         else:
             selected_features.append(0.1)
 
@@ -1184,8 +1245,8 @@ class ImmunePortfolioSystem:
             ]
             return recalled_memory["strategy"], "memory_response", bcell_decisions
 
-        # B-세포 활성화
-        if self.crisis_level > 0.3:
+        # B-세포 활성화 (더 민감한 임계값)
+        if self.crisis_level > 0.15:
             if self.use_learning_bcells:
                 response_weights = []
                 antibody_strengths = []
@@ -1775,8 +1836,8 @@ class ImmunePortfolioBacktester:
                             if i % 20 == 0:
                                 bcell.learn_from_specialized_experience()
 
-                # 기억 세포 업데이트
-                if immune_system.crisis_level > 0.3:
+                # 기억 세포 업데이트 (더 민감한 임계값)
+                if immune_system.crisis_level > 0.15:
                     immune_system.update_memory(
                         market_features, weights, np.clip(base_reward, -1, 1)
                     )
