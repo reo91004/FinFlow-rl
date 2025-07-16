@@ -866,8 +866,8 @@ class ImmunePortfolioBacktester:
 
             # 면역 시스템 효과성 평가 및 학습
             if len(portfolio_values) > 20:
-                # --- 정교한 보상 함수 설계 (Reward Shaping) ---
-                # 1. 공유된 성과 보상 계산
+                # --- 정교한 보상 함수 설계 (역할 기여도 기반) ---
+                # 1. 팀 전체의 성과에 따른 기본 보상 계산
                 base_reward = portfolio_return * 100
                 if portfolio_return < 0:
                     base_reward -= (portfolio_return * 150)**2
@@ -877,31 +877,28 @@ class ImmunePortfolioBacktester:
                 if drawdown < 0:
                     base_reward += drawdown * 50
 
-                # 2. B-세포별 개별 보상 계산 (경쟁적 특화)
+                # 2. 오늘의 지배적 위험(Dominant Risk) 판단
+                # market_features: [vol, corr, mom, skew, kurt, vol_vol, down_ratio, range]
+                risk_features = market_features[:5] # vol, corr, mom, skew, kurtosis
+                dominant_risk_idx = np.argmax(np.abs(risk_features - np.mean(risk_features)))
+                risk_map = {0: "volatility", 1: "correlation", 2: "momentum", 3: "liquidity", 4: "macro"}
+                dominant_risk = risk_map.get(dominant_risk_idx, "volatility")
+
+                # 3. B-세포별 역할 기여도에 따른 최종 보상 분배
                 if use_learning_bcells:
-                    # 각 B-세포가 제안했던 전략들을 가져옴
-                    individual_strategies = [bcell.last_strategy for bcell in immune_system.bcells if hasattr(bcell, 'last_strategy')]
-                    
                     for bcell in immune_system.bcells:
                         if hasattr(bcell, 'last_strategy'):
-                            # 2-1. 독창성 보너스 계산 (다른 세포와의 유사도)
-                            uniqueness_bonus = 0
-                            if len(individual_strategies) > 1:
-                                similarities = [F.cosine_similarity(bcell.last_strategy, other_strategy, dim=0) 
-                                                for other_strategy in individual_strategies if other_strategy is not bcell.last_strategy]
-                                if similarities:
-                                    uniqueness_bonus = -torch.mean(torch.stack(similarities)) * 0.1
-                                    uniqueness_bonus = uniqueness_bonus.item()
-
-                            # 2-2. 최종 개별 보상 = 공유 성과 + 독창성 보너스
-                            final_reward = base_reward + uniqueness_bonus
-                            final_reward = np.clip(final_reward, -1, 1)
+                            # 자신의 전문 분야와 지배적 위험이 일치하면 보상 증폭
+                            if bcell.risk_type == dominant_risk:
+                                specialized_reward = base_reward * 1.5
+                            else:
+                                specialized_reward = base_reward * 0.8
                             
+                            final_reward = np.clip(specialized_reward, -1, 1)
                             bcell.add_experience(market_features, immune_system.crisis_level, bcell.last_strategy.numpy(), final_reward)
 
-                # 위기 상황에서는 기억 세포에만 저장
+                # 위기 상황에서는 기억 세포에만 저장 (팀 전체 성과 기준)
                 if immune_system.crisis_level > 0.3:
-                    # 기억세포에는 최종 앙상블 전략을 저장
                     immune_system.update_memory(market_features, weights, np.clip(base_reward, -1, 1))
 
         # 훈련 완료 후 에피소드 종료
