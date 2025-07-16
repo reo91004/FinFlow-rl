@@ -873,14 +873,14 @@ class ImmunePortfolioBacktester:
                 )
                 effectiveness = max(0, min(1, (effectiveness + 1) / 2))  # 0~1 정규화
 
-                # 위기 상황에서의 대응 효과를 기억에 저장
+                # 위기 상황에서는 기억 세포에만 저장
                 if immune_system.crisis_level > 0.3:
                     immune_system.update_memory(market_features, weights, effectiveness)
-                    
-                    # 생성형 B-세포 추가 학습
-                    if use_generative_bcells:
-                        for bcell in immune_system.bcells:
-                            bcell.add_experience(market_features, immune_system.crisis_level, weights, effectiveness)
+
+                # 생성형 B-세포는 모든 상황에서 학습
+                if use_generative_bcells:
+                    for bcell in immune_system.bcells:
+                        bcell.add_experience(market_features, immune_system.crisis_level, weights, effectiveness)
 
         # 훈련 완료 후 에피소드 종료
         if use_generative_bcells:
