@@ -10,6 +10,10 @@ import os
 import pickle
 import matplotlib.pyplot as plt
 from datetime import datetime
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torch.nn.functional as F
 
 warnings.filterwarnings("ignore")
 
@@ -61,8 +65,149 @@ class TCell(ImmuneCell):
         return self.activation_level
 
 
+class StrategyNetwork(nn.Module):
+    """B-세포의 전략 생성 신경망"""
+    
+    def __init__(self, input_size, n_assets, hidden_size=64):
+        super(StrategyNetwork, self).__init__()
+        self.fc1 = nn.Linear(input_size, hidden_size)
+        self.fc2 = nn.Linear(hidden_size, hidden_size)
+        self.fc3 = nn.Linear(hidden_size, n_assets)
+        self.dropout = nn.Dropout(0.1)
+        
+    def forward(self, x):
+        x = F.relu(self.fc1(x))
+        x = self.dropout(x)
+        x = F.relu(self.fc2(x))
+        x = self.dropout(x)
+        x = self.fc3(x)
+        # Softmax로 포트폴리오 가중치 정규화
+        return F.softmax(x, dim=-1)
+
+
+class GenerativeBCell(ImmuneCell):
+    """생성형 B-세포: 신경망 기반 동적 전략 생성"""
+
+    def __init__(self, cell_id, risk_type, input_size, n_assets, learning_rate=0.001):
+        super().__init__(cell_id)
+        self.risk_type = risk_type
+        self.n_assets = n_assets
+        
+        # 신경망 초기화
+        self.strategy_network = StrategyNetwork(input_size, n_assets)
+        self.optimizer = optim.Adam(self.strategy_network.parameters(), lr=learning_rate)
+        
+        # 학습 기록
+        self.experience_buffer = []
+        self.antibody_strength = 0.1
+        
+        # 특화 가중치 (각 B-세포의 전문성)
+        self.specialization_weights = self._initialize_specialization(risk_type, n_assets)
+        
+    def _initialize_specialization(self, risk_type, n_assets):
+        """위험 유형별 초기 특화 설정"""
+        weights = torch.ones(n_assets) * 0.1
+        
+        if risk_type == "volatility":
+            # 안전 자산 선호 (JPM, JNJ, PG)
+            safe_indices = [6, 7, 8] if n_assets >= 9 else [n_assets-1]
+            for idx in safe_indices:
+                if idx < n_assets:
+                    weights[idx] = 0.3
+        elif risk_type == "correlation":
+            # 분산 투자 선호
+            weights = torch.ones(n_assets) * (0.8 / n_assets)
+        elif risk_type == "momentum":
+            # 중립적 가중치
+            weights = torch.ones(n_assets) * 0.5
+        elif risk_type == "liquidity":
+            # 대형주 선호 (AAPL, MSFT, AMZN, GOOGL)
+            large_cap_indices = [0, 1, 2, 3] if n_assets >= 4 else list(range(n_assets))
+            for idx in large_cap_indices:
+                if idx < n_assets:
+                    weights[idx] = 0.25
+        
+        return weights
+
+    def produce_antibody(self, market_features, crisis_level):
+        """신경망을 통한 항체(전략) 생성"""
+        try:
+            # 입력 준비
+            features_tensor = torch.FloatTensor(market_features)
+            crisis_tensor = torch.FloatTensor([crisis_level])
+            
+            # 특화 정보 추가
+            specialization_tensor = self.specialization_weights
+            
+            # 모든 정보를 결합
+            combined_input = torch.cat([features_tensor, crisis_tensor, specialization_tensor])
+            
+            # 신경망을 통한 전략 생성
+            with torch.no_grad():
+                raw_strategy = self.strategy_network(combined_input.unsqueeze(0))
+                strategy = raw_strategy.squeeze(0)
+            
+            # 항체 강도 계산 (전략의 확신도)
+            self.antibody_strength = float(torch.max(strategy) - torch.min(strategy))
+            
+            return strategy.numpy(), self.antibody_strength
+            
+        except Exception as e:
+            print(f"항체 생성 오류 ({self.risk_type}): {e}")
+            # 기본 전략 반환
+            default_strategy = np.ones(self.n_assets) / self.n_assets
+            return default_strategy, 0.1
+
+    def learn_from_experience(self, market_features, crisis_level, effectiveness):
+        """경험으로부터 학습"""
+        try:
+            # 입력 준비
+            features_tensor = torch.FloatTensor(market_features)
+            crisis_tensor = torch.FloatTensor([crisis_level])
+            specialization_tensor = self.specialization_weights
+            combined_input = torch.cat([features_tensor, crisis_tensor, specialization_tensor])
+            
+            # 순전파
+            strategy_probs = self.strategy_network(combined_input.unsqueeze(0))
+            
+            # 보상 계산 (effectiveness를 -1~1 범위로 정규화)
+            reward = torch.FloatTensor([effectiveness * 2 - 1])
+            
+            # Policy Gradient 손실 계산
+            log_probs = torch.log(strategy_probs + 1e-8)
+            loss = -torch.mean(log_probs) * reward
+            
+            # 역전파 및 가중치 업데이트
+            self.optimizer.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.strategy_network.parameters(), 0.5)
+            self.optimizer.step()
+            
+            # 경험 저장
+            self.experience_buffer.append({
+                'features': market_features.copy(),
+                'crisis_level': crisis_level,
+                'effectiveness': effectiveness,
+                'timestamp': datetime.now()
+            })
+            
+            # 버퍼 크기 제한
+            if len(self.experience_buffer) > 100:
+                self.experience_buffer.pop(0)
+                
+        except Exception as e:
+            print(f"학습 오류 ({self.risk_type}): {e}")
+
+    def adapt_response(self, antigen_pattern, effectiveness):
+        """기존 인터페이스 호환성을 위한 래퍼"""
+        # 단순화된 학습
+        if len(antigen_pattern) >= 8:  # market_features 크기 확인
+            crisis_level = 0.5  # 기본값
+            self.learn_from_experience(antigen_pattern, crisis_level, effectiveness)
+
+
 class BCell(ImmuneCell):
-    """B-세포: 위험 대응 담당"""
+    """레거시 B-세포: 기존 하드코딩 전략 (호환성 유지)"""
 
     def __init__(self, cell_id, risk_type, response_strategy):
         super().__init__(cell_id)
@@ -146,8 +291,9 @@ class MemoryCell:
 class ImmunePortfolioSystem:
     """생체모방 면역 포트폴리오 시스템"""
 
-    def __init__(self, n_assets, n_tcells=3, n_bcells=5, random_state=None):
+    def __init__(self, n_assets, n_tcells=3, n_bcells=5, random_state=None, use_generative_bcells=True):
         self.n_assets = n_assets
+        self.use_generative_bcells = use_generative_bcells
 
         # T-세포들 (다양한 민감도로 위험 탐지)
         # 각 T-세포마다 다른 random_state 사용
@@ -158,13 +304,29 @@ class ImmunePortfolioSystem:
         ]
 
         # B-세포들 (위험 유형별 대응)
-        self.bcells = [
-            BCell("B1", "volatility", self._volatility_response),
-            BCell("B2", "correlation", self._correlation_response),
-            BCell("B3", "momentum", self._momentum_response),
-            BCell("B4", "liquidity", self._liquidity_response),
-            BCell("B5", "macro", self._macro_response),
-        ]
+        if use_generative_bcells:
+            # 생성형 B-세포 사용 (신경망 기반)
+            feature_size = 8  # market_features 크기
+            input_size = feature_size + 1 + n_assets  # features + crisis_level + specialization
+            
+            self.bcells = [
+                GenerativeBCell("GB1", "volatility", input_size, n_assets),
+                GenerativeBCell("GB2", "correlation", input_size, n_assets),
+                GenerativeBCell("GB3", "momentum", input_size, n_assets),
+                GenerativeBCell("GB4", "liquidity", input_size, n_assets),
+                GenerativeBCell("GB5", "macro", input_size, n_assets),
+            ]
+            print("🧬 생성형 B-세포 시스템 활성화됨")
+        else:
+            # 기존 하드코딩 B-세포 사용
+            self.bcells = [
+                BCell("B1", "volatility", self._volatility_response),
+                BCell("B2", "correlation", self._correlation_response),
+                BCell("B3", "momentum", self._momentum_response),
+                BCell("B4", "liquidity", self._liquidity_response),
+                BCell("B5", "macro", self._macro_response),
+            ]
+            print("📊 레거시 B-세포 시스템 활성화됨")
 
         # 기억 세포
         self.memory_cell = MemoryCell()
@@ -309,7 +471,7 @@ class ImmunePortfolioSystem:
         return weights / np.sum(weights)
 
     def immune_response(self, market_features):
-        """면역 반응 실행"""
+        """면역 반응 실행 (생성형 B-세포 지원)"""
         # 1. T-세포 활성화 (위험 탐지)
         tcell_activations = []
         for tcell in self.tcells:
@@ -330,36 +492,78 @@ class ImmunePortfolioSystem:
 
         # 3. B-세포 활성화 (위험 대응)
         if self.crisis_level > 0.3:  # 위험 임계값
-            response_weights = []
-            antibody_strengths = []
+            
+            if self.use_generative_bcells:
+                # 생성형 B-세포 사용
+                response_weights = []
+                antibody_strengths = []
 
-            for bcell in self.bcells:
-                antibody_strength = bcell.produce_antibody(market_features)
-                response_weight = bcell.response_strategy(
-                    self.crisis_level * antibody_strength
+                for bcell in self.bcells:
+                    strategy, antibody_strength = bcell.produce_antibody(market_features, self.crisis_level)
+                    response_weights.append(strategy)
+                    antibody_strengths.append(antibody_strength)
+
+                # 협력적 앙상블: 항체 강도에 따른 가중 평균
+                if len(antibody_strengths) > 0 and sum(antibody_strengths) > 0:
+                    # 정규화된 가중치 계산
+                    normalized_strengths = np.array(antibody_strengths) / sum(antibody_strengths)
+                    
+                    # 가중 평균으로 최종 전략 결합
+                    ensemble_strategy = np.zeros(self.n_assets)
+                    for i, (strategy, weight) in enumerate(zip(response_weights, normalized_strengths)):
+                        ensemble_strategy += strategy * weight
+                    
+                    # 정규화
+                    ensemble_strategy = ensemble_strategy / np.sum(ensemble_strategy)
+                    
+                    self.immune_activation = np.mean(antibody_strengths)
+                    
+                    # 가장 기여도가 높은 B-세포 찾기
+                    dominant_bcell_idx = np.argmax(antibody_strengths)
+                    response_type = f"generative_ensemble_{self.bcells[dominant_bcell_idx].risk_type}"
+                    
+                    return ensemble_strategy, response_type
+                else:
+                    return self.base_weights, "generative_fallback"
+            
+            else:
+                # 기존 하드코딩 B-세포 사용
+                response_weights = []
+                antibody_strengths = []
+
+                for bcell in self.bcells:
+                    antibody_strength = bcell.produce_antibody(market_features)
+                    response_weight = bcell.response_strategy(
+                        self.crisis_level * antibody_strength
+                    )
+                    response_weights.append(response_weight)
+                    antibody_strengths.append(antibody_strength)
+
+                # 가장 강한 항체 반응 선택
+                best_response_idx = np.argmax(antibody_strengths)
+                self.immune_activation = antibody_strengths[best_response_idx]
+
+                return (
+                    response_weights[best_response_idx],
+                    f"legacy_bcell_{self.bcells[best_response_idx].risk_type}",
                 )
-                response_weights.append(response_weight)
-                antibody_strengths.append(antibody_strength)
-
-            # 가장 강한 항체 반응 선택
-            best_response_idx = np.argmax(antibody_strengths)
-            self.immune_activation = antibody_strengths[best_response_idx]
-
-            return (
-                response_weights[best_response_idx],
-                f"bcell_{self.bcells[best_response_idx].risk_type}",
-            )
 
         # 위험 수준이 낮으면 기본 가중치 유지
         return self.base_weights, "normal"
 
     def update_memory(self, crisis_pattern, response_strategy, effectiveness):
-        """면역 기억 업데이트"""
+        """면역 기억 업데이트 (생성형 B-세포 학습 지원)"""
         self.memory_cell.store_memory(crisis_pattern, response_strategy, effectiveness)
 
         # B-세포 적응
-        for bcell in self.bcells:
-            bcell.adapt_response(crisis_pattern, effectiveness)
+        if self.use_generative_bcells:
+            # 생성형 B-세포 학습
+            for bcell in self.bcells:
+                bcell.learn_from_experience(crisis_pattern, self.crisis_level, effectiveness)
+        else:
+            # 기존 B-세포 적응
+            for bcell in self.bcells:
+                bcell.adapt_response(crisis_pattern, effectiveness)
 
 
 class ImmunePortfolioBacktester:
@@ -497,12 +701,18 @@ class ImmunePortfolioBacktester:
         drawdown = (cum_returns - running_max) / running_max
         return drawdown.min()
 
-    def backtest_single_run(self, seed=None, return_model=False):
+    def backtest_single_run(self, seed=None, return_model=False, use_generative_bcells=True):
         """단일 백테스트 실행"""
         if seed is not None:
             np.random.seed(seed)
+            if use_generative_bcells:
+                torch.manual_seed(seed)
 
-        immune_system = ImmunePortfolioSystem(n_assets=len(self.symbols), random_state=seed)
+        immune_system = ImmunePortfolioSystem(
+            n_assets=len(self.symbols), 
+            random_state=seed,
+            use_generative_bcells=use_generative_bcells
+        )
 
         # 훈련 단계 (면역 시스템 훈련)
         train_returns = self.train_data.pct_change().dropna()
@@ -561,16 +771,46 @@ class ImmunePortfolioBacktester:
             return pd.Series(test_portfolio_returns, index=test_returns.index)
 
     def save_model(self, immune_system, filename=None):
-        """면역 시스템 모델 저장"""
+        """면역 시스템 모델 저장 (PyTorch 모델 지원)"""
         if filename is None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"immune_system_{timestamp}.pkl"
-
-        model_path = os.path.join(MODELS_DIR, filename)
-        with open(model_path, "wb") as f:
-            pickle.dump(immune_system, f)
-        print(f"모델 저장 완료: {filename}")
-        return model_path
+            if immune_system.use_generative_bcells:
+                filename = f"generative_immune_system_{timestamp}"
+            else:
+                filename = f"legacy_immune_system_{timestamp}.pkl"
+        
+        if immune_system.use_generative_bcells:
+            # 생성형 B-세포 포함 모델 저장
+            model_dir = os.path.join(MODELS_DIR, filename)
+            os.makedirs(model_dir, exist_ok=True)
+            
+            # 각 생성형 B-세포의 신경망 저장
+            for i, bcell in enumerate(immune_system.bcells):
+                if hasattr(bcell, 'strategy_network'):
+                    network_path = os.path.join(model_dir, f"bcell_{i}_{bcell.risk_type}.pth")
+                    torch.save(bcell.strategy_network.state_dict(), network_path)
+            
+            # 기타 시스템 상태 저장
+            system_state = {
+                'n_assets': immune_system.n_assets,
+                'base_weights': immune_system.base_weights,
+                'memory_cell': immune_system.memory_cell,
+                'tcells': immune_system.tcells,
+                'use_generative_bcells': True
+            }
+            state_path = os.path.join(model_dir, "system_state.pkl")
+            with open(state_path, "wb") as f:
+                pickle.dump(system_state, f)
+            
+            print(f"생성형 모델 저장 완료: {model_dir}")
+            return model_dir
+        else:
+            # 기존 방식 저장
+            model_path = os.path.join(MODELS_DIR, filename)
+            with open(model_path, "wb") as f:
+                pickle.dump(immune_system, f)
+            print(f"레거시 모델 저장 완료: {filename}")
+            return model_path
 
     def load_model(self, filename):
         """면역 시스템 모델 로드"""
@@ -643,20 +883,24 @@ class ImmunePortfolioBacktester:
         print(f"결과 저장 완료: {csv_path}, {plot_path}")
         return csv_path, plot_path
 
-    def run_multiple_backtests(self, n_runs=10, save_results=True):
+    def run_multiple_backtests(self, n_runs=10, save_results=True, use_generative_bcells=True):
         """다중 백테스트 실행"""
         all_metrics = []
         best_immune_system = None
         best_sharpe = -np.inf
 
-        print(f"BIPD 백테스트 {n_runs}회 실행 중...")
+        print(f"\n🧬 BIPD 백테스트 {n_runs}회 실행 중...")
+        if use_generative_bcells:
+            print("🔬 생성형 B-세포 시스템 사용")
+        else:
+            print("📊 레거시 B-세포 시스템 사용")
 
         for run in range(n_runs):
             print(f"Run {run + 1}/{n_runs}")
 
             # 각 실행마다 다른 시드 사용
             portfolio_returns, immune_system = self.backtest_single_run(
-                seed=run, return_model=True
+                seed=run, return_model=True, use_generative_bcells=use_generative_bcells
             )
             metrics = self.calculate_metrics(portfolio_returns)
             all_metrics.append(metrics)
@@ -669,7 +913,8 @@ class ImmunePortfolioBacktester:
         # 평균과 표준편차 계산
         metrics_df = pd.DataFrame(all_metrics)
 
-        print("\n=== BIPD 백테스트 결과 ===")
+        system_type = "생성형" if use_generative_bcells else "레거시"
+        print(f"\n=== BIPD ({system_type}) 백테스트 결과 ===")
         print(f"총 수익률: {metrics_df['Total Return'].mean():.2%}")
         print(f"표준편차: {metrics_df['Volatility'].mean():.3f}")
         print(f"최대 낙폭: {metrics_df['Max Drawdown'].mean():.2%}")
@@ -680,9 +925,16 @@ class ImmunePortfolioBacktester:
 
         # 결과 저장
         if save_results:
-            self.save_results(metrics_df)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            result_filename = f"bipd_{system_type}_{timestamp}"
+            self.save_results(metrics_df, result_filename)
+            
             if best_immune_system is not None:
-                self.save_model(best_immune_system, "best_immune_system.pkl")
+                if use_generative_bcells:
+                    model_filename = f"best_generative_immune_system_{timestamp}"
+                else:
+                    model_filename = "best_legacy_immune_system.pkl"
+                self.save_model(best_immune_system, model_filename)
 
         return metrics_df
 
@@ -700,10 +952,55 @@ if __name__ == "__main__":
     import time
     global_seed = int(time.time()) % 10000
     np.random.seed(global_seed)
-    print(f"Global random seed: {global_seed}")
+    torch.manual_seed(global_seed)
+    print(f"🎲 Global random seed: {global_seed}")
 
-    # 백테스터 초기화 및 실행
+    # 백테스터 초기화
     backtester = ImmunePortfolioBacktester(
         symbols, train_start, train_end, test_start, test_end
     )
-    results = backtester.run_multiple_backtests(n_runs=10)
+    
+    # 생성형 B-세포 시스템 테스트
+    print("\n" + "="*60)
+    print("🚀 BIPD 생성형 B-세포 시스템 테스트")
+    print("="*60)
+    
+    try:
+        generative_results = backtester.run_multiple_backtests(
+            n_runs=10, 
+            save_results=True, 
+            use_generative_bcells=True
+        )
+        
+        print("\n✅ 생성형 B-세포 시스템 테스트 완료!")
+        
+        # 옵션: 레거시 시스템과 비교
+        print("\n" + "="*60)
+        print("📊 레거시 시스템과 성능 비교")
+        print("="*60)
+        
+        legacy_results = backtester.run_multiple_backtests(
+            n_runs=5,  # 비교용으로 더 적은 횟수
+            save_results=True,
+            use_generative_bcells=False
+        )
+        
+        # 성능 비교 출력
+        print("\n🔬 성능 비교 결과:")
+        print(f"생성형 B-세포 Sharpe Ratio: {generative_results['Sharpe Ratio'].mean():.3f}")
+        print(f"레거시 B-세포 Sharpe Ratio: {legacy_results['Sharpe Ratio'].mean():.3f}")
+        
+        improvement = ((generative_results['Sharpe Ratio'].mean() - legacy_results['Sharpe Ratio'].mean()) 
+                      / legacy_results['Sharpe Ratio'].mean() * 100)
+        print(f"성능 개선: {improvement:+.1f}%")
+        
+    except Exception as e:
+        print(f"❌ 오류 발생: {e}")
+        print("레거시 시스템으로 폴백합니다...")
+        
+        # 오류 시 레거시 시스템 사용
+        legacy_results = backtester.run_multiple_backtests(
+            n_runs=10,
+            save_results=True,
+            use_generative_bcells=False
+        )
