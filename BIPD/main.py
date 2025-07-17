@@ -19,27 +19,9 @@ from collections import deque
 import json
 import copy
 import seaborn as sns
-from html_dashboard import generate_enhanced_dashboard
-from immune_visualization import create_paper_ready_visualizations
+from html_dashboard import generate_dashboard
+from immune_visualization import create_visualizations
 from typing import Dict, List, Tuple, Any, Optional
-import matplotlib.font_manager as fm
-
-# 한글 폰트 설정
-# 시스템에 'Malgun Gothic' 폰트가 없을 경우 다른 폰트 (예: 'AppleGothic', 'NanumGothic')를 시도하거나 설치해야 합니다.
-try:
-    plt.rcParams["font.family"] = "Malgun Gothic"
-except:
-    # Fallback for other OS or if Malgun Gothic is not found
-    if "AppleGothic" in [f.name for f in fm.fontManager.ttflist]:
-        plt.rcParams["font.family"] = "AppleGothic"
-    elif "NanumGothic" in [f.name for f in fm.fontManager.ttflist]:
-        plt.rcParams["font.family"] = "NanumGothic"
-    else:
-        print(
-            "Warning: No suitable Korean font found. Please install 'Malgun Gothic', 'AppleGothic', or 'NanumGothic'."
-        )
-
-plt.rcParams["axes.unicode_minus"] = False  # 음수 부호 깨짐 방지
 
 warnings.filterwarnings("ignore")
 
@@ -91,8 +73,8 @@ class DecisionAnalyzer:
             and "detailed_crisis_logs" in tcell_analysis
         ):
             detailed_logs = tcell_analysis["detailed_crisis_logs"]
-            enhanced_analysis = basic_analysis.copy()
-            enhanced_analysis["detailed_crisis_detection"] = {
+            analysis = basic_analysis.copy()
+            analysis["detailed_crisis_detection"] = {
                 "active_tcells": len(detailed_logs),
                 "crisis_detections": [],
             }
@@ -113,7 +95,7 @@ class DecisionAnalyzer:
                         ),
                         "market_state_analysis": tcell_log.get("market_state", {}),
                     }
-                    enhanced_analysis["detailed_crisis_detection"][
+                    analysis["detailed_crisis_detection"][
                         "crisis_detections"
                     ].append(crisis_detection)
 
@@ -126,7 +108,7 @@ class DecisionAnalyzer:
                         }
                     )
 
-            return enhanced_analysis
+            return analysis
 
         return basic_analysis
 
@@ -154,8 +136,8 @@ class DecisionAnalyzer:
         }
         dominant_risk = risk_map.get(dominant_risk_idx, "volatility")
 
-        # 향상된 T-cell 분석 처리
-        enhanced_tcell_analysis = self._process_detailed_tcell_analysis(
+        # T-cell 분석 처리
+        tcell_analysis_result = self._process_detailed_tcell_analysis(
             tcell_analysis, dominant_risk, risk_features, dominant_risk_idx
         )
 
@@ -168,7 +150,7 @@ class DecisionAnalyzer:
                 if hasattr(market_features, "tolist")
                 else list(market_features)
             ),
-            "tcell_analysis": enhanced_tcell_analysis,
+            "tcell_analysis": tcell_analysis_result,
             "bcell_decisions": self._serialize_bcell_decisions(bcell_decisions),
             "final_weights": (
                 final_weights.tolist()
@@ -761,7 +743,7 @@ class DecisionAnalyzer:
         """분석 결과를 파일로 저장"""
 
         if output_dir is None:
-            output_dir = create_timestamped_directory(RESULTS_DIR, "analysis")
+            output_dir = self.output_dir  # 전역 output_dir 사용
 
         if filename is None:
             filename = f"decision_analysis_{start_date}_{end_date}"
@@ -2906,6 +2888,11 @@ class ImmunePortfolioBacktester:
         self.train_end = train_end
         self.test_start = test_start
         self.test_end = test_end
+        
+        # 타임스탬프 기반 통합 출력 디렉토리 생성
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.output_dir = os.path.join(RESULTS_DIR, f"analysis_{timestamp}")
+        os.makedirs(self.output_dir, exist_ok=True)
 
         # 데이터 로드
         data_filename = f"market_data_{'_'.join(symbols)}_{train_start}_{test_end}.pkl"
@@ -3456,9 +3443,7 @@ class ImmunePortfolioBacktester:
         """통합 분석 결과 저장 (의사결정 분석 + 전문성 분석)"""
 
         if output_dir is None:
-            output_dir = create_timestamped_directory(
-                RESULTS_DIR, "comprehensive_analysis"
-            )
+            output_dir = self.output_dir  # 전역 output_dir 사용
 
         if filename is None:
             filename = f"bipd_comprehensive_{start_date}_{end_date}"
@@ -3635,13 +3620,13 @@ class ImmunePortfolioBacktester:
             )
 
             # HTML 대시보드 생성
-            dashboard_paths = generate_enhanced_dashboard(
+            dashboard_paths = generate_dashboard(
                 analysis_report,
                 output_dir=os.path.dirname(json_path) if json_path else ".",
             )
 
-            # 논문용 면역 시스템 시각화 생성
-            immune_viz = create_paper_ready_visualizations(
+            # 면역 시스템 시각화 생성
+            immune_viz = create_visualizations(
                 self,
                 start_date,
                 end_date,
@@ -3653,10 +3638,10 @@ class ImmunePortfolioBacktester:
             print(f"  Markdown: {md_path}")
             print(f"  HTML Dashboard: {dashboard_paths['html_dashboard']}")
             print(
-                f"\n🎯 HTML 대시보드에서 T-Cell/B-Cell 판단 근거를 직관적으로 확인할 수 있습니다!"
+                f"\nHTML 대시보드에서 T-Cell/B-Cell 판단 근거를 직관적으로 확인할 수 있습니다!"
             )
             print(
-                f"🧬 면역 시스템 반응 패턴 시각화로 기존 연구와의 차별점을 강조할 수 있습니다!"
+                f"면역 시스템 반응 패턴 시각화로 기존 연구와의 차별점을 강조할 수 있습니다!"
             )
 
             return json_path, md_path, dashboard_paths["html_dashboard"]
@@ -3679,13 +3664,13 @@ class ImmunePortfolioBacktester:
             filename = f"expertise_analysis_{timestamp}"
 
         # JSON 저장
-        json_path = os.path.join(RESULTS_DIR, f"{filename}.json")
+        json_path = os.path.join(self.output_dir, f"{filename}.json")
         with open(json_path, "w", encoding="utf-8") as f:
             json.dump(expertise_data, f, ensure_ascii=False, indent=2)
 
         # Markdown 저장
         md_content = self._generate_expertise_markdown(expertise_data)
-        md_path = os.path.join(RESULTS_DIR, f"{filename}.md")
+        md_path = os.path.join(self.output_dir, f"{filename}.md")
         with open(md_path, "w", encoding="utf-8") as f:
             f.write(md_content)
 
@@ -3732,7 +3717,8 @@ class ImmunePortfolioBacktester:
     def save_model(self, immune_system, filename=None, output_dir=None):
         """모델 저장"""
         if output_dir is None:
-            output_dir = create_timestamped_directory(MODELS_DIR, "model")
+            output_dir = os.path.join(self.output_dir, "models")
+            os.makedirs(output_dir, exist_ok=True)
 
         if filename is None:
             if immune_system.use_learning_bcells:
@@ -3776,7 +3762,7 @@ class ImmunePortfolioBacktester:
     def save_results(self, metrics_df, filename=None, output_dir=None):
         """결과 저장"""
         if output_dir is None:
-            output_dir = create_timestamped_directory(RESULTS_DIR, "backtest_results")
+            output_dir = self.output_dir  # 전역 output_dir 사용
 
         if filename is None:
             filename = "bipd_performance_metrics"
@@ -3965,7 +3951,7 @@ if __name__ == "__main__":
             "2021-01-01", "2021-06-30"
         )
 
-        # 향상된 분석 결과 저장 (HTML 대시보드 + 면역 시스템 시각화)
+        # 분석 결과 저장 (HTML 대시보드 + 면역 시스템 시각화)
         analysis_json, analysis_md, dashboard_html = backtester.save_analysis_results(
             "2021-01-01", "2021-06-30"
         )

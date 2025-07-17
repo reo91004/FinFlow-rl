@@ -697,8 +697,8 @@ class HTMLDashboardGenerator:
 
 
 # 기존 분석 시스템과 통합하는 함수
-def generate_enhanced_dashboard(analysis_report: Dict, output_dir: str = None):
-    """향상된 대시보드 생성"""
+def generate_dashboard(analysis_report: Dict, output_dir: str = None):
+    """대시보드 생성"""
     
     if output_dir is None:
         output_dir = "."
