@@ -74,12 +74,12 @@ class ImmuneSystemVisualizer:
         self._plot_xai_decision_tree(ax6, analysis_data)
 
         plt.suptitle(
-            "BIPD 면역 시스템 반응 패턴 분석", fontsize=16, fontweight="bold"
+            "BIPD Immune System Response Pattern Analysis", fontsize=16, fontweight="bold"
         )
 
         if output_path:
             plt.savefig(output_path, dpi=300, bbox_inches="tight")
-            print(f"면역 시스템 시각화 저장: {output_path}")
+            print(f"Immune system visualization saved: {output_path}")
 
         return fig
 

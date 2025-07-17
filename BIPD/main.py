@@ -3495,8 +3495,8 @@ class ImmunePortfolioBacktester:
         with open(md_path, "w", encoding="utf-8") as f:
             f.write(md_content)
 
-        print(f"통합 분석 결과 저장 완료:")
-        print(f"  디렉토리: {output_dir}")
+        print(f"Comprehensive analysis results saved:")
+        print(f"  Directory: {output_dir}")
         print(f"  JSON: {os.path.basename(json_path)}")
         print(f"  Markdown: {os.path.basename(md_path)}")
 
@@ -3605,7 +3605,7 @@ class ImmunePortfolioBacktester:
         if not hasattr(self, "immune_system") or not hasattr(
             self.immune_system, "analyzer"
         ):
-            print("분석 시스템을 사용할 수 없습니다.")
+            print("Analysis system is not available.")
             return None, None, None
 
         try:
@@ -3633,21 +3633,21 @@ class ImmunePortfolioBacktester:
                 output_dir=os.path.dirname(json_path) if json_path else ".",
             )
 
-            print(f"분석 결과 저장 완료:")
+            print(f"Analysis results saved:")
             print(f"  JSON: {json_path}")
             print(f"  Markdown: {md_path}")
             print(f"  HTML Dashboard: {dashboard_paths['html_dashboard']}")
             print(
-                f"\nHTML 대시보드에서 T-Cell/B-Cell 판단 근거를 직관적으로 확인할 수 있습니다!"
+                f"\nYou can intuitively check T-Cell/B-Cell decision basis in HTML dashboard!"
             )
             print(
-                f"면역 시스템 반응 패턴 시각화로 기존 연구와의 차별점을 강조할 수 있습니다!"
+                f"Immune system response pattern visualization emphasizes differentiation from existing research!"
             )
 
             return json_path, md_path, dashboard_paths["html_dashboard"]
 
         except Exception as e:
-            print(f"분석 결과 저장 오류: {e}")
+            print(f"Analysis results save error: {e}")
             return None, None, None
 
     def save_expertise_analysis(self, filename: str = None):
@@ -3797,15 +3797,15 @@ class ImmunePortfolioBacktester:
         plt.subplot(2, 2, 4)
         plt.axis("off")
         summary_text = f"""
-BIPD 백테스트 결과 요약
+BIPD Backtest Results Summary
 
-총 수익률: {metrics_df['Total Return'].mean():.2%}
-표준편차: {metrics_df['Volatility'].mean():.3f}
-최대 낙폭: {metrics_df['Max Drawdown'].mean():.2%}
+Total Return: {metrics_df['Total Return'].mean():.2%}
+Volatility: {metrics_df['Volatility'].mean():.3f}
+Max Drawdown: {metrics_df['Max Drawdown'].mean():.2%}
 Sharpe Ratio: {metrics_df['Sharpe Ratio'].mean():.2f}
 Calmar Ratio: {metrics_df['Calmar Ratio'].mean():.2f}
-초기 자본: {metrics_df['Initial Capital'].iloc[0]:,.0f}원
-최종 자본: {metrics_df['Final Value'].mean():,.0f}원
+Initial Capital: {metrics_df['Initial Capital'].iloc[0]:,.0f}
+Final Capital: {metrics_df['Final Value'].mean():,.0f}
         """
         plt.text(0.1, 0.5, summary_text, fontsize=10, verticalalignment="center")
 
@@ -3814,10 +3814,10 @@ Calmar Ratio: {metrics_df['Calmar Ratio'].mean():.2f}
         plt.savefig(plot_path, dpi=300, bbox_inches="tight")
         plt.close()
 
-        print(f"백테스트 결과 저장 완료:")
-        print(f"  디렉토리: {output_dir}")
+        print(f"Backtest results saved:")
+        print(f"  Directory: {output_dir}")
         print(f"  CSV: {os.path.basename(csv_path)}")
-        print(f"  그래프: {os.path.basename(plot_path)}")
+        print(f"  Chart: {os.path.basename(plot_path)}")
         return csv_path, plot_path
 
     def run_multiple_backtests(
