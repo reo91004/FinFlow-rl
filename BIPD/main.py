@@ -48,10 +48,11 @@ def create_timestamped_directory(base_dir, prefix="run"):
 class DecisionAnalyzer:
     """의사결정 과정 분석 클래스"""
 
-    def __init__(self):
+    def __init__(self, output_dir=None):
         self.decision_log = []
         self.risk_thresholds = {"low": 0.3, "medium": 0.5, "high": 0.7, "critical": 0.9}
         self.crisis_detection_log = []  # 상세 위기 감지 로그
+        self.output_dir = output_dir or "."
 
     def _process_detailed_tcell_analysis(
         self, tcell_analysis, dominant_risk, risk_features, dominant_risk_idx
@@ -2308,6 +2309,7 @@ class ImmunePortfolioSystem:
         random_state=None,
         use_learning_bcells=True,
         logging_level="full",
+        output_dir=None,
     ):
         self.n_assets = n_assets
         self.use_learning_bcells = use_learning_bcells
@@ -2358,7 +2360,7 @@ class ImmunePortfolioSystem:
         self.crisis_level = 0.0
 
         # 분석 시스템
-        self.analyzer = DecisionAnalyzer()
+        self.analyzer = DecisionAnalyzer(output_dir=output_dir or '.')
         self.enable_logging = True
 
         # 로깅 레벨에 따른 설정
@@ -3241,6 +3243,7 @@ class ImmunePortfolioBacktester:
             random_state=seed,
             use_learning_bcells=use_learning_bcells,
             logging_level=logging_level,
+            output_dir=self.output_dir,
         )
 
         # 사전 훈련
@@ -3404,7 +3407,7 @@ class ImmunePortfolioBacktester:
             not hasattr(self, "immune_system")
             or not self.immune_system.use_learning_bcells
         ):
-            return {"error": "학습 기반 시스템을 사용할 수 없습니다."}
+            return {"error": "Learning-based system is not available."}
 
         print("B-세포 전문화 시스템 분석 중...")
 
@@ -3472,7 +3475,7 @@ class ImmunePortfolioBacktester:
                 "analysis_timestamp": datetime.now().isoformat(),
                 "analysis_period": {"start": start_date, "end": end_date},
                 "system_type": (
-                    "학습 기반"
+                    "Learning-based"
                     if (
                         hasattr(self, "immune_system")
                         and self.immune_system.use_learning_bcells
@@ -3611,7 +3614,7 @@ class ImmunePortfolioBacktester:
         try:
             # 기존 JSON/MD 파일 생성
             json_path, md_path = self.immune_system.analyzer.save_analysis_to_file(
-                start_date, end_date, filename
+                start_date, end_date, filename, output_dir=self.output_dir
             )
 
             # 분석 보고서 데이터 가져오기
@@ -3622,7 +3625,7 @@ class ImmunePortfolioBacktester:
             # HTML 대시보드 생성
             dashboard_paths = generate_dashboard(
                 analysis_report,
-                output_dir=os.path.dirname(json_path) if json_path else ".",
+                output_dir=self.output_dir,
             )
 
             # 면역 시스템 시각화 생성
@@ -3630,7 +3633,7 @@ class ImmunePortfolioBacktester:
                 self,
                 start_date,
                 end_date,
-                output_dir=os.path.dirname(json_path) if json_path else ".",
+                output_dir=self.output_dir,
             )
 
             print(f"Analysis results saved:")
@@ -3750,7 +3753,7 @@ class ImmunePortfolioBacktester:
             with open(state_path, "wb") as f:
                 pickle.dump(system_state, f)
 
-            print(f"학습 기반 모델 저장 완료: {model_dir}")
+            print(f"Learning-based model saved: {model_dir}")
             return model_dir
         else:
             model_path = os.path.join(output_dir, f"{filename}.pkl")
@@ -3866,7 +3869,7 @@ Final Capital: {metrics_df['Final Value'].mean():,.0f}
 
         metrics_df = pd.DataFrame(all_metrics)
 
-        system_type = "학습 기반" if use_learning_bcells else "규칙 기반"
+        system_type = "Learning-based" if use_learning_bcells else "Rule-based"
         print(f"\n=== {system_type} 모델 성능 요약 ({n_runs}회 실행 평균) ===")
         print(f"총 수익률: {metrics_df['Total Return'].mean():.2%}")
         print(f"연평균 변동성: {metrics_df['Volatility'].mean():.3f}")

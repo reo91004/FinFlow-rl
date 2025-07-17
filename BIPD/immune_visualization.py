@@ -10,14 +10,8 @@ import seaborn as sns
 import matplotlib.font_manager as fm
 import platform
 
-# 한글 폰트 설정
-if platform.system() == 'Darwin':  # macOS
-    plt.rcParams['font.family'] = 'AppleGothic'
-elif platform.system() == 'Windows':
-    plt.rcParams['font.family'] = 'Malgun Gothic'
-else:  # Linux
-    plt.rcParams['font.family'] = 'NanumGothic'
-
+# 기본 폰트 설정 (한글 폰트 제거)
+plt.rcParams['font.family'] = 'DejaVu Sans'
 plt.rcParams['axes.unicode_minus'] = False  # 마이너스 기호 깨짐 방지
 from matplotlib.patches import Circle, FancyBboxPatch
 from matplotlib.collections import LineCollection
