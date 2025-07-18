@@ -10,6 +10,8 @@ from datetime import datetime, timedelta
 from tqdm import tqdm
 from typing import Dict, List, Tuple, Any, Optional
 from .system import ImmunePortfolioSystem
+from .reward import RewardCalculator
+from .curriculum import CurriculumLearningManager
 from xai import generate_dashboard, create_visualizations
 from constant import *
 
@@ -32,30 +34,35 @@ class ImmunePortfolioBacktester:
         self.output_dir = os.path.join(RESULTS_DIR, f"analysis_{timestamp}")
         os.makedirs(self.output_dir, exist_ok=True)
 
+        # 고도화된 보상 계산기 초기화
+        self.reward_calculator = RewardCalculator(
+            lookback_window=20,
+            transaction_cost_rate=0.001,
+            target_volatility=0.15,
+            target_max_drawdown=0.1,
+        )
+
         # 데이터 로드
         data_filename = f"market_data_{'_'.join(symbols)}_{train_start}_{test_end}.pkl"
         self.data_path = os.path.join(DATA_DIR, data_filename)
 
         if os.path.exists(self.data_path):
-            print(f"기존 데이터 로드 중: {data_filename}")
+            print(f"기존 데이터를 로드하고 있습니다: {data_filename}")
             with open(self.data_path, "rb") as f:
                 self.data = pickle.load(f)
         else:
-            print("포괄적 시장 데이터 다운로드 중...")
+            print("포괄적 시장 데이터를 다운로드하고 있습니다...")
             raw_data = yf.download(
                 symbols, start="2007-12-01", end="2025-01-01", progress=True
             )
 
-            # 다중 지표 데이터 처리
             self.data = self._process_comprehensive_data(raw_data, symbols)
 
-            # 데이터 전처리는 _process_comprehensive_data에서 이미 완료됨
-            print("데이터 전처리 완료")
+            print("데이터 전처리를 완료했습니다.")
 
-            # 데이터 저장
             with open(self.data_path, "wb") as f:
                 pickle.dump(self.data, f)
-            print(f"포괄적 시장 데이터 저장 완료: {data_filename}")
+            print(f"포괄적 시장 데이터를 저장했습니다: {data_filename}")
             print(f"데이터 구조: {list(self.data.keys())}")
 
         # 데이터 분할
@@ -64,15 +71,20 @@ class ImmunePortfolioBacktester:
         self.train_features = self.data["features"][train_start:train_end]
         self.test_features = self.data["features"][test_start:test_end]
 
-        # 기존 코드 호환성을 위한 추가 정리
         self.train_data = self._clean_data(self.train_data)
         self.test_data = self._clean_data(self.test_data)
 
+        # 가중치 추적용 변수
+        self.previous_weights = None
+        self.current_weights = None
+
+        # 커리큘럼 학습 관리자 초기화
+        self.curriculum_manager = None
+
     def _process_comprehensive_data(self, raw_data, symbols):
         """포괄적인 시장 데이터 처리"""
-        print("다중 지표 데이터 처리 중...")
+        print("다중 지표 데이터를 처리하고 있습니다...")
 
-        # 기본 가격 데이터 추출
         if len(symbols) == 1:
             if "Adj Close" in raw_data.columns:
                 prices = raw_data["Adj Close"].to_frame(symbols[0])
@@ -101,10 +113,8 @@ class ImmunePortfolioBacktester:
                         raise ValueError("사용 가능한 가격 데이터가 없습니다.")
                     prices = pd.DataFrame(price_data)
 
-        # 추가 지표 계산
         features = self._calculate_technical_indicators(raw_data, symbols)
 
-        # 데이터 정리
         prices = self._clean_data(prices)
         features = self._clean_data(features)
 
@@ -112,13 +122,12 @@ class ImmunePortfolioBacktester:
 
     def _calculate_technical_indicators(self, raw_data, symbols):
         """기술적 지표 계산"""
-        print("기술적 지표 계산 중...")
+        print("기술적 지표를 계산하고 있습니다...")
 
         features = {}
 
         for symbol in symbols:
             try:
-                # 가격 데이터 추출
                 if len(symbols) == 1:
                     high = (
                         raw_data["High"]
@@ -162,10 +171,8 @@ class ImmunePortfolioBacktester:
                         else pd.Series(1, index=raw_data.index)
                     )
 
-                # 기술적 지표 계산
                 symbol_features = pd.DataFrame(index=close.index)
 
-                # 1. 가격 기반 지표
                 symbol_features[f"{symbol}_returns"] = close.pct_change()
                 symbol_features[f"{symbol}_volatility"] = (
                     symbol_features[f"{symbol}_returns"].rolling(20).std()
@@ -179,23 +186,19 @@ class ImmunePortfolioBacktester:
                     close / symbol_features[f"{symbol}_sma_50"]
                 )
 
-                # 2. 모멘텀 지표
                 symbol_features[f"{symbol}_rsi"] = self._calculate_rsi(close, 14)
                 symbol_features[f"{symbol}_momentum"] = close / close.shift(10) - 1
 
-                # 3. 볼린저 밴드
                 bb_upper, bb_lower = self._calculate_bollinger_bands(close, 20, 2)
                 symbol_features[f"{symbol}_bb_position"] = (close - bb_lower) / (
                     bb_upper - bb_lower
                 )
 
-                # 4. 거래량 지표
                 symbol_features[f"{symbol}_volume_sma"] = volume.rolling(20).mean()
                 symbol_features[f"{symbol}_volume_ratio"] = (
                     volume / symbol_features[f"{symbol}_volume_sma"]
                 )
 
-                # 5. 변동성 지표
                 symbol_features[f"{symbol}_high_low_ratio"] = (high - low) / close
                 symbol_features[f"{symbol}_price_range"] = (high - low) / close.rolling(
                     20
@@ -207,10 +210,7 @@ class ImmunePortfolioBacktester:
                 print(f"[경고] {symbol} 기술적 지표 계산 중 오류 발생: {e}")
                 continue
 
-        # 전체 특성 데이터프레임 생성
         all_features = pd.concat(features.values(), axis=1)
-
-        # 시장 전체 지표 추가
         all_features = self._add_market_indicators(all_features, symbols)
 
         return all_features
@@ -234,15 +234,13 @@ class ImmunePortfolioBacktester:
 
     def _add_market_indicators(self, features, symbols):
         """시장 전체 지표 추가"""
-        print("시장 전체 지표 계산 중...")
+        print("시장 전체 지표를 계산하고 있습니다...")
 
         try:
-            # 시장 전체 수익률 (동일 가중)
             return_cols = [col for col in features.columns if "_returns" in col]
             if return_cols:
                 features["market_return"] = features[return_cols].mean(axis=1)
                 features["market_volatility"] = features[return_cols].std(axis=1)
-                # 상관계수 계산 개선
                 corr_values = []
                 for i in range(len(features)):
                     try:
@@ -261,14 +259,12 @@ class ImmunePortfolioBacktester:
                     corr_values, index=features.index
                 )
 
-            # VIX 대용 지표 (변동성의 변동성)
             vol_cols = [col for col in features.columns if "_volatility" in col]
             if vol_cols:
                 features["vix_proxy"] = (
                     features[vol_cols].mean(axis=1).rolling(10).std()
                 )
 
-            # 시장 스트레스 지수
             rsi_cols = [col for col in features.columns if "_rsi" in col]
             if rsi_cols:
                 features["market_stress"] = features[rsi_cols].apply(
@@ -277,7 +273,6 @@ class ImmunePortfolioBacktester:
             else:
                 features["market_stress"] = 0
 
-            # 결측값 처리
             market_cols = [
                 "market_return",
                 "market_volatility",
@@ -291,7 +286,6 @@ class ImmunePortfolioBacktester:
 
         except Exception as e:
             print(f"[경고] 시장 전체 지표 계산 중 오류 발생: {e}")
-            # 기본값 설정
             features["market_return"] = 0.0
             features["market_volatility"] = 0.1
             features["market_correlation"] = 0.5
@@ -302,22 +296,22 @@ class ImmunePortfolioBacktester:
 
     def _clean_data(self, data):
         """데이터 정리"""
-        print("데이터 전처리 중...")
+        print("데이터를 전처리하고 있습니다...")
 
         if data.isnull().values.any():
-            print("결측값 발견, 전방향/후방향 채우기 적용")
+            print("결측값을 발견했습니다. 전방향/후방향 채우기를 적용합니다.")
             data = data.fillna(method="ffill").fillna(method="bfill")
 
         if data.isnull().values.any():
-            print("잔여 결측값을 0으로 채움")
+            print("잔여 결측값을 0으로 채웁니다.")
             data = data.fillna(0)
 
         if np.isinf(data.values).any():
-            print("무한대 값 발견, 유한값으로 변환")
+            print("무한대 값을 발견했습니다. 유한값으로 변환합니다.")
             data = data.replace([np.inf, -np.inf], 0)
 
         if data.isnull().values.any() or np.isinf(data.values).any():
-            print("최종 데이터 정리 중...")
+            print("최종 데이터 정리를 진행합니다...")
             data = pd.DataFrame(
                 np.nan_to_num(data.values, nan=0.0, posinf=0.0, neginf=0.0),
                 index=data.index,
@@ -365,9 +359,11 @@ class ImmunePortfolioBacktester:
         seed=None,
         return_model=False,
         use_learning_bcells=True,
+        use_hierarchical=True,
+        use_curriculum=True,
         logging_level="full",
     ):
-        """단일 백테스트 실행"""
+        """단일 백테스트 실행 (모든 기능 통합)"""
 
         if seed is not None:
             np.random.seed(seed)
@@ -378,24 +374,230 @@ class ImmunePortfolioBacktester:
             n_assets=len(self.symbols),
             random_state=seed,
             use_learning_bcells=use_learning_bcells,
+            use_hierarchical=use_hierarchical,
             logging_level=logging_level,
             output_dir=self.output_dir,
         )
 
-        # 사전 훈련
-        if use_learning_bcells:
-            immune_system.pretrain_bcells(self.train_data, episodes=500)
+        # 특성 데이터 전달
+        immune_system.train_features = self.train_features
+        immune_system.test_features = self.test_features
 
-        # 훈련 단계
-        print("적응형 학습 진행 중...")
+        # 커리큘럼 학습 초기화
+        if use_curriculum and use_learning_bcells:
+            self.curriculum_manager = CurriculumLearningManager(
+                market_data=self.train_data, total_episodes=1000, episode_length=60
+            )
+            print("커리큘럼 학습이 활성화되었습니다.")
+
+        # 사전 훈련 (기본 전문가 지식)
+        if use_learning_bcells:
+            immune_system.pretrain_bcells(self.train_data, episodes=300)
+
+        # 커리큘럼 기반 적응형 학습
+        if use_curriculum and self.curriculum_manager:
+            print("커리큘럼 기반 적응형 학습을 진행하고 있습니다...")
+            self._curriculum_training(immune_system)
+        else:
+            print("기존 방식 적응형 학습을 진행하고 있습니다...")
+            self._traditional_training(immune_system)
+
+        # 테스트 단계
+        print("테스트 데이터 기반 성능 평가를 진행하고 있습니다...")
+        test_portfolio_returns = self._run_test_phase(immune_system, logging_level)
+
+        if return_model:
+            return (
+                pd.Series(
+                    test_portfolio_returns,
+                    index=self.test_data.pct_change().dropna().index,
+                ),
+                immune_system,
+            )
+        else:
+            return pd.Series(
+                test_portfolio_returns, index=self.test_data.pct_change().dropna().index
+            )
+
+    def _curriculum_training(self, immune_system):
+        """커리큘럼 기반 훈련"""
+
+        # 가중치 초기화
+        base_weights = np.ones(len(self.symbols)) / len(self.symbols)
+        self.previous_weights = base_weights.copy()
+        self.current_weights = base_weights.copy()
+
+        episode_rewards = []
+
+        with tqdm(
+            total=self.curriculum_manager.scheduler.total_episodes, desc="커리큘럼 학습"
+        ) as pbar:
+            while not self.curriculum_manager.is_curriculum_complete():
+                # 커리큘럼에 맞는 에피소드 데이터 획득
+                episode_data, episode_features, curriculum_config = (
+                    self.curriculum_manager.get_next_training_episode()
+                )
+
+                # 에피소드 실행
+                episode_reward, episode_return = self._run_training_episode(
+                    immune_system, episode_data, curriculum_config
+                )
+
+                episode_rewards.append(episode_reward)
+
+                # 성과 메트릭 계산
+                episode_returns = episode_data.pct_change().dropna()
+                if len(episode_returns) > 5:
+                    sharpe_ratio = (
+                        episode_returns.mean().mean()
+                        / episode_returns.std().mean()
+                        * np.sqrt(252)
+                        if episode_returns.std().mean() > 0
+                        else 0
+                    )
+                    max_drawdown = self.calculate_max_drawdown(
+                        episode_returns.mean(axis=1)
+                    )
+                else:
+                    sharpe_ratio = 0
+                    max_drawdown = 0
+
+                # 커리큘럼 결과 기록
+                self.curriculum_manager.record_episode_result(
+                    reward=episode_reward,
+                    portfolio_return=episode_return,
+                    sharpe_ratio=sharpe_ratio,
+                    max_drawdown=max_drawdown,
+                )
+
+                # 진행률 업데이트
+                progress = self.curriculum_manager.get_curriculum_progress()
+                pbar.set_postfix(
+                    {
+                        "Level": progress["current_level"],
+                        "Episode": progress["current_episode"],
+                        "Reward": f"{episode_reward:.3f}",
+                        "Config": curriculum_config["name"],
+                    }
+                )
+                pbar.update(1)
+
+                # B-세포 학습
+                if immune_system.use_learning_bcells:
+                    for bcell in immune_system.bcells:
+                        if hasattr(bcell, "end_episode"):
+                            bcell.end_episode()
+
+                # 계층적 제어기 학습
+                if (
+                    hasattr(immune_system, "hierarchical_controller")
+                    and immune_system.hierarchical_controller
+                ):
+                    immune_system.update_hierarchical_learning(episode_reward)
+
+        # 커리큘럼 요약 저장
+        curriculum_summary = self.curriculum_manager.get_training_summary()
+        summary_path = os.path.join(self.output_dir, "curriculum_summary.json")
+        with open(summary_path, "w", encoding="utf-8") as f:
+            json.dump(curriculum_summary, f, ensure_ascii=False, indent=2, default=str)
+
+        print(f"커리큘럼 학습이 완료되었습니다. 요약: {summary_path}")
+
+    def _run_training_episode(self, immune_system, episode_data, curriculum_config):
+        """단일 훈련 에피소드 실행"""
+
+        episode_returns = episode_data.pct_change().dropna()
+        if len(episode_returns) == 0:
+            return 0.0, 0.0
+
+        episode_rewards = []
+        portfolio_returns = []
+
+        for i in range(len(episode_returns)):
+            current_data = episode_data.iloc[: i + 1]
+            market_features = immune_system.extract_market_features(current_data)
+
+            # 마지막 특성 저장 (보상 계산용)
+            immune_system.last_market_features = market_features
+
+            weights, response_type, bcell_decisions = immune_system.immune_response(
+                market_features, training=True
+            )
+
+            portfolio_return = np.sum(weights * episode_returns.iloc[i])
+            portfolio_returns.append(portfolio_return)
+
+            # 고도화된 보상 계산
+            reward_details = self.reward_calculator.calculate_comprehensive_reward(
+                current_return=portfolio_return,
+                previous_weights=self.previous_weights,
+                current_weights=weights,
+                market_features=market_features,
+                crisis_level=immune_system.crisis_level,
+            )
+
+            total_reward = reward_details["total_reward"]
+            episode_rewards.append(total_reward)
+
+            # B-세포 학습 (커리큘럼 난이도 반영)
+            if immune_system.use_learning_bcells and len(episode_rewards) > 5:
+                difficulty_multiplier = curriculum_config.get("difficulty", 1.0)
+                adjusted_reward = total_reward * difficulty_multiplier
+
+                for bcell in immune_system.bcells:
+                    if hasattr(bcell, "last_strategy"):
+                        is_specialist_today = bcell.is_my_specialty_situation(
+                            market_features, immune_system.crisis_level
+                        )
+
+                        if is_specialist_today:
+                            specialist_reward = adjusted_reward * 2.0
+                        else:
+                            specialist_reward = adjusted_reward * 0.8
+
+                        final_reward = np.clip(specialist_reward, -2, 2)
+
+                        bcell.add_experience(
+                            market_features,
+                            immune_system.crisis_level,
+                            bcell.last_strategy.numpy(),
+                            final_reward,
+                        )
+
+            # 기억 세포 업데이트
+            if immune_system.crisis_level > 0.15:
+                immune_system.update_memory(
+                    market_features, weights, np.clip(total_reward, -1, 1)
+                )
+
+            # 가중치 업데이트
+            self.previous_weights = self.current_weights.copy()
+            self.current_weights = weights.copy()
+
+        # 에피소드 평균 보상 및 수익률 반환
+        avg_reward = np.mean(episode_rewards) if episode_rewards else 0.0
+        avg_return = np.mean(portfolio_returns) if portfolio_returns else 0.0
+
+        return avg_reward, avg_return
+
+    def _traditional_training(self, immune_system):
+        """기존 방식 훈련"""
+
         train_returns = self.train_data.pct_change().dropna()
         portfolio_values = [1.0]
+
+        # 가중치 초기화
+        base_weights = np.ones(len(self.symbols)) / len(self.symbols)
+        self.previous_weights = base_weights.copy()
+        self.current_weights = base_weights.copy()
 
         for i in tqdm(range(len(train_returns)), desc="적응형 학습"):
             current_data = self.train_data.iloc[: i + 1]
             market_features = immune_system.extract_market_features(current_data)
 
-            # 면역 반응 실행
+            # 마지막 특성 저장
+            immune_system.last_market_features = market_features
+
             weights, response_type, bcell_decisions = immune_system.immune_response(
                 market_features, training=True
             )
@@ -403,7 +605,6 @@ class ImmunePortfolioBacktester:
             portfolio_return = np.sum(weights * train_returns.iloc[i])
             portfolio_values.append(portfolio_values[-1] * (1 + portfolio_return))
 
-            # 로깅
             if hasattr(immune_system, "analyzer") and immune_system.enable_logging:
                 current_date = train_returns.index[i]
                 immune_system.analyzer.log_decision(
@@ -420,50 +621,33 @@ class ImmunePortfolioBacktester:
                     crisis_level=immune_system.crisis_level,
                 )
 
-            # 학습 로직
+            # 고도화된 보상 계산
             if len(portfolio_values) > 20:
-                base_reward = portfolio_return * 100
-                if portfolio_return < 0:
-                    base_reward -= (portfolio_return * 150) ** 2
-
-                running_max = np.maximum.accumulate(portfolio_values)
-                drawdown = (portfolio_values[-1] - running_max[-1]) / (
-                    running_max[-1] + 1e-8
+                reward_details = self.reward_calculator.calculate_comprehensive_reward(
+                    current_return=portfolio_return,
+                    previous_weights=self.previous_weights,
+                    current_weights=weights,
+                    market_features=market_features,
+                    crisis_level=immune_system.crisis_level,
                 )
-                if drawdown < 0:
-                    base_reward += drawdown * 50
 
-                # 지배적 위험 판단
-                risk_features = market_features[:5]
-                dominant_risk_idx = np.argmax(
-                    np.abs(risk_features - np.mean(risk_features))
-                )
-                risk_map = {
-                    0: "volatility",
-                    1: "correlation",
-                    2: "momentum",
-                    3: "liquidity",
-                    4: "macro",
-                }
-                dominant_risk = risk_map.get(dominant_risk_idx, "volatility")
+                total_reward = reward_details["total_reward"]
 
                 # B-세포 학습
-                if use_learning_bcells:
+                if immune_system.use_learning_bcells:
                     for bcell in immune_system.bcells:
                         if hasattr(bcell, "last_strategy"):
-                            # 전문 분야 보상 조정
                             is_specialist_today = bcell.is_my_specialty_situation(
                                 market_features, immune_system.crisis_level
                             )
 
                             if is_specialist_today:
-                                specialist_reward = base_reward * 2.0
+                                specialist_reward = total_reward * 2.0
                             else:
-                                specialist_reward = base_reward * 0.8
+                                specialist_reward = total_reward * 0.8
 
                             final_reward = np.clip(specialist_reward, -2, 2)
 
-                            # 경험 추가
                             bcell.add_experience(
                                 market_features,
                                 immune_system.crisis_level,
@@ -471,29 +655,43 @@ class ImmunePortfolioBacktester:
                                 final_reward,
                             )
 
-                            # 주기적 전문가 학습
                             if i % 20 == 0:
                                 bcell.learn_from_specialized_experience()
 
-                # 기억 세포 업데이트 (더 민감한 임계값)
+                # 기억 세포 업데이트
                 if immune_system.crisis_level > 0.15:
                     immune_system.update_memory(
-                        market_features, weights, np.clip(base_reward, -1, 1)
+                        market_features, weights, np.clip(total_reward, -1, 1)
                     )
 
+                # 계층적 제어기 학습
+                if (
+                    hasattr(immune_system, "hierarchical_controller")
+                    and immune_system.hierarchical_controller
+                ):
+                    immune_system.update_hierarchical_learning(total_reward)
+
+            # 가중치 업데이트
+            self.previous_weights = self.current_weights.copy()
+            self.current_weights = weights.copy()
+
         # 에피소드 종료
-        if use_learning_bcells:
+        if immune_system.use_learning_bcells:
             for bcell in immune_system.bcells:
                 bcell.end_episode()
 
-        # 테스트 단계
-        print("테스트 데이터 기반 성능 평가 진행 중...")
+    def _run_test_phase(self, immune_system, logging_level):
+        """테스트 단계 실행"""
+
         test_returns = self.test_data.pct_change().dropna()
         test_portfolio_returns = []
 
         for i in tqdm(range(len(test_returns)), desc="성능 평가"):
             current_data = self.test_data.iloc[: i + 1]
             market_features = immune_system.extract_market_features(current_data)
+
+            # 마지막 특성 저장
+            immune_system.last_market_features = market_features
 
             weights, response_type, bcell_decisions = immune_system.immune_response(
                 market_features, training=False
@@ -502,7 +700,6 @@ class ImmunePortfolioBacktester:
             portfolio_return = np.sum(weights * test_returns.iloc[i])
             test_portfolio_returns.append(portfolio_return)
 
-            # 테스트 로깅 (로깅 레벨에 따라 조정)
             should_log = False
             if hasattr(immune_system, "analyzer") and immune_system.enable_logging:
                 if immune_system.logging_level == "full":
@@ -528,13 +725,11 @@ class ImmunePortfolioBacktester:
                         crisis_level=immune_system.crisis_level,
                     )
 
-        if return_model:
-            return (
-                pd.Series(test_portfolio_returns, index=test_returns.index),
-                immune_system,
-            )
-        else:
-            return pd.Series(test_portfolio_returns, index=test_returns.index)
+            # 가중치 업데이트
+            self.previous_weights = self.current_weights.copy()
+            self.current_weights = weights.copy()
+
+        return test_portfolio_returns
 
     def analyze_bcell_expertise(self):
         """B-세포 전문성 분석"""
@@ -545,7 +740,7 @@ class ImmunePortfolioBacktester:
         ):
             return {"error": "Learning-based system is not available."}
 
-        print("B-세포 전문화 시스템 분석 중...")
+        print("B-세포 전문화 시스템을 분석하고 있습니다...")
 
         total_specialist_exp = 0
         total_general_exp = 0
@@ -579,15 +774,14 @@ class ImmunePortfolioBacktester:
         filename: str = None,
         output_dir: str = None,
     ):
-        """통합 분석 결과 저장 (의사결정 분석 + 전문성 분석)"""
+        """통합 분석 결과 저장"""
 
         if output_dir is None:
-            output_dir = self.output_dir  # 전역 output_dir 사용
+            output_dir = self.output_dir
 
         if filename is None:
             filename = f"bipd_comprehensive_{start_date}_{end_date}"
 
-        # 의사결정 분석
         decision_analysis = {}
         if hasattr(self, "immune_system") and hasattr(self.immune_system, "analyzer"):
             try:
@@ -602,40 +796,61 @@ class ImmunePortfolioBacktester:
         else:
             decision_analysis = {"error": "분석 시스템을 사용할 수 없습니다."}
 
-        # 전문성 분석
         expertise_analysis = self.analyze_bcell_expertise()
 
-        # 통합 데이터 구조
+        # 계층적 메트릭 추가
+        hierarchical_metrics = {}
+        if hasattr(self, "immune_system") and hasattr(
+            self.immune_system, "get_hierarchical_metrics"
+        ):
+            hierarchical_metrics = self.immune_system.get_hierarchical_metrics()
+
+        # 커리큘럼 메트릭 추가
+        curriculum_metrics = {}
+        if self.curriculum_manager:
+            curriculum_metrics = self.curriculum_manager.get_training_summary()
+
         comprehensive_data = {
             "metadata": {
                 "analysis_timestamp": datetime.now().isoformat(),
                 "analysis_period": {"start": start_date, "end": end_date},
                 "system_type": (
-                    "Learning-based"
+                    "Advanced Learning-based"
                     if (
                         hasattr(self, "immune_system")
                         and self.immune_system.use_learning_bcells
                     )
-                    else "규칙 기반"
+                    else "Rule-based"
                 ),
+                "features_enabled": {
+                    "hierarchical_control": bool(
+                        hasattr(self, "immune_system")
+                        and hasattr(self.immune_system, "hierarchical_controller")
+                        and self.immune_system.hierarchical_controller
+                    ),
+                    "curriculum_learning": bool(self.curriculum_manager),
+                    "attention_mechanism": True,
+                    "memory_augmentation": True,
+                    "advanced_rewards": True,
+                },
             },
             "decision_analysis": decision_analysis,
             "expertise_analysis": expertise_analysis,
+            "hierarchical_metrics": hierarchical_metrics,
+            "curriculum_metrics": curriculum_metrics,
         }
 
-        # JSON 저장
         json_path = os.path.join(output_dir, f"{filename}.json")
         with open(json_path, "w", encoding="utf-8") as f:
-            json.dump(comprehensive_data, f, ensure_ascii=False, indent=2)
+            json.dump(comprehensive_data, f, ensure_ascii=False, indent=2, default=str)
 
-        # Markdown 저장
         md_content = self._generate_comprehensive_markdown(comprehensive_data)
         md_path = os.path.join(output_dir, f"{filename}.md")
         with open(md_path, "w", encoding="utf-8") as f:
             f.write(md_content)
 
-        print(f"Comprehensive analysis results saved:")
-        print(f"  Directory: {output_dir}")
+        print(f"통합 분석 결과를 저장했습니다:")
+        print(f"  디렉토리: {output_dir}")
         print(f"  JSON: {os.path.basename(json_path)}")
         print(f"  Markdown: {os.path.basename(md_path)}")
 
@@ -647,6 +862,8 @@ class ImmunePortfolioBacktester:
         metadata = comprehensive_data["metadata"]
         decision_data = comprehensive_data["decision_analysis"]
         expertise_data = comprehensive_data["expertise_analysis"]
+        hierarchical_data = comprehensive_data["hierarchical_metrics"]
+        curriculum_data = comprehensive_data["curriculum_metrics"]
 
         md_content = f"""# BIPD 시스템 통합 분석 보고서
 
@@ -655,11 +872,40 @@ class ImmunePortfolioBacktester:
 - 시스템 유형: {metadata['system_type']}
 - 분석 기간: {metadata['analysis_period']['start']} ~ {metadata['analysis_period']['end']}
 
+### 활성화된 기능
+- 계층적 제어: {metadata['features_enabled']['hierarchical_control']}
+- 커리큘럼 학습: {metadata['features_enabled']['curriculum_learning']}
+- 어텐션 메커니즘: {metadata['features_enabled']['attention_mechanism']}
+- 기억 기반 학습: {metadata['features_enabled']['memory_augmentation']}
+- 고도화된 보상: {metadata['features_enabled']['advanced_rewards']}
+
 ---
 
 """
 
-        # 의사결정 분석 섹션
+        # 커리큘럼 학습 분석
+        if curriculum_data and "error" not in curriculum_data:
+            md_content += """## 커리큘럼 학습 분석
+
+"""
+            if "current_level" in curriculum_data:
+                md_content += f"- 최종 레벨: {curriculum_data['current_level']}\n"
+                md_content += f"- 총 에피소드: {curriculum_data['total_episodes']}\n"
+                md_content += (
+                    f"- 레벨 전환 횟수: {curriculum_data['level_transitions']}\n\n"
+                )
+
+        # 계층적 제어 분석
+        if hierarchical_data and "hierarchical_system" not in hierarchical_data:
+            md_content += """## 계층적 제어 시스템 분석
+
+"""
+            if "total_expert_selections" in hierarchical_data:
+                md_content += f"- 총 전문가 선택: {hierarchical_data['total_expert_selections']}\n"
+                md_content += f"- 선택 다양성: {hierarchical_data.get('selection_diversity', 0):.3f}\n"
+                md_content += f"- 전환 엔트로피: {hierarchical_data.get('expert_transition_entropy', 0):.3f}\n\n"
+
+        # 기존 분석들...
         if "error" in decision_data:
             md_content += (
                 f"## 의사결정 분석\n\n**오류:** {decision_data['error']}\n\n---\n\n"
@@ -701,7 +947,6 @@ class ImmunePortfolioBacktester:
 
 """
 
-        # 전문성 분석 섹션
         if "error" in expertise_data:
             md_content += f"## 전문성 분석\n\n**오류:** {expertise_data['error']}\n\n"
         else:
@@ -739,32 +984,28 @@ class ImmunePortfolioBacktester:
     def save_analysis_results(
         self, start_date: str, end_date: str, filename: str = None
     ):
-        """분석 결과 저장 (HTML 대시보드 포함)"""
+        """분석 결과 저장"""
 
         if not hasattr(self, "immune_system") or not hasattr(
             self.immune_system, "analyzer"
         ):
-            print("Analysis system is not available.")
+            print("분석 시스템을 사용할 수 없습니다.")
             return None, None, None
 
         try:
-            # 기존 JSON/MD 파일 생성
             json_path, md_path = self.immune_system.analyzer.save_analysis_to_file(
                 start_date, end_date, filename, output_dir=self.output_dir
             )
 
-            # 분석 보고서 데이터 가져오기
             analysis_report = self.immune_system.analyzer.generate_analysis_report(
                 start_date, end_date
             )
 
-            # HTML 대시보드 생성
             dashboard_paths = generate_dashboard(
                 analysis_report,
                 output_dir=self.output_dir,
             )
 
-            # 면역 시스템 시각화 생성
             immune_viz = create_visualizations(
                 self,
                 start_date,
@@ -772,21 +1013,19 @@ class ImmunePortfolioBacktester:
                 output_dir=self.output_dir,
             )
 
-            print(f"Analysis results saved:")
+            print(f"분석 결과를 저장했습니다:")
             print(f"  JSON: {json_path}")
             print(f"  Markdown: {md_path}")
             print(f"  HTML Dashboard: {dashboard_paths['html_dashboard']}")
             print(
-                f"\nYou can intuitively check T-Cell/B-Cell decision basis in HTML dashboard!"
+                f"\nHTML 대시보드에서 T-Cell/B-Cell 판단 근거를 직관적으로 확인할 수 있습니다!"
             )
-            print(
-                f"Immune system response pattern visualization emphasizes differentiation from existing research!"
-            )
+            print(f"면역 시스템 반응 패턴 시각화는 기존 연구와의 차별화를 강조합니다!")
 
             return json_path, md_path, dashboard_paths["html_dashboard"]
 
         except Exception as e:
-            print(f"Analysis results save error: {e}")
+            print(f"분석 결과 저장 오류: {e}")
             return None, None, None
 
     def save_expertise_analysis(self, filename: str = None):
@@ -802,18 +1041,16 @@ class ImmunePortfolioBacktester:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"expertise_analysis_{timestamp}"
 
-        # JSON 저장
         json_path = os.path.join(self.output_dir, f"{filename}.json")
         with open(json_path, "w", encoding="utf-8") as f:
             json.dump(expertise_data, f, ensure_ascii=False, indent=2)
 
-        # Markdown 저장
         md_content = self._generate_expertise_markdown(expertise_data)
         md_path = os.path.join(self.output_dir, f"{filename}.md")
         with open(md_path, "w", encoding="utf-8") as f:
             f.write(md_content)
 
-        print(f"전문성 분석 저장 완료:")
+        print(f"전문성 분석을 저장했습니다:")
         print(f"  JSON: {json_path}")
         print(f"  Markdown: {md_path}")
 
@@ -869,15 +1106,13 @@ class ImmunePortfolioBacktester:
             model_dir = os.path.join(output_dir, filename)
             os.makedirs(model_dir, exist_ok=True)
 
-            # B-세포 신경망 저장
             for i, bcell in enumerate(immune_system.bcells):
-                if hasattr(bcell, "strategy_network"):
+                if hasattr(bcell, "actor_network"):
                     network_path = os.path.join(
                         model_dir, f"bcell_{i}_{bcell.risk_type}.pth"
                     )
-                    torch.save(bcell.strategy_network.state_dict(), network_path)
+                    torch.save(bcell.actor_network.state_dict(), network_path)
 
-            # 시스템 상태 저장
             system_state = {
                 "n_assets": immune_system.n_assets,
                 "base_weights": immune_system.base_weights,
@@ -889,28 +1124,26 @@ class ImmunePortfolioBacktester:
             with open(state_path, "wb") as f:
                 pickle.dump(system_state, f)
 
-            print(f"Learning-based model saved: {model_dir}")
+            print(f"Learning-based 모델을 저장했습니다: {model_dir}")
             return model_dir
         else:
             model_path = os.path.join(output_dir, f"{filename}.pkl")
             with open(model_path, "wb") as f:
                 pickle.dump(immune_system, f)
-            print(f"규칙 기반 모델 저장 완료: {model_path}")
+            print(f"규칙 기반 모델을 저장했습니다: {model_path}")
             return model_path
 
     def save_results(self, metrics_df, filename=None, output_dir=None):
         """결과 저장"""
         if output_dir is None:
-            output_dir = self.output_dir  # 전역 output_dir 사용
+            output_dir = self.output_dir
 
         if filename is None:
             filename = "bipd_performance_metrics"
 
-        # CSV 저장
         csv_path = os.path.join(output_dir, f"{filename}.csv")
         metrics_df.to_csv(csv_path, index=False)
 
-        # 시각화
         plt.figure(figsize=(15, 10))
 
         plt.subplot(2, 3, 1)
@@ -953,10 +1186,10 @@ Final Capital: {metrics_df['Final Value'].mean():,.0f}
         plt.savefig(plot_path, dpi=300, bbox_inches="tight")
         plt.close()
 
-        print(f"Backtest results saved:")
-        print(f"  Directory: {output_dir}")
+        print(f"백테스트 결과를 저장했습니다:")
+        print(f"  디렉토리: {output_dir}")
         print(f"  CSV: {os.path.basename(csv_path)}")
-        print(f"  Chart: {os.path.basename(plot_path)}")
+        print(f"  차트: {os.path.basename(plot_path)}")
         return csv_path, plot_path
 
     def run_multiple_backtests(
@@ -964,21 +1197,31 @@ Final Capital: {metrics_df['Final Value'].mean():,.0f}
         n_runs=10,
         save_results=True,
         use_learning_bcells=True,
+        use_hierarchical=True,
+        use_curriculum=True,
         logging_level="sample",
         base_seed=None,
     ):
-        """다중 백테스트 실행"""
+        """다중 백테스트 실행 (모든 기능 통합)"""
         all_metrics = []
         best_immune_system = None
         best_sharpe = -np.inf
 
         print(f"\n=== BIPD 시스템 다중 백테스트 ({n_runs}회) 실행 ===")
+
+        feature_status = []
         if use_learning_bcells:
-            print("시스템 유형: 적응형 신경망 기반 BIPD 모델")
+            feature_status.append("적응형 신경망")
+        if use_hierarchical:
+            feature_status.append("계층적 제어")
+        if use_curriculum:
+            feature_status.append("커리큘럼 학습")
+
+        if feature_status:
+            print(f"시스템 유형: {' + '.join(feature_status)} 기반 BIPD 모델")
         else:
             print("시스템 유형: 규칙 기반 레거시 BIPD 모델")
 
-        # 시드 설정
         if base_seed is None:
             import time
 
@@ -987,13 +1230,15 @@ Final Capital: {metrics_df['Final Value'].mean():,.0f}
         print(f"[설정] 기본 시드: {base_seed}")
 
         for run in range(n_runs):
-            run_seed = base_seed + run * 1000  # 각 실행마다 다른 시드
+            run_seed = base_seed + run * 1000
             print(f"\n{run + 1}/{n_runs}번째 실행 (시드: {run_seed})")
 
             portfolio_returns, immune_system = self.backtest_single_run(
                 seed=run_seed,
                 return_model=True,
                 use_learning_bcells=use_learning_bcells,
+                use_hierarchical=use_hierarchical,
+                use_curriculum=use_curriculum,
                 logging_level=logging_level,
             )
             metrics = self.calculate_metrics(portfolio_returns)
@@ -1005,7 +1250,16 @@ Final Capital: {metrics_df['Final Value'].mean():,.0f}
 
         metrics_df = pd.DataFrame(all_metrics)
 
-        system_type = "Learning-based" if use_learning_bcells else "Rule-based"
+        system_features = []
+        if use_learning_bcells:
+            system_features.append("Learning")
+        if use_hierarchical:
+            system_features.append("Hierarchical")
+        if use_curriculum:
+            system_features.append("Curriculum")
+
+        system_type = "+".join(system_features) if system_features else "Rule-based"
+
         print(f"\n=== {system_type} 모델 성능 요약 ({n_runs}회 실행 평균) ===")
         print(f"총 수익률: {metrics_df['Total Return'].mean():.2%}")
         print(f"연평균 변동성: {metrics_df['Volatility'].mean():.3f}")
