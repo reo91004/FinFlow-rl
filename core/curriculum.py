@@ -153,8 +153,9 @@ class CurriculumScheduler:
         self, reward: float, additional_metrics: Dict = None
     ) -> float:
         """정규화된 성과 점수 계산"""
-        # 기본 보상 정규화 (-2 ~ +2 범위를 0 ~ 1로 변환)
-        base_score = np.clip((reward + 2) / 4, 0, 1)
+        # 개선된 보상 정규화 (실제 보상 범위 -1 ~ +1을 0 ~ 1로 변환)
+        # 대부분의 보상이 -1 ~ +1 범위에 있으므로 이를 기준으로 정규화
+        base_score = np.clip((reward + 1) / 2, 0, 1)
 
         # 추가 메트릭이 있는 경우 종합 점수 계산
         if additional_metrics:
