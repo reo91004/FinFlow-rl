@@ -3,8 +3,11 @@
 import numpy as np
 import torch
 import time
+import traceback
+import gc
 from core import ImmunePortfolioBacktester
 from constant import create_directories
+from utils.logger import stop_logging
 
 # 디렉토리 초기화
 create_directories()
@@ -32,7 +35,7 @@ if __name__ == "__main__":
     np.random.seed(global_seed)
     torch.manual_seed(global_seed)
 
-    # 백테스터 초기화
+    # 백테스터 초기화 (로깅은 백테스터 내부에서 자동 초기화)
     backtester = ImmunePortfolioBacktester(
         symbols, train_start, train_end, test_start, test_end
     )
@@ -50,6 +53,8 @@ if __name__ == "__main__":
         print("- 계층적 강화학습 (Meta-Controller)")
         print("- 커리큘럼 학습 (3단계 난이도)")
         print("- XAI 기반 설명 가능성")
+        print("- 체크포인트 자동 관리")
+        print("- 데이터 검증 시스템")
 
     try:
         # 통합 백테스트 실행
@@ -100,20 +105,44 @@ if __name__ == "__main__":
             base_seed=global_seed,
         )
 
+        print(f"\n=== 최종 성과 요약 ===")
+        print(f"평균 샤프 지수: {results['Sharpe Ratio'].mean():.3f}")
+        print(f"샤프 지수 표준편차: {results['Sharpe Ratio'].std():.3f}")
+        print(f"평균 최대 낙폭: {results['Max Drawdown'].mean():.2%}")
+
+    except KeyboardInterrupt:
+        print("\n사용자에 의한 중단")
     except Exception as e:
         print(f"\n[오류] 주요 실행 실패: {e}")
-        import traceback
-
-        traceback.print_exc()
+        print(f"스택 트레이스:\n{traceback.format_exc()}")
 
         # 폴백 모드: 기본 기능만 활성화
         print(f"\n[폴백] 기본 기능으로 재시도...")
-        basic_results = backtester.run_multiple_backtests(
-            n_runs=1,
-            save_results=True,
-            use_learning_bcells=True,
-            use_hierarchical=False,
-            use_curriculum=False,
-            logging_level="minimal",
-            base_seed=global_seed,
-        )
+        try:
+            basic_results = backtester.run_multiple_backtests(
+                n_runs=1,
+                save_results=True,
+                use_learning_bcells=True,
+                use_hierarchical=False,
+                use_curriculum=False,
+                logging_level="minimal",
+                base_seed=global_seed,
+            )
+            print("폴백 모드 실행 완료")
+        except Exception as fallback_error:
+            print(f"폴백 모드도 실패: {fallback_error}")
+
+    finally:
+        # 시스템 정리
+        print("\n시스템 정리 중...")
+
+        # 메모리 정리
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        # 로깅 시스템 정리
+        if hasattr(backtester, "tee_output") and backtester.tee_output:
+            stop_logging(backtester.tee_output)
+
+        print("정리 완료")

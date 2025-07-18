@@ -6,6 +6,7 @@ import yfinance as yf
 import pickle
 import matplotlib.pyplot as plt
 import torch
+import gc
 from datetime import datetime, timedelta
 from tqdm import tqdm
 from typing import Dict, List, Tuple, Any, Optional
@@ -14,6 +15,9 @@ from .reward import RewardCalculator
 from .curriculum import CurriculumLearningManager
 from xai import generate_dashboard, create_visualizations
 from constant import *
+from utils.logger import setup_logging, stop_logging
+from utils.checkpoint import CheckpointManager
+from utils.validator import DataLeakageValidator, SystemValidator
 
 import warnings
 import json
@@ -33,6 +37,16 @@ class ImmunePortfolioBacktester:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.output_dir = os.path.join(RESULTS_DIR, f"analysis_{timestamp}")
         os.makedirs(self.output_dir, exist_ok=True)
+
+        # 로깅 시스템 초기화
+        self.tee_output = setup_logging(self.output_dir)
+
+        # 체크포인트 관리자 초기화
+        checkpoint_dir = os.path.join(self.output_dir, "checkpoints")
+        self.checkpoint_manager = CheckpointManager(checkpoint_dir, save_interval=100)
+
+        # 시스템 검증기 초기화
+        self.validator = SystemValidator()
 
         # 고도화된 보상 계산기 초기화
         self.reward_calculator = RewardCalculator(
@@ -74,12 +88,20 @@ class ImmunePortfolioBacktester:
         self.train_data = self._clean_data(self.train_data)
         self.test_data = self._clean_data(self.test_data)
 
+        # 데이터 리키지 검증
+        DataLeakageValidator.validate_train_test_split(self.train_data, self.test_data)
+
         # 가중치 추적용 변수
         self.previous_weights = None
         self.current_weights = None
 
         # 커리큘럼 학습 관리자 초기화
         self.curriculum_manager = None
+
+    def __del__(self):
+        """소멸자 - 로깅 정리"""
+        if hasattr(self, "tee_output") and self.tee_output:
+            stop_logging(self.tee_output)
 
     def _process_comprehensive_data(self, raw_data, symbols):
         """포괄적인 시장 데이터 처리"""
@@ -390,21 +412,34 @@ class ImmunePortfolioBacktester:
             )
             print("커리큘럼 학습이 활성화되었습니다.")
 
-        # 사전 훈련 (기본 전문가 지식)
-        if use_learning_bcells:
-            immune_system.pretrain_bcells(self.train_data, episodes=300)
+        try:
+            # 사전 훈련 (기본 전문가 지식)
+            if use_learning_bcells:
+                immune_system.pretrain_bcells(self.train_data, episodes=300)
 
-        # 커리큘럼 기반 적응형 학습
-        if use_curriculum and self.curriculum_manager:
-            print("커리큘럼 기반 적응형 학습을 진행하고 있습니다...")
-            self._curriculum_training(immune_system)
-        else:
-            print("기존 방식 적응형 학습을 진행하고 있습니다...")
-            self._traditional_training(immune_system)
+            # 커리큘럼 기반 적응형 학습
+            if use_curriculum and self.curriculum_manager:
+                print("커리큘럼 기반 적응형 학습을 진행하고 있습니다...")
+                self._curriculum_training(immune_system)
+            else:
+                print("기존 방식 적응형 학습을 진행하고 있습니다...")
+                self._traditional_training(immune_system)
 
-        # 테스트 단계
-        print("테스트 데이터 기반 성능 평가를 진행하고 있습니다...")
-        test_portfolio_returns = self._run_test_phase(immune_system, logging_level)
+            # 테스트 단계
+            print("테스트 데이터 기반 성능 평가를 진행하고 있습니다...")
+            test_portfolio_returns = self._run_test_phase(immune_system, logging_level)
+
+            # 검증 요약 출력
+            validation_summary = self.validator.get_validation_summary()
+            print(
+                f"검증 요약: 성공률 {validation_summary['success_rate']:.1%} ({validation_summary['successful']}/{validation_summary['total']})"
+            )
+
+        except Exception as e:
+            print(f"백테스트 실행 중 오류 발생: {e}")
+            # 응급 체크포인트 저장
+            self._save_emergency_checkpoint(immune_system, str(e))
+            raise
 
         if return_model:
             return (
@@ -438,6 +473,17 @@ class ImmunePortfolioBacktester:
                     self.curriculum_manager.get_next_training_episode()
                 )
 
+                # 데이터 검증
+                validation_result = self.validator.validate_episode_data(
+                    episode_data, episode_features
+                )
+                if (
+                    not validation_result["data_valid"]
+                    or not validation_result["features_valid"]
+                ):
+                    print(f"에피소드 데이터 검증 실패: {validation_result['issues']}")
+                    continue
+
                 # 에피소드 실행
                 episode_reward, episode_return = self._run_training_episode(
                     immune_system, episode_data, curriculum_config
@@ -469,6 +515,18 @@ class ImmunePortfolioBacktester:
                     sharpe_ratio=sharpe_ratio,
                     max_drawdown=max_drawdown,
                 )
+
+                # 체크포인트 저장
+                if self.checkpoint_manager.should_save_checkpoint():
+                    episode_info = {
+                        "reward": episode_reward,
+                        "return": episode_return,
+                        "config": curriculum_config,
+                        "progress": self.curriculum_manager.get_curriculum_progress(),
+                    }
+                    self.checkpoint_manager.save_checkpoint(
+                        immune_system, self.curriculum_manager, episode_info
+                    )
 
                 # 진행률 업데이트
                 progress = self.curriculum_manager.get_curriculum_progress()
@@ -504,7 +562,7 @@ class ImmunePortfolioBacktester:
         print(f"커리큘럼 학습이 완료되었습니다. 요약: {summary_path}")
 
     def _run_training_episode(self, immune_system, episode_data, curriculum_config):
-        """단일 훈련 에피소드 실행 (수치적 안정성 강화)"""
+        """단일 훈련 에피소드 실행"""
 
         episode_returns = episode_data.pct_change().dropna()
         if len(episode_returns) == 0:
@@ -626,9 +684,7 @@ class ImmunePortfolioBacktester:
 
                                     # 전문성에 따른 보상 조정
                                     if is_specialist_today:
-                                        specialist_reward = (
-                                            adjusted_reward * 1.5
-                                        )  # 2.0 → 1.5로 완화
+                                        specialist_reward = adjusted_reward * 1.5
                                     else:
                                         specialist_reward = adjusted_reward * 0.8
 
@@ -677,9 +733,6 @@ class ImmunePortfolioBacktester:
                     # 주기적 메모리 정리
                     if i % memory_cleanup_interval == 0 and i > 0:
                         try:
-                            import gc
-                            import torch
-
                             collected = gc.collect()
                             if torch.cuda.is_available():
                                 torch.cuda.empty_cache()
@@ -773,6 +826,14 @@ class ImmunePortfolioBacktester:
             weights, response_type, bcell_decisions = immune_system.immune_response(
                 market_features, training=True
             )
+
+            # 면역 반응 검증
+            validation_result = self.validator.validate_immune_response(
+                weights, response_type, bcell_decisions
+            )
+            if not validation_result["weights_valid"]:
+                print(f"면역 반응 검증 실패: {validation_result['issues']}")
+                weights = np.ones(len(self.symbols)) / len(self.symbols)  # 기본값 사용
 
             portfolio_return = np.sum(weights * train_returns.iloc[i])
             portfolio_values.append(portfolio_values[-1] * (1 + portfolio_return))
@@ -869,6 +930,13 @@ class ImmunePortfolioBacktester:
                 market_features, training=False
             )
 
+            # 면역 반응 검증
+            validation_result = self.validator.validate_immune_response(
+                weights, response_type, bcell_decisions
+            )
+            if not validation_result["weights_valid"]:
+                weights = np.ones(len(self.symbols)) / len(self.symbols)  # 기본값 사용
+
             portfolio_return = np.sum(weights * test_returns.iloc[i])
             test_portfolio_returns.append(portfolio_return)
 
@@ -902,6 +970,31 @@ class ImmunePortfolioBacktester:
             self.current_weights = weights.copy()
 
         return test_portfolio_returns
+
+    def _save_emergency_checkpoint(self, immune_system, error_message):
+        """응급 체크포인트 저장"""
+        try:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            emergency_path = os.path.join(
+                self.output_dir, f"emergency_checkpoint_{timestamp}.pkl"
+            )
+
+            emergency_data = {
+                "timestamp": timestamp,
+                "error_message": error_message,
+                "immune_system_state": self.checkpoint_manager._extract_immune_system_state(
+                    immune_system
+                ),
+                "validation_summary": self.validator.get_validation_summary(),
+            }
+
+            with open(emergency_path, "wb") as f:
+                pickle.dump(emergency_data, f)
+
+            print(f"응급 체크포인트 저장: {emergency_path}")
+
+        except Exception as e:
+            print(f"응급 체크포인트 저장 실패: {e}")
 
     def analyze_bcell_expertise(self):
         """B-세포 전문성 분석"""
