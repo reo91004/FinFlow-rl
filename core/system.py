@@ -427,8 +427,8 @@ class ImmunePortfolioSystem:
         if memory_augmented_features is not None:
             market_features = memory_augmented_features
 
-        recalled_memory, memory_strength = self.memory_cell.recall_memory(
-            market_features
+        recalled_memory, memory_strength, multiple_memories = self.memory_cell.recall_memory(
+            market_features, return_multiple=True
         )
 
         if recalled_memory and memory_strength > 0.8:
@@ -440,6 +440,12 @@ class ImmunePortfolioSystem:
                     "antibody_strength": memory_strength,
                     "strategy_contribution": 1.0,
                     "specialized_for_today": True,
+                    "multiple_memories_count": len(multiple_memories) if multiple_memories else 0,
+                    "memory_diversity": (
+                        len(set(m["memory"].get("context", {}).get("crisis_type", "unknown") 
+                               for m in multiple_memories)) 
+                        if multiple_memories else 0
+                    ),
                 }
             ]
             return recalled_memory["strategy"], "memory_response", bcell_decisions
