@@ -198,12 +198,19 @@ class MemoryCell:
                 query_tensor, memory_bank
             )
 
+            # 계산 그래프에서 분리
+            attention_weights = attention_weights.detach()
+            retrieved_memory = retrieved_memory.detach()
+
             # 가장 유사한 기억 찾기
             best_memory_idx = torch.argmax(attention_weights[0]).item()
             best_similarity = attention_weights[0][best_memory_idx].item()
 
             # 임계값 확인
             if best_similarity < self.similarity_threshold:
+                # 명시적 해제
+                del query_tensor, memory_bank, attention_weights, retrieved_memory
+                torch.cuda.empty_cache() if torch.cuda.is_available() else None
                 return None, 0.0, None
 
             # 기억 강화
@@ -234,9 +241,20 @@ class MemoryCell:
 
                 return best_memory, best_similarity, multiple_memories
 
-            return best_memory, best_similarity, None
+            # 사용 후 텐서 정리
+            del query_tensor, memory_bank
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            return best_memory, best_similarity, multiple_memories
 
         except Exception as e:
+            # 예외 발생 시에도 메모리 정리
+            if "query_tensor" in locals():
+                del query_tensor
+            if "memory_bank" in locals():
+                del memory_bank
+            torch.cuda.empty_cache() if torch.cuda.is_available() else None
             print(f"기억 회상 중 오류 발생: {e}")
             return None, 0.0, None
 

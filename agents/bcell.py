@@ -408,7 +408,11 @@ class BCell(ImmuneCell):
             return
 
         try:
-            batch_size = min(self.batch_size, len(self.episode_buffer))
+            # 배치 크기 동적 조정 (GPU 메모리 기반)
+            available_memory = self._get_available_gpu_memory()
+            dynamic_batch_size = min(self.batch_size, max(8, available_memory // 100))
+
+            batch_size = min(dynamic_batch_size, len(self.episode_buffer))
             batch = np.random.choice(self.episode_buffer, batch_size, replace=False)
 
             states = []
@@ -500,8 +504,32 @@ class BCell(ImmuneCell):
 
             self.epsilon = max(self.min_epsilon, self.epsilon * self.epsilon_decay)
 
+            del states, actions, rewards, state_values, next_state_values
+            del td_targets, current_values, advantages
+            torch.cuda.empty_cache() if torch.cuda.is_available() else None
+
+        except RuntimeError as e:
+            if "out of memory" in str(e):
+                # OOM 시 배치 크기 감소 및 재시도
+                print(f"[경고] GPU 메모리 부족. 배치 크기를 절반으로 줄입니다.")
+                self.batch_size = max(4, self.batch_size // 2)
+                torch.cuda.empty_cache()
+                return self.learn_from_batch()  # 재귀 호출 (한 번만)
+            else:
+                raise e
+
         except Exception as e:
             print(f"[경고] {self.risk_type} B-세포 Actor-Critic 학습 오류: {e}")
+
+    def _get_available_gpu_memory(self):
+        """사용 가능한 GPU 메모리 추정 (MB)"""
+        if not torch.cuda.is_available():
+            return 1000  # CPU 사용 시 기본값
+
+        device = torch.cuda.current_device()
+        total_memory = torch.cuda.get_device_properties(device).total_memory
+        allocated_memory = torch.cuda.memory_allocated(device)
+        return (total_memory - allocated_memory) // (1024 * 1024)  # MB 단위
 
     def learn_from_specialized_experience(self):
         """전문 분야 집중 학습"""
