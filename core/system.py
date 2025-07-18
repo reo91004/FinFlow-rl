@@ -427,8 +427,8 @@ class ImmunePortfolioSystem:
         if memory_augmented_features is not None:
             market_features = memory_augmented_features
 
-        recalled_memory, memory_strength, multiple_memories = self.memory_cell.recall_memory(
-            market_features, return_multiple=True
+        recalled_memory, memory_strength, multiple_memories = (
+            self.memory_cell.recall_memory(market_features, return_multiple=True)
         )
 
         if recalled_memory and memory_strength > 0.8:
@@ -440,12 +440,13 @@ class ImmunePortfolioSystem:
                     "antibody_strength": memory_strength,
                     "strategy_contribution": 1.0,
                     "specialized_for_today": True,
-                    "multiple_memories_count": len(multiple_memories) if multiple_memories else 0,
-                    "memory_diversity": (
-                        len(set(m["memory"].get("context", {}).get("crisis_type", "unknown") 
-                               for m in multiple_memories)) 
-                        if multiple_memories else 0
+                    "multiple_memories_count": (
+                        len(multiple_memories) if multiple_memories else 0
                     ),
+                    "memory_diversity": self._calculate_memory_diversity(
+                        multiple_memories
+                    ),
+                    "memory_details": self._extract_memory_details(multiple_memories),
                 }
             ]
             return recalled_memory["strategy"], "memory_response", bcell_decisions
@@ -466,6 +467,127 @@ class ImmunePortfolioSystem:
                 return self._legacy_immune_response(market_features)
 
         return self.base_weights, "normal", []
+
+    def _calculate_memory_diversity(self, multiple_memories):
+        """기억 다양성 계산 (안전한 방식)"""
+        if not multiple_memories:
+            return 0
+
+        crisis_types = set()
+        for memory_item in multiple_memories:
+            # 안전한 키 접근
+            context = memory_item.get("context", {})
+            if isinstance(context, dict):
+                crisis_type = context.get("crisis_type", "unknown")
+                crisis_types.add(crisis_type)
+            else:
+                # context가 딕셔너리가 아닌 경우 대체 방법
+                memory_data = memory_item.get("memory", {})
+                if isinstance(memory_data, dict):
+                    # memory 내부의 패턴을 분석해서 위기 유형 추정
+                    crisis_types.add(self._infer_crisis_type_from_pattern(memory_data))
+                else:
+                    crisis_types.add("unknown")
+
+        return len(crisis_types)
+
+    def _extract_memory_details(self, multiple_memories):
+        """기억 상세 정보 추출"""
+        if not multiple_memories:
+            return []
+
+        details = []
+        for memory_item in multiple_memories:
+            detail = {
+                "similarity": memory_item.get("similarity", 0.0),
+                "memory_strength": memory_item.get("memory", {}).get("strength", 0.0),
+                "effectiveness": memory_item.get("memory", {}).get(
+                    "effectiveness", 0.0
+                ),
+                "crisis_type": self._extract_crisis_type_safely(memory_item),
+            }
+            details.append(detail)
+
+        return details
+
+    def _extract_crisis_type_safely(self, memory_item):
+        """안전한 위기 유형 추출"""
+        # 1순위: context에서 추출
+        context = memory_item.get("context", {})
+        if isinstance(context, dict) and "crisis_type" in context:
+            return context["crisis_type"]
+
+        # 2순위: memory 패턴에서 추정
+        memory_data = memory_item.get("memory", {})
+        if isinstance(memory_data, dict):
+            return self._infer_crisis_type_from_pattern(memory_data)
+
+        return "unknown"
+
+    def _infer_crisis_type_from_pattern(self, memory_data):
+        """메모리 패턴에서 위기 유형 추정"""
+        pattern = memory_data.get("pattern", [])
+        if not pattern or len(pattern) < 5:
+            return "unknown"
+
+        # 패턴의 특성을 분석해서 위기 유형 추정
+        volatility_signal = abs(pattern[0]) if len(pattern) > 0 else 0
+        correlation_signal = abs(pattern[1]) if len(pattern) > 1 else 0
+        momentum_signal = abs(pattern[2]) if len(pattern) > 2 else 0
+
+        max_signal = max(volatility_signal, correlation_signal, momentum_signal)
+
+        if volatility_signal == max_signal:
+            return "volatility_crisis"
+        elif correlation_signal == max_signal:
+            return "correlation_crisis"
+        elif momentum_signal == max_signal:
+            return "momentum_crisis"
+        else:
+            return "mixed_crisis"
+
+    def update_memory(self, crisis_pattern, response_strategy, effectiveness):
+        """기억 업데이트 (context 정보 포함)"""
+
+        # 현재 시장 상황을 분석해서 위기 유형 결정
+        crisis_type = self._determine_current_crisis_type(crisis_pattern)
+
+        # 컨텍스트 정보 구성
+        context = {
+            "crisis_type": crisis_type,
+            "crisis_level": self.crisis_level,
+            "timestamp": datetime.now().isoformat(),
+            "market_conditions": {
+                "volatility": (
+                    float(crisis_pattern[0]) if len(crisis_pattern) > 0 else 0.0
+                ),
+                "correlation": (
+                    float(crisis_pattern[1]) if len(crisis_pattern) > 1 else 0.0
+                ),
+                "momentum": (
+                    float(crisis_pattern[2]) if len(crisis_pattern) > 2 else 0.0
+                ),
+            },
+        }
+
+        # 컨텍스트와 함께 기억 저장
+        self.memory_cell.store_memory(
+            crisis_pattern, response_strategy, effectiveness, context=context
+        )
+
+    def _determine_current_crisis_type(self, crisis_pattern):
+        """현재 위기 유형 결정"""
+        if len(crisis_pattern) < 3:
+            return "unknown"
+
+        # 가장 강한 신호를 보이는 특성을 위기 유형으로 결정
+        signals = {
+            "volatility": abs(crisis_pattern[0]),
+            "correlation": abs(crisis_pattern[1]),
+            "momentum": abs(crisis_pattern[2]),
+        }
+
+        return max(signals, key=signals.get) + "_crisis"
 
     def _hierarchical_immune_response(
         self, market_features, tcell_contributions, training
