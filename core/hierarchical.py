@@ -158,66 +158,127 @@ class HierarchicalController:
     ) -> np.ndarray:
         """메타 상태 벡터 구성"""
 
+        # 모든 입력의 타입 검증 및 변환
+        if not isinstance(market_features, np.ndarray):
+            market_features = np.array(market_features, dtype=np.float32)
+
+        if not isinstance(crisis_level, (int, float)):
+            crisis_level = float(crisis_level) if crisis_level is not None else 0.0
+
         # 기본 시장 특성 (12차원)
         base_features = (
             market_features[:12]
             if len(market_features) >= 12
-            else np.pad(market_features, (0, 12 - len(market_features)))
+            else np.pad(
+                market_features,
+                (0, max(0, 12 - len(market_features))),
+                mode="constant",
+                constant_values=0.0,
+            ).astype(np.float32)
         )
 
         # 위기 정보 (4차원)
+        def safe_get(d, key, default=0.0):
+            try:
+                value = d.get(key, default) if isinstance(d, dict) else default
+                return float(value) if value is not None else default
+            except (TypeError, ValueError):
+                return default
+
         crisis_features = np.array(
             [
-                crisis_level,
-                tcell_analysis.get("dominant_risk_intensity", 0.0),
-                tcell_analysis.get("risk_diversity", 0.0),  # 여러 위험의 분산도
-                len(tcell_analysis.get("detected_risks", []))
-                / 5.0,  # 감지된 위험 수 정규화
-            ]
+                float(crisis_level),
+                safe_get(tcell_analysis, "dominant_risk_intensity"),
+                safe_get(tcell_analysis, "risk_diversity"),
+                min(5.0, len(tcell_analysis.get("detected_risks", []))) / 5.0,
+            ],
+            dtype=np.float32,
         )
 
         # 전문가 성과 히스토리 (5차원)
+        expert_performance_features = []
+        for name in self.expert_names:
+            try:
+                performances = list(self.expert_performance.get(name, []))
+                if performances:
+                    avg_performance = np.mean(performances[-10:])
+                    expert_performance_features.append(float(avg_performance))
+                else:
+                    expert_performance_features.append(0.0)
+            except (TypeError, ValueError):
+                expert_performance_features.append(0.0)
+
         expert_performance_features = np.array(
-            [
-                (
-                    np.mean(list(self.expert_performance[name])[-10:])
-                    if len(self.expert_performance[name]) > 0
-                    else 0.0
-                )
-                for name in self.expert_names
-            ]
+            expert_performance_features, dtype=np.float32
         )
 
+        # 배열 길이 검증
+        def ensure_length(arr, target_length, fill_value=0.0):
+            if len(arr) == target_length:
+                return arr
+            elif len(arr) > target_length:
+                return arr[:target_length]
+            else:
+                padding = np.full(
+                    target_length - len(arr), fill_value, dtype=np.float32
+                )
+                return np.concatenate([arr, padding])
+
+        # 모든 구성 요소의 길이 보장
+        base_features = ensure_length(base_features, 12)
+        crisis_features = ensure_length(crisis_features, 4)
+        expert_performance_features = ensure_length(expert_performance_features, 5)
+
         # 최근 전문가 선택 패턴 (5차원)
-        recent_selections = list(self.expert_selection_history)[-10:]
-        selection_distribution = np.zeros(self.num_experts)
-        if recent_selections:
-            for selection in recent_selections:
-                selection_distribution[selection["expert_idx"]] += 1
-            selection_distribution /= len(recent_selections)
+        selection_distribution = np.zeros(5, dtype=np.float32)
+        try:
+            recent_selections = list(self.expert_selection_history)[-10:]
+            if recent_selections:
+                for selection in recent_selections:
+                    expert_idx = selection.get("expert_idx", 0)
+                    if 0 <= expert_idx < 5:
+                        selection_distribution[expert_idx] += 1
+                selection_distribution /= len(recent_selections)
+        except Exception:
+            pass  # 실패 시 0 배열 유지
 
         # 시간적 특성 (3차원)
         current_time = datetime.now()
         temporal_features = np.array(
             [
-                current_time.hour / 24.0,  # 시간대
-                current_time.weekday() / 7.0,  # 요일
-                (current_time.month - 1) / 12.0,  # 월
-            ]
+                current_time.hour / 24.0,
+                current_time.weekday() / 7.0,
+                (current_time.month - 1) / 12.0,
+            ],
+            dtype=np.float32,
         )
 
-        # 메타 상태 결합
-        meta_state = np.concatenate(
-            [
-                base_features,  # 12차원
-                crisis_features,  # 4차원
-                expert_performance_features,  # 5차원
-                selection_distribution,  # 5차원
-                temporal_features,  # 3차원
-            ]
-        )  # 총 29차원
+        # 안전한 concatenation
+        try:
+            meta_state = np.concatenate(
+                [
+                    base_features,  # 12차원
+                    crisis_features,  # 4차원
+                    expert_performance_features,  # 5차원
+                    selection_distribution,  # 5차원
+                    temporal_features,  # 3차원
+                ]
+            )  # 총 29차원
 
-        return meta_state
+            # 최종 검증
+            assert (
+                meta_state.shape[0] == 29
+            ), f"메타 상태 차원 오류: {meta_state.shape[0]} != 29"
+            assert (
+                meta_state.dtype == np.float32
+            ), f"메타 상태 타입 오류: {meta_state.dtype}"
+
+            return meta_state
+
+        except Exception as e:
+            print(f"[경고] 메타 상태 구성 실패: {e}")
+            # 폴백: 기본 상태 반환
+            return np.zeros(29, dtype=np.float32)
 
     def _classify_crisis_situation(self, tcell_analysis: Dict) -> str:
         """위기 상황 분류"""

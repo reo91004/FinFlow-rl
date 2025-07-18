@@ -119,9 +119,26 @@ class ImmunePortfolioSystem:
     def extract_market_features(self, market_data, lookback=DEFAULT_LOOKBACK):
         """시장 특성 추출"""
         if len(market_data) < lookback:
-            return np.zeros(FEATURE_SIZE)
+            return np.zeros(FEATURE_SIZE, dtype=np.float32)  # 명시적 타입 지정
 
-        return self._extract_technical_features(market_data, lookback)
+        features = self._extract_technical_features(market_data, lookback)
+
+        # 타입 검증 및 변환
+        if not isinstance(features, np.ndarray):
+            features = np.array(features, dtype=np.float32)
+
+        # NaN/Inf 값 안전 처리
+        features = np.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
+
+        # 크기 및 타입 검증
+        if features.shape[0] != FEATURE_SIZE:
+            if features.shape[0] > FEATURE_SIZE:
+                features = features[:FEATURE_SIZE]
+            else:
+                padding = np.zeros(FEATURE_SIZE - features.shape[0], dtype=np.float32)
+                features = np.concatenate([features, padding])
+
+        return features.astype(np.float32)
 
     def _extract_basic_features(self, market_data, lookback=DEFAULT_LOOKBACK):
         """기본 특성 추출"""

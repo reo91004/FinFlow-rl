@@ -15,16 +15,24 @@ class RewardCalculator:
         transaction_cost_rate=0.001,
         target_volatility=0.15,
         target_max_drawdown=0.1,
+        reward_clipping_range=(-5.0, 5.0),
     ):
         self.lookback_window = lookback_window
         self.transaction_cost_rate = transaction_cost_rate
         self.target_volatility = target_volatility
         self.target_max_drawdown = target_max_drawdown
+        self.reward_clipping_range = reward_clipping_range
 
         # 성과 추적
         self.return_history = deque(maxlen=252)  # 1년간 수익률
         self.portfolio_values = deque(maxlen=252)
         self.weight_history = deque(maxlen=5)  # 최근 5일 가중치 변화 추적
+
+        # 보상 정규화를 위한 통계 추적
+        self.reward_history = deque(maxlen=1000)
+        self.reward_mean = 0.0
+        self.reward_std = 1.0
+        self.update_count = 0
 
     def calculate_comprehensive_reward(
         self,
@@ -36,40 +44,67 @@ class RewardCalculator:
     ) -> Dict[str, float]:
         """종합적인 보상 계산"""
 
-        # 기본 수익률 보상
-        return_reward = current_return * 100
+        # 입력값 검증 및 클리핑
+        current_return = np.clip(current_return, -0.2, 0.2)  # ±20% 일일 수익률 제한
+        crisis_level = np.clip(crisis_level, 0.0, 1.0)
+
+        if previous_weights is None:
+            previous_weights = np.ones_like(current_weights) / len(current_weights)
+
+        # 기본 수익률 보상 (스케일링 조정)
+        return_reward = current_return * 50
 
         # 위험 조정 성과 보상
         risk_adjusted_reward = self._calculate_risk_adjusted_reward()
+        risk_adjusted_reward = np.clip(risk_adjusted_reward, -2.0, 2.0)  # 클리핑
 
-        # 거래 비용 패널티
+        # 거래 비용 패널티 (정규화)
         transaction_cost_penalty = self._calculate_transaction_cost_penalty(
             previous_weights, current_weights
         )
+        transaction_cost_penalty = np.clip(
+            transaction_cost_penalty, -1.0, 0.0
+        )  # 클리핑
 
-        # 목표 지향적 보상
+        # 목표 지향적 보상 (스케일링 조정)
         target_reward = self._calculate_target_based_reward()
+        target_reward = np.clip(target_reward, -2.0, 2.0)  # 클리핑
 
-        # 시장 적응성 보상
+        # 시장 적응성 보상 (안정화)
         adaptation_reward = self._calculate_adaptation_reward(
             market_features, crisis_level
         )
+        adaptation_reward = np.clip(adaptation_reward, -1.0, 1.0)  # 클리핑
 
-        # 포트폴리오 집중도 패널티
+        # 포트폴리오 집중도 패널티 (정규화)
         concentration_penalty = self._calculate_concentration_penalty(current_weights)
+        concentration_penalty = np.clip(concentration_penalty, -1.0, 0.0)  # 클리핑
 
         # 종합 보상 계산
         total_reward = (
-            return_reward
-            + risk_adjusted_reward
-            + transaction_cost_penalty
-            + target_reward
-            + adaptation_reward
-            + concentration_penalty
+            return_reward * 0.4  # 주요 수익률 신호
+            + risk_adjusted_reward * 0.25  # 위험 조정 성과
+            + target_reward * 0.15  # 목표 달성
+            + adaptation_reward * 0.1  # 시장 적응성
+            + transaction_cost_penalty * 0.05  # 거래 비용
+            + concentration_penalty * 0.05  # 집중도 패널티
         )
+
+        # 최종 보상 클리핑 및 정규화
+        total_reward = np.clip(
+            total_reward, self.reward_clipping_range[0], self.reward_clipping_range[1]
+        )
+
+        # 적응적 정규화 (선택적)
+        if len(self.reward_history) > 50:
+            normalized_reward = self._adaptive_normalize_reward(total_reward)
+        else:
+            normalized_reward = total_reward
 
         # 이력 업데이트
         self._update_history(current_return, current_weights)
+        self.reward_history.append(normalized_reward)
+        self._update_reward_statistics(normalized_reward)
 
         return {
             "total_reward": total_reward,
@@ -80,6 +115,35 @@ class RewardCalculator:
             "adaptation_reward": adaptation_reward,
             "concentration_penalty": concentration_penalty,
         }
+
+    def _adaptive_normalize_reward(self, reward: float) -> float:
+        """적응적 보상 정규화"""
+        try:
+            # Z-score 정규화 (극단값 방지)
+            if self.reward_std > 1e-6:
+                normalized = (reward - self.reward_mean) / self.reward_std
+                # 정규화된 값도 클리핑 (-3σ ~ +3σ)
+                normalized = np.clip(normalized, -3.0, 3.0)
+                return normalized
+            else:
+                return reward
+        except (ValueError, ZeroDivisionError):
+            return reward
+
+    def _update_reward_statistics(self, reward: float):
+        """보상 통계 업데이트 (지수 이동 평균)"""
+        self.update_count += 1
+        alpha = min(0.1, 2.0 / self.update_count)  # 적응적 학습률
+
+        # 지수 이동 평균으로 평균과 분산 업데이트
+        self.reward_mean = (1 - alpha) * self.reward_mean + alpha * reward
+
+        # 분산 업데이트 (Welford's online algorithm 변형)
+        if self.update_count > 1:
+            variance_update = alpha * (reward - self.reward_mean) ** 2
+            current_variance = self.reward_std**2
+            new_variance = (1 - alpha) * current_variance + variance_update
+            self.reward_std = np.sqrt(max(new_variance, 1e-6))  # 최소값 보장
 
     def _calculate_risk_adjusted_reward(self) -> float:
         """위험 조정 성과 보상 (샤프/소르티노 지수 기반)"""

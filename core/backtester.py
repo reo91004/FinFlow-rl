@@ -504,7 +504,7 @@ class ImmunePortfolioBacktester:
         print(f"커리큘럼 학습이 완료되었습니다. 요약: {summary_path}")
 
     def _run_training_episode(self, immune_system, episode_data, curriculum_config):
-        """단일 훈련 에피소드 실행"""
+        """단일 훈련 에피소드 실행 (수치적 안정성 강화)"""
 
         episode_returns = episode_data.pct_change().dropna()
         if len(episode_returns) == 0:
@@ -513,72 +513,244 @@ class ImmunePortfolioBacktester:
         episode_rewards = []
         portfolio_returns = []
 
-        for i in range(len(episode_returns)):
-            current_data = episode_data.iloc[: i + 1]
-            market_features = immune_system.extract_market_features(current_data)
+        # 극단값 체크 및 조기 종료
+        consecutive_extreme_rewards = 0
+        extreme_threshold = 3.0
 
-            # 마지막 특성 저장 (보상 계산용)
-            immune_system.last_market_features = market_features
+        # 안전장치 변수들
+        max_iterations = min(len(episode_returns), 200)  # 최대 반복 제한
+        memory_cleanup_interval = 50  # 메모리 정리 주기
 
-            weights, response_type, bcell_decisions = immune_system.immune_response(
-                market_features, training=True
-            )
+        try:
+            for i in range(max_iterations):
+                try:
+                    # 현재 데이터 추출 (경계 검사 포함)
+                    current_data = episode_data.iloc[: i + 1]
+                    if len(current_data) < 2:  # 최소 데이터 요구사항
+                        continue
 
-            portfolio_return = np.sum(weights * episode_returns.iloc[i])
-            portfolio_returns.append(portfolio_return)
+                    # 시장 특성 추출 (타입 안전성 보장)
+                    market_features = immune_system.extract_market_features(
+                        current_data
+                    )
+                    if market_features is None or len(market_features) == 0:
+                        market_features = np.zeros(12, dtype=np.float32)
 
-            # 고도화된 보상 계산
-            reward_details = self.reward_calculator.calculate_comprehensive_reward(
-                current_return=portfolio_return,
-                previous_weights=self.previous_weights,
-                current_weights=weights,
-                market_features=market_features,
-                crisis_level=immune_system.crisis_level,
-            )
+                    # 마지막 특성 저장 (보상 계산용)
+                    immune_system.last_market_features = market_features
 
-            total_reward = reward_details["total_reward"]
-            episode_rewards.append(total_reward)
+                    # 면역 반응 실행
+                    weights, response_type, bcell_decisions = (
+                        immune_system.immune_response(market_features, training=True)
+                    )
 
-            # B-세포 학습 (커리큘럼 난이도 반영)
-            if immune_system.use_learning_bcells and len(episode_rewards) > 5:
-                difficulty_multiplier = curriculum_config.get("difficulty", 1.0)
-                adjusted_reward = total_reward * difficulty_multiplier
-
-                for bcell in immune_system.bcells:
-                    if hasattr(bcell, "last_strategy"):
-                        is_specialist_today = bcell.is_my_specialty_situation(
-                            market_features, immune_system.crisis_level
+                    # 가중치 검증 및 정규화
+                    if weights is None or len(weights) != len(episode_returns.columns):
+                        weights = np.ones(len(episode_returns.columns)) / len(
+                            episode_returns.columns
                         )
 
-                        if is_specialist_today:
-                            specialist_reward = adjusted_reward * 2.0
-                        else:
-                            specialist_reward = adjusted_reward * 0.8
+                    # 포트폴리오 수익률 계산 (안전한 연산)
+                    try:
+                        portfolio_return = np.sum(weights * episode_returns.iloc[i])
+                        # 극단적 수익률 클리핑 (일일 ±50% 제한)
+                        portfolio_return = np.clip(portfolio_return, -0.5, 0.5)
+                    except (IndexError, ValueError) as e:
+                        print(f"[경고] 수익률 계산 오류 (i={i}): {e}")
+                        portfolio_return = 0.0
 
-                        final_reward = np.clip(specialist_reward, -2, 2)
+                    portfolio_returns.append(portfolio_return)
 
-                        bcell.add_experience(
-                            market_features,
-                            immune_system.crisis_level,
-                            bcell.last_strategy.numpy(),
-                            final_reward,
+                    # 고도화된 보상 계산 (예외 처리 포함)
+                    try:
+                        reward_details = (
+                            self.reward_calculator.calculate_comprehensive_reward(
+                                current_return=portfolio_return,
+                                previous_weights=self.previous_weights,
+                                current_weights=weights,
+                                market_features=market_features,
+                                crisis_level=immune_system.crisis_level,
+                            )
                         )
+                        total_reward = reward_details["total_reward"]
+                    except Exception as e:
+                        print(f"[경고] 보상 계산 오류: {e}")
+                        total_reward = 0.0
 
-            # 기억 세포 업데이트
-            if immune_system.crisis_level > 0.15:
-                immune_system.update_memory(
-                    market_features, weights, np.clip(total_reward, -1, 1)
-                )
+                    # 1차 보상 클리핑 (극단값 방지)
+                    total_reward = np.clip(total_reward, -10.0, 10.0)
+                    episode_rewards.append(total_reward)
 
-            # 가중치 업데이트
-            self.previous_weights = self.current_weights.copy()
-            self.current_weights = weights.copy()
+                    # 극단값 모니터링 및 조기 종료
+                    if abs(total_reward) > extreme_threshold:
+                        consecutive_extreme_rewards += 1
+                        if consecutive_extreme_rewards > 5:
+                            print(
+                                f"[경고] 연속적인 극단 보상값 감지 (i={i}). 에피소드 조기 종료."
+                            )
+                            break
+                    else:
+                        consecutive_extreme_rewards = 0
 
-        # 에피소드 평균 보상 및 수익률 반환
-        avg_reward = np.mean(episode_rewards) if episode_rewards else 0.0
-        avg_return = np.mean(portfolio_returns) if portfolio_returns else 0.0
+                    # B-세포 학습 (수치적 안정성 강화)
+                    if immune_system.use_learning_bcells and len(episode_rewards) > 5:
+                        # 보상 시계열의 분산이 너무 클 때 스케일링 조정
+                        recent_rewards = episode_rewards[-5:]
+                        reward_volatility = np.std(recent_rewards)
 
-        return avg_reward, avg_return
+                        # 보상 스무딩 (높은 변동성 감지시)
+                        if reward_volatility > 2.0:
+                            smoothed_reward = np.mean(recent_rewards[-3:])
+                            total_reward = 0.7 * total_reward + 0.3 * smoothed_reward
+                            print(
+                                f"[정보] 보상 스무딩 적용 (변동성: {reward_volatility:.3f})"
+                            )
+
+                        # 커리큘럼 난이도 반영
+                        difficulty_multiplier = curriculum_config.get("difficulty", 1.0)
+                        adjusted_reward = total_reward * difficulty_multiplier
+
+                        # 2차 보상 클리핑 (B-세포 학습용)
+                        adjusted_reward = np.clip(adjusted_reward, -5.0, 5.0)
+
+                        # B-세포별 개별 학습
+                        for bcell in immune_system.bcells:
+                            if hasattr(bcell, "last_strategy"):
+                                try:
+                                    # 전문성 여부 판단
+                                    is_specialist_today = (
+                                        bcell.is_my_specialty_situation(
+                                            market_features, immune_system.crisis_level
+                                        )
+                                    )
+
+                                    # 전문성에 따른 보상 조정
+                                    if is_specialist_today:
+                                        specialist_reward = (
+                                            adjusted_reward * 1.5
+                                        )  # 2.0 → 1.5로 완화
+                                    else:
+                                        specialist_reward = adjusted_reward * 0.8
+
+                                    # 3차 최종 클리핑 (더 엄격)
+                                    final_reward = np.clip(specialist_reward, -2.0, 2.0)
+
+                                    # NaN/Inf 검증
+                                    if np.isnan(final_reward) or np.isinf(final_reward):
+                                        final_reward = 0.0
+
+                                    # 경험 추가
+                                    bcell.add_experience(
+                                        market_features,
+                                        immune_system.crisis_level,
+                                        bcell.last_strategy.numpy(),
+                                        final_reward,
+                                    )
+
+                                except Exception as e:
+                                    print(
+                                        f"[경고] B-세포 {bcell.cell_id} 학습 오류: {e}"
+                                    )
+                                    continue
+
+                    # 기억 세포 업데이트 (안전한 임계값)
+                    if immune_system.crisis_level > 0.15:
+                        try:
+                            memory_reward = np.clip(total_reward, -1.0, 1.0)
+                            immune_system.update_memory(
+                                market_features, weights, memory_reward
+                            )
+                        except Exception as e:
+                            print(f"[경고] 기억 세포 업데이트 오류: {e}")
+
+                    # 가중치 업데이트 (안전한 복사)
+                    try:
+                        self.previous_weights = (
+                            self.current_weights.copy()
+                            if self.current_weights is not None
+                            else weights.copy()
+                        )
+                        self.current_weights = weights.copy()
+                    except Exception as e:
+                        print(f"[경고] 가중치 업데이트 오류: {e}")
+
+                    # 주기적 메모리 정리
+                    if i % memory_cleanup_interval == 0 and i > 0:
+                        try:
+                            import gc
+                            import torch
+
+                            collected = gc.collect()
+                            if torch.cuda.is_available():
+                                torch.cuda.empty_cache()
+                            if collected > 100:  # 정리된 객체가 많을 때만 로그
+                                print(f"[정보] 메모리 정리 완료 (객체: {collected}개)")
+                        except Exception as e:
+                            print(f"[경고] 메모리 정리 오류: {e}")
+
+                except Exception as e:
+                    print(f"[경고] 에피소드 스텝 {i} 실행 오류: {e}")
+                    # 오류 발생시 안전한 기본값으로 진행
+                    portfolio_returns.append(0.0)
+                    episode_rewards.append(0.0)
+                    continue
+
+        except Exception as e:
+            print(f"[오류] 에피소드 실행 중 심각한 오류 발생: {e}")
+            # 최소한의 반환값 보장
+            if not episode_rewards:
+                episode_rewards = [0.0]
+            if not portfolio_returns:
+                portfolio_returns = [0.0]
+
+        # 에피소드 통계 검증 및 안전한 계산
+        try:
+            if episode_rewards:
+                avg_reward = np.mean(episode_rewards)
+                reward_std = np.std(episode_rewards)
+
+                # 비정상적인 통계값 감지 및 수정
+                if abs(avg_reward) > 10.0 or reward_std > 5.0:
+                    print(
+                        f"[경고] 비정상적인 에피소드 통계: 평균={avg_reward:.3f}, 표준편차={reward_std:.3f}"
+                    )
+                    # 보상을 보수적으로 조정
+                    avg_reward = np.clip(avg_reward, -3.0, 3.0)
+
+                # NaN/Inf 검증
+                if np.isnan(avg_reward) or np.isinf(avg_reward):
+                    avg_reward = 0.0
+                    print("[경고] 평균 보상에서 NaN/Inf 감지. 0으로 초기화.")
+            else:
+                avg_reward = 0.0
+                print("[경고] 에피소드 보상 기록이 없습니다.")
+
+            if portfolio_returns:
+                avg_return = np.mean(portfolio_returns)
+                # NaN/Inf 검증
+                if np.isnan(avg_return) or np.isinf(avg_return):
+                    avg_return = 0.0
+                    print("[경고] 평균 수익률에서 NaN/Inf 감지. 0으로 초기화.")
+            else:
+                avg_return = 0.0
+                print("[경고] 포트폴리오 수익률 기록이 없습니다.")
+
+        except Exception as e:
+            print(f"[오류] 에피소드 통계 계산 오류: {e}")
+            avg_reward = 0.0
+            avg_return = 0.0
+
+        # 최종 검증 및 로깅
+        if abs(avg_reward) > 3.0 or abs(avg_return) > 0.3:
+            print(
+                f"[경고] 에피소드 결과 이상: 보상={avg_reward:.3f}, 수익률={avg_return:.3f}"
+            )
+
+        # 최종 안전 클리핑
+        avg_reward = np.clip(avg_reward, -5.0, 5.0)
+        avg_return = np.clip(avg_return, -0.5, 0.5)
+
+        return float(avg_reward), float(avg_return)
 
     def _traditional_training(self, immune_system):
         """기존 방식 훈련"""
