@@ -8,16 +8,27 @@ import matplotlib.pyplot as plt
 import torch
 import gc
 from datetime import datetime, timedelta
-from tqdm import tqdm
 from typing import Dict, List, Tuple, Any, Optional
 from .system import ImmunePortfolioSystem
 from .reward import RewardCalculator
 from .curriculum import CurriculumLearningManager
 from xai import generate_dashboard, create_visualizations
 from constant import *
-from utils.logger import setup_logging, stop_logging
+from utils.logger import (
+    setup_logging_legacy as setup_logging,
+    stop_logging_legacy as stop_logging,
+)
 from utils.checkpoint import CheckpointManager
 from utils.validator import DataLeakageValidator, SystemValidator
+
+# tqdm 기본 설정 (한 번만 실행)
+from tqdm import tqdm
+
+tqdm.pandas()
+import os
+
+if os.name == "nt":  # Windows
+    tqdm._instances.clear()
 
 import warnings
 import json
@@ -637,11 +648,13 @@ class ImmunePortfolioBacktester:
 
                     # 1차 보상 클리핑 (극단값 방지)
                     total_reward = np.clip(total_reward, -10.0, 10.0)
-                    
+
                     # 극단값 모니터링 (커리큘럼 학습 디버깅용)
                     if abs(total_reward) > 5.0:
-                        print(f"[커리큘럼] 큰 보상 감지: {total_reward:.3f} (레벨 {curriculum_config.get('level', 'N/A')})")
-                    
+                        print(
+                            f"[커리큘럼] 큰 보상 감지: {total_reward:.3f} (레벨 {curriculum_config.get('level', 'N/A')})"
+                        )
+
                     episode_rewards.append(total_reward)
 
                     # 극단값 모니터링 및 조기 종료
