@@ -1,3 +1,5 @@
+# xai/visualization.py
+
 """
 면역 시스템 반응 패턴 시각화 - 논문 차별화용
 T-Cell과 B-Cell의 동적 상호작용과 적응적 학습 과정을 시각화
@@ -11,8 +13,8 @@ import matplotlib.font_manager as fm
 import platform
 
 # 기본 폰트 설정 (한글 폰트 제거)
-plt.rcParams['font.family'] = 'DejaVu Sans'
-plt.rcParams['axes.unicode_minus'] = False  # 마이너스 기호 깨짐 방지
+plt.rcParams["font.family"] = "DejaVu Sans"
+plt.rcParams["axes.unicode_minus"] = False  # 마이너스 기호 깨짐 방지
 from matplotlib.patches import Circle, FancyBboxPatch
 from matplotlib.collections import LineCollection
 import matplotlib.patches as mpatches
@@ -68,7 +70,9 @@ class ImmuneSystemVisualizer:
         self._plot_xai_decision_tree(ax6, analysis_data)
 
         plt.suptitle(
-            "BIPD Immune System Response Pattern Analysis", fontsize=16, fontweight="bold"
+            "BIPD Immune System Response Pattern Analysis",
+            fontsize=16,
+            fontweight="bold",
         )
 
         if output_path:

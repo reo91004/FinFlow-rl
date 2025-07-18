@@ -12,3 +12,14 @@
 ---
 
 ## 🛠 프로젝트 폴더 구조
+
+```
+finflow-rl
+├─ README.md
+├─ data/
+├─ results/
+├─ html_dashboard.py
+├─ immune_visualization.py
+└─ main.py
+
+```

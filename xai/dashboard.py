@@ -1,3 +1,5 @@
+# xai/dashboard.py
+
 """
 HTML 대시보드 생성기 - T-Cell과 B-Cell 판단 근거 시각화
 """
@@ -11,50 +13,50 @@ import numpy as np
 
 class HTMLDashboardGenerator:
     """HTML 대시보드 생성기"""
-    
+
     def __init__(self):
         self.template = self._load_template()
-    
+
     def generate_dashboard(self, analysis_report: Dict, output_path: str = None):
         """분석 보고서를 기반으로 HTML 대시보드 생성"""
-        
+
         if output_path is None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             output_path = f"dashboard_{timestamp}.html"
-        
+
         # 데이터 처리
         dashboard_data = self._process_analysis_data(analysis_report)
-        
+
         # HTML 생성
         html_content = self._generate_html(dashboard_data)
-        
+
         # 파일 저장
-        with open(output_path, 'w', encoding='utf-8') as f:
+        with open(output_path, "w", encoding="utf-8") as f:
             f.write(html_content)
-        
+
         print(f"HTML 대시보드가 생성되었습니다: {output_path}")
         return output_path
-    
+
     def _process_analysis_data(self, report: Dict) -> Dict:
         """분석 데이터 처리"""
-        
+
         # 기본 통계
         basic_stats = report.get("basic_stats", {})
-        
+
         # T-Cell 분석
         tcell_data = report.get("tcell_analysis", {})
         tcell_crisis_events = tcell_data.get("crisis_events", [])
-        
+
         # B-Cell 분석
         bcell_data = report.get("bcell_analysis", {})
         expert_responses = bcell_data.get("expert_responses", [])
-        
+
         # 특성 기여도
         feature_attribution = report.get("feature_attribution", {})
-        
+
         # 시간별 분석
         temporal_analysis = report.get("temporal_analysis", {})
-        
+
         return {
             "period": report.get("period", {}),
             "basic_stats": basic_stats,
@@ -63,13 +65,13 @@ class HTMLDashboardGenerator:
             "feature_importance": self._process_feature_importance(feature_attribution),
             "temporal_patterns": self._process_temporal_patterns(temporal_analysis),
             "risk_distribution": basic_stats.get("risk_distribution", {}),
-            "xai_explanations": self._generate_xai_explanations(report)
+            "xai_explanations": self._generate_xai_explanations(report),
         }
-    
+
     def _process_tcell_insights(self, crisis_events: List) -> List[Dict]:
         """T-Cell 위기 감지 인사이트 처리"""
         insights = []
-        
+
         for event in crisis_events[:10]:  # 최대 10개 이벤트
             insight = {
                 "date": event.get("date", ""),
@@ -77,16 +79,16 @@ class HTMLDashboardGenerator:
                 "detected_risks": event.get("detected_risks", []),
                 "feature_scores": event.get("feature_scores", {}),
                 "explanation": self._generate_tcell_explanation(event),
-                "severity": self._get_severity_level(event.get("crisis_level", 0))
+                "severity": self._get_severity_level(event.get("crisis_level", 0)),
             }
             insights.append(insight)
-        
+
         return insights
-    
+
     def _process_bcell_insights(self, expert_responses: List) -> List[Dict]:
         """B-Cell 전문가 응답 인사이트 처리"""
         insights = []
-        
+
         for response in expert_responses[:10]:  # 최대 10개 응답
             insight = {
                 "date": response.get("date", ""),
@@ -95,38 +97,38 @@ class HTMLDashboardGenerator:
                 "recommendation": response.get("recommendation", ""),
                 "reasoning": response.get("reasoning", []),
                 "market_context": response.get("market_context", {}),
-                "explanation": self._generate_bcell_explanation(response)
+                "explanation": self._generate_bcell_explanation(response),
             }
             insights.append(insight)
-        
+
         return insights
-    
+
     def _process_feature_importance(self, feature_attribution: Dict) -> List[Dict]:
         """특성 중요도 처리"""
         top_features = feature_attribution.get("top_features", [])
-        
+
         return [
             {
                 "feature": feature.get("name", ""),
                 "importance": feature.get("importance", 0),
                 "impact": feature.get("impact", ""),
-                "explanation": self._generate_feature_explanation(feature)
+                "explanation": self._generate_feature_explanation(feature),
             }
             for feature in top_features[:15]  # 상위 15개 특성
         ]
-    
+
     def _process_temporal_patterns(self, temporal_analysis: Dict) -> Dict:
         """시간별 패턴 처리"""
         return {
             "crisis_progression": temporal_analysis.get("crisis_progression", []),
             "market_cycles": temporal_analysis.get("market_cycles", {}),
-            "prediction_accuracy": temporal_analysis.get("prediction_accuracy", 0)
+            "prediction_accuracy": temporal_analysis.get("prediction_accuracy", 0),
         }
-    
+
     def _generate_xai_explanations(self, report: Dict) -> List[Dict]:
         """XAI 설명 생성"""
         explanations = []
-        
+
         # T-Cell 설명
         tcell_explanation = {
             "component": "T-Cell (위기 감지)",
@@ -134,12 +136,12 @@ class HTMLDashboardGenerator:
             "key_insights": [
                 f"총 {report.get('basic_stats', {}).get('crisis_days', 0)}일의 위기 상황 감지",
                 f"주요 위험 요소: {list(report.get('basic_stats', {}).get('risk_distribution', {}).keys())[:3]}",
-                "적응적 임계값 조정으로 거짓 양성 최소화"
+                "적응적 임계값 조정으로 거짓 양성 최소화",
             ],
-            "methodology": "Isolation Forest 기반 이상 탐지 + 동적 임계값 조정"
+            "methodology": "Isolation Forest 기반 이상 탐지 + 동적 임계값 조정",
         }
         explanations.append(tcell_explanation)
-        
+
         # B-Cell 설명
         bcell_explanation = {
             "component": "B-Cell (전문가 시스템)",
@@ -147,50 +149,54 @@ class HTMLDashboardGenerator:
             "key_insights": [
                 f"평균 신뢰도: {report.get('bcell_analysis', {}).get('avg_confidence', 0):.2f}",
                 f"메모리 활성화: {report.get('basic_stats', {}).get('memory_activations', 0)}회",
-                "상황별 전문가 모델 적응적 선택"
+                "상황별 전문가 모델 적응적 선택",
             ],
-            "methodology": "앙상블 전문가 모델 + 메모리 기반 학습"
+            "methodology": "앙상블 전문가 모델 + 메모리 기반 학습",
         }
         explanations.append(bcell_explanation)
-        
+
         return explanations
-    
+
     def _generate_tcell_explanation(self, event: Dict) -> str:
         """T-Cell 이벤트 설명 생성"""
         crisis_level = event.get("crisis_level", 0)
         risks = event.get("detected_risks", [])
-        
+
         if crisis_level > 0.8:
             severity = "심각한 위기"
         elif crisis_level > 0.5:
             severity = "중간 위기"
         else:
             severity = "경미한 위기"
-        
+
         risk_text = ", ".join(risks[:3]) if risks else "일반적 시장 불안정"
-        
+
         return f"{severity} 감지: {risk_text}로 인한 시장 이상 신호 포착"
-    
+
     def _generate_bcell_explanation(self, response: Dict) -> str:
         """B-Cell 응답 설명 생성"""
         expert_type = response.get("expert_type", "")
         confidence = response.get("confidence", 0)
         recommendation = response.get("recommendation", "")
-        
-        confidence_text = "높은" if confidence > 0.7 else "중간" if confidence > 0.4 else "낮은"
-        
+
+        confidence_text = (
+            "높은" if confidence > 0.7 else "중간" if confidence > 0.4 else "낮은"
+        )
+
         return f"{expert_type} 전문가가 {confidence_text} 신뢰도로 '{recommendation}' 전략 추천"
-    
+
     def _generate_feature_explanation(self, feature: Dict) -> str:
         """특성 설명 생성"""
         name = feature.get("name", "")
         importance = feature.get("importance", 0)
         impact = feature.get("impact", "")
-        
-        importance_text = "매우 중요" if importance > 0.7 else "중요" if importance > 0.4 else "보통"
-        
+
+        importance_text = (
+            "매우 중요" if importance > 0.7 else "중요" if importance > 0.4 else "보통"
+        )
+
         return f"{name}: {importance_text}한 특성으로 {impact} 영향"
-    
+
     def _get_severity_level(self, crisis_level: float) -> str:
         """위기 심각도 레벨"""
         if crisis_level > 0.8:
@@ -201,7 +207,7 @@ class HTMLDashboardGenerator:
             return "medium"
         else:
             return "low"
-    
+
     def _generate_html(self, data: Dict) -> str:
         """HTML 생성"""
         return f"""
@@ -265,11 +271,11 @@ class HTMLDashboardGenerator:
 </body>
 </html>
         """
-    
+
     def _generate_summary_cards(self, data: Dict) -> str:
         """요약 카드 생성"""
-        stats = data.get('basic_stats', {})
-        
+        stats = data.get("basic_stats", {})
+
         return f"""
         <div class="card">
             <h3>총 분석 기간</h3>
@@ -288,15 +294,15 @@ class HTMLDashboardGenerator:
             <div class="metric">{stats.get('memory_activations', 0)}회</div>
         </div>
         """
-    
+
     def _generate_tcell_section(self, data: Dict) -> str:
         """T-Cell 섹션 생성"""
-        insights = data.get('tcell_insights', [])
-        
+        insights = data.get("tcell_insights", [])
+
         html = "<div class='insights-container'>"
-        
+
         for insight in insights[:5]:  # 최대 5개 표시
-            severity_class = insight.get('severity', 'low')
+            severity_class = insight.get("severity", "low")
             html += f"""
             <div class="insight-card tcell-card {severity_class}">
                 <div class="insight-header">
@@ -309,20 +315,22 @@ class HTMLDashboardGenerator:
                 </div>
             </div>
             """
-        
+
         html += "</div>"
         return html
-    
+
     def _generate_bcell_section(self, data: Dict) -> str:
         """B-Cell 섹션 생성"""
-        insights = data.get('bcell_insights', [])
-        
+        insights = data.get("bcell_insights", [])
+
         html = "<div class='insights-container'>"
-        
+
         for insight in insights[:5]:  # 최대 5개 표시
-            confidence = insight.get('confidence', 0)
-            confidence_class = "high" if confidence > 0.7 else "medium" if confidence > 0.4 else "low"
-            
+            confidence = insight.get("confidence", 0)
+            confidence_class = (
+                "high" if confidence > 0.7 else "medium" if confidence > 0.4 else "low"
+            )
+
             html += f"""
             <div class="insight-card bcell-card">
                 <div class="insight-header">
@@ -336,20 +344,20 @@ class HTMLDashboardGenerator:
                 </div>
             </div>
             """
-        
+
         html += "</div>"
         return html
-    
+
     def _generate_feature_section(self, data: Dict) -> str:
         """특성 섹션 생성"""
-        features = data.get('feature_importance', [])
-        
+        features = data.get("feature_importance", [])
+
         html = "<div class='feature-list'>"
-        
+
         for feature in features[:10]:  # 최대 10개 표시
-            importance = feature.get('importance', 0)
+            importance = feature.get("importance", 0)
             width = int(importance * 100)
-            
+
             html += f"""
             <div class="feature-item">
                 <div class="feature-name">{feature.get('feature', '')}</div>
@@ -360,16 +368,16 @@ class HTMLDashboardGenerator:
                 <div class="feature-explanation">{feature.get('explanation', '')}</div>
             </div>
             """
-        
+
         html += "</div>"
         return html
-    
+
     def _generate_xai_section(self, data: Dict) -> str:
         """XAI 섹션 생성"""
-        explanations = data.get('xai_explanations', [])
-        
+        explanations = data.get("xai_explanations", [])
+
         html = "<div class='xai-container'>"
-        
+
         for exp in explanations:
             html += f"""
             <div class="xai-card">
@@ -386,14 +394,14 @@ class HTMLDashboardGenerator:
                 </div>
             </div>
             """
-        
+
         html += "</div>"
         return html
-    
+
     def _generate_temporal_section(self, data: Dict) -> str:
         """시간별 섹션 생성"""
-        temporal = data.get('temporal_patterns', {})
-        
+        temporal = data.get("temporal_patterns", {})
+
         return f"""
         <div class="temporal-content">
             <div class="chart-container">
@@ -405,7 +413,7 @@ class HTMLDashboardGenerator:
             </div>
         </div>
         """
-    
+
     def _get_css_styles(self) -> str:
         """CSS 스타일"""
         return """
@@ -656,7 +664,7 @@ class HTMLDashboardGenerator:
             }
         }
         """
-    
+
     def _get_javascript(self) -> str:
         """JavaScript 코드"""
         return """
@@ -690,7 +698,7 @@ class HTMLDashboardGenerator:
             }
         });
         """
-    
+
     def _load_template(self) -> str:
         """템플릿 로드 (향후 확장용)"""
         return ""
@@ -699,23 +707,20 @@ class HTMLDashboardGenerator:
 # 기존 분석 시스템과 통합하는 함수
 def generate_dashboard(analysis_report: Dict, output_dir: str = None):
     """대시보드 생성"""
-    
+
     if output_dir is None:
         output_dir = "."
-    
+
     # HTML 대시보드 생성
     dashboard_generator = HTMLDashboardGenerator()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     html_path = os.path.join(output_dir, f"bipd_dashboard_{timestamp}.html")
-    
+
     dashboard_generator.generate_dashboard(analysis_report, html_path)
-    
+
     # 기존 JSON 파일도 함께 생성 (호환성)
     json_path = os.path.join(output_dir, f"bipd_analysis_{timestamp}.json")
-    with open(json_path, 'w', encoding='utf-8') as f:
+    with open(json_path, "w", encoding="utf-8") as f:
         json.dump(analysis_report, f, ensure_ascii=False, indent=2)
-    
-    return {
-        "html_dashboard": html_path,
-        "json_report": json_path
-    }
+
+    return {"html_dashboard": html_path, "json_report": json_path}
