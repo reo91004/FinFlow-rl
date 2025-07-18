@@ -91,3 +91,5 @@ htmlcov/
 
 # Performance profiling
 *.prof
+
+.claude
