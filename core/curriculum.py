@@ -499,10 +499,21 @@ class CurriculumLearningManager:
 
     def is_curriculum_complete(self) -> bool:
         """커리큘럼 학습 완료 여부"""
-        return (
-            self.scheduler.current_level >= len(self.scheduler.level_configs) - 1
-            and self.scheduler.current_episode >= self.scheduler.total_episodes
-        )
+        # 1000 에피소드에 도달하면 레벨과 관계없이 종료
+        if self.scheduler.current_episode >= self.scheduler.total_episodes:
+            return True
+            
+        # 또는 최고 레벨에 도달하고 해당 레벨의 최소 에피소드를 완료한 경우
+        if self.scheduler.current_level >= len(self.scheduler.level_configs) - 1:
+            episodes_in_level = (
+                self.scheduler.current_episode - self.scheduler.level_start_episode
+            )
+            min_episodes = self.scheduler.level_configs[self.scheduler.current_level][
+                "min_episodes"
+            ]
+            return episodes_in_level >= min_episodes
+            
+        return False
 
     def get_curriculum_progress(self) -> Dict:
         """커리큘럼 진행 상황"""
