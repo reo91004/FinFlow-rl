@@ -7,7 +7,6 @@ import traceback
 import gc
 from core import ImmunePortfolioBacktester
 from constant import create_directories
-from utils.logger import stop_logging
 
 # 디렉토리 초기화
 create_directories()
@@ -141,8 +140,5 @@ if __name__ == "__main__":
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-        # 로깅 시스템 정리
-        if hasattr(backtester, "tee_output") and backtester.tee_output:
-            stop_logging(backtester.tee_output)
 
         print("정리 완료")

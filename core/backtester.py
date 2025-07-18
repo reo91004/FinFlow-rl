@@ -15,10 +15,6 @@ from .reward import RewardCalculator
 from .curriculum import CurriculumLearningManager
 from xai import generate_dashboard, create_visualizations
 from constant import *
-from utils.logger import (
-    setup_logging_legacy as setup_logging,
-    stop_logging_legacy as stop_logging,
-)
 from utils.checkpoint import CheckpointManager
 from utils.validator import DataLeakageValidator, SystemValidator
 from utils.rl_tracker import RLTracker
@@ -46,8 +42,6 @@ class ImmunePortfolioBacktester:
         self.rl_tracker_dir = os.path.join(self.output_dir, "rl_tracker")
         os.makedirs(self.rl_tracker_dir, exist_ok=True)
 
-        # 로깅 시스템 초기화
-        self.tee_output = setup_logging(self.output_dir)
 
         # 체크포인트 관리자 초기화
         checkpoint_dir = os.path.join(self.output_dir, "checkpoints")
@@ -109,10 +103,6 @@ class ImmunePortfolioBacktester:
         # 커리큘럼 학습 관리자 초기화
         self.curriculum_manager = None
 
-    def __del__(self):
-        """소멸자 - 로깅 정리"""
-        if hasattr(self, "tee_output") and self.tee_output:
-            stop_logging(self.tee_output)
 
     def _process_comprehensive_data(self, raw_data, symbols):
         """포괄적인 시장 데이터 처리"""
