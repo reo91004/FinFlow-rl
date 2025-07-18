@@ -577,7 +577,7 @@ class ImmunePortfolioBacktester:
 
         # 안전장치 변수들
         max_iterations = min(len(episode_returns), 200)  # 최대 반복 제한
-        memory_cleanup_interval = 50  # 메모리 정리 주기
+        memory_cleanup_interval = 200  # 메모리 정리 주기 (에피소드당)
 
         try:
             for i in range(max_iterations):
@@ -637,6 +637,11 @@ class ImmunePortfolioBacktester:
 
                     # 1차 보상 클리핑 (극단값 방지)
                     total_reward = np.clip(total_reward, -10.0, 10.0)
+                    
+                    # 극단값 모니터링 (커리큘럼 학습 디버깅용)
+                    if abs(total_reward) > 5.0:
+                        print(f"[커리큘럼] 큰 보상 감지: {total_reward:.3f} (레벨 {curriculum_config.get('level', 'N/A')})")
+                    
                     episode_rewards.append(total_reward)
 
                     # 극단값 모니터링 및 조기 종료
@@ -730,14 +735,16 @@ class ImmunePortfolioBacktester:
                     except Exception as e:
                         print(f"[경고] 가중치 업데이트 오류: {e}")
 
-                    # 주기적 메모리 정리
+                    # 주기적 메모리 정리 (빈도 감소, 로그 레벨 조정)
                     if i % memory_cleanup_interval == 0 and i > 0:
                         try:
                             collected = gc.collect()
                             if torch.cuda.is_available():
                                 torch.cuda.empty_cache()
-                            if collected > 100:  # 정리된 객체가 많을 때만 로그
-                                print(f"[정보] 메모리 정리 완료 (객체: {collected}개)")
+                            # 메모리 정리 로그는 디버그 모드에서만 표시하거나
+                            # 매우 많은 객체가 정리될 때만 표시
+                            if collected > 1000:  # 임계값을 높여서 중요한 경우만 표시
+                                print(f"[메모리] 대량 객체 정리: {collected}개")
                         except Exception as e:
                             print(f"[경고] 메모리 정리 오류: {e}")
 

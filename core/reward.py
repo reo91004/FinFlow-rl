@@ -15,7 +15,7 @@ class RewardCalculator:
         transaction_cost_rate=0.001,
         target_volatility=0.15,
         target_max_drawdown=0.1,
-        reward_clipping_range=(-5.0, 5.0),
+        reward_clipping_range=(-2.0, 2.0),  # 더 보수적인 클리핑
     ):
         self.lookback_window = lookback_window
         self.transaction_cost_rate = transaction_cost_rate
@@ -52,7 +52,7 @@ class RewardCalculator:
             previous_weights = np.ones_like(current_weights) / len(current_weights)
 
         # 기본 수익률 보상 (스케일링 조정)
-        return_reward = current_return * 50  # 100 -> 50로 축소
+        return_reward = current_return * 20  # 더 적절한 스케일링
 
         # 위험 조정 성과 보상 (안정화)
         risk_adjusted_reward = self._calculate_risk_adjusted_reward()
@@ -80,9 +80,9 @@ class RewardCalculator:
 
         # 가중치 조정으로 균형 맞추기
         total_reward = (
-            return_reward * 0.4  # 주요 수익률 신호
-            + risk_adjusted_reward * 0.25  # 위험 조정 성과
-            + target_reward * 0.15  # 목표 달성
+            return_reward * 0.3  # 수익률 비중 감소
+            + risk_adjusted_reward * 0.3  # 위험 조정 성과 비중 증가
+            + target_reward * 0.2  # 목표 달성
             + adaptation_reward * 0.1  # 시장 적응성
             + transaction_cost_penalty * 0.05  # 거래 비용
             + concentration_penalty * 0.05  # 집중도 패널티
@@ -94,8 +94,10 @@ class RewardCalculator:
         )
 
         # 적응적 정규화 (선택적)
-        if len(self.reward_history) > 50:
+        if len(self.reward_history) > 100:  # 충분한 데이터 후 정규화
             normalized_reward = self._adaptive_normalize_reward(total_reward)
+            # 정규화 후에도 최종 범위 확인
+            normalized_reward = np.clip(normalized_reward, -2.0, 2.0)
         else:
             normalized_reward = total_reward
 
