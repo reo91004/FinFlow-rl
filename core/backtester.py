@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import torch
 import gc
 from datetime import datetime, timedelta
+from tqdm import tqdm
 from typing import Dict, List, Tuple, Any, Optional
 from .system import ImmunePortfolioSystem
 from .reward import RewardCalculator
@@ -20,15 +21,7 @@ from utils.logger import (
 )
 from utils.checkpoint import CheckpointManager
 from utils.validator import DataLeakageValidator, SystemValidator
-
-# tqdm 기본 설정 (한 번만 실행)
-from tqdm import tqdm
-
-tqdm.pandas()
-import os
-
-if os.name == "nt":  # Windows
-    tqdm._instances.clear()
+from utils.rl_tracker import RLTracker
 
 import warnings
 import json
@@ -49,6 +42,10 @@ class ImmunePortfolioBacktester:
         self.output_dir = os.path.join(RESULTS_DIR, f"analysis_{timestamp}")
         os.makedirs(self.output_dir, exist_ok=True)
 
+        # RL Tracker 전용 디렉토리 생성
+        self.rl_tracker_dir = os.path.join(self.output_dir, "rl_tracker")
+        os.makedirs(self.rl_tracker_dir, exist_ok=True)
+
         # 로깅 시스템 초기화
         self.tee_output = setup_logging(self.output_dir)
 
@@ -58,6 +55,9 @@ class ImmunePortfolioBacktester:
 
         # 시스템 검증기 초기화
         self.validator = SystemValidator()
+
+        # RLTracker 초기화
+        self.rl_tracker = RLTracker(output_dir=self.rl_tracker_dir)
 
         # 고도화된 보상 계산기 초기화
         self.reward_calculator = RewardCalculator(
@@ -396,7 +396,7 @@ class ImmunePortfolioBacktester:
         use_curriculum=True,
         logging_level="full",
     ):
-        """단일 백테스트 실행 (모든 기능 통합)"""
+        """단일 백테스트 실행"""
 
         if seed is not None:
             np.random.seed(seed)
@@ -424,7 +424,7 @@ class ImmunePortfolioBacktester:
             print("커리큘럼 학습이 활성화되었습니다.")
 
         try:
-            # 사전 훈련 (기본 전문가 지식)
+            # 사전 훈련
             if use_learning_bcells:
                 immune_system.pretrain_bcells(self.train_data, episodes=300)
 
@@ -435,6 +435,23 @@ class ImmunePortfolioBacktester:
             else:
                 print("기존 방식 적응형 학습을 진행하고 있습니다...")
                 self._traditional_training(immune_system)
+
+            # 강화학습 시각화 생성
+            if use_learning_bcells:
+                print("강화학습 추적 시각화를 생성하고 있습니다...")
+
+                rl_plot_path = os.path.join(
+                    self.rl_tracker_dir, "training_analysis.png"
+                )
+                self.rl_tracker.create_comprehensive_plot(save_path=rl_plot_path)
+
+                data_path = self.rl_tracker.save_training_data(
+                    os.path.join(self.rl_tracker_dir, "training_data.csv")
+                )
+
+                print(f"강화학습 분석 완료:")
+                print(f"  시각화: {rl_plot_path}")
+                print(f"  데이터: {data_path}")
 
             # 테스트 단계
             print("테스트 데이터 기반 성능 평가를 진행하고 있습니다...")
@@ -448,7 +465,6 @@ class ImmunePortfolioBacktester:
 
         except Exception as e:
             print(f"백테스트 실행 중 오류 발생: {e}")
-            # 응급 체크포인트 저장
             self._save_emergency_checkpoint(immune_system, str(e))
             raise
 
@@ -527,6 +543,66 @@ class ImmunePortfolioBacktester:
                     max_drawdown=max_drawdown,
                 )
 
+                # RLTracker에 데이터 기록
+                current_episode = self.curriculum_manager.scheduler.current_episode
+                current_level = self.curriculum_manager.scheduler.current_level
+
+                # B-Cell 개별 성과 수집
+                bcell_rewards = {}
+                learning_rates = {}
+                losses = {}
+                epsilon = None
+
+                if immune_system.use_learning_bcells:
+                    for i, bcell in enumerate(immune_system.bcells):
+                        if (
+                            hasattr(bcell, "specialist_performance")
+                            and bcell.specialist_performance
+                        ):
+                            bcell_rewards[f"bcell_{i}_{bcell.risk_type}"] = np.mean(
+                                list(bcell.specialist_performance)[-3:]
+                            )
+
+                        if hasattr(bcell, "actor_optimizer"):
+                            learning_rates[f"actor_{i}"] = (
+                                bcell.actor_optimizer.param_groups[0]["lr"]
+                            )
+                            learning_rates[f"critic_{i}"] = (
+                                bcell.critic_optimizer.param_groups[0]["lr"]
+                            )
+
+                        if hasattr(bcell, "last_actor_loss"):
+                            losses[f"actor_{i}"] = bcell.last_actor_loss
+                        if hasattr(bcell, "last_critic_loss"):
+                            losses[f"critic_{i}"] = bcell.last_critic_loss
+
+                        if hasattr(bcell, "epsilon"):
+                            epsilon = bcell.epsilon
+
+                # 메타 컨트롤러 성과
+                meta_reward = None
+                if (
+                    hasattr(immune_system, "hierarchical_controller")
+                    and immune_system.hierarchical_controller
+                ):
+                    if immune_system.hierarchical_controller.meta_level_rewards:
+                        meta_reward = (
+                            immune_system.hierarchical_controller.meta_level_rewards[-1]
+                        )
+
+                # RLTracker 로깅
+                self.rl_tracker.log_episode(
+                    episode=current_episode,
+                    reward=episode_reward,
+                    portfolio_return=episode_return,
+                    learning_rates=learning_rates,
+                    losses=losses,
+                    epsilon=epsilon,
+                    curriculum_level=current_level,
+                    bcell_rewards=bcell_rewards,
+                    meta_reward=meta_reward,
+                )
+
                 # 체크포인트 저장
                 if self.checkpoint_manager.should_save_checkpoint():
                     episode_info = {
@@ -587,25 +663,25 @@ class ImmunePortfolioBacktester:
         extreme_threshold = 3.0
 
         # 안전장치 변수들
-        max_iterations = min(len(episode_returns), 200)  # 최대 반복 제한
-        memory_cleanup_interval = 200  # 메모리 정리 주기 (에피소드당)
+        max_iterations = min(len(episode_returns), 200)
+        memory_cleanup_interval = 200
 
         try:
             for i in range(max_iterations):
                 try:
-                    # 현재 데이터 추출 (경계 검사 포함)
+                    # 현재 데이터 추출
                     current_data = episode_data.iloc[: i + 1]
-                    if len(current_data) < 2:  # 최소 데이터 요구사항
+                    if len(current_data) < 2:
                         continue
 
-                    # 시장 특성 추출 (타입 안전성 보장)
+                    # 시장 특성 추출
                     market_features = immune_system.extract_market_features(
                         current_data
                     )
                     if market_features is None or len(market_features) == 0:
                         market_features = np.zeros(12, dtype=np.float32)
 
-                    # 마지막 특성 저장 (보상 계산용)
+                    # 마지막 특성 저장
                     immune_system.last_market_features = market_features
 
                     # 면역 반응 실행
@@ -619,10 +695,9 @@ class ImmunePortfolioBacktester:
                             episode_returns.columns
                         )
 
-                    # 포트폴리오 수익률 계산 (안전한 연산)
+                    # 포트폴리오 수익률 계산
                     try:
                         portfolio_return = np.sum(weights * episode_returns.iloc[i])
-                        # 극단적 수익률 클리핑 (일일 ±50% 제한)
                         portfolio_return = np.clip(portfolio_return, -0.5, 0.5)
                     except (IndexError, ValueError) as e:
                         print(f"[경고] 수익률 계산 오류 (i={i}): {e}")
@@ -630,7 +705,7 @@ class ImmunePortfolioBacktester:
 
                     portfolio_returns.append(portfolio_return)
 
-                    # 고도화된 보상 계산 (예외 처리 포함)
+                    # 고도화된 보상 계산
                     try:
                         reward_details = (
                             self.reward_calculator.calculate_comprehensive_reward(
@@ -646,10 +721,9 @@ class ImmunePortfolioBacktester:
                         print(f"[경고] 보상 계산 오류: {e}")
                         total_reward = 0.0
 
-                    # 1차 보상 클리핑 (극단값 방지)
+                    # 1차 보상 클리핑
                     total_reward = np.clip(total_reward, -10.0, 10.0)
 
-                    # 극단값 모니터링 (커리큘럼 학습 디버깅용)
                     if abs(total_reward) > 5.0:
                         print(
                             f"[커리큘럼] 큰 보상 감지: {total_reward:.3f} (레벨 {curriculum_config.get('level', 'N/A')})"
@@ -668,13 +742,13 @@ class ImmunePortfolioBacktester:
                     else:
                         consecutive_extreme_rewards = 0
 
-                    # B-세포 학습 (수치적 안정성 강화)
+                    # B-세포 학습
                     if immune_system.use_learning_bcells and len(episode_rewards) > 5:
                         # 보상 시계열의 분산이 너무 클 때 스케일링 조정
                         recent_rewards = episode_rewards[-5:]
                         reward_volatility = np.std(recent_rewards)
 
-                        # 보상 스무딩 (높은 변동성 감지시)
+                        # 보상 스무딩
                         if reward_volatility > 2.0:
                             smoothed_reward = np.mean(recent_rewards[-3:])
                             total_reward = 0.7 * total_reward + 0.3 * smoothed_reward
@@ -686,7 +760,7 @@ class ImmunePortfolioBacktester:
                         difficulty_multiplier = curriculum_config.get("difficulty", 1.0)
                         adjusted_reward = total_reward * difficulty_multiplier
 
-                        # 2차 보상 클리핑 (B-세포 학습용)
+                        # 2차 보상 클리핑
                         adjusted_reward = np.clip(adjusted_reward, -5.0, 5.0)
 
                         # B-세포별 개별 학습
@@ -706,7 +780,7 @@ class ImmunePortfolioBacktester:
                                     else:
                                         specialist_reward = adjusted_reward * 0.8
 
-                                    # 3차 최종 클리핑 (더 엄격)
+                                    # 3차 최종 클리핑
                                     final_reward = np.clip(specialist_reward, -2.0, 2.0)
 
                                     # NaN/Inf 검증
@@ -727,7 +801,7 @@ class ImmunePortfolioBacktester:
                                     )
                                     continue
 
-                    # 기억 세포 업데이트 (안전한 임계값)
+                    # 기억 세포 업데이트
                     if immune_system.crisis_level > 0.15:
                         try:
                             memory_reward = np.clip(total_reward, -1.0, 1.0)
@@ -737,7 +811,7 @@ class ImmunePortfolioBacktester:
                         except Exception as e:
                             print(f"[경고] 기억 세포 업데이트 오류: {e}")
 
-                    # 가중치 업데이트 (안전한 복사)
+                    # 가중치 업데이트
                     try:
                         self.previous_weights = (
                             self.current_weights.copy()
@@ -748,15 +822,13 @@ class ImmunePortfolioBacktester:
                     except Exception as e:
                         print(f"[경고] 가중치 업데이트 오류: {e}")
 
-                    # 주기적 메모리 정리 (빈도 감소, 로그 레벨 조정)
+                    # 주기적 메모리 정리
                     if i % memory_cleanup_interval == 0 and i > 0:
                         try:
                             collected = gc.collect()
                             if torch.cuda.is_available():
                                 torch.cuda.empty_cache()
-                            # 메모리 정리 로그는 디버그 모드에서만 표시하거나
-                            # 매우 많은 객체가 정리될 때만 표시
-                            if collected > 1000:  # 임계값을 높여서 중요한 경우만 표시
+                            if collected > 1000:
                                 print(f"[메모리] 대량 객체 정리: {collected}개")
                         except Exception as e:
                             print(f"[경고] 메모리 정리 오류: {e}")
@@ -853,7 +925,7 @@ class ImmunePortfolioBacktester:
             )
             if not validation_result["weights_valid"]:
                 print(f"면역 반응 검증 실패: {validation_result['issues']}")
-                weights = np.ones(len(self.symbols)) / len(self.symbols)  # 기본값 사용
+                weights = np.ones(len(self.symbols)) / len(self.symbols)
 
             portfolio_return = np.sum(weights * train_returns.iloc[i])
             portfolio_values.append(portfolio_values[-1] * (1 + portfolio_return))
@@ -885,6 +957,44 @@ class ImmunePortfolioBacktester:
                 )
 
                 total_reward = reward_details["total_reward"]
+
+                # RLTracker 로깅
+                if i % 10 == 0:  # 일정 간격으로만 로깅
+                    learning_rates = {}
+                    losses = {}
+                    epsilon = None
+                    bcell_rewards = {}
+
+                    if immune_system.use_learning_bcells:
+                        for j, bcell in enumerate(immune_system.bcells):
+                            if hasattr(bcell, "actor_optimizer"):
+                                learning_rates[f"actor_{j}"] = (
+                                    bcell.actor_optimizer.param_groups[0]["lr"]
+                                )
+                                learning_rates[f"critic_{j}"] = (
+                                    bcell.critic_optimizer.param_groups[0]["lr"]
+                                )
+
+                            if (
+                                hasattr(bcell, "specialist_performance")
+                                and bcell.specialist_performance
+                            ):
+                                bcell_rewards[f"bcell_{j}_{bcell.risk_type}"] = np.mean(
+                                    list(bcell.specialist_performance)[-3:]
+                                )
+
+                            if hasattr(bcell, "epsilon"):
+                                epsilon = bcell.epsilon
+
+                    self.rl_tracker.log_episode(
+                        episode=i,
+                        reward=total_reward,
+                        portfolio_return=portfolio_return,
+                        learning_rates=learning_rates,
+                        losses=losses,
+                        epsilon=epsilon,
+                        bcell_rewards=bcell_rewards,
+                    )
 
                 # B-세포 학습
                 if immune_system.use_learning_bcells:
@@ -955,7 +1065,7 @@ class ImmunePortfolioBacktester:
                 weights, response_type, bcell_decisions
             )
             if not validation_result["weights_valid"]:
-                weights = np.ones(len(self.symbols)) / len(self.symbols)  # 기본값 사용
+                weights = np.ones(len(self.symbols)) / len(self.symbols)
 
             portfolio_return = np.sum(weights * test_returns.iloc[i])
             test_portfolio_returns.append(portfolio_return)
@@ -1487,10 +1597,11 @@ Final Capital: {metrics_df['Final Value'].mean():,.0f}
         logging_level="sample",
         base_seed=None,
     ):
-        """다중 백테스트 실행 (모든 기능 통합)"""
+        """다중 백테스트 실행"""
         all_metrics = []
         best_immune_system = None
         best_sharpe = -np.inf
+        rl_trackers = []
 
         print(f"\n=== BIPD 시스템 다중 백테스트 ({n_runs}회) 실행 ===")
 
@@ -1518,6 +1629,13 @@ Final Capital: {metrics_df['Final Value'].mean():,.0f}
             run_seed = base_seed + run * 1000
             print(f"\n{run + 1}/{n_runs}번째 실행 (시드: {run_seed})")
 
+            # 각 실행별 RLTracker 디렉토리 생성
+            run_rl_dir = os.path.join(self.rl_tracker_dir, f"run_{run+1}")
+            os.makedirs(run_rl_dir, exist_ok=True)
+
+            # 새로운 RLTracker 생성
+            self.rl_tracker = RLTracker(output_dir=run_rl_dir)
+
             portfolio_returns, immune_system = self.backtest_single_run(
                 seed=run_seed,
                 return_model=True,
@@ -1532,6 +1650,8 @@ Final Capital: {metrics_df['Final Value'].mean():,.0f}
             if metrics["Sharpe Ratio"] > best_sharpe:
                 best_sharpe = metrics["Sharpe Ratio"]
                 best_immune_system = immune_system
+
+            rl_trackers.append(self.rl_tracker)
 
         metrics_df = pd.DataFrame(all_metrics)
 
@@ -1553,6 +1673,10 @@ Final Capital: {metrics_df['Final Value'].mean():,.0f}
         print(f"칼마 지수: {metrics_df['Calmar Ratio'].mean():.2f}")
         print(f"최종 자산: {metrics_df['Final Value'].mean():,.0f}원")
 
+        # 다중 실행 결과 비교 시각화
+        if use_learning_bcells and len(rl_trackers) > 1:
+            self._create_multi_run_comparison(rl_trackers)
+
         if save_results:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             result_filename = f"bipd_{system_type}_{timestamp}"
@@ -1566,3 +1690,98 @@ Final Capital: {metrics_df['Final Value'].mean():,.0f}
                 self.save_model(best_immune_system, model_filename)
 
         return metrics_df
+
+    def _create_multi_run_comparison(self, rl_trackers):
+        """다중 실행 결과 비교 시각화"""
+
+        fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+
+        # 1. 실행별 보상 비교
+        ax = axes[0, 0]
+        for i, tracker in enumerate(rl_trackers):
+            if tracker.episode_rewards:
+                episodes = range(len(tracker.episode_rewards))
+                ax.plot(
+                    episodes,
+                    tracker.episode_rewards,
+                    alpha=0.7,
+                    label=f"Run {i+1}",
+                    linewidth=1,
+                )
+        ax.set_title("Reward Progression Comparison")
+        ax.set_xlabel("Episode")
+        ax.set_ylabel("Reward")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+        # 2. 최종 성과 분포
+        ax = axes[0, 1]
+        final_rewards = []
+        for tracker in rl_trackers:
+            if tracker.episode_rewards:
+                final_rewards.append(np.mean(tracker.episode_rewards[-50:]))
+
+        if final_rewards:
+            ax.hist(
+                final_rewards, bins=10, alpha=0.7, color="skyblue", edgecolor="black"
+            )
+            ax.axvline(
+                np.mean(final_rewards),
+                color="red",
+                linestyle="--",
+                label=f"Mean: {np.mean(final_rewards):.3f}",
+            )
+            ax.set_title("Final Performance Distribution")
+            ax.set_xlabel("Average Final Reward")
+            ax.set_ylabel("Frequency")
+            ax.legend()
+
+        # 3. 학습 안정성 비교
+        ax = axes[1, 0]
+        for i, tracker in enumerate(rl_trackers):
+            if len(tracker.episode_rewards) > 50:
+                stds = []
+                for j in range(50, len(tracker.episode_rewards), 10):
+                    window_std = np.std(tracker.episode_rewards[j - 50 : j])
+                    stds.append(window_std)
+                if stds:
+                    ax.plot(
+                        range(len(stds)),
+                        stds,
+                        alpha=0.7,
+                        label=f"Run {i+1}",
+                        linewidth=1,
+                    )
+        ax.set_title("Learning Stability Comparison")
+        ax.set_xlabel("Window")
+        ax.set_ylabel("Reward Std")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+        # 4. 수렴 속도 비교
+        ax = axes[1, 1]
+        convergence_episodes = []
+        for i, tracker in enumerate(rl_trackers):
+            if tracker.episode_rewards:
+                target = np.mean(tracker.episode_rewards[-100:]) * 0.9
+                for j in range(100, len(tracker.episode_rewards)):
+                    if np.mean(tracker.episode_rewards[j - 20 : j]) >= target:
+                        convergence_episodes.append(j)
+                        break
+                else:
+                    convergence_episodes.append(len(tracker.episode_rewards))
+
+        if convergence_episodes:
+            runs = [f"Run {i+1}" for i in range(len(convergence_episodes))]
+            ax.bar(runs, convergence_episodes, alpha=0.7, color="lightgreen")
+            ax.set_title("Convergence Speed Comparison")
+            ax.set_xlabel("Run")
+            ax.set_ylabel("Episodes to Convergence")
+            plt.setp(ax.get_xticklabels(), rotation=45)
+
+        plt.tight_layout()
+        comparison_path = os.path.join(self.rl_tracker_dir, "multi_run_comparison.png")
+        plt.savefig(comparison_path, dpi=300, bbox_inches="tight")
+        plt.close()
+
+        print(f"다중 실행 비교 시각화 저장: {comparison_path}")

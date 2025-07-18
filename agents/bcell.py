@@ -151,6 +151,10 @@ class BCell(ImmuneCell):
             risk_type, n_assets
         )
 
+        # 손실 추적용 변수 추가
+        self.last_actor_loss = 0.0
+        self.last_critic_loss = 0.0
+
     def _initialize_specialization(self, risk_type, n_assets):
         """위험 유형별 초기 특화 설정"""
         weights = torch.ones(n_assets) * 0.1
