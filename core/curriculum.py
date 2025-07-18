@@ -266,63 +266,182 @@ class MarketDataCurator:
         volatility_range = curriculum_config["volatility_range"]
         crisis_prob = curriculum_config["crisis_probability"]
 
+        #  에피소드 길이 검증 및 조정
+        max_possible_length = len(self.market_data) - 50  # 안전 마진
+        if episode_length > max_possible_length:
+            episode_length = max(20, max_possible_length)  # 최소 20일 보장
+            print(f"[경고] 에피소드 길이를 {episode_length}로 조정했습니다.")
+
         # 조건에 맞는 인덱스 수집
         candidate_indices = []
         for condition in target_conditions:
             if condition in self.market_periods:
-                candidate_indices.extend(self.market_periods[condition])
+                valid_indices = [
+                    idx
+                    for idx in self.market_periods[condition]
+                    if idx + episode_length < len(self.market_data)
+                ]  # 경계 검사
+                candidate_indices.extend(valid_indices)
 
         if not candidate_indices:
-            # 폴백: 전체 데이터에서 변동성 기준으로 선별
+            # 전체 데이터에서 변동성 기준으로 안전하게 선별
             volatility = self.returns.mean(axis=1).rolling(20).std()
-            mask = (volatility >= volatility_range[0]) & (
-                volatility <= volatility_range[1]
-            )
-            candidate_indices = volatility[mask].index.tolist()
+            volatility = volatility.dropna()
+
+            if len(volatility) > episode_length:
+                mask = (volatility >= volatility_range[0]) & (
+                    volatility <= volatility_range[1]
+                )
+                valid_indices = volatility[mask].index.tolist()
+
+                # 인덱스를 정수로 변환하고 경계 검사
+                candidate_indices = []
+                for idx in valid_indices:
+                    if isinstance(idx, pd.Timestamp):
+                        idx_pos = self.market_data.index.get_loc(idx)
+                    else:
+                        idx_pos = idx
+
+                    if idx_pos + episode_length < len(self.market_data):
+                        candidate_indices.append(idx_pos)
+
+        if not candidate_indices:
+            # 마지막 폴백: 데이터 중간 부분에서 안전하게 선택
+            safe_start = 50
+            safe_end = len(self.market_data) - episode_length - 50
+            if safe_end > safe_start:
+                candidate_indices = list(range(safe_start, safe_end, episode_length))
+            else:
+                # 정말 데이터가 부족한 경우
+                episode_length = min(20, len(self.market_data) // 2)
+                candidate_indices = [len(self.market_data) // 4]
+                print(
+                    f"[경고] 데이터 부족으로 에피소드 길이를 {episode_length}로 축소했습니다."
+                )
 
         # 위기 상황 강제 삽입 (확률 기반)
-        if np.random.random() < crisis_prob and self.market_periods["crisis"]:
-            crisis_idx = np.random.choice(self.market_periods["crisis"])
-            candidate_indices.append(crisis_idx)
+        if np.random.random() < crisis_prob and self.market_periods.get("crisis"):
+            crisis_candidates = [
+                idx
+                for idx in self.market_periods["crisis"]
+                if idx + episode_length < len(self.market_data)
+            ]
+            if crisis_candidates:
+                crisis_idx = np.random.choice(crisis_candidates)
+                candidate_indices.append(crisis_idx)
 
-        # 랜덤 시작점 선택
-        if candidate_indices:
+        # 안전한 시작점 선택
+        try:
             start_idx = np.random.choice(candidate_indices)
-            end_idx = min(start_idx + episode_length, len(self.market_data) - 1)
-
-            selected_data = self.market_data.iloc[start_idx:end_idx]
-            market_features = self._extract_episode_features(selected_data)
-
-            return selected_data, market_features
-        else:
-            # 폴백: 랜덤 구간 선택
-            start_idx = np.random.randint(20, len(self.market_data) - episode_length)
             end_idx = start_idx + episode_length
 
+            # 최종 경계 검사
+            if end_idx >= len(self.market_data):
+                end_idx = len(self.market_data) - 1
+                start_idx = max(0, end_idx - episode_length)
+
             selected_data = self.market_data.iloc[start_idx:end_idx]
+
+            # 데이터 유효성 검사
+            if len(selected_data) < 10:  # 최소 10일 데이터 보장
+                print(
+                    f"[경고] 선택된 데이터가 너무 짧습니다 ({len(selected_data)}일). 기본 구간 사용."
+                )
+                # 안전한 기본 구간 선택
+                default_start = len(self.market_data) // 3
+                default_end = default_start + max(20, episode_length)
+                selected_data = self.market_data.iloc[default_start:default_end]
+
             market_features = self._extract_episode_features(selected_data)
 
             return selected_data, market_features
+
+        except Exception as e:
+            print(f"[오류] 커리큘럼 데이터 선택 실패: {e}")
+            # 마지막 폴백: 안전한 기본 구간
+            safe_start = len(self.market_data) // 3
+            safe_end = safe_start + min(episode_length, len(self.market_data) // 3)
+            fallback_data = self.market_data.iloc[safe_start:safe_end]
+            fallback_features = self._extract_episode_features(fallback_data)
+            return fallback_data, fallback_features
 
     def _extract_episode_features(self, episode_data: pd.DataFrame) -> np.ndarray:
         """에피소드 데이터에서 특성 추출"""
-        returns = episode_data.pct_change().dropna()
+        try:
+            if len(episode_data) == 0:
+                return np.zeros(8, dtype=np.float32)
 
-        if len(returns) == 0:
-            return np.zeros(8)
+            returns = episode_data.pct_change().dropna()
 
-        features = [
-            returns.std().mean(),  # 평균 변동성
-            returns.corr().mean().mean(),  # 평균 상관계수
-            returns.mean().mean(),  # 평균 수익률
-            returns.skew().mean(),  # 평균 왜도
-            returns.kurtosis().mean(),  # 평균 첨도
-            (returns < -0.02).sum().sum() / len(returns),  # 하락일 비율
-            (returns.max().max() - returns.min().min()),  # 가격 범위
-            len(returns[returns.sum(axis=1) < -0.05]) / len(returns),  # 큰 하락일 비율
-        ]
+            if len(returns) == 0:
+                return np.zeros(8, dtype=np.float32)
 
-        return np.nan_to_num(np.array(features), nan=0.0, posinf=0.0, neginf=0.0)
+            # 통계 계산
+            def safe_stat(func, data, default=0.0):
+                try:
+                    if len(data) == 0:
+                        return default
+                    result = func(data)
+                    if np.isnan(result) or np.isinf(result):
+                        return default
+                    return float(result)
+                except Exception:
+                    return default
+
+            features = [
+                safe_stat(lambda x: x.std().mean(), returns),  # 평균 변동성
+                safe_stat(
+                    lambda x: self._safe_correlation(x), returns
+                ),  # 평균 상관계수
+                safe_stat(lambda x: x.mean().mean(), returns),  # 평균 수익률
+                safe_stat(lambda x: x.skew().mean(), returns),  # 평균 왜도
+                safe_stat(lambda x: x.kurtosis().mean(), returns),  # 평균 첨도
+                safe_stat(
+                    lambda x: (x < -0.02).sum().sum() / max(1, len(x)), returns
+                ),  # 하락일 비율
+                safe_stat(
+                    lambda x: x.max().max() - x.min().min(), returns
+                ),  # 가격 범위
+                safe_stat(
+                    lambda x: len(x[x.sum(axis=1) < -0.05]) / max(1, len(x)), returns
+                ),  # 큰 하락일 비율
+            ]
+
+            features = np.array(features, dtype=np.float32)
+            features = np.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
+
+            return features
+
+        except Exception as e:
+            print(f"[경고] 에피소드 특성 추출 실패: {e}")
+            return np.zeros(8, dtype=np.float32)
+
+    def _safe_correlation(self, returns):
+        """상관계수 계산"""
+        try:
+            if len(returns) <= 1 or returns.isnull().all().all():
+                return 0.0
+
+            # 최소 2개 이상의 유효한 열이 있는지 확인
+            valid_cols = returns.dropna(axis=1, how="all").columns
+            if len(valid_cols) < 2:
+                return 0.0
+
+            corr_matrix = returns[valid_cols].corr()
+            if corr_matrix.isnull().all().all():
+                return 0.0
+
+            # 대각선 제외한 평균 상관계수
+            mask = ~np.eye(corr_matrix.shape[0], dtype=bool)
+            corr_values = corr_matrix.values[mask]
+            valid_corr = corr_values[~np.isnan(corr_values)]
+
+            if len(valid_corr) > 0:
+                return np.mean(valid_corr)
+            else:
+                return 0.0
+        except Exception:
+            return 0.0
 
 
 class CurriculumLearningManager:
