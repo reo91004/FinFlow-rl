@@ -6,7 +6,7 @@ import time
 import traceback
 import gc
 from core import ImmunePortfolioBacktester
-from constant import create_directories
+from constant import *
 
 # 디렉토리 초기화
 create_directories()
@@ -14,18 +14,16 @@ create_directories()
 # 실행
 if __name__ == "__main__":
     # 설정
-    symbols = ["AAPL", "MSFT", "AMZN", "GOOGL", "AMD", "TSLA", "JPM", "JNJ", "PG", "V"]
-    train_start = "2008-01-02"
-    train_end = "2020-12-31"
-    test_start = "2021-01-01"
-    test_end = "2024-12-31"
+    symbols = STOCK_SYMBOLS
+    train_start = TRAIN_START_DATE
+    train_end = TRAIN_END_DATE
+    test_start = TEST_START_DATE
+    test_end = TEST_END_DATE
 
-    # 시드 설정 옵션
-    USE_FIXED_SEED = False
-    ENABLE_ALL_FEATURES = True  # 모든 기능 활성화
+    # 시드 설정 옵션 (constant.py에서 가져옴)
 
     if USE_FIXED_SEED:
-        global_seed = 42
+        global_seed = GLOBAL_SEED
         print(f"[설정] 고정 시드 사용: {global_seed} (재현 가능한 결과)")
     else:
         global_seed = int(time.time()) % 10000
@@ -82,12 +80,12 @@ if __name__ == "__main__":
 
         # 포괄적 분석 (모든 메트릭 포함)
         json_path, md_path = backtester.save_comprehensive_analysis(
-            "2021-01-01", "2021-06-30"
+            ANALYSIS_START_DATE, ANALYSIS_END_DATE
         )
 
         # XAI 대시보드 및 시각화
         analysis_json, analysis_md, dashboard_html = backtester.save_analysis_results(
-            "2021-01-01", "2021-06-30"
+            ANALYSIS_START_DATE, ANALYSIS_END_DATE
         )
 
         print(f"\n=== BIPD 통합 시스템 성능 평가 완료 ===")
@@ -95,7 +93,7 @@ if __name__ == "__main__":
         # 안정성 검증을 위한 다중 실행
         print(f"\n=== 다중 실행 안정성 검증 ===")
         results = backtester.run_multiple_backtests(
-            n_runs=3,
+            n_runs=DEFAULT_N_RUNS,
             save_results=True,
             use_learning_bcells=ENABLE_ALL_FEATURES,
             use_hierarchical=ENABLE_ALL_FEATURES,

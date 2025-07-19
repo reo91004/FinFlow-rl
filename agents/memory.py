@@ -9,6 +9,7 @@ from collections import deque
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional
 import pickle
+from constant import *
 
 
 class MemoryEmbedding(nn.Module):
@@ -107,7 +108,7 @@ class MemoryCell:
         self.optimizer = torch.optim.Adam(
             list(self.memory_embedding_net.parameters())
             + list(self.memory_retrieval_net.parameters()),
-            lr=0.001,
+            lr=DEFAULT_MEMORY_LR,
         )
 
     def store_memory(

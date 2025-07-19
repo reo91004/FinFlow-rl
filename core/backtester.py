@@ -409,14 +409,14 @@ class ImmunePortfolioBacktester:
         # 커리큘럼 학습 초기화
         if use_curriculum and use_learning_bcells:
             self.curriculum_manager = CurriculumLearningManager(
-                market_data=self.train_data, total_episodes=1000, episode_length=60
+                market_data=self.train_data, total_episodes=TOTAL_EPISODES, episode_length=EPISODE_LENGTH
             )
             print("커리큘럼 학습이 활성화되었습니다.")
 
         try:
             # 사전 훈련
             if use_learning_bcells:
-                immune_system.pretrain_bcells(self.train_data, episodes=300)
+                immune_system.pretrain_bcells(self.train_data, episodes=PRETRAIN_EPISODES)
 
             # 커리큘럼 기반 적응형 학습
             if use_curriculum and self.curriculum_manager:

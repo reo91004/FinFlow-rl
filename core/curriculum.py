@@ -5,6 +5,7 @@ import pandas as pd
 from typing import Dict, List, Tuple, Optional
 from datetime import datetime, timedelta
 import warnings
+from constant import *
 
 warnings.filterwarnings("ignore")
 
@@ -14,7 +15,7 @@ class CurriculumScheduler:
 
     def __init__(
         self,
-        total_episodes: int = 1000,
+        total_episodes: int = TOTAL_EPISODES,
         difficulty_levels: int = 3,
         transition_threshold: float = 0.7,
         performance_window: int = 50,
@@ -46,7 +47,7 @@ class CurriculumScheduler:
                 "volatility_range": (0.05, 0.15),
                 "crisis_probability": 0.1,
                 "market_conditions": ["bull", "stable"],
-                "min_episodes": 200,
+                "min_episodes": CURRICULUM_MIN_EPISODES[0],
                 "difficulty": 1.0,
             },
             {
@@ -55,7 +56,7 @@ class CurriculumScheduler:
                 "volatility_range": (0.15, 0.30),
                 "crisis_probability": 0.3,
                 "market_conditions": ["bull", "bear", "sideways"],
-                "min_episodes": 300,
+                "min_episodes": CURRICULUM_MIN_EPISODES[1],
                 "difficulty": 2.0,
             },
             {
@@ -64,7 +65,7 @@ class CurriculumScheduler:
                 "volatility_range": (0.30, 0.60),
                 "crisis_probability": 0.7,
                 "market_conditions": ["crisis", "bear", "volatile"],
-                "min_episodes": 500,
+                "min_episodes": CURRICULUM_MIN_EPISODES[2],
                 "difficulty": 3.0,
             },
         ]
@@ -451,8 +452,8 @@ class CurriculumLearningManager:
     def __init__(
         self,
         market_data: pd.DataFrame,
-        total_episodes: int = 1000,
-        episode_length: int = 60,
+        total_episodes: int = TOTAL_EPISODES,
+        episode_length: int = EPISODE_LENGTH,
     ):
         self.scheduler = CurriculumScheduler(total_episodes=total_episodes)
         self.data_curator = MarketDataCurator(market_data)

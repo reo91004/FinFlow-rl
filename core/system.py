@@ -842,7 +842,7 @@ class ImmunePortfolioSystem:
                 weights[idx] += defensive_boost / len(defensive_indices)
         return weights / np.sum(weights)
 
-    def pretrain_bcells(self, market_data, episodes=500):
+    def pretrain_bcells(self, market_data, episodes=PRETRAIN_EPISODES):
         """B-세포 사전 훈련"""
         if not self.use_learning_bcells:
             return

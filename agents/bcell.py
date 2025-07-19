@@ -9,6 +9,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from collections import deque
 from datetime import datetime
 from .base import ImmuneCell
+from constant import *
 
 
 class ActorNetwork(nn.Module):
@@ -87,7 +88,7 @@ class AttentionMechanism(nn.Module):
 class BCell(ImmuneCell):
     """B-세포: Actor-Critic 기반 전문화된 대응 전략 생성"""
 
-    def __init__(self, cell_id, risk_type, input_size, n_assets, learning_rate=0.001):
+    def __init__(self, cell_id, risk_type, input_size, n_assets, learning_rate=DEFAULT_LEARNING_RATE):
         super().__init__(cell_id)
         self.risk_type = risk_type
         self.n_assets = n_assets
@@ -102,25 +103,25 @@ class BCell(ImmuneCell):
             self.actor_network.parameters(), lr=learning_rate
         )
         self.critic_optimizer = optim.Adam(
-            self.critic_network.parameters(), lr=learning_rate * 2
+            self.critic_network.parameters(), lr=learning_rate * (DEFAULT_CRITIC_LR / DEFAULT_ACTOR_LR)
         )
         self.attention_optimizer = optim.Adam(
-            self.attention_mechanism.parameters(), lr=learning_rate * 0.5
+            self.attention_mechanism.parameters(), lr=learning_rate * (DEFAULT_ATTENTION_LR / DEFAULT_ACTOR_LR)
         )
 
         # 강화학습 파라미터
         self.experience_buffer = []
         self.episode_buffer = []
         self.antibody_strength = 0.1
-        self.epsilon = 0.3
-        self.epsilon_decay = 0.995
-        self.min_epsilon = 0.05
+        self.epsilon = DEFAULT_EPSILON
+        self.epsilon_decay = DEFAULT_EPSILON_DECAY
+        self.min_epsilon = DEFAULT_MIN_EPSILON
 
         # 학습 설정
-        self.batch_size = 32
-        self.update_frequency = 10
+        self.batch_size = DEFAULT_BATCH_SIZE
+        self.update_frequency = DEFAULT_UPDATE_FREQUENCY
         self.experience_count = 0
-        self.gamma = 0.95  # 할인 인수
+        self.gamma = DEFAULT_GAMMA  # 할인 인수
 
         # 전문화 관련 속성
         self.specialization_buffer = deque(maxlen=1000)

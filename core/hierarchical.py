@@ -8,6 +8,7 @@ import torch.optim as optim
 from typing import Dict, List, Tuple, Optional
 from collections import deque
 from datetime import datetime
+from constant import *
 
 
 class MetaController(nn.Module):
@@ -70,12 +71,12 @@ class HierarchicalController:
         # Meta-Controller 초기화
         self.meta_controller = MetaController(meta_input_size, num_experts)
         self.meta_optimizer = optim.Adam(
-            self.meta_controller.parameters(), lr=learning_rate
+            self.meta_controller.parameters(), lr=learning_rate or DEFAULT_META_LR
         )
 
         # 학습 파라미터
-        self.gamma = 0.95
-        self.meta_batch_size = 32
+        self.gamma = DEFAULT_GAMMA
+        self.meta_batch_size = DEFAULT_BATCH_SIZE
         self.experience_buffer = deque(maxlen=1000)
 
         # 전문가 성과 추적
