@@ -229,16 +229,16 @@ class ImmunePortfolioSystem:
         selected_features = []
 
         market_volatility = feature_data.get("market_volatility", 0.0)
-        selected_features.append(np.clip(market_volatility * 5, 0, 1))
+        selected_features.append(np.clip(market_volatility * MARKET_VOLATILITY_SCALE, 0, 1))
 
         market_correlation = feature_data.get("market_correlation", 0.5)
         selected_features.append(np.clip(abs(market_correlation), 0, 1))
 
         market_return = feature_data.get("market_return", 0.0)
-        selected_features.append(np.clip(market_return * 10, -1, 1))
+        selected_features.append(np.clip(market_return * MARKET_RETURN_SCALE, -1, 1))
 
         vix_proxy = feature_data.get("vix_proxy", 0.1)
-        selected_features.append(np.clip(vix_proxy * 3, 0, 1))
+        selected_features.append(np.clip(vix_proxy * VIX_PROXY_SCALE, 0, 1))
 
         market_stress = feature_data.get("market_stress", 0.0)
         selected_features.append(np.clip(market_stress / 10, 0, 1))
@@ -275,7 +275,7 @@ class ImmunePortfolioSystem:
             avg_bb_position = np.mean(
                 [feature_data[col] for col in bb_cols if not pd.isna(feature_data[col])]
             )
-            bb_risk = abs(avg_bb_position - 0.5) * 2
+            bb_risk = abs(avg_bb_position - 0.5) * BOLLINGER_SCALE
             selected_features.append(np.clip(bb_risk, 0, 1))
         else:
             selected_features.append(0.0)
@@ -303,7 +303,7 @@ class ImmunePortfolioSystem:
                     if not pd.isna(feature_data[col])
                 ]
             )
-            selected_features.append(np.clip(avg_range * 2, 0, 1))
+            selected_features.append(np.clip(avg_range * PRICE_RANGE_SCALE, 0, 1))
         else:
             selected_features.append(0.1)
 
@@ -330,7 +330,7 @@ class ImmunePortfolioSystem:
                     if not pd.isna(feature_data[col])
                 ]
             )
-            selected_features.append(np.clip(avg_volatility * 5, 0, 1))
+            selected_features.append(np.clip(avg_volatility * MARKET_VOLATILITY_SCALE, 0, 1))
         else:
             selected_features.append(0.1)
 
@@ -684,7 +684,13 @@ class ImmunePortfolioSystem:
             ):
                 ensemble_strategy += strategy * weight
 
-            ensemble_strategy = ensemble_strategy / np.sum(ensemble_strategy)
+            # Division by zero 방지
+            total_weight = np.sum(ensemble_strategy)
+            if total_weight > WEIGHT_NORMALIZATION_MIN:
+                ensemble_strategy = ensemble_strategy / total_weight
+            else:
+                # 모든 가중치가 0에 가까울 경우, 균등 분배로 폴백
+                ensemble_strategy = np.ones(self.n_assets) / self.n_assets
             self.immune_activation = np.mean(antibody_strengths)
 
             # B-세포 정보 수집
@@ -797,50 +803,75 @@ class ImmunePortfolioSystem:
 
     def _volatility_response(self, activation_level):
         """변동성 위험 대응"""
-        risk_reduction = activation_level * 0.3
+        risk_reduction = activation_level * RISK_REDUCTION_FACTOR
         weights = self.base_weights * (1 - risk_reduction)
         safe_indices = [6, 7, 8]
         for idx in safe_indices:
             if idx < len(weights):
                 weights[idx] += risk_reduction / len(safe_indices)
-        return weights / np.sum(weights)
+        # Division by zero 방지
+        total_weight = np.sum(weights)
+        if total_weight > WEIGHT_NORMALIZATION_MIN:
+            return weights / total_weight
+        else:
+            return np.ones(len(weights)) / len(weights)
 
     def _correlation_response(self, activation_level):
         """상관관계 위험 대응"""
-        diversification_boost = activation_level * 0.2
+        diversification_boost = activation_level * DIVERSIFICATION_FACTOR
         weights = self.base_weights.copy()
         weights = weights * (1 - diversification_boost) + diversification_boost / len(
             weights
         )
-        return weights / np.sum(weights)
+        # Division by zero 방지
+        total_weight = np.sum(weights)
+        if total_weight > WEIGHT_NORMALIZATION_MIN:
+            return weights / total_weight
+        else:
+            return np.ones(len(weights)) / len(weights)
 
     def _momentum_response(self, activation_level):
         """모멘텀 위험 대응"""
-        neutral_adjustment = activation_level * 0.25
+        neutral_adjustment = activation_level * NEUTRAL_ADJUSTMENT_FACTOR
         weights = self.base_weights * (1 - neutral_adjustment) + (
             self.base_weights * neutral_adjustment
         )
-        return weights / np.sum(weights)
+        # Division by zero 방지
+        total_weight = np.sum(weights)
+        if total_weight > WEIGHT_NORMALIZATION_MIN:
+            return weights / total_weight
+        else:
+            return np.ones(len(weights)) / len(weights)
 
     def _liquidity_response(self, activation_level):
         """유동성 위험 대응"""
-        large_cap_boost = activation_level * 0.2
+        large_cap_boost = activation_level * LARGE_CAP_FACTOR
         weights = self.base_weights.copy()
         large_cap_indices = [0, 1, 2, 3]
         for idx in large_cap_indices:
             if idx < len(weights):
                 weights[idx] += large_cap_boost / len(large_cap_indices)
-        return weights / np.sum(weights)
+        # Division by zero 방지
+        total_weight = np.sum(weights)
+        if total_weight > WEIGHT_NORMALIZATION_MIN:
+            return weights / total_weight
+        else:
+            return np.ones(len(weights)) / len(weights)
 
     def _macro_response(self, activation_level):
         """거시경제 위험 대응"""
-        defensive_boost = activation_level * 0.3
+        defensive_boost = activation_level * DEFENSIVE_FACTOR
         weights = self.base_weights * (1 - defensive_boost)
         defensive_indices = [7, 8, 9]
         for idx in defensive_indices:
             if idx < len(weights):
                 weights[idx] += defensive_boost / len(defensive_indices)
-        return weights / np.sum(weights)
+        # Division by zero 방지
+        total_weight = np.sum(weights)
+        if total_weight > WEIGHT_NORMALIZATION_MIN:
+            return weights / total_weight
+        else:
+            return np.ones(len(weights)) / len(weights)
 
     def pretrain_bcells(self, market_data, episodes=PRETRAIN_EPISODES):
         """B-세포 사전 훈련"""

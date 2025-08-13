@@ -68,40 +68,42 @@ EXPECTED_FEATURES = 12  # 예상 특성 수
 
 # ===== 4. 강화학습 하이퍼파라미터 =====
 # 학습률 설정
-DEFAULT_LEARNING_RATE = 0.001  # 기본 학습률
-DEFAULT_ACTOR_LR = 0.001  # Actor 네트워크 학습률
-DEFAULT_CRITIC_LR = 0.002  # Critic 네트워크 학습률 (일반적으로 Actor의 2배)
-DEFAULT_ATTENTION_LR = 0.0005  # 어텐션 메커니즘 학습률 (Actor의 0.5배)
-DEFAULT_META_LR = 0.001  # 메타 컨트롤러 학습률
-DEFAULT_MEMORY_LR = 0.001  # 메모리 네트워크 학습률
+DEFAULT_LEARNING_RATE = 0.0003  # 기본 학습률
+DEFAULT_ACTOR_LR = 0.0003  # Actor 네트워크 학습률
+DEFAULT_CRITIC_LR = 0.001  # Critic 네트워크 학습률
+DEFAULT_ATTENTION_LR = 0.0002  # 어텐션 메커니즘 학습률
+DEFAULT_META_LR = 0.0005  # 메타 컨트롤러 학습률
+DEFAULT_MEMORY_LR = 0.0005  # 메모리 네트워크 학습률
 
 # 강화학습 파라미터
-DEFAULT_GAMMA = 0.95  # 할인 인수 (미래 보상의 현재 가치)
-DEFAULT_TAU = 0.001  # 소프트 업데이트 파라미터
-DEFAULT_BATCH_SIZE = 32  # 미니배치 크기
-DEFAULT_UPDATE_FREQUENCY = 10  # 네트워크 업데이트 주기
+DEFAULT_GAMMA = 0.99  # 할인 인수
+DEFAULT_TAU = 0.005  # 소프트 업데이트 파라미터
+DEFAULT_BATCH_SIZE = 64  # 미니배치 크기
+DEFAULT_UPDATE_FREQUENCY = 100  # 네트워크 업데이트 주기
 
 # 탐험-활용 파라미터
-DEFAULT_EPSILON = 0.3  # 초기 탐험 확률
-DEFAULT_EPSILON_DECAY = 0.995  # 에피소드마다 감소율
-DEFAULT_MIN_EPSILON = 0.05  # 최소 탐험 확률
+DEFAULT_EPSILON = 0.2  # 초기 탐험 확률
+DEFAULT_EPSILON_DECAY = 0.999  # 에피소드마다 감소율
+DEFAULT_MIN_EPSILON = 0.01  # 최소 탐험 확률
 
 
 # ===== 5. 학습 프로세스 설정 =====
 # 에피소드 설정
-TOTAL_EPISODES = 1000  # 전체 학습 에피소드
-PRETRAIN_EPISODES = 300  # 사전 학습 에피소드
-EPISODE_LENGTH = 60  # 에피소드당 스텝 수
+TOTAL_EPISODES = 2000  # 전체 학습 에피소드
+PRETRAIN_EPISODES = 500  # 사전 학습 에피소드
+EPISODE_LENGTH = 252  # 에피소드당 스텝 수 (1년 거래일)
 
 # 커리큘럼 학습 설정
 CURRICULUM_MIN_EPISODES = {
-    0: 200,  # Level 0: 쉬운 시장 (안정적)
-    1: 300,  # Level 1: 중간 난이도 (변동성 있음)
-    2: 500,  # Level 2: 어려운 시장 (위기 상황)
+    0: 400,  # Level 0: 쉬운 시장
+    1: 600,  # Level 1: 중간 난이도
+    2: 1000,  # Level 2: 어려운 시장
 }
 
 
 # ===== 6. 네트워크 아키텍처 =====
+# 메타 컨트롤러 상태 차원
+META_STATE_DIM = 29  # base(12) + crisis(4) + expert_perf(5) + selection(5) + temporal(3)
 # Actor-Critic 네트워크
 ACTOR_HIDDEN_SIZE = 128  # Actor 기본 은닉층
 CRITIC_HIDDEN_SIZE = 256  # Critic 기본 은닉층
@@ -176,6 +178,53 @@ RISK_THRESHOLDS = {
 
 
 # ===== 9. 거래 및 비용 설정 =====
+# 보상 함수 가중치
+REWARD_RETURN_WEIGHT = 0.3      # 수익률 비중
+REWARD_RISK_WEIGHT = 0.3        # 위험 조정 성과 비중  
+REWARD_TARGET_WEIGHT = 0.2      # 목표 달성 비중
+REWARD_ADAPTATION_WEIGHT = 0.1  # 시장 적응성 비중
+REWARD_TRANSACTION_WEIGHT = 0.05 # 거래 비용 비중
+REWARD_CONCENTRATION_WEIGHT = 0.05 # 집중도 패널티 비중
+
+# 보상 스케일링 팩터
+REWARD_RETURN_SCALE = 10        # 수익률 스케일링
+REWARD_RISK_SCALE = 5           # 위험 조정 보상 스케일링
+REWARD_TRANSACTION_SCALE = 1000 # 거래 비용 스케일링
+REWARD_VOLATILITY_SCALE = 50    # 변동성 스케일링
+REWARD_DRAWDOWN_SCALE = 100     # 낙폭 스케일링
+REWARD_CRISIS_SCALE = 15        # 위기 적응 스케일링
+REWARD_CONCENTRATION_SCALE = 20 # 집중도 스케일링
+
+# B-Cell 전문화 보상 스케일링
+SPECIALIST_REWARD_BOOST = 1.5   # 전문 상황 보상 증폭
+SPECIALIST_PENALTY_FACTOR = 0.8 # 비전문 상황 페널티
+GENERAL_REWARD_BOOST = 2.0      # 일반 상황 보상 증폭
+
+# B-Cell 전문화 세부 팩터
+SPECIALIZATION_CONFIDENCE_FACTOR = 0.5  # 전문성 신뢰도 팩터
+SPECIALIZATION_LIQUIDITY_FACTOR = 0.6   # 유동성 전문화 팩터  
+SPECIALIZATION_MACRO_FACTOR = 0.7       # 거시경제 전문화 팩터
+
+# 면역 시스템 전략 조정 팩터
+RISK_REDUCTION_FACTOR = 0.3         # 위험 감소 팩터
+DIVERSIFICATION_FACTOR = 0.2        # 분산투자 팩터
+NEUTRAL_ADJUSTMENT_FACTOR = 0.25    # 중성 조정 팩터
+LARGE_CAP_FACTOR = 0.2              # 대형주 선호 팩터
+DEFENSIVE_FACTOR = 0.3              # 방어적 전략 팩터
+
+# 메모리 시스템 팩터
+MEMORY_STRENGTH_FACTOR = 0.1        # 메모리 강도 팩터
+
+# 수치 안정성 상수
+EPSILON_SMALL = 1e-8               # Division by zero 방지용
+WEIGHT_NORMALIZATION_MIN = 1e-8    # 가중치 정규화 최소값
+
+# 특성 스케일링 팩터
+MARKET_VOLATILITY_SCALE = 5     # 시장 변동성 스케일링
+MARKET_RETURN_SCALE = 10        # 시장 수익률 스케일링
+VIX_PROXY_SCALE = 3             # VIX 프록시 스케일링
+BOLLINGER_SCALE = 2             # 볼린저 밴드 스케일링
+PRICE_RANGE_SCALE = 2           # 가격 범위 스케일링
 DEFAULT_TRANSACTION_COST_RATE = 0.001  # 거래 수수료 (0.1%)
 
 # 보상 계산 파라미터
@@ -222,6 +271,12 @@ DEFAULT_BASE_SEED = 42  # 다중 실행 기본 시드
 PLOT_STYLE = "seaborn-v0_8-darkgrid"  # matplotlib 스타일
 FIGURE_SIZE = (16, 12)  # 기본 그림 크기
 DPI = 100  # 해상도
+
+# 로깅 간격 설정
+MEMORY_CLEANUP_INTERVAL = 200   # 메모리 정리 간격
+LOG_INTERVAL_DETAILED = 10      # 상세 로깅 간격
+LOG_INTERVAL_NORMAL = 20        # 일반 로깅 간격
+LOG_INTERVAL_SPARSE = 50        # 희소 로깅 간격
 
 # 로깅 레벨
 LOGGING_LEVELS = {

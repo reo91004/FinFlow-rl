@@ -154,7 +154,7 @@ class CurriculumScheduler:
         self, reward: float, additional_metrics: Dict = None
     ) -> float:
         """정규화된 성과 점수 계산"""
-        # 개선된 보상 정규화 (실제 보상 범위 -1 ~ +1을 0 ~ 1로 변환)
+        # 보상 정규화 (실제 보상 범위 -1 ~ +1을 0 ~ 1로 변환)
         # 대부분의 보상이 -1 ~ +1 범위에 있으므로 이를 기준으로 정규화
         base_score = np.clip((reward + 1) / 2, 0, 1)
 
@@ -501,19 +501,9 @@ class CurriculumLearningManager:
 
     def is_curriculum_complete(self) -> bool:
         """커리큘럼 학습 완료 여부"""
-        # 1000 에피소드에 도달하면 레벨과 관계없이 종료
+        # 전체 에피소드 수에 도달하면 종료
         if self.scheduler.current_episode >= self.scheduler.total_episodes:
             return True
-            
-        # 또는 최고 레벨에 도달하고 해당 레벨의 최소 에피소드를 완료한 경우
-        if self.scheduler.current_level >= len(self.scheduler.level_configs) - 1:
-            episodes_in_level = (
-                self.scheduler.current_episode - self.scheduler.level_start_episode
-            )
-            min_episodes = self.scheduler.level_configs[self.scheduler.current_level][
-                "min_episodes"
-            ]
-            return episodes_in_level >= min_episodes
             
         return False
 

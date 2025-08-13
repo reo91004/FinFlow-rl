@@ -15,7 +15,7 @@ from constant import *
 class ActorNetwork(nn.Module):
     """Actor 네트워크: 정책 결정"""
 
-    def __init__(self, input_size, n_assets, hidden_size=64):
+    def __init__(self, input_size, n_assets, hidden_size=BCELL_ACTOR_HIDDEN_SIZE):
         super(ActorNetwork, self).__init__()
         self.fc1 = nn.Linear(input_size, hidden_size)
         self.fc2 = nn.Linear(hidden_size, hidden_size)
@@ -34,7 +34,7 @@ class ActorNetwork(nn.Module):
 class CriticNetwork(nn.Module):
     """Critic 네트워크: 가치 함수 평가"""
 
-    def __init__(self, input_size, hidden_size=64):
+    def __init__(self, input_size, hidden_size=BCELL_CRITIC_HIDDEN_SIZE):
         super(CriticNetwork, self).__init__()
         self.fc1 = nn.Linear(input_size, hidden_size)
         self.fc2 = nn.Linear(hidden_size, hidden_size)
@@ -53,7 +53,7 @@ class CriticNetwork(nn.Module):
 class AttentionMechanism(nn.Module):
     """어텐션 메커니즘: T-Cell 특성 기여도를 B-Cell에 연결"""
 
-    def __init__(self, feature_dim, hidden_dim=32):
+    def __init__(self, feature_dim, hidden_dim=ATTENTION_HIDDEN_DIM):
         super(AttentionMechanism, self).__init__()
         self.feature_dim = feature_dim
         self.attention_weights = nn.Linear(feature_dim, hidden_dim)
@@ -123,15 +123,19 @@ class BCell(ImmuneCell):
         self.min_epsilon = DEFAULT_MIN_EPSILON
 
         # 학습 설정
-        self.batch_size = DEFAULT_BATCH_SIZE
-        self.update_frequency = DEFAULT_UPDATE_FREQUENCY
+        self.batch_size = max(64, DEFAULT_BATCH_SIZE * 2)
+        self.update_frequency = max(50, DEFAULT_UPDATE_FREQUENCY * 5)
         self.experience_count = 0
         self.gamma = DEFAULT_GAMMA  # 할인 인수
         self.tau = DEFAULT_TAU  # Target network soft update rate
+        
+        # Experience Replay
+        self.min_replay_size = 100  # 최소 replay buffer 크기
+        self.max_replay_size = 2000  # 최대 replay buffer 크기
 
-        # 전문화 관련 속성
-        self.specialization_buffer = deque(maxlen=1000)
-        self.general_buffer = deque(maxlen=500)
+        # 전문화 관련 속성 (균형 조정)
+        self.specialization_buffer = deque(maxlen=int(self.max_replay_size * 0.6))
+        self.general_buffer = deque(maxlen=int(self.max_replay_size * 0.6))
         self.specialization_strength = 0.1
 
         # 전문 분야별 특화 기준
@@ -239,7 +243,7 @@ class BCell(ImmuneCell):
         required_signals = max(1, len(feature_indices) // 2)
         is_specialty = specialty_signals >= required_signals
 
-        confidence_boost = 1.0 + self.specialization_strength * 0.5
+        confidence_boost = 1.0 + self.specialization_strength * SPECIALIZATION_CONFIDENCE_FACTOR
 
         return is_specialty and (
             specialty_signals * confidence_boost >= required_signals
@@ -255,9 +259,16 @@ class BCell(ImmuneCell):
 
             # 어텐션 메커니즘 적용 (T-Cell 기여도가 있는 경우)
             if tcell_contributions:
-                attended_features, attention_weights = self.attention_mechanism(
-                    features_tensor, tcell_contributions
-                )
+                # Training 시에는 gradient flow를 위해 no_grad 사용 안함
+                if training:
+                    attended_features, attention_weights = self.attention_mechanism(
+                        features_tensor, tcell_contributions
+                    )
+                else:
+                    with torch.no_grad():
+                        attended_features, attention_weights = self.attention_mechanism(
+                            features_tensor, tcell_contributions
+                        )
                 combined_input = torch.cat(
                     [attended_features, crisis_tensor, self.specialization_weights]
                 )
@@ -267,7 +278,17 @@ class BCell(ImmuneCell):
                 )
 
             # Actor 네트워크로 정책 생성
-            with torch.no_grad():
+            if not training:
+                # Inference 시에만 no_grad 적용
+                with torch.no_grad():
+                    action_probs = self.actor_network(combined_input.unsqueeze(0))
+                    strategy_tensor = action_probs.squeeze(0)
+
+                    # Critic 네트워크로 가치 평가
+                    state_value = self.critic_network(combined_input.unsqueeze(0))
+                    self.last_state_value = state_value.item()
+            else:
+                # Training 시에는 gradient flow 허용
                 action_probs = self.actor_network(combined_input.unsqueeze(0))
                 strategy_tensor = action_probs.squeeze(0)
 
@@ -275,29 +296,27 @@ class BCell(ImmuneCell):
                 state_value = self.critic_network(combined_input.unsqueeze(0))
                 self.last_state_value = state_value.item()
 
-            # Activation Threshold 확인 - 위기 수준이 임계값 이상일 때만 전문 전략 적용
+            # 전문성 확인 - T-Cell에서 이미 threshold 필터링 완료
             is_specialty = self.is_my_specialty_situation(market_features, crisis_level)
             
-            # B-Cell 활성화 확인
-            should_activate = crisis_level >= self.activation_threshold
-            
-            if should_activate and is_specialty:
-                # 임계값 이상 + 전문 상황: 특화 전략 적용
+            # crisis_level이 이미 T-Cell의 threshold를 통과한 값
+            if crisis_level > 0.0 and is_specialty:
+                # 전문 상황: 특화 전략 적용
                 strategy_tensor = self._apply_specialist_strategy(
                     strategy_tensor, market_features, crisis_level
                 )
                 confidence_multiplier = 1.0 + self.specialization_strength
                 self.activation_level = 1.0  # 완전 활성화
-            elif should_activate:
-                # 임계값 이상 + 비전문 상황: 일반 전략 적용
+            elif crisis_level > 0.0:
+                # 비전문 상황: 일반 전략 적용
                 strategy_tensor = self._apply_conservative_adjustment(strategy_tensor)
                 confidence_multiplier = 0.7
                 self.activation_level = 0.7  # 부분 활성화
             else:
-                # 임계값 미달: 기본 전략 (최소한의 조정)
+                # 위기 없음: 기본 전략 (최소한의 조정)
                 strategy_tensor = self._apply_conservative_adjustment(strategy_tensor)
                 confidence_multiplier = 0.3
-                self.activation_level = 0.0  # 비활성화
+                self.activation_level = 0.3  # 기본 활성화
 
             # 탐험/활용 (training 모드에서만)
             if training and np.random.random() < self.epsilon:
@@ -364,14 +383,14 @@ class BCell(ImmuneCell):
 
         elif self.risk_type == "liquidity" and market_features[6] > 0.5:
             large_cap_indices = [0, 1, 2, 3]
-            boost_factor = 1.0 + self.specialization_strength * 0.6
+            boost_factor = 1.0 + self.specialization_strength * SPECIALIZATION_LIQUIDITY_FACTOR
             for idx in large_cap_indices:
                 if idx < len(specialized_strategy):
                     specialized_strategy[idx] *= boost_factor
 
         elif self.risk_type == "macro":
             defensive_indices = [7, 8, 9]
-            boost_factor = 1.0 + self.specialization_strength * 0.7
+            boost_factor = 1.0 + self.specialization_strength * SPECIALIZATION_MACRO_FACTOR
             for idx in defensive_indices:
                 if idx < len(specialized_strategy):
                     specialized_strategy[idx] *= boost_factor
@@ -433,6 +452,10 @@ class BCell(ImmuneCell):
 
     def learn_from_batch(self):
         """Actor-Critic 배치 학습"""
+        # 충분한 경험이 쌓일 때까지 학습하지 않음
+        if len(self.experience_buffer) < self.min_replay_size:
+            return
+            
         if len(self.episode_buffer) < self.batch_size:
             return
 
@@ -442,7 +465,10 @@ class BCell(ImmuneCell):
             dynamic_batch_size = min(self.batch_size, max(8, available_memory // 100))
 
             batch_size = min(dynamic_batch_size, len(self.episode_buffer))
-            batch = np.random.choice(self.episode_buffer, batch_size, replace=False)
+            # deque를 list로 변환 후 sampling
+            buffer_list = list(self.episode_buffer)
+            batch_indices = np.random.choice(len(buffer_list), batch_size, replace=False)
+            batch = [buffer_list[i] for i in batch_indices]
 
             states = []
             actions = []
@@ -455,7 +481,7 @@ class BCell(ImmuneCell):
                 features_tensor = torch.FloatTensor(exp["state"])
                 crisis_tensor = torch.FloatTensor([exp["crisis_level"]])
 
-                # 어텐션 적용
+                # 어텐션 적용 (학습 시에는 gradient flow 허용)
                 if exp["tcell_contributions"]:
                     attended_features, _ = self.attention_mechanism(
                         features_tensor, exp["tcell_contributions"]
@@ -485,11 +511,14 @@ class BCell(ImmuneCell):
             state_values = torch.FloatTensor(state_values)
             next_state_values = torch.FloatTensor(next_state_values)
 
-            # Target Network로 더 안정적인 TD Target 계산
+            # Target Network로 TD Target 계산
             with torch.no_grad():
-                # next_state_values는 이미 계산되었지만, 더 정확성을 위해 재계산
-                # (이미 올바르게 계산된 경우 이 부분을 생략 가능)
-                target_next_values = next_state_values  # 이미 target network로 계산되었음
+                # Terminal state 처리를 고려한 target value 계산
+                terminal_mask = torch.FloatTensor(terminal_flags)
+                target_next_values = torch.FloatTensor(next_state_values)
+                
+                # Terminal state에서는 next_state_value = 0
+                target_next_values = target_next_values * (1.0 - terminal_mask)
                 td_targets = rewards + self.gamma * target_next_values
 
             # 현재 가치 추정 (main network)
@@ -534,7 +563,8 @@ class BCell(ImmuneCell):
             torch.nn.utils.clip_grad_norm_(self.actor_network.parameters(), 0.5)
             self.actor_optimizer.step()
 
-            # 어텐션 메커니즘 업데이트 (별도 손실 없이 Actor와 함께 학습)
+            # 어텐션 메커니즘 업데이트 (Actor Loss에 의해 자동으로 학습됨)
+            # attention_mechanism은 이미 actor loss를 통해 gradient를 받았음
 
             # 스케줄러 업데이트
             avg_reward = torch.mean(rewards).item()
@@ -544,7 +574,8 @@ class BCell(ImmuneCell):
             # Target Network 소프트 업데이트
             self.update_target_network()
 
-            self.epsilon = max(self.min_epsilon, self.epsilon * self.epsilon_decay)
+            # Epsilon Decay (탐험율 감소)
+            self._update_exploration_rate()
 
             del states, actions, rewards, state_values, next_state_values
             del td_targets, current_values, advantages
@@ -703,7 +734,9 @@ class BCell(ImmuneCell):
                 market_features, crisis_level, dummy_action, effectiveness
             )
 
-            if self.experience_count % self.update_frequency == 0:
+            # 충분한 경험 축적 후에만 학습 시작
+            if (self.experience_count >= self.min_replay_size and 
+                self.experience_count % self.update_frequency == 0):
                 self.learn_from_batch()
 
     def update_target_network(self):
@@ -720,42 +753,36 @@ class BCell(ImmuneCell):
         except Exception as e:
             print(f"[경고] Target network 업데이트 실패: {e}")
 
+    def _update_exploration_rate(self, curriculum_level=None):
+        """탐험율 업데이트 (커리큘럼 적응형)"""
+        old_epsilon = self.epsilon
+        
+        # 커리큘럼 레벨에 따른 적응적 감소율
+        if curriculum_level is not None:
+            # 새 레벨로 전환 시 탐험율 일시 증가
+            level_boost = {0: 1.0, 1: 1.2, 2: 1.5}.get(curriculum_level, 1.0)
+            adaptive_decay = self.epsilon_decay * (0.99 + 0.01 * level_boost)
+        else:
+            adaptive_decay = self.epsilon_decay
+        
+        # 기본 지수 감소
+        self.epsilon = max(self.min_epsilon, self.epsilon * adaptive_decay)
+        
+        # 성과 기반 적응적 조정
+        if hasattr(self, 'specialist_performance') and len(self.specialist_performance) > 10:
+            recent_performance = np.mean(list(self.specialist_performance)[-10:])
+            
+            # 성과가 나쁘면 탐험율을 약간 증가
+            if recent_performance < -0.5:
+                self.epsilon = min(self.epsilon * 1.1, 0.3)  # 최대 30%까지
+            
+        # 변화량이 클 때만 로그
+        if abs(old_epsilon - self.epsilon) > 0.01:
+            print(f"[{self.cell_id}] Epsilon: {old_epsilon:.3f} → {self.epsilon:.3f}")
+
     def adapt_response(self, antigen_pattern, effectiveness):
         """호환성 래퍼"""
         if len(antigen_pattern) >= 8:
             crisis_level = 0.5
             self.learn_from_experience(antigen_pattern, crisis_level, effectiveness)
 
-
-class LegacyBCell(ImmuneCell):
-    """규칙 기반 B-세포"""
-
-    def __init__(self, cell_id, risk_type, response_strategy):
-        super().__init__(cell_id)
-        self.risk_type = risk_type
-        self.response_strategy = response_strategy
-        self.antibody_strength = 0.1
-
-    def produce_antibody(self, antigen_pattern):
-        """전략 생성"""
-        if hasattr(self, "learned_patterns"):
-            similarities = [
-                cosine_similarity([antigen_pattern], [pattern])[0][0]
-                for pattern in self.learned_patterns
-            ]
-            max_similarity = max(similarities) if similarities else 0
-        else:
-            max_similarity = 0
-
-        self.antibody_strength = min(1.0, max_similarity + 0.1)
-        return self.antibody_strength
-
-    def adapt_response(self, antigen_pattern, effectiveness):
-        """적응적 학습"""
-        if not hasattr(self, "learned_patterns"):
-            self.learned_patterns = []
-
-        if effectiveness > 0.6:
-            self.learned_patterns.append(antigen_pattern.copy())
-            if len(self.learned_patterns) > 10:
-                self.learned_patterns.pop(0)

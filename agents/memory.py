@@ -104,7 +104,7 @@ class MemoryCell:
         self.retrieval_success_rate = deque(maxlen=50)
         self.memory_utilization_rate = deque(maxlen=50)
 
-        # 최적화
+        # 옵티마이저
         self.optimizer = torch.optim.Adam(
             list(self.memory_embedding_net.parameters())
             + list(self.memory_retrieval_net.parameters()),
@@ -240,6 +240,11 @@ class MemoryCell:
                             }
                         )
 
+                # 사용 후 텐서 정리
+                del query_tensor, memory_bank
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                
                 return best_memory, best_similarity, multiple_memories
 
             # 사용 후 텐서 정리
@@ -380,7 +385,7 @@ class MemoryCell:
             self.memory_access_counts[memory_index] += 1
 
             # 강도 증가 (상한선 있음)
-            strength_boost = similarity * 0.1
+            strength_boost = similarity * MEMORY_STRENGTH_FACTOR
             self.memory_strengths[memory_index] = min(
                 2.0, self.memory_strengths[memory_index] + strength_boost
             )

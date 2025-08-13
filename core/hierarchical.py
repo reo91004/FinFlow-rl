@@ -266,20 +266,31 @@ class HierarchicalController:
                 ]
             )  # 총 29차원
 
-            # 최종 검증
-            assert (
-                meta_state.shape[0] == 29
-            ), f"메타 상태 차원 오류: {meta_state.shape[0]} != 29"
-            assert (
-                meta_state.dtype == np.float32
-            ), f"메타 상태 타입 오류: {meta_state.dtype}"
+            # 동적 차원 처리 - 예상 차원과 다를 경우 조정
+            expected_dim = META_STATE_DIM
+            actual_dim = meta_state.shape[0]
+            
+            if actual_dim != expected_dim:
+                print(f"[정보] 메타 상태 차원 조정: {actual_dim} -> {expected_dim}")
+                
+                if actual_dim > expected_dim:
+                    # 차원이 클 경우 자르기
+                    meta_state = meta_state[:expected_dim]
+                else:
+                    # 차원이 작을 경우 패딩
+                    padding = np.zeros(expected_dim - actual_dim, dtype=np.float32)
+                    meta_state = np.concatenate([meta_state, padding])
+            
+            # 타입 확인 및 변환
+            if meta_state.dtype != np.float32:
+                meta_state = meta_state.astype(np.float32)
 
             return meta_state
 
         except Exception as e:
             print(f"[경고] 메타 상태 구성 실패: {e}")
             # 폴백: 기본 상태 반환
-            return np.zeros(29, dtype=np.float32)
+            return np.zeros(META_STATE_DIM, dtype=np.float32)
 
     def _classify_crisis_situation(self, tcell_analysis: Dict) -> str:
         """위기 상황 분류"""

@@ -659,7 +659,7 @@ class ImmunePortfolioBacktester:
 
         # 안전장치 변수들
         max_iterations = min(len(episode_returns), 200)
-        memory_cleanup_interval = 200
+        memory_cleanup_interval = MEMORY_CLEANUP_INTERVAL
 
         try:
             for i in range(max_iterations):
@@ -691,7 +691,8 @@ class ImmunePortfolioBacktester:
                     # 이전 transition이 있다면 기록
                     if previous_state is not None and previous_action is not None:
                         # 이전 스텝의 transition 완성: (s_t-1, a_t-1, r_t, s_t)
-                        # 이는 reward 계산 후에 처리될 예정
+                        # 이미 reward 계산 시점에서 add_experience로 처리됨
+                        # 여기서는 현재 상태 추적만 수행
                         pass
 
                     # 가중치 검증 및 정규화
@@ -726,8 +727,7 @@ class ImmunePortfolioBacktester:
                         print(f"[경고] 보상 계산 오류: {e}")
                         total_reward = 0.0
 
-                    # 1차 보상 클리핑
-                    total_reward = np.clip(total_reward, -10.0, 10.0)
+                    total_reward = self._normalize_reward(total_reward)
 
                     if abs(total_reward) > 5.0:
                         print(
@@ -765,8 +765,7 @@ class ImmunePortfolioBacktester:
                         difficulty_multiplier = curriculum_config.get("difficulty", 1.0)
                         adjusted_reward = total_reward * difficulty_multiplier
 
-                        # 2차 보상 클리핑
-                        adjusted_reward = np.clip(adjusted_reward, -5.0, 5.0)
+                        adjusted_reward = self._normalize_reward(adjusted_reward)
 
                         # B-세포별 개별 학습
                         for bcell in immune_system.bcells:
@@ -781,16 +780,11 @@ class ImmunePortfolioBacktester:
 
                                     # 전문성에 따른 보상 조정
                                     if is_specialist_today:
-                                        specialist_reward = adjusted_reward * 1.5
+                                        specialist_reward = adjusted_reward * SPECIALIST_REWARD_BOOST
                                     else:
-                                        specialist_reward = adjusted_reward * 0.8
+                                        specialist_reward = adjusted_reward * SPECIALIST_PENALTY_FACTOR
 
-                                    # 3차 최종 클리핑
-                                    final_reward = np.clip(specialist_reward, -2.0, 2.0)
-
-                                    # NaN/Inf 검증
-                                    if np.isnan(final_reward) or np.isinf(final_reward):
-                                        final_reward = 0.0
+                                    final_reward = self._normalize_reward(specialist_reward)
 
                                     # Next State Value 계산
                                     next_state_value = 0.0
@@ -801,7 +795,7 @@ class ImmunePortfolioBacktester:
                                             if len(next_data) >= 2:
                                                 next_features = immune_system.extract_market_features(next_data)
                                                 
-                                                # Target Critic network로 다음 상태 가치 계산 (더 안정적)
+                                                # Target Critic network로 다음 상태 가치 계산
                                                 with torch.no_grad():
                                                     next_features_tensor = torch.FloatTensor(next_features)
                                                     next_crisis_tensor = torch.FloatTensor([immune_system.crisis_level])
@@ -867,14 +861,7 @@ class ImmunePortfolioBacktester:
 
                     # 주기적 메모리 정리
                     if i % memory_cleanup_interval == 0 and i > 0:
-                        try:
-                            collected = gc.collect()
-                            if torch.cuda.is_available():
-                                torch.cuda.empty_cache()
-                            if collected > 1000:
-                                print(f"[메모리] 대량 객체 정리: {collected}개")
-                        except Exception as e:
-                            print(f"[경고] 메모리 정리 오류: {e}")
+                        self._comprehensive_memory_cleanup(i, episode_rewards)
 
                 except Exception as e:
                     print(f"[경고] 에피소드 스텝 {i} 실행 오류: {e}")
@@ -1002,7 +989,7 @@ class ImmunePortfolioBacktester:
                 total_reward = reward_details["total_reward"]
 
                 # RLTracker 로깅
-                if i % 10 == 0:  # 일정 간격으로만 로깅
+                if i % LOG_INTERVAL_DETAILED == 0:  # 일정 간격으로만 로깅
                     learning_rates = {}
                     losses = {}
                     epsilon = None
@@ -1048,11 +1035,11 @@ class ImmunePortfolioBacktester:
                             )
 
                             if is_specialist_today:
-                                specialist_reward = total_reward * 2.0
+                                specialist_reward = total_reward * GENERAL_REWARD_BOOST
                             else:
-                                specialist_reward = total_reward * 0.8
+                                specialist_reward = total_reward * SPECIALIST_PENALTY_FACTOR
 
-                            final_reward = np.clip(specialist_reward, -2, 2)
+                            final_reward = self._normalize_reward(specialist_reward)
 
                             # Next State Value 계산
                             next_state_value = 0.0
@@ -1075,8 +1062,8 @@ class ImmunePortfolioBacktester:
                                 except Exception as e:
                                     next_state_value = 0.0
 
-                            # Terminal flag 확인
-                            is_terminal = (i >= len(train_returns) - 1)
+                            # Terminal flag 확인 (통일된 기준 사용)
+                            is_terminal = (i >= max_iterations - 1)
                             
                             bcell.add_experience(
                                 market_features,
@@ -1087,7 +1074,7 @@ class ImmunePortfolioBacktester:
                                 is_terminal=is_terminal
                             )
 
-                            if i % 20 == 0:
+                            if i % LOG_INTERVAL_NORMAL == 0:
                                 bcell.learn_from_specialized_experience()
 
                 # 기억 세포 업데이트
@@ -1144,9 +1131,9 @@ class ImmunePortfolioBacktester:
                 if immune_system.logging_level == "full":
                     should_log = True
                 elif immune_system.logging_level == "sample":
-                    should_log = i % 10 == 0
+                    should_log = i % LOG_INTERVAL_DETAILED == 0
                 elif immune_system.logging_level == "minimal":
-                    should_log = i % 50 == 0
+                    should_log = i % LOG_INTERVAL_SPARSE == 0
 
                 if should_log:
                     current_date = test_returns.index[i]
@@ -1854,3 +1841,69 @@ Final Capital: {metrics_df['Final Value'].mean():,.0f}
         plt.close()
 
         print(f"다중 실행 비교 시각화 저장: {comparison_path}")
+
+    def _normalize_reward(self, reward):
+        """보상 정규화"""
+        # NaN/Inf 처리
+        if np.isnan(reward) or np.isinf(reward):
+            return 0.0
+        
+        # 1차: 극단값 클리핑 (-10 ~ +10)
+        clipped_reward = np.clip(reward, -10.0, 10.0)
+        
+        # 2차: 보상 스케일링 (tanh로 부드러운 클리핑)
+        scaled_reward = np.tanh(clipped_reward / 5.0) * 2.0  # -2 ~ +2 범위
+        
+        # 3차: 최종 범위 보장
+        final_reward = np.clip(scaled_reward, -2.0, 2.0)
+        
+        return float(final_reward)
+
+    def _comprehensive_memory_cleanup(self, step, episode_rewards):
+        """포괄적인 메모리 정리"""
+        try:
+            import psutil
+            import os
+            
+            # 현재 메모리 사용량 확인
+            process = psutil.Process(os.getpid())
+            memory_info = process.memory_info()
+            memory_mb = memory_info.rss / 1024 / 1024
+            
+            # Python 객체 정리
+            collected = gc.collect()
+            
+            # PyTorch 캐시 정리
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+                
+            # 메모리 사용량이 높을 때만 상세 로깅
+            if memory_mb > 2000 or collected > 500:
+                print(f"[메모리 정리] Step {step}: {memory_mb:.1f}MB, 정리된 객체: {collected}개")
+                
+                # 극도로 높은 메모리 사용량일 때 추가 정리
+                if memory_mb > 4000:
+                    print(f"[경고] 높은 메모리 사용량 감지: {memory_mb:.1f}MB")
+                    # 에피소드 보상 버퍼 크기 제한
+                    if len(episode_rewards) > 1000:
+                        episode_rewards = episode_rewards[-500:]
+                        print(f"[메모리] 에피소드 보상 버퍼 크기 제한: 500개")
+                        
+        except ImportError:
+            # psutil이 없는 경우 기본 정리만 수행
+            collected = gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            if collected > 100:
+                print(f"[메모리] 기본 정리: {collected}개 객체")
+                
+        except Exception as e:
+            print(f"[경고] 메모리 정리 중 오류: {e}")
+            # 최소한의 정리는 수행
+            try:
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except:
+                pass

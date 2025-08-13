@@ -51,8 +51,8 @@ class RewardCalculator:
         if previous_weights is None:
             previous_weights = np.ones_like(current_weights) / len(current_weights)
 
-        # 기본 수익률 보상 (스케일링 조정)
-        return_reward = current_return * 20  # 더 적절한 스케일링
+        # 기본 수익률 보상 (통일된 스케일링)
+        return_reward = current_return * REWARD_RETURN_SCALE
 
         # 위험 조정 성과 보상 (안정화)
         risk_adjusted_reward = self._calculate_risk_adjusted_reward()
@@ -80,18 +80,23 @@ class RewardCalculator:
 
         # 가중치 조정으로 균형 맞추기
         total_reward = (
-            return_reward * 0.3  # 수익률 비중 감소
-            + risk_adjusted_reward * 0.3  # 위험 조정 성과 비중 증가
-            + target_reward * 0.2  # 목표 달성
-            + adaptation_reward * 0.1  # 시장 적응성
-            + transaction_cost_penalty * 0.05  # 거래 비용
-            + concentration_penalty * 0.05  # 집중도 패널티
+            return_reward * REWARD_RETURN_WEIGHT
+            + risk_adjusted_reward * REWARD_RISK_WEIGHT
+            + target_reward * REWARD_TARGET_WEIGHT
+            + adaptation_reward * REWARD_ADAPTATION_WEIGHT
+            + transaction_cost_penalty * REWARD_TRANSACTION_WEIGHT
+            + concentration_penalty * REWARD_CONCENTRATION_WEIGHT
         )
 
         # 최종 보상 클리핑 및 정규화
         total_reward = np.clip(
             total_reward, self.reward_clipping_range[0], self.reward_clipping_range[1]
         )
+        
+        # NaN/Inf 검증
+        if not np.isfinite(total_reward):
+            print(f"[경고] 보상 계산에서 비정상값 감지: {total_reward}, 기본값으로 대체")
+            total_reward = 0.0
 
         # 적응적 정규화 (선택적)
         if len(self.reward_history) > 100:  # 충분한 데이터 후 정규화
@@ -143,8 +148,8 @@ class RewardCalculator:
         # 위험 조정 보상 (샤프와 소르티노의 평균)
         risk_adjusted_score = (sharpe_ratio + sortino_ratio) / 2
 
-        # 정규화 및 스케일링
-        reward = np.tanh(risk_adjusted_score) * 10
+        # 정규화 및 스케일링 (통일된 스케일링)
+        reward = np.tanh(risk_adjusted_score) * REWARD_RISK_SCALE
 
         return reward
 
@@ -160,7 +165,7 @@ class RewardCalculator:
         total_turnover = np.sum(weight_changes) / 2  # 실제 거래량
 
         # 거래 비용 패널티
-        cost_penalty = -total_turnover * self.transaction_cost_rate * 1000
+        cost_penalty = -total_turnover * self.transaction_cost_rate * REWARD_TRANSACTION_SCALE
 
         return cost_penalty
 
@@ -174,7 +179,7 @@ class RewardCalculator:
         # 변동성 목표 달성 보상
         current_volatility = np.std(returns) * np.sqrt(252)
         volatility_deviation = abs(current_volatility - self.target_volatility)
-        volatility_reward = max(0, 5 - volatility_deviation * 50)
+        volatility_reward = max(0, 5 - volatility_deviation * REWARD_VOLATILITY_SCALE)
 
         # 최대 낙폭 목표 달성 보상
         max_drawdown = self._calculate_max_drawdown()
@@ -182,7 +187,7 @@ class RewardCalculator:
             drawdown_reward = 10
         else:
             drawdown_reward = max(
-                -10, -abs(max_drawdown - self.target_max_drawdown) * 100
+                -10, -abs(max_drawdown - self.target_max_drawdown) * REWARD_DRAWDOWN_SCALE
             )
 
         return volatility_reward + drawdown_reward
@@ -197,9 +202,9 @@ class RewardCalculator:
         if crisis_level > 0.5:  # 고위기 상황
             # 최근 수익률이 양수이면 보상
             if len(self.return_history) > 0 and self.return_history[-1] > 0:
-                adaptation_reward += crisis_level * 15
+                adaptation_reward += crisis_level * REWARD_CRISIS_SCALE
             else:
-                adaptation_reward -= crisis_level * 10
+                adaptation_reward -= crisis_level * (REWARD_CRISIS_SCALE - 5)
 
         # 시장 변동성에 대한 적응 보상
         if len(market_features) > 0:
@@ -219,7 +224,7 @@ class RewardCalculator:
 
         # 과도한 집중에 대한 패널티
         if hhi > 0.4:  # 40% 이상 집중시 패널티
-            concentration_penalty = -(hhi - 0.4) * 20
+            concentration_penalty = -(hhi - 0.4) * REWARD_CONCENTRATION_SCALE
         else:
             concentration_penalty = 0.0
 
