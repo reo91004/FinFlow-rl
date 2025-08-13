@@ -37,9 +37,8 @@ class TCell(ImmuneCell):
                 self.detector.fit(training_matrix)
                 self.is_trained = True
                 self.expected_features = training_matrix.shape[1]
-                print(
-                    f"[정보] T-cell {self.cell_id} 훈련 완료 (데이터: {len(self.training_data)}개)"
-                )
+                # T-cell 훈련 완료는 로그로만 기록
+                pass
             return 0.0
 
         # 특성 크기 확인

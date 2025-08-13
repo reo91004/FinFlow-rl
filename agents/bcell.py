@@ -197,6 +197,15 @@ class BCell(ImmuneCell):
         # 손실 추적용 변수
         self.last_actor_loss = 0.0
         self.last_critic_loss = 0.0
+        
+        # 학습 통계 누적
+        self.learning_stats = {
+            'total_updates': 0,
+            'actor_loss_sum': 0.0,
+            'critic_loss_sum': 0.0,
+            'weight_change_sum': 0.0,
+            'last_summary_update': 0
+        }
 
         # 활성화 임계값 실제 구현
         self.activation_threshold = ACTIVATION_THRESHOLDS["bcell"]
@@ -418,14 +427,31 @@ class BCell(ImmuneCell):
                 for key in old_critic_weights.keys()
             )
             
-            self.logger.debug(f"{self.risk_type} B-Cell 학습 완료: "
-                            f"Actor 가중치 변화={actor_change:.8f}, "
-                            f"Critic 가중치 변화={critic_change:.8f}, "
-                            f"Critic 손실={critic_loss.item():.6f}, "
-                            f"Actor 손실={total_actor_loss.item():.6f}")
+            # 학습 통계 누적
+            self.learning_stats['total_updates'] += 1
+            self.learning_stats['actor_loss_sum'] += total_actor_loss.item()
+            self.learning_stats['critic_loss_sum'] += critic_loss.item()
+            self.learning_stats['weight_change_sum'] += (actor_change + critic_change)
             
-            if actor_change < 1e-8 or critic_change < 1e-8:
-                self.logger.warning(f"{self.risk_type} B-Cell: 가중치 업데이트 미흐! "
+            # 50번마다 학습 요약 로깅
+            if self.learning_stats['total_updates'] % 50 == 0:
+                avg_actor_loss = self.learning_stats['actor_loss_sum'] / 50
+                avg_critic_loss = self.learning_stats['critic_loss_sum'] / 50
+                avg_weight_change = self.learning_stats['weight_change_sum'] / 50
+                
+                self.logger.debug(f"{self.risk_type} B-Cell 학습 요약 (50회): "
+                                f"평균 Actor 손실={avg_actor_loss:.6f}, "
+                                f"평균 Critic 손실={avg_critic_loss:.6f}, "
+                                f"평균 가중치 변화={avg_weight_change:.6f}")
+                
+                # 통계 초기화
+                self.learning_stats['actor_loss_sum'] = 0.0
+                self.learning_stats['critic_loss_sum'] = 0.0
+                self.learning_stats['weight_change_sum'] = 0.0
+            
+            # 심각한 문제만 개별 경고
+            if actor_change < 1e-8 and critic_change < 1e-8:
+                self.logger.warning(f"{self.risk_type} B-Cell: 가중치 업데이트 정지! "
                                   f"Actor={actor_change:.8f}, Critic={critic_change:.8f}")
 
             return critic_loss.item()
@@ -630,9 +656,7 @@ class BCell(ImmuneCell):
             torch.nn.utils.clip_grad_norm_(self.actor_network.parameters(), 1.0)
             self.actor_optimizer.step()
             
-            self.logger.debug(f"{self.risk_type} B-Cell 모방학습: "
-                             f"MSE={imitation_loss.item():.6f}, "
-                             f"KL={kl_loss.item():.6f}")
+            # 개별 스텝 로그 제거 - 배치 통계만 기록
             
             return total_loss.item()
             

@@ -830,7 +830,7 @@ class ImmunePortfolioBacktester:
         learning_validator.end_episode_timing()
         
         # 에피소드 결과 로깅
-        self.logger.info(f"에피소드 완료: 평균 보상={avg_reward:.6f}, "
+        self.logger.debug(f"에피소드 완료: 평균 보상={avg_reward:.6f}, "
                         f"평균 수익률={avg_return:.6f}, "
                         f"transition 수={len(transitions)}")
             

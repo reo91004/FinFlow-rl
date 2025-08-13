@@ -853,7 +853,7 @@ class ImmunePortfolioSystem:
         
         for bcell_idx, bcell in enumerate(self.bcells):
             print(f"\n[{bcell_idx+1}/{len(self.bcells)}] {bcell.risk_type} B-Cell 사전훈련")
-            self.logger.info(f"{bcell.risk_type} B-Cell 사전훈련 시작")
+            # 개별 B-Cell 시작 로그 제거
             
             # 훈련 데이터 준비
             states = []
@@ -915,7 +915,16 @@ class ImmunePortfolioSystem:
                     print(f"    ⚠️ 정책 검증 실패 - 추가 학습 필요")
                     self.logger.warning(f"{bcell.risk_type} B-Cell 사전훈련 품질 문제: {validation_result}")
         
-        self.logger.info("모든 B-Cell 사전훈련 완료. 강화학습 준비 완료.")
+        # 사전훈련 요약 통계 로깅
+        self.logger.info("=" * 60)
+        self.logger.info("B-Cell 사전훈련 완료 요약")
+        self.logger.info("=" * 60)
+        self.logger.info(f"훈련된 B-Cell 수: {len(self.bcells)}")
+        self.logger.info(f"각 B-Cell 훈련 에피소드: {episodes}")
+        self.logger.info(f"전문가 전략 데이터: {len(all_expert_data)} 샘플")
+        self.logger.info("강화학습 준비 완료")
+        self.logger.info("=" * 60)
+        
         print("사전훈련 완료! 이제 실제 강화학습을 시작합니다.")
 
     def update_memory(self, crisis_pattern, response_strategy, effectiveness):

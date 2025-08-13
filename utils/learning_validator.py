@@ -25,6 +25,10 @@ class LearningValidator:
         self.episode_start_time = None
         self.total_episodes = 0
         
+        # 주기적 요약을 위한 통계
+        self.summary_interval = 25  # 25 에피소드마다 요약
+        self.last_summary_episode = 0
+        
     def start_episode_timing(self):
         """에피소드 타이밍 시작"""
         self.episode_start_time = time.time()
@@ -38,16 +42,20 @@ class LearningValidator:
         self.episode_times.append(episode_duration)
         self.total_episodes += 1
         
-        # 실행 시간 검증
+        # 실행 시간 검증 (로그 파일에만 기록)
         if episode_duration < 10.0:  # 10초 미만
-            self.logger.warning(f"에피소드 실행 시간이 너무 빠름: {episode_duration:.2f}초")
+            self.logger.debug(f"에피소드 실행 시간이 너무 빠름: {episode_duration:.2f}초")
             
         if len(self.episode_times) >= 10:
             avg_time = np.mean(self.episode_times[-10:])
             if avg_time < 15.0:
-                self.logger.error(f"최근 10 에피소드 평균 시간이 비정상적으로 빠름: {avg_time:.2f}초")
+                self.logger.debug(f"최근 10 에피소드 평균 시간이 비정상적으로 빠름: {avg_time:.2f}초")
                 
-        self.logger.info(f"에피소드 {self.total_episodes} 완료: {episode_duration:.2f}초")
+        self.logger.debug(f"에피소드 {self.total_episodes} 완료: {episode_duration:.2f}초")
+        
+        # 주기적 검증 요약 (25 에피소드마다)
+        if self.total_episodes % self.summary_interval == 0 and self.total_episodes > 0:
+            self._log_periodic_summary()
         
     def validate_gradient_flow(self, model: torch.nn.Module, 
                               loss: torch.Tensor,
@@ -224,6 +232,32 @@ class LearningValidator:
         
         if not summary['realistic_timing']:
             self.logger.error("학습이 제대로 이루어지지 않는 것으로 판단됨!")
+    
+    def _log_periodic_summary(self):
+        """주기적 검증 요약 로깅"""
+        recent_episodes = self.summary_interval
+        recent_times = self.episode_times[-recent_episodes:] if len(self.episode_times) >= recent_episodes else self.episode_times
+        
+        if recent_times:
+            avg_time = np.mean(recent_times)
+            min_time = np.min(recent_times)
+            max_time = np.max(recent_times)
+            
+            # 최근 간격의 학습 이벤트와 가중치 업데이트 계산
+            recent_learning_events = max(0, self.learning_events - getattr(self, '_last_learning_events', 0))
+            recent_weight_updates = max(0, self.weight_updates - getattr(self, '_last_weight_updates', 0))
+            
+            self.logger.debug("=" * 50)
+            self.logger.debug(f"검증 요약 (에피소드 {self.total_episodes-recent_episodes+1}-{self.total_episodes})")
+            self.logger.debug("=" * 50)
+            self.logger.debug(f"평균 실행시간: {avg_time:.2f}초 (범위: {min_time:.2f}-{max_time:.2f})")
+            self.logger.debug(f"학습 이벤트: {recent_learning_events}회")
+            self.logger.debug(f"가중치 업데이트: {recent_weight_updates}회")
+            self.logger.debug(f"그라디언트 검사: {self.gradient_flow_checks}회 (누적)")
+            
+            # 이전 값 저장
+            self._last_learning_events = self.learning_events
+            self._last_weight_updates = self.weight_updates
             
 # 전역 검증자 인스턴스
 learning_validator = LearningValidator()

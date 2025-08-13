@@ -46,12 +46,12 @@ class BIPDLogger:
             return self._loggers[name]
         
         logger = logging.getLogger(name)
-        logger.setLevel(level)
+        logger.setLevel(logging.DEBUG)  # 로거 자체는 DEBUG 레벨로
         logger.handlers = []  # 기존 핸들러 제거
         
         # 파일 핸들러 (모든 로그)
         file_handler = logging.FileHandler(self.log_file, encoding='utf-8')
-        file_handler.setLevel(logging.INFO)  # DEBUG 줄이고 INFO 이상만
+        file_handler.setLevel(logging.DEBUG)  # DEBUG도 파일에 기록
         file_handler.setFormatter(self.formatter)
         logger.addHandler(file_handler)
         
@@ -99,17 +99,17 @@ class BIPDLogger:
         """로그 파일에 섹션 헤더 작성"""
         logger = self.get_logger(logger_name)
         separator = "=" * 80
-        logger.info(separator)
-        logger.info(f" {title}")
-        logger.info(separator)
+        logger.debug(separator)
+        logger.debug(f" {title}")
+        logger.debug(separator)
     
     def write_subsection_header(self, title: str, logger_name: str = 'BIPD'):
         """로그 파일에 서브섹션 헤더 작성"""
         logger = self.get_logger(logger_name)
         separator = "-" * 50
-        logger.info(separator)
-        logger.info(f" {title}")
-        logger.info(separator)
+        logger.debug(separator)
+        logger.debug(f" {title}")
+        logger.debug(separator)
 
 # 전역 로거 인스턴스
 logger_instance = BIPDLogger()

@@ -37,6 +37,10 @@ class RewardCalculator:
         self.reward_history = deque(maxlen=REWARD_MEMORY_BUFFER_SIZE)
         self.reward_mean = 0.0
         self.reward_std = 1.0
+        
+        # 에피소드별 보상 통계 (로깅 최적화)
+        self.episode_rewards = []
+        self.episode_step_count = 0
         self.update_count = 0
 
     def calculate_comprehensive_reward(
@@ -99,16 +103,20 @@ class RewardCalculator:
             normalized_reward, self.reward_clipping_range[0], self.reward_clipping_range[1]
         )
 
-        # 보상 계산 로깅
-        self.logger.debug(f"보상 계산: "
-                         f"return_reward={return_reward:.4f}, "
-                         f"risk_adjusted={risk_adjusted_reward:.4f}, "
-                         f"transaction_cost={transaction_cost_penalty:.4f}, "
-                         f"target_reward={target_reward:.4f}, "
-                         f"adaptation={adaptation_reward:.4f}, "
-                         f"concentration={concentration_penalty:.4f}, "
-                         f"total_before_clip={total_reward:.4f}, "
-                         f"final_reward={final_reward:.4f}")
+        # 에피소드 보상 통계 누적
+        self.episode_rewards.append({
+            'return': return_reward,
+            'risk_adjusted': risk_adjusted_reward,
+            'target': target_reward,
+            'adaptation': adaptation_reward,
+            'total': total_reward,
+            'final': final_reward
+        })
+        self.episode_step_count += 1
+        
+        # 50스텝마다 보상 요약 로깅
+        if self.episode_step_count % 50 == 0:
+            self._log_reward_summary()
         
         # 이력 업데이트
         self._update_history(current_return, current_weights)
@@ -304,3 +312,26 @@ class RewardCalculator:
                 len(returns[returns > 0]) / len(returns) if len(returns) > 0 else 0
             ),
         }
+    
+    def _log_reward_summary(self):
+        """50스텝마다 보상 통계 요약 로깅"""
+        if not self.episode_rewards:
+            return
+            
+        recent_rewards = self.episode_rewards[-50:] if len(self.episode_rewards) >= 50 else self.episode_rewards
+        
+        # 각 컴포넌트별 통계
+        returns = [r['return'] for r in recent_rewards]
+        finals = [r['final'] for r in recent_rewards]
+        totals = [r['total'] for r in recent_rewards]
+        
+        self.logger.debug(f"보상 요약 (최근 {len(recent_rewards)}스텝): "
+                         f"평균 최종보상={np.mean(finals):.3f}, "
+                         f"평균 수익보상={np.mean(returns):.3f}, "
+                         f"범위=[{np.min(finals):.2f}, {np.max(finals):.2f}], "
+                         f"클리핑 비율={sum(1 for t, f in zip(totals, finals) if abs(t-f) > 0.01) / len(totals):.2%}")
+    
+    def reset_episode_stats(self):
+        """에피소드 통계 초기화 (에피소드 종료 시 호출)"""
+        self.episode_rewards = []
+        self.episode_step_count = 0
