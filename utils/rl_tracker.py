@@ -94,6 +94,12 @@ class RLTracker:
             self.reward_stats["max"].append(np.max(recent_rewards))
             self.reward_stats["min"].append(np.min(recent_rewards))
 
+    def log_loss(self, bcell_type: str, loss: float):
+        """B-Cell별 손실 기록"""
+        if bcell_type not in self.losses:
+            self.losses[bcell_type] = []
+        self.losses[bcell_type].append(loss)
+    
     def extract_from_immune_system(self, immune_system, episode: int):
         """면역 시스템에서 자동으로 데이터 추출"""
 

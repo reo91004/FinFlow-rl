@@ -654,19 +654,30 @@ class ImmunePortfolioBacktester:
             try:
                 # 현재 상태
                 current_data = episode_data.iloc[:i+1]
-                current_state = immune_system.extract_market_features(current_data)
-                if current_state is None or len(current_state) == 0:
-                    current_state = np.zeros(12, dtype=np.float32)
+                market_features = immune_system.extract_market_features(current_data)
+                if market_features is None or len(market_features) == 0:
+                    market_features = np.zeros(12, dtype=np.float32)
+                
+                # 현재 위기 수준과 포트폴리오 가중치
+                crisis_level = getattr(immune_system, 'crisis_level', 0.0)
+                current_weights = getattr(self, 'current_weights', np.ones(len(self.symbols)) / len(self.symbols))
+                
+                # 완전한 상태 벡터 구성 (market_features + crisis_level + weights)
+                current_state = np.concatenate([
+                    market_features,
+                    [crisis_level],
+                    current_weights
+                ])
                 
                 # 다음 상태  
                 next_data = episode_data.iloc[:i+2]
-                next_state = immune_system.extract_market_features(next_data)
-                if next_state is None or len(next_state) == 0:
-                    next_state = np.zeros(12, dtype=np.float32)
+                next_market_features = immune_system.extract_market_features(next_data)
+                if next_market_features is None or len(next_market_features) == 0:
+                    next_market_features = np.zeros(12, dtype=np.float32)
                 
-                # 행동 실행
+                # 행동 실행 (market_features만 전달)
                 weights, response_type, bcell_decisions = immune_system.immune_response(
-                    current_state, training=True
+                    market_features, training=True
                 )
                 
                 # 가중치 검증
@@ -684,7 +695,7 @@ class ImmunePortfolioBacktester:
                         current_return=portfolio_return,
                         previous_weights=getattr(self, 'previous_weights', None),
                         current_weights=weights,
-                        market_features=current_state,
+                        market_features=market_features,  # 12차원 market_features만 전달
                         crisis_level=immune_system.crisis_level,
                     )
                     total_reward = reward_details["total_reward"]
@@ -696,6 +707,15 @@ class ImmunePortfolioBacktester:
                 
                 # 에피소드 종료 플래그
                 done = (i == len(episode_returns) - 2)
+                
+                # 다음 상태의 완전한 벡터 구성
+                next_crisis_level = getattr(immune_system, 'crisis_level', 0.0)
+                next_weights = weights  # 행동 후의 새로운 가중치
+                next_state = np.concatenate([
+                    next_market_features,
+                    [next_crisis_level],
+                    next_weights
+                ])
                 
                 # Transition 저장 (완전한 (s,a,r,s',done) 튜플)
                 transitions.append({

@@ -30,8 +30,36 @@ def create_timestamped_directory(base_dir, prefix="run"):
 
 # ===== 데이터 설정 =====
 STOCK_SYMBOLS = [
-    "AAPL", "MSFT", "AMZN", "GOOGL", "AMD",
-    "TSLA", "JPM", "JNJ", "PG", "V"
+    "MMM",
+    "AXP",
+    "AMGN",
+    "AMZN",
+    "AAPL",
+    "BA",
+    "CAT",
+    "CVX",
+    "CSCO",
+    "KO",
+    "DIS",
+    "GS",
+    "HD",
+    "HON",
+    "IBM",
+    "JNJ",
+    "JPM",
+    "MCD",
+    "MRK",
+    "MSFT",
+    "NKE",
+    "NVDA",
+    "PG",
+    "CRM",
+    "SHW",
+    "TRV",
+    "UNH",
+    "VZ",
+    "V",
+    "WMT",
 ]
 
 TRAIN_START_DATE = "2008-01-02"
@@ -60,7 +88,7 @@ DEFAULT_ATTENTION_LR = 0.00005
 DEFAULT_META_LR = 0.0001
 DEFAULT_MEMORY_LR = 0.0001
 
-# RL 파라미터  
+# RL 파라미터
 DEFAULT_GAMMA = 0.99
 DEFAULT_TAU = 0.005
 DEFAULT_BATCH_SIZE = 256
@@ -152,9 +180,9 @@ RISK_THRESHOLDS = {
 }
 
 ACTIVATION_THRESHOLDS = {
-    'tcell': [0.8, 0.6, 0.4, 0.2],
-    'bcell': 0.5,
-    'memory': 0.3,
+    "tcell": [0.8, 0.6, 0.4, 0.2],
+    "bcell": 0.5,
+    "memory": 0.3,
 }
 
 
@@ -172,10 +200,10 @@ RETURN_SCALING_FACTOR = 20
 TARGET_VOLATILITY = 0.15
 
 REWARD_COMPONENT_WEIGHTS = {
-    'return': 0.4,
-    'risk_adjusted': 0.3,
-    'target': 0.2,
-    'adaptation': 0.1,
+    "return": 0.4,
+    "risk_adjusted": 0.3,
+    "target": 0.2,
+    "adaptation": 0.1,
 }
 
 # 기존 리스트 형태도 호환성 유지
@@ -231,10 +259,10 @@ GPU_MEMORY_THRESHOLD_1GB = 1000
 GPU_MEMORY_THRESHOLD_2GB = 2000
 
 DYNAMIC_BATCH_SIZES = {
-    'low_memory': 16,
-    'medium_memory': 32,
-    'high_memory': 64,
-    'full_memory': 256,
+    "low_memory": 16,
+    "medium_memory": 32,
+    "high_memory": 64,
+    "full_memory": 256,
 }
 
 MEMORY_BATCH_DIVISOR = 100
@@ -254,10 +282,10 @@ DEFAULT_BASE_SEED = 42
 TEST_EPISODES_PER_RUN = 1000
 
 PERFORMANCE_THRESHOLDS = {
-    'buy_hold_improvement': 0.15,
-    'sharpe_improvement': 0.1,
-    'convergence_episodes': 20000,
-    'stability_cv': 0.3,
+    "buy_hold_improvement": 0.15,
+    "sharpe_improvement": 0.1,
+    "convergence_episodes": 20000,
+    "stability_cv": 0.3,
 }
 
 
