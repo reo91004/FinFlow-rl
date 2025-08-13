@@ -110,24 +110,9 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\n사용자에 의한 중단")
     except Exception as e:
-        print(f"\n[오류] 주요 실행 실패: {e}")
+        print(f"\n[오류] 실행 실패: {e}")
         print(f"스택 트레이스:\n{traceback.format_exc()}")
-
-        # 폴백 모드: 기본 기능만 활성화
-        print(f"\n[폴백] 기본 기능으로 재시도...")
-        try:
-            basic_results = backtester.run_multiple_backtests(
-                n_runs=1,
-                save_results=True,
-                use_learning_bcells=True,
-                use_hierarchical=False,
-                use_curriculum=False,
-                logging_level="minimal",
-                base_seed=global_seed,
-            )
-            print("폴백 모드 실행 완료")
-        except Exception as fallback_error:
-            print(f"폴백 모드도 실패: {fallback_error}")
+        print("연구용 시스템이므로 오류 복구를 수행하지 않습니다.")
 
     finally:
         # 시스템 정리

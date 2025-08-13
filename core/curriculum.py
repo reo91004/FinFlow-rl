@@ -360,12 +360,12 @@ class MarketDataCurator:
 
         except Exception as e:
             print(f"[오류] 커리큘럼 데이터 선택 실패: {e}")
-            # 마지막 폴백: 안전한 기본 구간
+            # 오류 복구: 안전한 기본 구간
             safe_start = len(self.market_data) // 3
             safe_end = safe_start + min(episode_length, len(self.market_data) // 3)
-            fallback_data = self.market_data.iloc[safe_start:safe_end]
-            fallback_features = self._extract_episode_features(fallback_data)
-            return fallback_data, fallback_features
+            recovery_data = self.market_data.iloc[safe_start:safe_end]
+            recovery_features = self._extract_episode_features(recovery_data)
+            return recovery_data, recovery_features
 
     def _extract_episode_features(self, episode_data: pd.DataFrame) -> np.ndarray:
         """에피소드 데이터에서 특성 추출"""

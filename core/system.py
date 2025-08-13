@@ -6,7 +6,7 @@ from tqdm import tqdm
 import torch
 import torch.nn as nn
 import warnings
-from agents import TCell, BCell, LegacyBCell, MemoryCell
+from agents import TCell, BCell, MemoryCell
 from core.reward import RewardCalculator
 from core.hierarchical import HierarchicalController
 from xai import DecisionAnalyzer
@@ -72,15 +72,25 @@ class ImmunePortfolioSystem:
             else:
                 self.hierarchical_controller = None
         else:
+            # 레거시 모드 제거 - 모든 경우에 학습 기반 B-Cell 사용
+            feature_size = FEATURE_SIZE
+            input_size = feature_size + 1 + n_assets
+            
+            risk_types = ["volatility", "correlation", "momentum", "liquidity", "macro"]
             self.bcells = [
-                LegacyBCell("LB1-Vol", "volatility", self._volatility_response),
-                LegacyBCell("LB2-Corr", "correlation", self._correlation_response),
-                LegacyBCell("LB3-Mom", "momentum", self._momentum_response),
-                LegacyBCell("LB4-Liq", "liquidity", self._liquidity_response),
-                LegacyBCell("LB5-Macro", "macro", self._macro_response),
+                BCell(f"B{i+1}-{risk_type.title()}", risk_type, input_size, n_assets)
+                for i, risk_type in enumerate(risk_types)
             ]
-            print("시스템 유형: 규칙 기반 레거시 BIPD 모델")
-            self.hierarchical_controller = None
+            print("시스템 유형: 학습 기반 BIPD 모델 (강제)")
+            
+            if use_hierarchical:
+                self.hierarchical_controller = HierarchicalController(
+                    n_experts=len(self.bcells),
+                    market_feature_dim=feature_size
+                )
+                print("계층적 제어 시스템이 활성화되었습니다.")
+            else:
+                self.hierarchical_controller = None
 
         # 기억 세포
         self.memory_cell = MemoryCell()
@@ -712,7 +722,9 @@ class ImmunePortfolioSystem:
 
             return ensemble_strategy, response_type, bcell_decisions
         else:
-            return self.base_weights, "fallback", []
+            # 오류 발생 시 균등 가중치 반환
+            equal_weights = np.ones(self.n_assets) / self.n_assets
+            return equal_weights, "error_recovery", []
 
     def _legacy_immune_response(self, market_features):
         """규칙 기반 면역 반응"""
@@ -795,101 +807,12 @@ class ImmunePortfolioSystem:
                     if len(self.hierarchical_controller.experience_buffer) >= 32:
                         self.hierarchical_controller.learn_meta_policy()
 
-    def _volatility_response(self, activation_level):
-        """변동성 위험 대응"""
-        risk_reduction = activation_level * 0.3
-        weights = self.base_weights * (1 - risk_reduction)
-        safe_indices = [6, 7, 8]
-        for idx in safe_indices:
-            if idx < len(weights):
-                weights[idx] += risk_reduction / len(safe_indices)
-        return weights / np.sum(weights)
-
-    def _correlation_response(self, activation_level):
-        """상관관계 위험 대응"""
-        diversification_boost = activation_level * 0.2
-        weights = self.base_weights.copy()
-        weights = weights * (1 - diversification_boost) + diversification_boost / len(
-            weights
-        )
-        return weights / np.sum(weights)
-
-    def _momentum_response(self, activation_level):
-        """모멘텀 위험 대응"""
-        neutral_adjustment = activation_level * 0.25
-        weights = self.base_weights * (1 - neutral_adjustment) + (
-            self.base_weights * neutral_adjustment
-        )
-        return weights / np.sum(weights)
-
-    def _liquidity_response(self, activation_level):
-        """유동성 위험 대응"""
-        large_cap_boost = activation_level * 0.2
-        weights = self.base_weights.copy()
-        large_cap_indices = [0, 1, 2, 3]
-        for idx in large_cap_indices:
-            if idx < len(weights):
-                weights[idx] += large_cap_boost / len(large_cap_indices)
-        return weights / np.sum(weights)
-
-    def _macro_response(self, activation_level):
-        """거시경제 위험 대응"""
-        defensive_boost = activation_level * 0.3
-        weights = self.base_weights * (1 - defensive_boost)
-        defensive_indices = [7, 8, 9]
-        for idx in defensive_indices:
-            if idx < len(weights):
-                weights[idx] += defensive_boost / len(defensive_indices)
-        return weights / np.sum(weights)
-
     def pretrain_bcells(self, market_data, episodes=PRETRAIN_EPISODES):
-        """B-세포 사전 훈련"""
+        """B-세포 초기화 - 강화학습은 환경 상호작용에서 바로 학습"""
         if not self.use_learning_bcells:
             return
 
-        print(f"B-세포 네트워크 사전 훈련을 시작합니다. (에피소드: {episodes})")
-
-        expert_policy_functions = {
-            "volatility": self._volatility_response,
-            "correlation": self._correlation_response,
-            "momentum": self._momentum_response,
-            "liquidity": self._liquidity_response,
-            "macro": self._macro_response,
-        }
-
-        loss_function = nn.MSELoss()
-
-        for episode in tqdm(range(episodes), desc="사전 훈련 진행률"):
-            start_idx = np.random.randint(
-                20, len(market_data.pct_change().dropna()) - 50
-            )
-            current_data = market_data.iloc[:start_idx]
-            market_features = self.extract_market_features(current_data)
-            crisis_level = np.random.uniform(0.2, 0.8)
-
-            for bcell in self.bcells:
-                if bcell.risk_type in expert_policy_functions:
-                    expert_action = expert_policy_functions[bcell.risk_type](
-                        crisis_level
-                    )
-                    target_policy = torch.FloatTensor(expert_action)
-
-                    features_tensor = torch.FloatTensor(market_features)
-                    crisis_tensor = torch.FloatTensor([crisis_level])
-                    specialization_tensor = bcell.specialization_weights
-                    combined_input = torch.cat(
-                        [features_tensor, crisis_tensor, specialization_tensor]
-                    )
-                    current_policy = bcell.actor_network(
-                        combined_input.unsqueeze(0)
-                    ).squeeze(0)
-
-                    bcell.actor_optimizer.zero_grad()
-                    loss = loss_function(current_policy, target_policy)
-                    loss.backward()
-                    bcell.actor_optimizer.step()
-
-        print("B-세포 네트워크 사전 훈련이 완료되었습니다.")
+        print("B-세포 네트워크 초기화 완료. 강화학습은 환경과의 상호작용으로 시작합니다.")
 
     def update_memory(self, crisis_pattern, response_strategy, effectiveness):
         """기억 업데이트"""

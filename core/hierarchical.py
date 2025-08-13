@@ -156,8 +156,8 @@ class HierarchicalController:
 
         except Exception as e:
             print(f"전문가 선택 중 오류 발생: {e}")
-            # 폴백: 위기 수준 기반 휴리스틱 선택
-            return self._fallback_expert_selection(crisis_level, tcell_analysis)
+            # 오류 발생 시 기본 전문가(volatility) 선택
+            return 0, self.expert_names[0], 0.5, {"error_recovery": True}
 
     def _construct_meta_state(
         self, market_features: np.ndarray, crisis_level: float, tcell_analysis: Dict
@@ -474,26 +474,6 @@ class HierarchicalController:
             prev_expert = self.expert_selection_history[-2]["expert_idx"]
             self.expert_transition_matrix[prev_expert][expert_idx] += 1
 
-    def _fallback_expert_selection(
-        self, crisis_level: float, tcell_analysis: Dict
-    ) -> Tuple[int, str, float, Dict]:
-        """폴백 전문가 선택"""
-
-        dominant_risk = tcell_analysis.get("dominant_risk", "volatility")
-
-        # 휴리스틱 기반 선택
-        if dominant_risk == "volatility" or crisis_level > 0.7:
-            expert_idx = 0  # volatility expert
-        elif dominant_risk == "correlation":
-            expert_idx = 1  # correlation expert
-        elif dominant_risk == "momentum":
-            expert_idx = 2  # momentum expert
-        elif dominant_risk == "liquidity":
-            expert_idx = 3  # liquidity expert
-        else:
-            expert_idx = 4  # macro expert
-
-        return expert_idx, self.expert_names[expert_idx], 0.5, {"fallback": True}
 
     def get_hierarchical_metrics(self) -> Dict:
         """계층적 시스템 메트릭"""
