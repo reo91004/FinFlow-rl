@@ -5,21 +5,22 @@ from sklearn.ensemble import IsolationForest
 from collections import deque
 from datetime import datetime
 from .base import ImmuneCell
+from constant import *
 
 
 class TCell(ImmuneCell):
     """T-세포: 위험 탐지"""
 
-    def __init__(self, cell_id, sensitivity=0.1, random_state=None):
+    def __init__(self, cell_id, sensitivity=DEFAULT_SENSITIVITY, random_state=None):
         super().__init__(cell_id)
         self.sensitivity = sensitivity
         self.detector = IsolationForest(
             contamination=sensitivity, random_state=random_state
         )
         self.is_trained = False
-        self.training_data = deque(maxlen=200)  # 훈련 데이터 저장
-        self.historical_scores = deque(maxlen=100)
-        self.market_state_history = deque(maxlen=50)  # 시장 상태 히스토리
+        self.training_data = deque(maxlen=TCELL_TRAINING_BUFFER_SIZE)  # 훈련 데이터 저장
+        self.historical_scores = deque(maxlen=TCELL_PATTERN_BUFFER_SIZE)
+        self.market_state_history = deque(maxlen=TCELL_REWARD_BUFFER_SIZE)  # 시장 상태 히스토리
 
     def detect_anomaly(self, market_features):
         """시장 이상 상황 탐지"""
@@ -31,7 +32,7 @@ class TCell(ImmuneCell):
         self.training_data.append(market_features[0])
 
         if not self.is_trained:
-            if len(self.training_data) >= 200:  # 충분한 데이터가 쌓인 후 훈련
+            if len(self.training_data) >= TCELL_TRAINING_BUFFER_SIZE:  # 충분한 데이터가 쌓인 후 훈련
                 training_matrix = np.array(list(self.training_data))
                 self.detector.fit(training_matrix)
                 self.is_trained = True
@@ -107,13 +108,13 @@ class TCell(ImmuneCell):
             # 기본 활성화 레벨 계산 및 근거 기록
             base_activation = 0.0
             if z_score < -1.5:
-                base_activation = 0.8
+                base_activation = TCELL_ACTIVATION_THRESHOLDS[0]
                 crisis_info["crisis_indicators"].append(
                     {
                         "type": "extreme_anomaly",
                         "value": z_score,
                         "threshold": -1.5,
-                        "contribution": 0.8,
+                        "contribution": TCELL_ACTIVATION_THRESHOLDS[0],
                         "description": f"매우 이상한 이상 점수 (Z-score: {z_score:.3f})",
                     }
                 )
@@ -121,13 +122,13 @@ class TCell(ImmuneCell):
                     f"이상 점수가 과거 평균보다 {abs(z_score):.1f} 표준편차 낮음 (매우 이상)"
                 )
             elif z_score < -1.0:
-                base_activation = 0.6
+                base_activation = TCELL_ACTIVATION_THRESHOLDS[1]
                 crisis_info["crisis_indicators"].append(
                     {
                         "type": "high_anomaly",
                         "value": z_score,
                         "threshold": -1.0,
-                        "contribution": 0.6,
+                        "contribution": TCELL_ACTIVATION_THRESHOLDS[1],
                         "description": f"상당히 이상한 이상 점수 (Z-score: {z_score:.3f})",
                     }
                 )
@@ -135,13 +136,13 @@ class TCell(ImmuneCell):
                     f"이상 점수가 과거 평균보다 {abs(z_score):.1f} 표준편차 낮음 (상당히 이상)"
                 )
             elif z_score < -0.5:
-                base_activation = 0.4
+                base_activation = TCELL_ACTIVATION_THRESHOLDS[2]
                 crisis_info["crisis_indicators"].append(
                     {
                         "type": "moderate_anomaly",
                         "value": z_score,
                         "threshold": -0.5,
-                        "contribution": 0.4,
+                        "contribution": TCELL_ACTIVATION_THRESHOLDS[2],
                         "description": f"약간 이상한 이상 점수 (Z-score: {z_score:.3f})",
                     }
                 )
@@ -149,13 +150,13 @@ class TCell(ImmuneCell):
                     f"이상 점수가 과거 평균보다 {abs(z_score):.1f} 표준편차 낮음 (약간 이상)"
                 )
             elif z_score < 0.0:
-                base_activation = 0.2
+                base_activation = TCELL_ACTIVATION_THRESHOLDS[3]
                 crisis_info["crisis_indicators"].append(
                     {
                         "type": "mild_anomaly",
                         "value": z_score,
                         "threshold": 0.0,
-                        "contribution": 0.2,
+                        "contribution": TCELL_ACTIVATION_THRESHOLDS[3],
                         "description": f"주의 수준 이상 점수 (Z-score: {z_score:.3f})",
                     }
                 )
@@ -166,7 +167,7 @@ class TCell(ImmuneCell):
             # 시장 상태 기반 조정 및 근거 기록
             volatility_boost = 0.0
             if market_volatility > 0.3:
-                volatility_boost = 0.2
+                volatility_boost = RISK_BOOST_FACTORS["volatility"]
                 base_activation += volatility_boost
                 crisis_info["crisis_indicators"].append(
                     {
@@ -183,7 +184,7 @@ class TCell(ImmuneCell):
 
             stress_boost = 0.0
             if market_stress > 0.5:
-                stress_boost = 0.15
+                stress_boost = RISK_BOOST_FACTORS["stress"]
                 base_activation += stress_boost
                 crisis_info["crisis_indicators"].append(
                     {
@@ -201,7 +202,7 @@ class TCell(ImmuneCell):
             # 상관관계 위험 분석
             corr_boost = 0.0
             if market_correlation > 0.8:
-                corr_boost = 0.1
+                corr_boost = RISK_BOOST_FACTORS["correlation"]
                 base_activation += corr_boost
                 crisis_info["crisis_indicators"].append(
                     {

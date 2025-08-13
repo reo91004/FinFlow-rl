@@ -15,12 +15,12 @@ from constant import *
 class ActorNetwork(nn.Module):
     """Actor 네트워크: 정책 결정"""
 
-    def __init__(self, input_size, n_assets, hidden_size=64):
+    def __init__(self, input_size, n_assets, hidden_size=BCELL_ACTOR_HIDDEN_SIZE):
         super(ActorNetwork, self).__init__()
         self.fc1 = nn.Linear(input_size, hidden_size)
         self.fc2 = nn.Linear(hidden_size, hidden_size)
         self.fc3 = nn.Linear(hidden_size, n_assets)
-        self.dropout = nn.Dropout(0.1)
+        self.dropout = nn.Dropout(DEFAULT_DROPOUT_RATE)
 
     def forward(self, x):
         x = F.relu(self.fc1(x))
@@ -34,12 +34,12 @@ class ActorNetwork(nn.Module):
 class CriticNetwork(nn.Module):
     """Critic 네트워크: 가치 함수 평가"""
 
-    def __init__(self, input_size, hidden_size=64):
+    def __init__(self, input_size, hidden_size=BCELL_CRITIC_HIDDEN_SIZE):
         super(CriticNetwork, self).__init__()
         self.fc1 = nn.Linear(input_size, hidden_size)
         self.fc2 = nn.Linear(hidden_size, hidden_size)
         self.fc3 = nn.Linear(hidden_size, 1)
-        self.dropout = nn.Dropout(0.1)
+        self.dropout = nn.Dropout(DEFAULT_DROPOUT_RATE)
 
     def forward(self, x):
         x = F.relu(self.fc1(x))
@@ -124,8 +124,8 @@ class BCell(ImmuneCell):
         self.gamma = DEFAULT_GAMMA  # 할인 인수
 
         # 전문화 관련 속성
-        self.specialization_buffer = deque(maxlen=1000)
-        self.general_buffer = deque(maxlen=500)
+        self.specialization_buffer = deque(maxlen=BCELL_SPECIALIZATION_BUFFER_SIZE)
+        self.general_buffer = deque(maxlen=BCELL_GENERAL_BUFFER_SIZE)
         self.specialization_strength = 0.1
 
         # 전문 분야별 특화 기준
@@ -133,19 +133,19 @@ class BCell(ImmuneCell):
 
         # 적응형 학습률
         self.actor_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            self.actor_optimizer, mode="max", factor=0.8, patience=15, verbose=False
+            self.actor_optimizer, mode="max", factor=SCHEDULER_FACTOR, patience=SCHEDULER_PATIENCE
         )
         self.critic_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            self.critic_optimizer, mode="max", factor=0.8, patience=15, verbose=False
+            self.critic_optimizer, mode="max", factor=SCHEDULER_FACTOR, patience=SCHEDULER_PATIENCE
         )
 
         # 성과 추적
-        self.specialist_performance = deque(maxlen=50)
-        self.general_performance = deque(maxlen=50)
+        self.specialist_performance = deque(maxlen=BCELL_PERFORMANCE_BUFFER_SIZE)
+        self.general_performance = deque(maxlen=BCELL_PERFORMANCE_BUFFER_SIZE)
 
         # 가치 함수 추적
-        self.value_estimates = deque(maxlen=100)
-        self.td_errors = deque(maxlen=100)
+        self.value_estimates = deque(maxlen=BCELL_DECISION_BUFFER_SIZE)
+        self.td_errors = deque(maxlen=BCELL_DECISION_BUFFER_SIZE)
 
         # 전문화 가중치
         self.specialization_weights = self._initialize_specialization(
@@ -164,7 +164,7 @@ class BCell(ImmuneCell):
             safe_indices = [6, 7, 8] if n_assets >= 9 else [n_assets - 1]
             for idx in safe_indices:
                 if idx < n_assets:
-                    weights[idx] = 0.3
+                    weights[idx] = INITIAL_PORTFOLIO_WEIGHTS["primary"]
         elif risk_type == "correlation":
             weights = torch.ones(n_assets) * (0.8 / n_assets)
         elif risk_type == "momentum":
@@ -173,7 +173,7 @@ class BCell(ImmuneCell):
             large_cap_indices = [0, 1, 2, 3] if n_assets >= 4 else list(range(n_assets))
             for idx in large_cap_indices:
                 if idx < n_assets:
-                    weights[idx] = 0.25
+                    weights[idx] = INITIAL_PORTFOLIO_WEIGHTS["secondary"]
 
         return weights
 
@@ -233,7 +233,7 @@ class BCell(ImmuneCell):
         required_signals = max(1, len(feature_indices) // 2)
         is_specialty = specialty_signals >= required_signals
 
-        confidence_boost = 1.0 + self.specialization_strength * 0.5
+        confidence_boost = 1.0 + self.specialization_strength * CONFIDENCE_BOOST_FACTOR
 
         return is_specialty and (
             specialty_signals * confidence_boost >= required_signals
@@ -283,7 +283,7 @@ class BCell(ImmuneCell):
 
             # 탐험/활용 (training 모드에서만)
             if training and np.random.random() < self.epsilon:
-                exploration_strength = 0.05 if is_specialty else 0.1
+                exploration_strength = EXPLORATION_STRENGTH_SPECIALTY if is_specialty else EXPLORATION_STRENGTH_GENERAL
                 noise = torch.randn_like(strategy_tensor) * exploration_strength
                 strategy_tensor = strategy_tensor + noise
                 strategy_tensor = F.softmax(strategy_tensor, dim=0)
@@ -398,7 +398,7 @@ class BCell(ImmuneCell):
             self.specialization_buffer.append(experience)
             self.specialist_performance.append(reward)
             self.specialization_strength = min(
-                1.0, self.specialization_strength + 0.005
+                1.0, self.specialization_strength + SPECIALIZATION_STRENGTH_INCREMENT
             )
         else:
             self.general_buffer.append(experience)
@@ -415,7 +415,7 @@ class BCell(ImmuneCell):
         try:
             # 배치 크기 동적 조정 (GPU 메모리 기반)
             available_memory = self._get_available_gpu_memory()
-            dynamic_batch_size = min(self.batch_size, max(8, available_memory // 100))
+            dynamic_batch_size = min(self.batch_size, max(8, available_memory // MEMORY_BATCH_DIVISOR))
 
             batch_size = min(dynamic_batch_size, len(self.episode_buffer))
             batch = np.random.choice(self.episode_buffer, batch_size, replace=False)
@@ -484,7 +484,7 @@ class BCell(ImmuneCell):
             entropy = -torch.mean(
                 torch.sum(action_probs * torch.log(action_probs + 1e-8), dim=1)
             )
-            entropy_bonus = 0.01 * entropy
+            entropy_bonus = ENTROPY_BONUS * entropy
 
             total_actor_loss = policy_loss - entropy_bonus
 
@@ -578,7 +578,7 @@ class BCell(ImmuneCell):
             next_state_values = torch.FloatTensor(next_state_values)
 
             # 전문가 가중치 적용
-            specialist_weight = 3.0
+            specialist_weight = SPECIALIST_WEIGHT
             weighted_rewards = rewards * specialist_weight
 
             # TD Target
@@ -672,7 +672,7 @@ class BCell(ImmuneCell):
     def adapt_response(self, antigen_pattern, effectiveness):
         """호환성 래퍼"""
         if len(antigen_pattern) >= 8:
-            crisis_level = 0.5
+            crisis_level = CRISIS_LEVEL_THRESHOLD
             self.learn_from_experience(antigen_pattern, crisis_level, effectiveness)
 
 

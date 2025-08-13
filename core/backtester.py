@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import torch
 import gc
 from datetime import datetime, timedelta
+from constant import *
 from tqdm import tqdm
 from typing import Dict, List, Tuple, Any, Optional
 from .system import ImmunePortfolioSystem
@@ -650,10 +651,10 @@ class ImmunePortfolioBacktester:
 
         # 극단값 체크 및 조기 종료
         consecutive_extreme_rewards = 0
-        extreme_threshold = 3.0
+        extreme_threshold = EXTREME_RETURN_THRESHOLD
 
         # 안전장치 변수들
-        max_iterations = min(len(episode_returns), 200)
+        max_iterations = min(len(episode_returns), MAX_SIMULATION_ITERATIONS)
         memory_cleanup_interval = 200
 
         try:

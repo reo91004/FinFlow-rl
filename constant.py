@@ -219,7 +219,7 @@ DEFAULT_BASE_SEED = 42  # 다중 실행 기본 시드
 
 # ===== 13. 시각화 및 로깅 =====
 # 플롯 설정
-PLOT_STYLE = "seaborn-v0_8-darkgrid"  # matplotlib 스타일
+PLOT_STYLE = "default"  # matplotlib 스타일 (호환성을 위해 기본값 사용)
 FIGURE_SIZE = (16, 12)  # 기본 그림 크기
 DPI = 100  # 해상도
 
@@ -233,3 +233,159 @@ LOGGING_LEVELS = {
 
 # ===== 14. 기능 플래그 =====
 ENABLE_ALL_FEATURES = True  # 모든 고급 기능 활성화
+
+
+# ===== 15. 네트워크 학습 세부 설정 =====
+# 드롭아웃 및 정규화
+DEFAULT_DROPOUT_RATE = 0.1  # 기본 드롭아웃 비율
+HIDDEN_LAYER_DIVISOR = 2  # 은닉층 크기 분할 계수
+ATTENTION_HIDDEN_RATIO = 0.5  # 어텐션 은닉층 비율
+
+# 학습률 스케줄러
+SCHEDULER_FACTOR = 0.8  # 학습률 감소 비율
+SCHEDULER_PATIENCE = 15  # 성능 개선 없을 시 대기 에피소드
+
+# 엔트로피 및 탐험
+ENTROPY_BONUS = 0.01  # 엔트로피 정규화 계수
+SPECIALIST_WEIGHT = 3.0  # 전문가 모델 가중치
+EXPLORATION_STRENGTH_SPECIALTY = 0.05  # 전문 영역 탐험 강도
+EXPLORATION_STRENGTH_GENERAL = 0.1  # 일반 영역 탐험 강도
+
+
+# ===== 16. B-Cell 특화 파라미터 =====
+# 포트폴리오 가중치 초기화
+INITIAL_PORTFOLIO_WEIGHTS = {
+    "primary": 0.3,  # 주요 자산 초기 가중치
+    "secondary": 0.25,  # 보조 자산 초기 가중치
+}
+
+# 신뢰도 및 위기 관리
+CONFIDENCE_BOOST_FACTOR = 0.5  # 신뢰도 부스팅 계수
+CRISIS_LEVEL_THRESHOLD = 0.5  # 위기 판단 임계값
+
+
+# ===== 17. T-Cell 위험 감지 파라미터 =====
+# 기본 민감도
+DEFAULT_SENSITIVITY = 0.1  # 기본 위험 감지 민감도
+TCELL_TRAINING_BUFFER_SIZE = 200  # T-Cell 훈련 데이터 버퍼
+
+# 활성화 임계값 (위험도 레벨별)
+TCELL_ACTIVATION_THRESHOLDS = [
+    0.8,  # Level 1: 매우 높은 위험
+    0.6,  # Level 2: 높은 위험
+    0.4,  # Level 3: 중간 위험
+    0.2,  # Level 4: 낮은 위험
+]
+
+# 위험 요소별 부스트 계수
+RISK_BOOST_FACTORS = {
+    "volatility": 0.2,  # 변동성 부스트
+    "stress": 0.15,  # 스트레스 부스트
+    "correlation": 0.1,  # 상관관계 부스트
+}
+
+
+# ===== 18. Memory Cell 파라미터 =====
+# 메모리 시스템 기본값
+MEMORY_DEFAULT_EMBEDDING_DIM = 64  # 임베딩 차원
+MEMORY_MAX_MEMORIES = 100  # 최대 메모리 저장 수
+MEMORY_DECAY_RATE = 0.05  # 메모리 감쇠율
+MEMORY_BLENDING_ALPHA = 0.3  # 메모리 블렌딩 계수
+MEMORY_MIN_STRENGTH = 0.1  # 최소 메모리 강도
+
+# 메모리 버퍼 (Memory Cell 전용)
+MEMORY_SHORT_TERM_BUFFER = 50  # 단기 메모리 버퍼
+MEMORY_LONG_TERM_BUFFER = 50  # 장기 메모리 버퍼
+
+
+# ===== 19. 보상 시스템 세부 설정 =====
+# 보상 계산 파라미터
+RETURN_CLIPPING_RANGE = (-0.2, 0.2)  # 수익률 클리핑 범위
+RETURN_SCALING_FACTOR = 20  # 수익률 스케일링 계수
+REWARD_CLIPPING_RANGE = (-2.0, 2.0)  # 최종 보상 클리핑 범위
+
+# 다중 목표 보상 가중치
+REWARD_COMPONENT_WEIGHTS = [
+    0.3,   # 수익률 가중치
+    0.3,   # 샤프 비율 가중치
+    0.2,   # 최대 낙폭 가중치
+    0.1,   # 거래 비용 가중치
+    0.05,  # 변동성 가중치
+    0.05,  # 기타 요소 가중치
+]
+
+# 보상 정규화 및 페널티
+REWARD_NORMALIZATION_THRESHOLD = 100  # 정규화 시작 에피소드
+CONCENTRATION_PENALTY_THRESHOLD = 0.4  # HHI 집중도 페널티 임계값
+TARGET_VOLATILITY = 0.15  # 목표 변동성 수준
+
+
+# ===== 20. 백테스터 및 시뮬레이션 =====
+# 조기 종료 조건
+EXTREME_RETURN_THRESHOLD = 3.0  # 극단적 수익률 표준편차
+MAX_SIMULATION_ITERATIONS = 200  # 최대 시뮬레이션 반복
+
+# 시뮬레이션 파라미터
+SIMULATION_PARAMS = {
+    "base_drift": 0.2,  # 기본 드리프트
+    "base_volatility": 0.1,  # 기본 변동성
+    "noise_scale": 0.3,  # 노이즈 스케일
+    "trend_strength": 0.5,  # 트렌드 강도
+}
+
+
+# ===== 21. 시각화 세부 설정 =====
+# 그래프 레이아웃
+GRID_SPACING = {
+    "hspace": 0.3,  # 수직 간격
+    "wspace": 0.3,  # 수평 간격
+}
+
+# 폰트 및 스타일
+TITLE_FONTSIZE = 16  # 제목 폰트 크기
+LABEL_FONTSIZE = 12  # 라벨 폰트 크기
+HIGH_DPI = 300  # 고해상도 출력용 DPI
+
+# 투명도 설정
+ALPHA_VALUES = {
+    "light": 0.3,  # 연한 투명도
+    "medium": 0.5,  # 중간 투명도
+    "dark": 0.7,  # 진한 투명도
+    "opaque": 1.0,  # 불투명
+}
+
+
+# ===== 22. XAI 분석 파라미터 =====
+# 시간 임계값
+REACTION_TIME_THRESHOLD = 6  # 반응 시간 임계값 (시간)
+JSON_INDENT = 2  # JSON 출력 들여쓰기
+
+
+# ===== 23. RL Tracker 설정 =====
+# 추적 윈도우
+MOVING_AVERAGE_WINDOW = 50  # 이동평균 윈도우 크기
+MIN_EPISODES_FOR_STATS = 10  # 통계 계산 최소 에피소드
+
+# 시각화 그리드
+TRACKER_GRID_ROWS = 4  # 추적기 그리드 행 수
+TRACKER_GRID_COLS = 3  # 추적기 그리드 열 수
+
+
+# ===== 24. 출력 포맷 설정 =====
+# 숫자 출력 정밀도
+FORMAT_PRECISION = {
+    "percentage": ".2%",  # 백분율: 소수점 2자리
+    "float_2": ".2f",  # 실수: 소수점 2자리
+    "float_3": ".3f",  # 실수: 소수점 3자리
+    "float_4": ".4f",  # 실수: 소수점 4자리
+}
+
+# 시간 포맷
+TIME_FORMAT = "%Y-%m-%d %H:%M:%S"  # 기본 시간 포맷
+DATE_FORMAT = "%Y-%m-%d"  # 날짜 포맷
+
+
+# ===== 25. 초기화 값 =====
+# 네트워크 가중치 초기화
+WEIGHT_INIT_RANGE = (-0.1, 0.1)  # 가중치 초기화 범위
+BIAS_INIT_VALUE = 0.0  # 편향 초기화 값

@@ -26,7 +26,7 @@ if __name__ == "__main__":
         global_seed = GLOBAL_SEED
         print(f"[설정] 고정 시드 사용: {global_seed} (재현 가능한 결과)")
     else:
-        global_seed = int(time.time()) % 10000
+        global_seed = int(time.time()) % RANDOM_SEED_MODULO
         print(f"[설정] 랜덤 시드 사용: {global_seed} (매번 다른 결과)")
 
     np.random.seed(global_seed)

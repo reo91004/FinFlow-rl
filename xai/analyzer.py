@@ -5,6 +5,7 @@ import os
 import numpy as np
 from datetime import datetime
 from typing import Dict, List
+from constant import *
 
 
 class DecisionAnalyzer:
@@ -12,7 +13,7 @@ class DecisionAnalyzer:
 
     def __init__(self, output_dir=None):
         self.decision_log = []
-        self.risk_thresholds = {"low": 0.3, "medium": 0.5, "high": 0.7, "critical": 0.9}
+        self.risk_thresholds = RISK_THRESHOLDS
         self.crisis_detection_log = []  # 상세 위기 감지 로그
         self.output_dir = output_dir or "."
 
@@ -602,7 +603,7 @@ class DecisionAnalyzer:
                 )
                 time_diff = (crisis_time - last_crisis_time).total_seconds() / 3600
 
-                if time_diff <= 6:  # 6시간 이내
+                if time_diff <= REACTION_TIME_THRESHOLD:  # 6시간 이내
                     current_cluster.append(crisis_log)
                 else:
                     if len(current_cluster) > 1:
@@ -717,7 +718,7 @@ class DecisionAnalyzer:
         # JSON 파일 저장
         json_path = os.path.join(output_dir, f"{filename}.json")
         with open(json_path, "w", encoding="utf-8") as f:
-            json.dump(report, f, ensure_ascii=False, indent=2)
+            json.dump(report, f, ensure_ascii=False, indent=JSON_INDENT)
 
         # Markdown 보고서 생성
         md_content = self._generate_markdown_report(report)

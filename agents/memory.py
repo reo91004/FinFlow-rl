@@ -15,7 +15,7 @@ from constant import *
 class MemoryEmbedding(nn.Module):
     """기억 임베딩 네트워크"""
 
-    def __init__(self, input_dim, embedding_dim=64):
+    def __init__(self, input_dim, embedding_dim=MEMORY_EMBEDDING_DIM):
         super(MemoryEmbedding, self).__init__()
         self.embedding_net = nn.Sequential(
             nn.Linear(input_dim, embedding_dim),
@@ -32,7 +32,7 @@ class MemoryEmbedding(nn.Module):
 class MemoryRetrieval(nn.Module):
     """기억 검색 네트워크"""
 
-    def __init__(self, query_dim, memory_dim, hidden_dim=64):
+    def __init__(self, query_dim, memory_dim, hidden_dim=MEMORY_HIDDEN_DIM):
         super(MemoryRetrieval, self).__init__()
         self.query_projection = nn.Linear(query_dim, hidden_dim)
         self.memory_projection = nn.Linear(memory_dim, hidden_dim)
@@ -75,7 +75,7 @@ class MemoryRetrieval(nn.Module):
 class MemoryCell:
     """기억 기반 의사결정 지원 세포"""
 
-    def __init__(self, max_memories=100, embedding_dim=64, similarity_threshold=0.8):
+    def __init__(self, max_memories=MEMORY_MAX_MEMORIES, embedding_dim=MEMORY_DEFAULT_EMBEDDING_DIM, similarity_threshold=MEMORY_SIMILARITY_THRESHOLD):
         self.max_memories = max_memories
         self.embedding_dim = embedding_dim
         self.similarity_threshold = similarity_threshold
@@ -98,11 +98,11 @@ class MemoryCell:
         # 기억 강도 관리
         self.memory_strengths = []
         self.memory_access_counts = []
-        self.decay_rate = 0.05
+        self.decay_rate = MEMORY_DECAY_RATE
 
         # 성과 추적
-        self.retrieval_success_rate = deque(maxlen=50)
-        self.memory_utilization_rate = deque(maxlen=50)
+        self.retrieval_success_rate = deque(maxlen=MEMORY_SHORT_TERM_BUFFER)
+        self.memory_utilization_rate = deque(maxlen=MEMORY_LONG_TERM_BUFFER)
 
         # 최적화
         self.optimizer = torch.optim.Adam(
@@ -314,7 +314,7 @@ class MemoryCell:
                     memory["pattern"], recalled_memory["pattern"], atol=1e-6
                 ):
                     # 효과성 업데이트 (지수 이동 평균)
-                    alpha = 0.3
+                    alpha = MEMORY_BLENDING_ALPHA
                     old_effectiveness = self.memory_effectiveness[i]
                     new_effectiveness = (
                         alpha * actual_effectiveness + (1 - alpha) * old_effectiveness
@@ -438,7 +438,7 @@ class MemoryCell:
 
             # 최소 강도 보장
             if self.memory_strengths[i] < 0.1:
-                self.memory_strengths[i] = 0.1
+                self.memory_strengths[i] = MEMORY_MIN_STRENGTH
 
     def get_memory_statistics(self) -> Dict:
         """기억 시스템 통계"""

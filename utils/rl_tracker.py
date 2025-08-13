@@ -8,6 +8,7 @@ from datetime import datetime
 from collections import deque
 from typing import Dict, List, Optional
 import seaborn as sns
+from constant import *
 
 # 한글 폰트 문제 방지
 plt.rcParams["font.family"] = "DejaVu Sans"
@@ -28,7 +29,7 @@ class RLTracker:
         self.td_errors = []
         self.epsilon_values = []
         self.curriculum_levels = []
-        self.bcell_rewards = {f"bcell_{i}": [] for i in range(5)}
+        self.bcell_rewards = {f"bcell_{i}": [] for i in range(DEFAULT_N_BCELLS)}
         self.meta_rewards = []
 
         # 시간 추적
@@ -86,8 +87,8 @@ class RLTracker:
             self.td_errors.append(td_error)
 
         # 통계 업데이트
-        if len(self.episode_rewards) >= 10:
-            recent_rewards = self.episode_rewards[-10:]
+        if len(self.episode_rewards) >= MIN_EPISODES_FOR_STATS:
+            recent_rewards = self.episode_rewards[-MIN_EPISODES_FOR_STATS:]
             self.reward_stats["mean"].append(np.mean(recent_rewards))
             self.reward_stats["std"].append(np.std(recent_rewards))
             self.reward_stats["max"].append(np.max(recent_rewards))
@@ -154,15 +155,15 @@ class RLTracker:
             "meta_reward": meta_reward,
         }
 
-    def create_comprehensive_plot(self, save_path: str = None, window_size: int = 50):
+    def create_comprehensive_plot(self, save_path: str = None, window_size: int = MOVING_AVERAGE_WINDOW):
         """종합적인 강화학습 추적 플롯 생성"""
 
-        if len(self.episode_rewards) < 10:
+        if len(self.episode_rewards) < MIN_EPISODES_FOR_STATS:
             print("[경고] 충분한 데이터가 없어서 시각화를 건너뜁니다.")
             return None
 
         fig = plt.figure(figsize=(20, 16))
-        gs = fig.add_gridspec(4, 3, hspace=0.3, wspace=0.3)
+        gs = fig.add_gridspec(TRACKER_GRID_ROWS, TRACKER_GRID_COLS, hspace=GRID_SPACING["hspace"], wspace=GRID_SPACING["wspace"])
 
         # 1. 에피소드별 보상 변화
         ax1 = fig.add_subplot(gs[0, :2])

@@ -21,6 +21,7 @@ import matplotlib.patches as mpatches
 from typing import Dict, List, Tuple
 import pandas as pd
 from datetime import datetime, timedelta
+from constant import *
 
 
 class ImmuneSystemVisualizer:
@@ -43,7 +44,7 @@ class ImmuneSystemVisualizer:
         """면역 반응 패턴 종합 시각화"""
 
         fig = plt.figure(figsize=self.figsize)
-        gs = fig.add_gridspec(3, 4, hspace=0.3, wspace=0.3)
+        gs = fig.add_gridspec(3, 4, hspace=GRID_SPACING["hspace"], wspace=GRID_SPACING["wspace"])
 
         # 1. T-Cell 활성화 패턴
         ax1 = fig.add_subplot(gs[0, 0:2])
@@ -71,12 +72,12 @@ class ImmuneSystemVisualizer:
 
         plt.suptitle(
             "BIPD Immune System Response Pattern Analysis",
-            fontsize=16,
+            fontsize=TITLE_FONTSIZE,
             fontweight="bold",
         )
 
         if output_path:
-            plt.savefig(output_path, dpi=300, bbox_inches="tight")
+            plt.savefig(output_path, dpi=HIGH_DPI, bbox_inches="tight")
             print(f"Immune system visualization saved: {output_path}")
 
         return fig
@@ -106,7 +107,7 @@ class ImmuneSystemVisualizer:
             time_points,
             0,
             crisis_activation,
-            alpha=0.3,
+            alpha=ALPHA_VALUES["light"],
             color=self.colors["tcell"],
             label="T-Cell 활성화",
         )
@@ -117,14 +118,14 @@ class ImmuneSystemVisualizer:
             y=0.5,
             color=self.colors["crisis"],
             linestyle="--",
-            alpha=0.7,
+            alpha=ALPHA_VALUES["dark"],
             label="위기 임계값",
         )
 
         # 위기 구간 강조
         crisis_zones = [(30, 40), (70, 80)]
         for start, end in crisis_zones:
-            ax.axvspan(start, end, alpha=0.2, color=self.colors["crisis"])
+            ax.axvspan(start, end, alpha=ALPHA_VALUES["light"]*0.67, color=self.colors["crisis"])
 
         ax.set_xlabel("시간")
         ax.set_ylabel("활성화 수준")
@@ -155,7 +156,7 @@ class ImmuneSystemVisualizer:
                 y,
                 s=size,
                 c=self.colors["bcell"],
-                alpha=0.7,
+                alpha=ALPHA_VALUES["dark"],
                 edgecolors="black",
                 linewidth=2,
             )
@@ -281,7 +282,7 @@ class ImmuneSystemVisualizer:
             time_points,
             adaptive_threshold,
             color=self.colors["tcell"],
-            alpha=0.7,
+            alpha=ALPHA_VALUES["dark"],
             label="시장 적응 임계값",
         )
         ax.plot(
@@ -377,7 +378,7 @@ class ImmuneSystemVisualizer:
                     arrowstyle="->",
                     color=self.colors["crisis"],
                     lw=strength * 3,
-                    alpha=0.7,
+                    alpha=ALPHA_VALUES["dark"],
                 ),
             )
 
@@ -438,7 +439,7 @@ class ImmuneSystemVisualizer:
                 0.06,
                 boxstyle="round,pad=0.01",
                 facecolor=color,
-                alpha=0.7,
+                alpha=ALPHA_VALUES["dark"],
                 edgecolor="black",
                 linewidth=1,
             )
@@ -633,7 +634,7 @@ class ImmuneSystemVisualizer:
         plt.suptitle("면역 시스템 상세 분석", fontsize=16, fontweight="bold", y=1.02)
 
         if output_path:
-            plt.savefig(output_path, dpi=300, bbox_inches="tight")
+            plt.savefig(output_path, dpi=HIGH_DPI, bbox_inches="tight")
 
         return fig
 

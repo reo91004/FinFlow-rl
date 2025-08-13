@@ -14,7 +14,7 @@ from constant import *
 class MetaController(nn.Module):
     """Meta-Controller: 상위 제어기 - 어떤 B-Cell 전문가를 선택할지 결정"""
 
-    def __init__(self, input_size, num_experts, hidden_size=128):
+    def __init__(self, input_size, num_experts, hidden_size=META_CONTROLLER_DEFAULT_HIDDEN):
         super(MetaController, self).__init__()
         self.input_size = input_size
         self.num_experts = num_experts
@@ -23,25 +23,25 @@ class MetaController(nn.Module):
         self.situation_analyzer = nn.Sequential(
             nn.Linear(input_size, hidden_size),
             nn.ReLU(),
-            nn.Dropout(0.1),
+            nn.Dropout(DEFAULT_DROPOUT_RATE),
             nn.Linear(hidden_size, hidden_size),
             nn.ReLU(),
-            nn.Dropout(0.1),
+            nn.Dropout(DEFAULT_DROPOUT_RATE),
             nn.Linear(hidden_size, hidden_size),
         )
 
         # 전문가 선택 네트워크
         self.expert_selector = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size // 2),
+            nn.Linear(hidden_size, hidden_size // HIDDEN_LAYER_DIVISOR),
             nn.ReLU(),
-            nn.Linear(hidden_size // 2, num_experts),
+            nn.Linear(hidden_size // HIDDEN_LAYER_DIVISOR, num_experts),
         )
 
         # 가치 추정 네트워크
         self.value_estimator = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size // 2),
+            nn.Linear(hidden_size, hidden_size // HIDDEN_LAYER_DIVISOR),
             nn.ReLU(),
-            nn.Linear(hidden_size // 2, 1),
+            nn.Linear(hidden_size // HIDDEN_LAYER_DIVISOR, 1),
         )
 
     def forward(self, state):
@@ -77,11 +77,11 @@ class HierarchicalController:
         # 학습 파라미터
         self.gamma = DEFAULT_GAMMA
         self.meta_batch_size = DEFAULT_BATCH_SIZE
-        self.experience_buffer = deque(maxlen=1000)
+        self.experience_buffer = deque(maxlen=HIERARCHICAL_EXPERIENCE_BUFFER_SIZE)
 
         # 전문가 성과 추적
-        self.expert_performance = {name: deque(maxlen=100) for name in expert_names}
-        self.expert_selection_history = deque(maxlen=200)
+        self.expert_performance = {name: deque(maxlen=HIERARCHICAL_EXPERT_PERFORMANCE_SIZE) for name in expert_names}
+        self.expert_selection_history = deque(maxlen=HIERARCHICAL_SELECTION_HISTORY_SIZE)
         self.expert_transition_matrix = np.zeros((num_experts, num_experts))
 
         # 상황별 전문가 매핑 학습
@@ -89,7 +89,7 @@ class HierarchicalController:
         self.situation_clusters = []
 
         # 메타 레벨 성과 지표
-        self.meta_level_rewards = deque(maxlen=100)
+        self.meta_level_rewards = deque(maxlen=HIERARCHICAL_EXPERT_PERFORMANCE_SIZE)
         self.expert_utilization = np.zeros(num_experts)
 
     def select_expert(
@@ -109,7 +109,12 @@ class HierarchicalController:
             state_tensor = torch.FloatTensor(state_vector).unsqueeze(0)
 
             # Meta-Controller로 전문가 선택
-            with torch.no_grad() if not training else torch.enable_grad():
+            if not training:
+                with torch.no_grad():
+                    expert_probs, state_value, situation_features = self.meta_controller(
+                        state_tensor
+                    )
+            else:
                 expert_probs, state_value, situation_features = self.meta_controller(
                     state_tensor
                 )
