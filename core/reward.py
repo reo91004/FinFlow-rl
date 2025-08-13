@@ -5,6 +5,7 @@ import pandas as pd
 from typing import Dict, List, Optional
 from collections import deque
 from constant import *
+from utils.logger import BIPDLogger
 
 
 class RewardCalculator:
@@ -16,13 +17,16 @@ class RewardCalculator:
         transaction_cost_rate=DEFAULT_TRANSACTION_COST_RATE,
         target_volatility=TARGET_VOLATILITY,
         target_max_drawdown=0.1,
-        reward_clipping_range=REWARD_CLIPPING_RANGE,  # 더 보수적인 클리핑
+        reward_clipping_range=REWARD_CLIPPING_RANGE,  # 확대된 클리핑 범위 (-10, 10)
     ):
         self.lookback_window = lookback_window
         self.transaction_cost_rate = transaction_cost_rate
         self.target_volatility = target_volatility
         self.target_max_drawdown = target_max_drawdown
         self.reward_clipping_range = reward_clipping_range
+        
+        # 로거 초기화
+        self.logger = BIPDLogger().get_reward_logger()
 
         # 성과 추적
         self.return_history = deque(maxlen=REWARD_HISTORY_BUFFER_SIZE)  # 1년간 수익률
@@ -95,6 +99,17 @@ class RewardCalculator:
             normalized_reward, self.reward_clipping_range[0], self.reward_clipping_range[1]
         )
 
+        # 보상 계산 로깅
+        self.logger.debug(f"보상 계산: "
+                         f"return_reward={return_reward:.4f}, "
+                         f"risk_adjusted={risk_adjusted_reward:.4f}, "
+                         f"transaction_cost={transaction_cost_penalty:.4f}, "
+                         f"target_reward={target_reward:.4f}, "
+                         f"adaptation={adaptation_reward:.4f}, "
+                         f"concentration={concentration_penalty:.4f}, "
+                         f"total_before_clip={total_reward:.4f}, "
+                         f"final_reward={final_reward:.4f}")
+        
         # 이력 업데이트
         self._update_history(current_return, current_weights)
         self.reward_history.append(final_reward)

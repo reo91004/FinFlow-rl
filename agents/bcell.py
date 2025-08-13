@@ -9,8 +9,10 @@ import copy
 import random
 from collections import deque
 from datetime import datetime
+from typing import Dict
 from .base import ImmuneCell
 from constant import *
+from utils.logger import BIPDLogger
 
 
 class ExperienceReplayBuffer:
@@ -117,6 +119,9 @@ class BCell(ImmuneCell):
         self.risk_type = risk_type
         self.n_assets = n_assets
         self.feature_dim = 12
+        
+        # 로거 초기화 (DEBUG 로그는 파일만, INFO는 터미널도)
+        self.logger = BIPDLogger().get_learning_logger()
 
         # constant.py에서 모든 설정 가져오기
         self.batch_size = DEFAULT_BATCH_SIZE
@@ -307,14 +312,24 @@ class BCell(ImmuneCell):
             self.general_performance.append(reward)
 
     def learn_from_batch(self):
-        """실제 TD Learning 구현 - 핵심 수정"""
-        if len(self.experience_buffer) < self.batch_size:
+        """실제 TD Learning 구현 - 학습 조건 완화 및 검증 추가"""
+        # 학습 조건 완화: 배치 사이즈의 절반만 채워도 학습 시작
+        min_samples = max(self.batch_size // 2, 16)  # 최소 16개
+        if len(self.experience_buffer) < min_samples:
+            # 경험 부족은 로그 파일에만 기록
             return None
 
         try:
-            # 배치 샘플링
-            batch = self.experience_buffer.sample(self.batch_size)
+            # 학습 전 가중치 저장 (검증용)
+            old_actor_weights = copy.deepcopy(self.actor_network.state_dict())
+            old_critic_weights = copy.deepcopy(self.critic_network.state_dict())
+            
+            # 배치 샘플링 (최소 크기 보장)
+            actual_batch_size = min(self.batch_size, len(self.experience_buffer))
+            batch = self.experience_buffer.sample(actual_batch_size)
             states, actions, rewards, next_states, dones = zip(*batch)
+            
+            self.logger.debug(f"{self.risk_type} B-Cell: 배치 크기 {actual_batch_size}, 보상 범위 [{min(rewards):.4f}, {max(rewards):.4f}]")
 
             states = torch.FloatTensor(states)
             actions = torch.FloatTensor(actions)
@@ -383,17 +398,40 @@ class BCell(ImmuneCell):
             # 탐험 확률 감소
             self.epsilon = max(self.min_epsilon, self.epsilon * self.epsilon_decay)
 
-            # 메모리 정리
-            if torch.cuda.is_available():
+            # 메모리 정리 (매 10번마다만)
+            if self.update_counter % 10 == 0 and torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
             self.last_critic_loss = critic_loss.item()
             self.last_actor_loss = total_actor_loss.item()
+            
+            # 학습 후 가중치 변화 검증
+            new_actor_weights = self.actor_network.state_dict()
+            new_critic_weights = self.critic_network.state_dict()
+            
+            actor_change = sum(
+                torch.sum(torch.abs(new_actor_weights[key] - old_actor_weights[key])).item()
+                for key in old_actor_weights.keys()
+            )
+            critic_change = sum(
+                torch.sum(torch.abs(new_critic_weights[key] - old_critic_weights[key])).item()
+                for key in old_critic_weights.keys()
+            )
+            
+            self.logger.debug(f"{self.risk_type} B-Cell 학습 완료: "
+                            f"Actor 가중치 변화={actor_change:.8f}, "
+                            f"Critic 가중치 변화={critic_change:.8f}, "
+                            f"Critic 손실={critic_loss.item():.6f}, "
+                            f"Actor 손실={total_actor_loss.item():.6f}")
+            
+            if actor_change < 1e-8 or critic_change < 1e-8:
+                self.logger.warning(f"{self.risk_type} B-Cell: 가중치 업데이트 미흐! "
+                                  f"Actor={actor_change:.8f}, Critic={critic_change:.8f}")
 
             return critic_loss.item()
 
         except Exception as e:
-            print(f"[오류] {self.risk_type} B-세포 학습 실패: {e}")
+            self.logger.error(f"{self.risk_type} B-세포 학습 실패: {e}", exc_info=True)
             return None
 
     def update_target_network(self):
@@ -558,4 +596,79 @@ class BCell(ImmuneCell):
             ),
             "buffer_size": len(self.experience_buffer),
             "update_counter": self.update_counter,
+        }
+    
+    def pretrain_with_imitation(self, expert_states: torch.Tensor, 
+                               expert_actions: torch.Tensor) -> float:
+        """모방학습을 통한 사전훈련 - 전문가 전략 모방"""
+        self.actor_network.train()
+        
+        try:
+            # 에이전트가 예측한 행동
+            predicted_actions = self.actor_network(expert_states)
+            
+            # 전문가 행동과의 차이를 최소화 (MSE Loss)
+            imitation_loss = F.mse_loss(predicted_actions, expert_actions)
+            
+            # 추가적인 정규화: 가중치 합이 1이 되도록 소프트맥스 적용
+            predicted_actions_normalized = F.softmax(predicted_actions, dim=-1)
+            expert_actions_normalized = F.softmax(expert_actions, dim=-1)
+            
+            # KL Divergence 추가 (분포 간 차이)
+            kl_loss = F.kl_div(
+                torch.log(predicted_actions_normalized + 1e-8),
+                expert_actions_normalized,
+                reduction='batchmean'
+            )
+            
+            # 총 손실
+            total_loss = imitation_loss + 0.1 * kl_loss
+            
+            # 역전파
+            self.actor_optimizer.zero_grad()
+            total_loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.actor_network.parameters(), 1.0)
+            self.actor_optimizer.step()
+            
+            self.logger.debug(f"{self.risk_type} B-Cell 모방학습: "
+                             f"MSE={imitation_loss.item():.6f}, "
+                             f"KL={kl_loss.item():.6f}")
+            
+            return total_loss.item()
+            
+        except Exception as e:
+            self.logger.error(f"{self.risk_type} B-Cell 모방학습 실패: {e}")
+            return float('inf')
+    
+    def validate_pretrained_policy(self, test_states: torch.Tensor) -> Dict:
+        """사전훈련된 정책 검증"""
+        self.actor_network.eval()
+        
+        with torch.no_grad():
+            predictions = self.actor_network(test_states)
+            
+            # 정책 검증 지표
+            policy_entropy = -torch.sum(
+                predictions * torch.log(predictions + 1e-8), dim=-1
+            ).mean()
+            
+            max_weights = predictions.max(dim=-1)[0].mean()
+            min_weights = predictions.min(dim=-1)[0].mean()
+            weight_variance = predictions.var(dim=-1).mean()
+            
+            # 가중치 합 검증
+            weight_sums = predictions.sum(dim=-1)
+            weight_sum_error = torch.abs(weight_sums - 1.0).mean()
+            
+        return {
+            "policy_entropy": policy_entropy.item(),
+            "max_weight": max_weights.item(),
+            "min_weight": min_weights.item(),
+            "weight_variance": weight_variance.item(),
+            "weight_sum_error": weight_sum_error.item(),
+            "is_reasonable": (
+                policy_entropy.item() > 0.5 and  # 적당한 다양성
+                weight_sum_error.item() < 0.1 and  # 가중치 합이 1에 가까움
+                max_weights.item() < 0.8  # 극단적 집중 방지
+            )
         }

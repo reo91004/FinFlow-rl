@@ -6,6 +6,7 @@ from typing import Dict, List, Tuple, Optional
 from datetime import datetime, timedelta
 import warnings
 from constant import *
+from utils.logger import BIPDLogger
 
 warnings.filterwarnings("ignore")
 
@@ -215,6 +216,9 @@ class MarketDataCurator:
     def __init__(self, market_data: pd.DataFrame):
         self.market_data = market_data
         self.returns = market_data.pct_change().dropna()
+        
+        # 로거 초기화
+        self.logger = BIPDLogger().get_episode_logger()
 
         # 시장 조건 분석
         self.market_periods = self._analyze_market_periods()
@@ -261,18 +265,23 @@ class MarketDataCurator:
         return periods
 
     def get_curriculum_data(
-        self, curriculum_config: Dict, episode_length: int = 60
+        self, curriculum_config: Dict, episode_length: int = EPISODE_LENGTH  # 기본값을 252로 변경
     ) -> Tuple[pd.DataFrame, np.ndarray]:
         """커리큘럼에 맞는 데이터 선별"""
         target_conditions = curriculum_config["market_conditions"]
         volatility_range = curriculum_config["volatility_range"]
         crisis_prob = curriculum_config["crisis_probability"]
 
-        #  에피소드 길이 검증 및 조정
+        # 에피소드 길이 검증 및 조정 - 최소 100일 보장
+        min_episode_length = 100  # 20에서 100으로 증가
         max_possible_length = len(self.market_data) - 50  # 안전 마진
+        
         if episode_length > max_possible_length:
-            episode_length = max(20, max_possible_length)  # 최소 20일 보장
-            print(f"[경고] 에피소드 길이를 {episode_length}로 조정했습니다.")
+            episode_length = max(min_episode_length, max_possible_length)
+            self.logger.warning(f"에피소드 길이를 {episode_length}로 조정")
+        elif episode_length < min_episode_length:
+            episode_length = min_episode_length
+            self.logger.warning(f"에피소드 길이를 최소 {min_episode_length}로 조정")
 
         # 조건에 맞는 인덱스 수집
         candidate_indices = []
@@ -355,6 +364,10 @@ class MarketDataCurator:
                 selected_data = self.market_data.iloc[default_start:default_end]
 
             market_features = self._extract_episode_features(selected_data)
+            
+            # 최종 데이터 크기 검증 (로그 파일에만)
+            self.logger.debug(f"에피소드 데이터 준비 완료: shape={selected_data.shape}, "
+                            f"features_shape={market_features.shape if market_features is not None else 'None'}")
 
             return selected_data, market_features
 

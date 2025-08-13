@@ -7,6 +7,7 @@ import pickle
 import matplotlib.pyplot as plt
 import torch
 import gc
+import copy
 from datetime import datetime, timedelta
 from constant import *
 from tqdm import tqdm
@@ -19,6 +20,8 @@ from constant import *
 from utils.checkpoint import CheckpointManager
 from utils.validator import DataLeakageValidator, SystemValidator
 from utils.rl_tracker import RLTracker
+from utils.logger import BIPDLogger
+from utils.learning_validator import learning_validator
 
 import warnings
 import json
@@ -53,6 +56,9 @@ class ImmunePortfolioBacktester:
 
         # RLTracker 초기화
         self.rl_tracker = RLTracker(output_dir=self.rl_tracker_dir)
+        
+        # 로거 초기화
+        self.logger = BIPDLogger().get_system_logger()
 
         # 고도화된 보상 계산기 초기화
         self.reward_calculator = RewardCalculator(
@@ -640,11 +646,35 @@ class ImmunePortfolioBacktester:
         print(f"커리큘럼 학습이 완료되었습니다. 요약: {summary_path}")
 
     def _run_training_episode(self, immune_system, episode_data, curriculum_config):
-        """올바른 State Transition을 보장하는 에피소드 실행 - 핵심 재구축"""
+        """올바른 State Transition을 보장하는 에피소드 실행 - 검증 시스템 통합"""
+        
+        # 에피소드 타이밍 시작
+        learning_validator.start_episode_timing()
+        
+        # 에피소드 데이터 검증
+        validation_result = learning_validator.validate_episode_data(episode_data)
+        if not validation_result["data_valid"]:
+            self.logger.warning(f"에피소드 데이터 검증 실패: {validation_result['issues']}")
         
         episode_returns = episode_data.pct_change().dropna()
         if len(episode_returns) < 2:
+            learning_validator.end_episode_timing()
             return 0.0, 0.0
+            
+        # 로그에 에피소드 헤더 추가
+        episode_num = getattr(self, '_episode_counter', 0) + 1
+        setattr(self, '_episode_counter', episode_num)
+        
+        from utils.logger import BIPDLogger
+        logger_instance = BIPDLogger()
+        logger_instance.write_subsection_header(
+            f"Episode {episode_num} - Level {curriculum_config.get('level', 0)} "
+            f"({curriculum_config.get('name', 'unknown')})"
+        )
+        
+        self.logger.debug(f"데이터 크기={episode_data.shape}, "
+                        f"수익률 길이={len(episode_returns)}, "
+                        f"커리큘럼={curriculum_config.get('level', 'unknown')}")
             
         transitions = []
         portfolio_returns = []
@@ -748,13 +778,26 @@ class ImmunePortfolioBacktester:
                         )
                     
                     # 배치 학습 (충분한 경험이 쌓였을 때만)
-                    if len(bcell.experience_buffer) >= DEFAULT_BATCH_SIZE:
+                    if len(bcell.experience_buffer) >= bcell.batch_size // 2:  # 완화된 조건
+                        # 학습 전 가중치 저장 (검증용)
+                        old_state_dict = copy.deepcopy(bcell.actor_network.state_dict())
+                        
                         loss = bcell.learn_from_batch()
                         if loss is not None:
                             self.rl_tracker.log_loss(bcell.risk_type, loss)
+                            learning_validator.log_learning_event(
+                                f"{bcell.risk_type}_learning", 
+                                f"loss={loss:.6f}"
+                            )
+                            
+                            # 가중치 업데이트 검증
+                            learning_validator.validate_weight_updates(
+                                bcell.actor_network, old_state_dict, f"{bcell.risk_type}_actor"
+                            )
                             
                 except Exception as e:
                     print(f"[경고] B-세포 {bcell.cell_id} 학습 오류: {e}")
+                    self.logger.error(f"B-세포 {bcell.cell_id} 학습 오류: {e}")
         
         # 메모리 시스템 업데이트
         if immune_system.crisis_level > 0.15 and transitions:
@@ -782,6 +825,14 @@ class ImmunePortfolioBacktester:
             avg_reward = 0.0
         if np.isnan(avg_return) or np.isinf(avg_return):
             avg_return = 0.0
+        
+        # 에피소드 타이밍 종료 및 검증
+        learning_validator.end_episode_timing()
+        
+        # 에피소드 결과 로깅
+        self.logger.info(f"에피소드 완료: 평균 보상={avg_reward:.6f}, "
+                        f"평균 수익률={avg_return:.6f}, "
+                        f"transition 수={len(transitions)}")
             
         return float(avg_reward), float(avg_return)
 

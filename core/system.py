@@ -11,6 +11,10 @@ from core.reward import RewardCalculator
 from core.hierarchical import HierarchicalController
 from xai import DecisionAnalyzer
 from constant import *
+from utils.logger import BIPDLogger
+from utils.expert_strategies import ExpertStrategies
+from utils.learning_validator import learning_validator
+import torch
 
 warnings.filterwarnings("ignore")
 
@@ -111,6 +115,9 @@ class ImmunePortfolioSystem:
         # 시스템 상태
         self.immune_activation = 0.0
         self.crisis_level = 0.0
+        
+        # 로거 초기화
+        self.logger = BIPDLogger().get_system_logger()
 
         # 분석 시스템
         self.analyzer = DecisionAnalyzer(output_dir=output_dir or ".")
@@ -808,11 +815,108 @@ class ImmunePortfolioSystem:
                         self.hierarchical_controller.learn_meta_policy()
 
     def pretrain_bcells(self, market_data, episodes=PRETRAIN_EPISODES):
-        """B-세포 초기화 - 강화학습은 환경 상호작용에서 바로 학습"""
+        """실제 사전훈련 구현 - 전문가 전략 모방"""
         if not self.use_learning_bcells:
             return
-
-        print("B-세포 네트워크 초기화 완료. 강화학습은 환경과의 상호작용으로 시작합니다.")
+            
+        # 로그에 사전훈련 섹션 헤더 추가
+        logger_instance = BIPDLogger()
+        logger_instance.write_section_header("B-Cell 사전훈련 (Imitation Learning)")
+        
+        self.logger.info(f"B-Cell 사전훈련 시작: {episodes}에피소드")
+        
+        # 전문가 전략 생성기 초기화
+        expert_strategies = ExpertStrategies(self.n_assets)
+        
+        # 다양한 전문가 전략으로 데이터 생성
+        strategies = ["equal_weight", "momentum", "mean_reversion", "volatility"]
+        all_expert_data = []
+        
+        print("전문가 전략 데이터 생성 중...")
+        for strategy in strategies:
+            expert_data = expert_strategies.generate_expert_data(market_data, strategy)
+            all_expert_data.extend(expert_data)
+            print(f"  ✓ {strategy} 전략: {len(expert_data)}개 샘플")
+        
+        if not all_expert_data:
+            print("❌ 전문가 데이터 생성 실패!")
+            return
+            
+        print(f"✅ 전체 전문가 데이터: {len(all_expert_data)}개 샘플 생성 완료")
+        
+        # 데이터를 훈련/검증으로 분할
+        train_data = all_expert_data[:int(0.8 * len(all_expert_data))]
+        val_data = all_expert_data[int(0.8 * len(all_expert_data)):]
+        
+        # 각 B-Cell에 대해 사전훈련 수행
+        print(f"\n사전훈련 시작: {len(self.bcells)}개 B-Cell, 각각 {episodes}에피소드")
+        
+        for bcell_idx, bcell in enumerate(self.bcells):
+            print(f"\n[{bcell_idx+1}/{len(self.bcells)}] {bcell.risk_type} B-Cell 사전훈련")
+            self.logger.info(f"{bcell.risk_type} B-Cell 사전훈련 시작")
+            
+            # 훈련 데이터 준비
+            states = []
+            actions = []
+            
+            for state, action in train_data:
+                # 상태에 crisis_level과 current_weights 추가
+                crisis_level = np.random.uniform(0.0, 0.5)  # 사전훈련에서는 낮은 위기
+                current_weights = np.ones(self.n_assets) / self.n_assets
+                
+                full_state = np.concatenate([state, [crisis_level], current_weights])
+                states.append(full_state)
+                actions.append(action)
+            
+            # 텐서로 변환
+            states_tensor = torch.FloatTensor(states)
+            actions_tensor = torch.FloatTensor(actions)
+            
+            # 모방학습 수행
+            total_loss = 0.0
+            batch_size = min(32, len(states) // 10)  # 적절한 배치 크기
+            
+            with tqdm(range(episodes), desc=f"    {bcell.risk_type} 모방학습", 
+                     unit="episode", leave=True, ncols=100, 
+                     bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]') as pbar:
+                for episode in pbar:
+                    # 랜덤 배치 선택
+                    indices = torch.randperm(len(states))[:batch_size]
+                    batch_states = states_tensor[indices]
+                    batch_actions = actions_tensor[indices]
+                    
+                    # 모방학습
+                    loss = bcell.pretrain_with_imitation(batch_states, batch_actions)
+                    total_loss += loss
+                    
+                    # 진행바 업데이트
+                    if episode % 10 == 0:
+                        avg_loss = total_loss / (episode + 1)
+                        pbar.set_postfix({"평균 손실": f"{avg_loss:.6f}", "현재 손실": f"{loss:.6f}"})
+            
+            avg_loss = total_loss / episodes
+            print(f"    ✅ 평균 손실: {avg_loss:.6f}")
+            
+            # 검증 데이터로 성능 확인
+            if val_data:
+                val_states = []
+                for state, action in val_data[:100]:  # 일부만 사용
+                    crisis_level = np.random.uniform(0.0, 0.5)
+                    current_weights = np.ones(self.n_assets) / self.n_assets
+                    full_state = np.concatenate([state, [crisis_level], current_weights])
+                    val_states.append(full_state)
+                
+                val_states_tensor = torch.FloatTensor(val_states)
+                validation_result = bcell.validate_pretrained_policy(val_states_tensor)
+                
+                if validation_result["is_reasonable"]:
+                    print(f"    ✅ 정책 검증 통과")
+                else:
+                    print(f"    ⚠️ 정책 검증 실패 - 추가 학습 필요")
+                    self.logger.warning(f"{bcell.risk_type} B-Cell 사전훈련 품질 문제: {validation_result}")
+        
+        self.logger.info("모든 B-Cell 사전훈련 완료. 강화학습 준비 완료.")
+        print("사전훈련 완료! 이제 실제 강화학습을 시작합니다.")
 
     def update_memory(self, crisis_pattern, response_strategy, effectiveness):
         """기억 업데이트"""
