@@ -85,6 +85,40 @@ class TestRLFunctionality:
         assert loss is not None
         assert isinstance(loss, float)
         assert loss >= 0  # MSE loss는 항상 양수
+        
+    def test_learning_convergence(self):
+        """학습 수렴 테스트 - TD Loss가 감소하는지 검증"""
+        bcell = BCell("test", "volatility", 23, 10)
+        
+        losses = []
+        
+        # 일관된 경험으로 학습 (수렴 유도)
+        for episode in range(20):
+            for _ in range(30):
+                # 일관된 패턴의 경험 생성
+                state = np.random.random(23) * 0.1 + 0.5  # 비슷한 상태들
+                action = np.ones(10) / 10  # 균등 액션
+                reward = 0.1 if np.mean(state) > 0.5 else -0.1  # 일관된 보상
+                next_state = state + np.random.random(23) * 0.05  # 약간의 변화
+                done = False
+                
+                bcell.add_experience(state, action, reward, next_state, done)
+                
+            # 매 에피소드마다 학습
+            loss = bcell.learn_from_batch()
+            if loss is not None:
+                losses.append(loss)
+        
+        # 학습이 진행되었는지 확인
+        assert len(losses) > 5, "충분한 학습이 이루어지지 않았음"
+        
+        # 수렴 여부 확인 (후반부 손실이 전반부보다 낮거나 안정적)
+        early_losses = np.mean(losses[:5])
+        late_losses = np.mean(losses[-5:])
+        
+        # 손실이 감소하거나 안정화되었는지 확인
+        improvement = early_losses - late_losses
+        assert improvement >= 0 or late_losses < early_losses * 1.1, f"학습 수렴 실패: 초기 손실 {early_losses:.4f} -> 후기 손실 {late_losses:.4f}"
 
     def test_activation_threshold(self):
         """활성화 임계값 테스트"""
@@ -202,6 +236,9 @@ if __name__ == "__main__":
 
         test_suite.test_gradient_flow()
         print("✅ Gradient Flow 테스트 통과")
+        
+        test_suite.test_learning_convergence()
+        print("✅ 학습 수렴 테스트 통과")
 
         test_realistic_parameters()
         print("✅ 현실적 파라미터 테스트 통과")

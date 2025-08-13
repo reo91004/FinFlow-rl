@@ -55,29 +55,24 @@ class RewardCalculator:
         # 기본 수익률 보상 (스케일링 조정)
         return_reward = current_return * RETURN_SCALING_FACTOR  # 더 적절한 스케일링
 
-        # 위험 조정 성과 보상 (안정화)
+        # 위험 조정 성과 보상 (클리핑 없음)
         risk_adjusted_reward = self._calculate_risk_adjusted_reward()
-        risk_adjusted_reward = np.clip(risk_adjusted_reward, -2.0, 2.0)
 
-        # 거래 비용 패널티 (정규화)
+        # 거래 비용 패널티 (클리핑 없음)
         transaction_cost_penalty = self._calculate_transaction_cost_penalty(
             previous_weights, current_weights
         )
-        transaction_cost_penalty = np.clip(transaction_cost_penalty, -1.0, 0.0)
 
-        # 목표 지향적 보상 (스케일링 조정)
+        # 목표 지향적 보상 (클리핑 없음)
         target_reward = self._calculate_target_based_reward()
-        target_reward = np.clip(target_reward, -2.0, 2.0)
 
-        # 시장 적응성 보상 (안정화)
+        # 시장 적응성 보상 (클리핑 없음)
         adaptation_reward = self._calculate_adaptation_reward(
             market_features, crisis_level
         )
-        adaptation_reward = np.clip(adaptation_reward, -1.0, 1.0)
 
-        # 포트폴리오 집중도 패널티 (정규화)
+        # 포트폴리오 집중도 패널티 (클리핑 없음)
         concentration_penalty = self._calculate_concentration_penalty(current_weights)
-        concentration_penalty = np.clip(concentration_penalty, -1.0, 0.0)
 
         # 가중치 조정으로 균형 맞추기
         total_reward = (
