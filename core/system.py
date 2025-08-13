@@ -820,9 +820,9 @@ class ImmunePortfolioSystem:
 
         if self.use_learning_bcells:
             for bcell in self.bcells:
-                bcell.learn_from_experience(
-                    crisis_pattern, self.crisis_level, effectiveness
-                )
+                # 배치 학습 실행 (충분한 경험이 있을 때)
+                if len(bcell.experience_buffer) >= bcell.batch_size:
+                    bcell.learn_from_batch()
         else:
             for bcell in self.bcells:
                 bcell.adapt_response(crisis_pattern, effectiveness)

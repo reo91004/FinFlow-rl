@@ -183,7 +183,7 @@ class SystemValidator:
         """최근 검증 결과 요약"""
 
         if not self.validation_history:
-            return {"total": 0, "success_rate": 0.0, "common_issues": []}
+            return {"total": 0, "successful": 0, "success_rate": 0.0, "common_issues": []}
 
         recent_validations = self.validation_history[-last_n:]
 

@@ -909,7 +909,8 @@ class ImmunePortfolioBacktester:
         # 에피소드 종료
         if immune_system.use_learning_bcells:
             for bcell in immune_system.bcells:
-                bcell.end_episode()
+                if hasattr(bcell, "end_episode"):
+                    bcell.end_episode()
 
     def _run_test_phase(self, immune_system, logging_level):
         """테스트 단계 실행"""

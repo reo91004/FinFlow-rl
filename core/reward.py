@@ -81,34 +81,32 @@ class RewardCalculator:
 
         # 가중치 조정으로 균형 맞추기
         total_reward = (
-            return_reward * REWARD_COMPONENT_WEIGHTS[0]  # 수익률 비중 감소
-            + risk_adjusted_reward * REWARD_COMPONENT_WEIGHTS[1]  # 위험 조정 성과 비중 증가
-            + target_reward * REWARD_COMPONENT_WEIGHTS[2]  # 목표 달성
-            + adaptation_reward * REWARD_COMPONENT_WEIGHTS[3]  # 시장 적응성
-            + transaction_cost_penalty * REWARD_COMPONENT_WEIGHTS[4]  # 거래 비용
-            + concentration_penalty * REWARD_COMPONENT_WEIGHTS[5]  # 집중도 패널티
+            return_reward * REWARD_COMPONENT_WEIGHTS_LIST[0]  # 수익률
+            + risk_adjusted_reward * REWARD_COMPONENT_WEIGHTS_LIST[1]  # 위험 조정 성과
+            + target_reward * REWARD_COMPONENT_WEIGHTS_LIST[2]  # 목표 달성
+            + adaptation_reward * REWARD_COMPONENT_WEIGHTS_LIST[3]  # 시장 적응성
+            + transaction_cost_penalty * REWARD_COMPONENT_WEIGHTS_LIST[4]  # 거래 비용
+            + concentration_penalty * REWARD_COMPONENT_WEIGHTS_LIST[5]  # 집중도 패널티
         )
 
-        # 최종 보상 클리핑 및 정규화
-        total_reward = np.clip(
-            total_reward, self.reward_clipping_range[0], self.reward_clipping_range[1]
-        )
-
-        # 적응적 정규화 (선택적)
+        # 적응적 정규화 (클리핑 없이)
         if len(self.reward_history) > REWARD_NORMALIZATION_THRESHOLD:  # 충분한 데이터 후 정규화
             normalized_reward = self._adaptive_normalize_reward(total_reward)
-            # 정규화 후에도 최종 범위 확인
-            normalized_reward = np.clip(normalized_reward, -2.0, 2.0)
         else:
             normalized_reward = total_reward
 
+        # 최종 단일 클리핑만 적용
+        final_reward = np.clip(
+            normalized_reward, self.reward_clipping_range[0], self.reward_clipping_range[1]
+        )
+
         # 이력 업데이트
         self._update_history(current_return, current_weights)
-        self.reward_history.append(normalized_reward)
-        self._update_reward_statistics(normalized_reward)
+        self.reward_history.append(final_reward)
+        self._update_reward_statistics(final_reward)
 
         return {
-            "total_reward": float(normalized_reward),
+            "total_reward": float(final_reward),
             "raw_total_reward": float(total_reward),
             "return_reward": float(return_reward),
             "risk_adjusted_reward": float(risk_adjusted_reward),
