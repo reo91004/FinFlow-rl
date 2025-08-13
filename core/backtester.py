@@ -647,6 +647,11 @@ class ImmunePortfolioBacktester:
 
         episode_rewards = []
         portfolio_returns = []
+        
+        # State transition 추적 변수들
+        previous_state = None
+        previous_action = None
+        previous_features = None
 
         # 극단값 체크 및 조기 종료
         consecutive_extreme_rewards = 0
@@ -678,6 +683,16 @@ class ImmunePortfolioBacktester:
                     weights, response_type, bcell_decisions = (
                         immune_system.immune_response(market_features, training=True)
                     )
+                    
+                    # State transition 추적 업데이트
+                    current_state = market_features.copy()
+                    current_action = weights.copy()
+                    
+                    # 이전 transition이 있다면 기록
+                    if previous_state is not None and previous_action is not None:
+                        # 이전 스텝의 transition 완성: (s_t-1, a_t-1, r_t, s_t)
+                        # 이는 reward 계산 후에 처리될 예정
+                        pass
 
                     # 가중치 검증 및 정규화
                     if weights is None or len(weights) != len(episode_returns.columns):
@@ -777,12 +792,45 @@ class ImmunePortfolioBacktester:
                                     if np.isnan(final_reward) or np.isinf(final_reward):
                                         final_reward = 0.0
 
-                                    # 경험 추가
+                                    # Next State Value 계산
+                                    next_state_value = 0.0
+                                    if i < max_iterations - 1:  # 마지막 스텝이 아닌 경우
+                                        try:
+                                            # 다음 스텝의 데이터 추출
+                                            next_data = episode_data.iloc[: i + 2]
+                                            if len(next_data) >= 2:
+                                                next_features = immune_system.extract_market_features(next_data)
+                                                
+                                                # Target Critic network로 다음 상태 가치 계산 (더 안정적)
+                                                with torch.no_grad():
+                                                    next_features_tensor = torch.FloatTensor(next_features)
+                                                    next_crisis_tensor = torch.FloatTensor([immune_system.crisis_level])
+                                                    next_combined_input = torch.cat([
+                                                        next_features_tensor, 
+                                                        next_crisis_tensor,
+                                                        bcell.specialization_weights
+                                                    ])
+                                                    next_state_value = bcell.target_critic_network(
+                                                        next_combined_input.unsqueeze(0)
+                                                    ).item()
+                                        except Exception as e:
+                                            print(f"[경고] Next State Value 계산 실패: {e}")
+                                            next_state_value = 0.0
+                                    else:
+                                        # Episode 종료 시 terminal state
+                                        next_state_value = 0.0
+
+                                    # Terminal flag 확인
+                                    is_terminal = (i >= max_iterations - 1)
+                                    
+                                    # 경험 추가 (next_state_value 및 terminal flag 포함)
                                     bcell.add_experience(
                                         market_features,
                                         immune_system.crisis_level,
                                         bcell.last_strategy.numpy(),
                                         final_reward,
+                                        next_state_value=next_state_value,
+                                        is_terminal=is_terminal
                                     )
 
                                 except Exception as e:
@@ -811,6 +859,11 @@ class ImmunePortfolioBacktester:
                         self.current_weights = weights.copy()
                     except Exception as e:
                         print(f"[경고] 가중치 업데이트 오류: {e}")
+                        
+                    # State transition 업데이트 (다음 스텝을 위해)
+                    previous_state = current_state
+                    previous_action = current_action
+                    previous_features = market_features
 
                     # 주기적 메모리 정리
                     if i % memory_cleanup_interval == 0 and i > 0:
@@ -1001,11 +1054,37 @@ class ImmunePortfolioBacktester:
 
                             final_reward = np.clip(specialist_reward, -2, 2)
 
+                            # Next State Value 계산
+                            next_state_value = 0.0
+                            if i < len(train_returns) - 1:  # 마지막 스텝이 아닌 경우
+                                try:
+                                    next_data = self.train_data.iloc[: i + 2]
+                                    next_features = immune_system.extract_market_features(next_data)
+                                    
+                                    with torch.no_grad():
+                                        next_features_tensor = torch.FloatTensor(next_features)
+                                        next_crisis_tensor = torch.FloatTensor([immune_system.crisis_level])
+                                        next_combined_input = torch.cat([
+                                            next_features_tensor, 
+                                            next_crisis_tensor,
+                                            bcell.specialization_weights
+                                        ])
+                                        next_state_value = bcell.target_critic_network(
+                                            next_combined_input.unsqueeze(0)
+                                        ).item()
+                                except Exception as e:
+                                    next_state_value = 0.0
+
+                            # Terminal flag 확인
+                            is_terminal = (i >= len(train_returns) - 1)
+                            
                             bcell.add_experience(
                                 market_features,
                                 immune_system.crisis_level,
                                 bcell.last_strategy.numpy(),
                                 final_reward,
+                                next_state_value=next_state_value,
+                                is_terminal=is_terminal
                             )
 
                             if i % 20 == 0:

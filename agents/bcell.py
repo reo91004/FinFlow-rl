@@ -98,6 +98,11 @@ class BCell(ImmuneCell):
         self.actor_network = ActorNetwork(input_size, n_assets)
         self.critic_network = CriticNetwork(input_size)
         self.attention_mechanism = AttentionMechanism(self.feature_dim)
+        
+        # Target Networks 초기화 (Double DQN)
+        self.target_critic_network = CriticNetwork(input_size)
+        self.target_critic_network.load_state_dict(self.critic_network.state_dict())
+        self.target_critic_network.eval()  # Evaluation mode
 
         self.actor_optimizer = optim.Adam(
             self.actor_network.parameters(), lr=learning_rate
@@ -122,6 +127,7 @@ class BCell(ImmuneCell):
         self.update_frequency = DEFAULT_UPDATE_FREQUENCY
         self.experience_count = 0
         self.gamma = DEFAULT_GAMMA  # 할인 인수
+        self.tau = DEFAULT_TAU  # Target network soft update rate
 
         # 전문화 관련 속성
         self.specialization_buffer = deque(maxlen=1000)
@@ -269,17 +275,29 @@ class BCell(ImmuneCell):
                 state_value = self.critic_network(combined_input.unsqueeze(0))
                 self.last_state_value = state_value.item()
 
-            # 전문 상황 여부에 따른 조정
+            # Activation Threshold 확인 - 위기 수준이 임계값 이상일 때만 전문 전략 적용
             is_specialty = self.is_my_specialty_situation(market_features, crisis_level)
-
-            if is_specialty:
+            
+            # B-Cell 활성화 확인
+            should_activate = crisis_level >= self.activation_threshold
+            
+            if should_activate and is_specialty:
+                # 임계값 이상 + 전문 상황: 특화 전략 적용
                 strategy_tensor = self._apply_specialist_strategy(
                     strategy_tensor, market_features, crisis_level
                 )
                 confidence_multiplier = 1.0 + self.specialization_strength
-            else:
+                self.activation_level = 1.0  # 완전 활성화
+            elif should_activate:
+                # 임계값 이상 + 비전문 상황: 일반 전략 적용
                 strategy_tensor = self._apply_conservative_adjustment(strategy_tensor)
                 confidence_multiplier = 0.7
+                self.activation_level = 0.7  # 부분 활성화
+            else:
+                # 임계값 미달: 기본 전략 (최소한의 조정)
+                strategy_tensor = self._apply_conservative_adjustment(strategy_tensor)
+                confidence_multiplier = 0.3
+                self.activation_level = 0.0  # 비활성화
 
             # 탐험/활용 (training 모드에서만)
             if training and np.random.random() < self.epsilon:
@@ -378,8 +396,13 @@ class BCell(ImmuneCell):
         reward,
         next_state_value=None,
         tcell_contributions=None,
+        is_terminal=False,
     ):
         """경험 저장 (Actor-Critic용)"""
+        # Terminal state 처리
+        if is_terminal:
+            next_state_value = 0.0  # Terminal state의 가치는 0
+            
         experience = {
             "state": market_features.copy(),
             "crisis_level": crisis_level,
@@ -387,6 +410,7 @@ class BCell(ImmuneCell):
             "reward": reward,
             "state_value": getattr(self, "last_state_value", 0.0),
             "next_state_value": next_state_value or 0.0,
+            "is_terminal": is_terminal,
             "timestamp": datetime.now(),
             "is_specialty": self.is_my_specialty_situation(
                 market_features, crisis_level
@@ -425,6 +449,7 @@ class BCell(ImmuneCell):
             rewards = []
             state_values = []
             next_state_values = []
+            terminal_flags = []
 
             for exp in batch:
                 features_tensor = torch.FloatTensor(exp["state"])
@@ -447,7 +472,12 @@ class BCell(ImmuneCell):
                 actions.append(torch.FloatTensor(exp["action"]))
                 rewards.append(exp["reward"])
                 state_values.append(exp["state_value"])
-                next_state_values.append(exp["next_state_value"])
+                
+                # Terminal state 처리 - terminal이면 next_state_value를 0으로 설정
+                is_terminal = exp.get("is_terminal", False)
+                next_value = 0.0 if is_terminal else exp["next_state_value"]
+                next_state_values.append(next_value)
+                terminal_flags.append(is_terminal)
 
             states = torch.stack(states)
             actions = torch.stack(actions)
@@ -455,10 +485,14 @@ class BCell(ImmuneCell):
             state_values = torch.FloatTensor(state_values)
             next_state_values = torch.FloatTensor(next_state_values)
 
-            # TD Target 계산
-            td_targets = rewards + self.gamma * next_state_values
+            # Target Network로 더 안정적인 TD Target 계산
+            with torch.no_grad():
+                # next_state_values는 이미 계산되었지만, 더 정확성을 위해 재계산
+                # (이미 올바르게 계산된 경우 이 부분을 생략 가능)
+                target_next_values = next_state_values  # 이미 target network로 계산되었음
+                td_targets = rewards + self.gamma * target_next_values
 
-            # 현재 가치 추정
+            # 현재 가치 추정 (main network)
             current_values = self.critic_network(states).squeeze()
 
             # Advantage 계산
@@ -506,6 +540,9 @@ class BCell(ImmuneCell):
             avg_reward = torch.mean(rewards).item()
             self.actor_scheduler.step(avg_reward)
             self.critic_scheduler.step(avg_reward)
+
+            # Target Network 소프트 업데이트
+            self.update_target_network()
 
             self.epsilon = max(self.min_epsilon, self.epsilon * self.epsilon_decay)
 
@@ -668,6 +705,20 @@ class BCell(ImmuneCell):
 
             if self.experience_count % self.update_frequency == 0:
                 self.learn_from_batch()
+
+    def update_target_network(self):
+        """Target Network Soft Update"""
+        try:
+            # Soft update: θ_target = τ * θ_local + (1 - τ) * θ_target
+            for target_param, local_param in zip(
+                self.target_critic_network.parameters(),
+                self.critic_network.parameters()
+            ):
+                target_param.data.copy_(
+                    self.tau * local_param.data + (1.0 - self.tau) * target_param.data
+                )
+        except Exception as e:
+            print(f"[경고] Target network 업데이트 실패: {e}")
 
     def adapt_response(self, antigen_pattern, effectiveness):
         """호환성 래퍼"""

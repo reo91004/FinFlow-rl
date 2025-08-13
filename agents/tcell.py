@@ -71,11 +71,27 @@ class TCell(ImmuneCell):
 
         # 위기 감지 로직 및 상세 분석
         crisis_detection = self._detailed_crisis_analysis(current_score, market_state)
-        self.activation_level = crisis_detection["activation_level"]
-
-        # 위기 감지 로그 저장 (활성화 레벨이 0.15 이상일 때)
-        if self.activation_level > 0.15:
+        raw_activation_level = crisis_detection["activation_level"]
+        
+        # Activation Threshold 적용 - 임계값 이상일 때만 활성화
+        if raw_activation_level >= self.activation_threshold:
+            self.activation_level = raw_activation_level
+            
+            # 활성화 로그 저장
             self.last_crisis_detection = crisis_detection
+            self.last_crisis_detection["threshold_triggered"] = True
+        else:
+            # 임계값 미달 시 비활성화
+            self.activation_level = 0.0
+            self.last_crisis_detection = {
+                "tcell_id": self.cell_id,
+                "timestamp": datetime.now().isoformat(),
+                "activation_level": 0.0,
+                "raw_activation_level": raw_activation_level,
+                "threshold_triggered": False,
+                "threshold_value": self.activation_threshold,
+                "reason": f"Activation level {raw_activation_level:.3f} below threshold {self.activation_threshold:.3f}"
+            }
 
         return self.activation_level
 
