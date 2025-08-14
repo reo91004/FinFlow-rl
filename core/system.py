@@ -99,12 +99,10 @@ class ImmunePortfolioSystem:
         # 기억 세포
         self.memory_cell = MemoryCell()
 
-        # 보상 계산기 초기화
+        # 단순화된 보상 계산기 초기화
         self.reward_calculator = RewardCalculator(
             lookback_window=20,
-            transaction_cost_rate=0.001,
-            target_volatility=0.15,
-            target_max_drawdown=0.1,
+            transaction_cost_rate=0.001
         )
 
         # 포트폴리오 가중치

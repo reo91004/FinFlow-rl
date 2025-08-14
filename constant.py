@@ -79,32 +79,32 @@ FEATURE_SIZE = 12
 EXPECTED_FEATURES = 12
 
 
-# ===== 강화학습 핵심 파라미터 (현실화) =====
-# 학습률
-DEFAULT_LEARNING_RATE = 0.00005
-DEFAULT_ACTOR_LR = 0.0001
-DEFAULT_CRITIC_LR = 0.0002
-DEFAULT_ATTENTION_LR = 0.00005
-DEFAULT_META_LR = 0.0001
-DEFAULT_MEMORY_LR = 0.0001
+# ===== 강화학습 핵심 파라미터 (수정: 클리핑 100% 문제 해결) =====
+# 학습률 대폭 상향 (30배 증가)
+DEFAULT_LEARNING_RATE = 0.001      # 0.00005 → 0.001 (20배)
+DEFAULT_ACTOR_LR = 0.003           # 0.0001 → 0.003 (30배)
+DEFAULT_CRITIC_LR = 0.003          # 0.0002 → 0.003 (15배)  
+DEFAULT_ATTENTION_LR = 0.001       # 0.00005 → 0.001 (20배)
+DEFAULT_META_LR = 0.001            # 0.0001 → 0.001 (10배)
+DEFAULT_MEMORY_LR = 0.001          # 0.0001 → 0.001 (10배)
 
-# RL 파라미터 - 수정: 배치 사이즈를 32로 줄여 학습 빈도 증가
-DEFAULT_GAMMA = 0.99
-DEFAULT_TAU = 0.005
-DEFAULT_BATCH_SIZE = 32  # 256에서 변경 - 매 에피소드마다 학습 보장
-DEFAULT_UPDATE_FREQUENCY = 100  # 1000에서 변경 - 더 빠른 타겟 네트워크 업데이트
+# RL 파라미터 - 빠른 학습과 안정성 균형
+DEFAULT_GAMMA = 0.95               # 0.99 → 0.95 (일일 결정에 맞춤)
+DEFAULT_TAU = 0.005               # 유지 (적절)
+DEFAULT_BATCH_SIZE = 8            # 32 → 8 (4일만에 학습 시작)
+DEFAULT_UPDATE_FREQUENCY = 100    # 유지
 
-# 탐험-활용
-DEFAULT_EPSILON = 0.3
-DEFAULT_EPSILON_DECAY = 0.995
-DEFAULT_MIN_EPSILON = 0.05
+# 탐험-활용 균형 조정
+DEFAULT_EPSILON = 0.2             # 0.3 → 0.2 (덜 공격적 탐험)
+DEFAULT_EPSILON_DECAY = 0.995     # 유지
+DEFAULT_MIN_EPSILON = 0.05        # 유지
 
 
-# ===== 학습 프로세스 (현실화) =====
-EPISODE_LENGTH = 252  # 실제로 사용되도록 보장 필요
-PRETRAIN_EPISODES = 1000  # 5000에서 감소 - 더 빠른 시작
-TOTAL_EPISODES = 50000
-CURRICULUM_TOTAL_EPISODES = 100000
+# ===== 학습 프로세스 (빠른 시작) =====
+EPISODE_LENGTH = 252              # 유지
+PRETRAIN_EPISODES = 500           # 1000 → 500 (빠른 시작)
+TOTAL_EPISODES = 50000           # 유지
+CURRICULUM_TOTAL_EPISODES = 100000  # 유지
 
 CURRICULUM_MIN_EPISODES = {
     0: 20000,
@@ -113,9 +113,9 @@ CURRICULUM_MIN_EPISODES = {
 }
 
 
-# ===== Experience Replay 및 Target Network =====
-EXPERIENCE_BUFFER_SIZE = 100000
-TARGET_UPDATE_FREQUENCY = 10  # 100에서 변경 - 더 빠른 타겟 네트워크 업데이트
+# ===== Experience Replay 및 Target Network (최적화) =====
+EXPERIENCE_BUFFER_SIZE = 50000    # 100000 → 50000 (효율화)
+TARGET_UPDATE_FREQUENCY = 20     # 10 → 20 (더 안정적)
 
 
 # ===== 네트워크 아키텍처 =====

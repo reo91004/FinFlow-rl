@@ -321,153 +321,115 @@ class BCell(ImmuneCell):
             self.general_performance.append(reward)
 
     def learn_from_batch(self):
-        """실제 TD Learning 구현 - 학습 조건 완화 및 검증 추가"""
-        # 학습 조건 완화: 배치 사이즈의 절반만 채워도 학습 시작
-        min_samples = max(self.batch_size // 2, 16)  # 최소 16개
-        if len(self.experience_buffer) < min_samples:
-            # 경험 부족은 로그 파일에만 기록
-            return None
-
+        """개선된 학습 로직 - 빠른 학습 시작, 안정적 업데이트"""
+        
+        # 최소 학습 조건 완화 (32개 → 4개)
+        min_experiences = self.batch_size // 2  # 4개
+        if len(self.experience_buffer) < min_experiences:
+            return False
+            
         try:
-            # 학습 전 가중치 저장 (검증용)
-            old_actor_weights = copy.deepcopy(self.actor_network.state_dict())
-            old_critic_weights = copy.deepcopy(self.critic_network.state_dict())
+            # 동적 배치 크기 (가용한 만큼 사용)
+            available_experiences = len(self.experience_buffer)
+            actual_batch_size = min(self.batch_size, available_experiences)
             
-            # 배치 샘플링 (최소 크기 보장)
-            actual_batch_size = min(self.batch_size, len(self.experience_buffer))
-            batch = self.experience_buffer.sample(actual_batch_size)
-            states, actions, rewards, next_states, dones = zip(*batch)
+            # 경험 샘플링
+            if available_experiences >= self.batch_size:
+                indices = np.random.choice(available_experiences, actual_batch_size, replace=False)
+                batch = [self.experience_buffer.buffer[i] for i in indices]
+            else:
+                batch = list(self.experience_buffer.buffer)[-actual_batch_size:]
             
-            self.logger.debug(f"{self.risk_type} B-Cell: 배치 크기 {actual_batch_size}, 보상 범위 [{min(rewards):.4f}, {max(rewards):.4f}]")
-
-            states = torch.FloatTensor(states)
-            actions = torch.FloatTensor(actions)
-            rewards = torch.FloatTensor(rewards)
-            next_states = torch.FloatTensor(next_states)
-            dones = torch.BoolTensor(dones)
-
-            # 현재 Q값
-            current_q_values = self.critic_network(states).squeeze()
-
-            # 타겟 Q값 (타겟 네트워크 사용)
-            with torch.no_grad():
-                next_q_values = self.target_critic_network(next_states).squeeze()
-                target_q_values = rewards + self.gamma * next_q_values * (~dones)
-
-            # TD Error 계산
-            td_errors = target_q_values - current_q_values
-            self.td_errors.extend(td_errors.detach().numpy())
-
-            # Critic 손실 (MSE)
-            critic_loss = F.mse_loss(current_q_values, target_q_values)
-
+            # 배치 데이터 준비
+            states = torch.FloatTensor([exp[0] for exp in batch])  # state
+            actions = torch.FloatTensor([exp[1] for exp in batch])  # action
+            rewards = torch.FloatTensor([exp[2] for exp in batch])  # reward
+            next_states = torch.FloatTensor([exp[3] for exp in batch])  # next_state
+            dones = torch.BoolTensor([exp[4] for exp in batch])  # done
+            
             # Critic 업데이트
+            current_q = self.critic_network(states).squeeze()
+            with torch.no_grad():
+                next_q = self.target_critic_network(next_states).squeeze()
+                if len(next_q.shape) == 0:
+                    next_q = next_q.unsqueeze(0)
+                target_q = rewards + self.gamma * next_q * (~dones)
+            
+            critic_loss = F.mse_loss(current_q, target_q)
+            
             self.critic_optimizer.zero_grad()
             critic_loss.backward()
             torch.nn.utils.clip_grad_norm_(self.critic_network.parameters(), 1.0)
             self.critic_optimizer.step()
-
-            # Actor 손실 (Policy Gradient)
+            
+            # Actor 업데이트
             action_probs = self.actor_network(states)
             log_probs = torch.log(action_probs + 1e-8)
-
-            # Advantage 계산
+            
             with torch.no_grad():
-                advantages = target_q_values - current_q_values
-
-            # 정책 손실
-            policy_loss = -torch.mean(
-                torch.sum(log_probs * actions, dim=1) * advantages
-            )
-
-            # 엔트로피 보너스
-            entropy = -torch.mean(
-                torch.sum(action_probs * torch.log(action_probs + 1e-8), dim=1)
-            )
-            entropy_bonus = ENTROPY_BONUS * entropy
-
-            total_actor_loss = policy_loss - entropy_bonus
-
-            # Actor 업데이트
+                advantages = target_q - current_q
+                # Advantage 정규화 (학습 안정성)
+                if len(advantages) > 1:
+                    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+            
+            policy_loss = -torch.mean(torch.sum(log_probs * actions, dim=1) * advantages)
+            
+            # 엔트로피 보너스 (탐험 장려)
+            entropy = -torch.mean(torch.sum(action_probs * torch.log(action_probs + 1e-8), dim=1))
+            total_actor_loss = policy_loss - ENTROPY_BONUS * entropy
+            
             self.actor_optimizer.zero_grad()
             total_actor_loss.backward()
             torch.nn.utils.clip_grad_norm_(self.actor_network.parameters(), 1.0)
             self.actor_optimizer.step()
-
+            
             # 타겟 네트워크 소프트 업데이트
             self.update_counter += 1
             if self.update_counter % TARGET_UPDATE_FREQUENCY == 0:
-                self.update_target_network()
-
+                self._soft_update_target_network()
+            
             # 스케줄러 업데이트
-            avg_reward = torch.mean(rewards).item()
-            self.actor_scheduler.step(avg_reward)
-            self.critic_scheduler.step(avg_reward)
-
-            # 탐험 확률 감소
+            if len(rewards) > 0:
+                avg_reward = torch.mean(rewards).item()
+                self.actor_scheduler.step(avg_reward)
+                self.critic_scheduler.step(avg_reward)
+            
+            # Epsilon 감소
             self.epsilon = max(self.min_epsilon, self.epsilon * self.epsilon_decay)
-
-            # 메모리 정리 (매 10번마다만)
-            if self.update_counter % 10 == 0 and torch.cuda.is_available():
-                torch.cuda.empty_cache()
-
-            self.last_critic_loss = critic_loss.item()
-            self.last_actor_loss = total_actor_loss.item()
-            
-            # 학습 후 가중치 변화 검증
-            new_actor_weights = self.actor_network.state_dict()
-            new_critic_weights = self.critic_network.state_dict()
-            
-            actor_change = sum(
-                torch.sum(torch.abs(new_actor_weights[key] - old_actor_weights[key])).item()
-                for key in old_actor_weights.keys()
-            )
-            critic_change = sum(
-                torch.sum(torch.abs(new_critic_weights[key] - old_critic_weights[key])).item()
-                for key in old_critic_weights.keys()
-            )
             
             # 학습 통계 누적
             self.learning_stats['total_updates'] += 1
             self.learning_stats['actor_loss_sum'] += total_actor_loss.item()
             self.learning_stats['critic_loss_sum'] += critic_loss.item()
-            self.learning_stats['weight_change_sum'] += (actor_change + critic_change)
             
             # 50번마다 학습 요약 로깅
             if self.learning_stats['total_updates'] % 50 == 0:
                 avg_actor_loss = self.learning_stats['actor_loss_sum'] / 50
                 avg_critic_loss = self.learning_stats['critic_loss_sum'] / 50
-                avg_weight_change = self.learning_stats['weight_change_sum'] / 50
                 
                 self.logger.debug(f"{self.risk_type} B-Cell 학습 요약 (50회): "
                                 f"평균 Actor 손실={avg_actor_loss:.6f}, "
-                                f"평균 Critic 손실={avg_critic_loss:.6f}, "
-                                f"평균 가중치 변화={avg_weight_change:.6f}")
+                                f"평균 Critic 손실={avg_critic_loss:.6f}")
                 
                 # 통계 초기화
                 self.learning_stats['actor_loss_sum'] = 0.0
                 self.learning_stats['critic_loss_sum'] = 0.0
-                self.learning_stats['weight_change_sum'] = 0.0
             
-            # 심각한 문제만 개별 경고
-            if actor_change < 1e-8 and critic_change < 1e-8:
-                self.logger.warning(f"{self.risk_type} B-Cell: 가중치 업데이트 정지! "
-                                  f"Actor={actor_change:.8f}, Critic={critic_change:.8f}")
-
-            return critic_loss.item()
-
+            return True
+            
         except Exception as e:
-            self.logger.error(f"{self.risk_type} B-세포 학습 실패: {e}", exc_info=True)
-            return None
+            print(f"[경고] {self.risk_type} B-Cell 학습 오류: {e}")
+            return False
 
-    def update_target_network(self):
-        """타겟 네트워크 소프트 업데이트 - 새로 추가"""
+    def _soft_update_target_network(self):
+        """타겟 네트워크 소프트 업데이트"""
+        tau = self.tau
         for target_param, param in zip(
-            self.target_critic_network.parameters(), self.critic_network.parameters()
+            self.target_critic_network.parameters(), 
+            self.critic_network.parameters()
         ):
-            target_param.data.copy_(
-                self.tau * param.data + (1.0 - self.tau) * target_param.data
-            )
+            target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
+
 
     def _get_available_gpu_memory(self):
         """실제 GPU 메모리 관리 구현"""

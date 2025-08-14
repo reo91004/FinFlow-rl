@@ -60,12 +60,10 @@ class ImmunePortfolioBacktester:
         # 로거 초기화
         self.logger = BIPDLogger().get_system_logger()
 
-        # 고도화된 보상 계산기 초기화
+        # 단순화된 보상 계산기 초기화
         self.reward_calculator = RewardCalculator(
             lookback_window=20,
-            transaction_cost_rate=0.001,
-            target_volatility=0.15,
-            target_max_drawdown=0.1,
+            transaction_cost_rate=0.001
         )
 
         # 데이터 로드
@@ -760,6 +758,12 @@ class ImmunePortfolioBacktester:
                 self.previous_weights = getattr(self, 'current_weights', weights.copy())
                 self.current_weights = weights.copy()
                 
+                # 매 5일마다 중간 학습 (빠른 적응)
+                if immune_system.use_learning_bcells and i % 5 == 4:
+                    for bcell in immune_system.bcells:
+                        if len(bcell.experience_buffer) >= bcell.batch_size // 2:
+                            bcell.learn_from_batch()
+                
             except Exception as e:
                 print(f"[경고] 스텝 {i} 실행 오류: {e}")
                 continue
@@ -811,6 +815,13 @@ class ImmunePortfolioBacktester:
                 )
             except Exception as e:
                 print(f"[경고] 메모리 업데이트 오류: {e}")
+        
+        # 에피소드 완료 후 집중 학습 (3회 추가)
+        if immune_system.use_learning_bcells:
+            for bcell in immune_system.bcells:
+                if len(bcell.experience_buffer) >= bcell.batch_size // 2:
+                    for _ in range(3):  # 3회 집중 학습
+                        bcell.learn_from_batch()
         
         # 결과 계산
         if transitions:
