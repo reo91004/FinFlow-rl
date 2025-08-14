@@ -135,9 +135,8 @@ class BCell(ImmuneCell):
 
         # 네트워크 초기화
         self.critic_network = CriticNetwork(input_size)
-        self.target_critic_network = copy.deepcopy(
-            self.critic_network
-        )  # 타겟 네트워크 추가
+        self.critic_target_network = CriticNetwork(input_size)
+        self.critic_target_network.load_state_dict(self.critic_network.state_dict())
         self.actor_network = ActorNetwork(input_size, n_assets)
         self.attention_mechanism = AttentionMechanism(self.feature_dim)
 
@@ -154,10 +153,20 @@ class BCell(ImmuneCell):
 
         # Experience Replay Buffer - 완전한 구현
         self.experience_buffer = ExperienceReplayBuffer(EXPERIENCE_BUFFER_SIZE)
+        
+        # MDP 전이 보존을 위한 에피소드 버퍼
+        self.episode_buffer = []
+        self._pending_experience = None  # 다음 상태값을 기다리는 경험
+        
+        # 현재 상태 저장 (next_state_value 계산용)
+        self.last_combined_input = None
 
         # 학습 카운터
         self.update_counter = 0
         self.step_counter = 0
+        
+        # 엔트로피 계수 추가
+        self.entropy_coef = 0.01
 
         # 전문화 관련 속성
         self.specialization_buffer = deque(maxlen=BCELL_SPECIALIZATION_BUFFER_SIZE)
@@ -293,15 +302,67 @@ class BCell(ImmuneCell):
 
         return is_specialty
 
-    def add_experience(
-        self, state, action, reward, next_state, done, tcell_contributions=None
-    ):
-        """완전한 (s,a,r,s',done) 경험 저장 - 핵심 수정"""
+    def queue_experience(self, market_features, crisis_level, action, reward, 
+                        tcell_contributions=None, done=False):
+        """RJH 브랜치의 핵심: MDP 전이를 보존하면서 경험을 큐에 쌓는다"""
+        
+        # 현재 상태 구성
+        features_tensor = torch.FloatTensor(market_features)
+        crisis_tensor = torch.FloatTensor([crisis_level])
+        
+        if tcell_contributions:
+            attended_features, _ = self.attention_mechanism(features_tensor, tcell_contributions)
+            current_combined_input = torch.cat([attended_features, crisis_tensor, self.specialization_weights])
+        else:
+            current_combined_input = torch.cat([features_tensor, crisis_tensor, self.specialization_weights])
+        
+        # 이전 보류 경험이 있으면 next_state_value 채워서 저장
+        if self._pending_experience is not None and self.last_combined_input is not None:
+            with torch.no_grad():
+                next_v = self.critic_target_network(current_combined_input.unsqueeze(0)).item()
+            self._pending_experience["next_state_value"] = float(next_v)
+            self._pending_experience["next_state"] = market_features.copy()
+            self.episode_buffer.append(self._pending_experience)
+            
+        # 현재 경험 생성
+        experience = {
+            "state": market_features.copy(),
+            "action": action.copy(),
+            "reward": float(reward),
+            "next_state": None,  # 다음 스텝에서 채움
+            "next_state_value": None,  # 다음 스텝에서 채움
+            "done": done,
+            "timestamp": datetime.now(),
+            "is_specialty": self.is_my_specialty_situation(market_features, crisis_level),
+            "tcell_contributions": tcell_contributions or {},
+            "combined_input": current_combined_input.numpy()
+        }
+        
+        # 터미널 상태면 즉시 저장
+        if done:
+            experience["next_state_value"] = 0.0  # 터미널 상태
+            experience["next_state"] = market_features.copy()  # 터미널에서는 자기 자신
+            self.episode_buffer.append(experience)
+            self._pending_experience = None
+        else:
+            # 다음 스텝까지 보류
+            self._pending_experience = experience
+            
+        # 현재 상태 저장
+        self.last_combined_input = current_combined_input
+        
+        # 전문성에 따른 분류
+        if experience["is_specialty"]:
+            self.specialist_performance.append(reward)
+        else:
+            self.general_performance.append(reward)
 
+    def add_experience(self, state, action, reward, next_state, done, tcell_contributions=None):
+        """기존 메소드 - 하위 호환성 유지"""
         self.experience_buffer.push(state, action, reward, next_state, done)
-
+        
         # 전문성 여부 판단을 위한 추가 저장
-        crisis_level = np.mean(np.abs(state[-3:]))  # 위기 수준 추정
+        crisis_level = np.mean(np.abs(state[-3:]))
         experience = {
             "state": state.copy(),
             "action": action.copy(),
@@ -320,42 +381,39 @@ class BCell(ImmuneCell):
             self.general_buffer.append(experience)
             self.general_performance.append(reward)
 
-    def learn_from_batch(self):
-        """개선된 학습 로직 - 빠른 학습 시작, 안정적 업데이트"""
+    def learn_from_episode_buffer(self):
+        """RJH 브랜치 방식: episode_buffer를 사용한 올바른 TD 학습"""
         
-        # 최소 학습 조건 완화 (32개 → 4개)
-        min_experiences = self.batch_size // 2  # 4개
-        if len(self.experience_buffer) < min_experiences:
+        # 최소 경험 조건 완화
+        min_experiences = max(4, self.batch_size // 2)
+        if len(self.episode_buffer) < min_experiences:
             return False
             
         try:
-            # 동적 배치 크기 (가용한 만큼 사용)
-            available_experiences = len(self.experience_buffer)
+            # 동적 배치 크기
+            available_experiences = len(self.episode_buffer)
             actual_batch_size = min(self.batch_size, available_experiences)
             
             # 경험 샘플링
             if available_experiences >= self.batch_size:
                 indices = np.random.choice(available_experiences, actual_batch_size, replace=False)
-                batch = [self.experience_buffer.buffer[i] for i in indices]
+                batch = [self.episode_buffer[i] for i in indices]
             else:
-                batch = list(self.experience_buffer.buffer)[-actual_batch_size:]
+                batch = self.episode_buffer[-actual_batch_size:]
             
-            # 배치 데이터 준비
-            states = torch.FloatTensor([exp[0] for exp in batch])  # state
-            actions = torch.FloatTensor([exp[1] for exp in batch])  # action
-            rewards = torch.FloatTensor([exp[2] for exp in batch])  # reward
-            next_states = torch.FloatTensor([exp[3] for exp in batch])  # next_state
-            dones = torch.BoolTensor([exp[4] for exp in batch])  # done
+            # 배치 데이터 준비 (combined_input 사용)
+            states = torch.FloatTensor([exp["combined_input"] for exp in batch])
+            actions = torch.FloatTensor([exp["action"] for exp in batch])
+            rewards = torch.FloatTensor([exp["reward"] for exp in batch])
+            next_state_values = torch.FloatTensor([exp["next_state_value"] for exp in batch])
+            terminals = torch.FloatTensor([1.0 if exp["done"] else 0.0 for exp in batch])
+            
+            # TD Target 계산 (terminal 상태 처리 포함)
+            td_targets = rewards + self.gamma * next_state_values * (1.0 - terminals)
             
             # Critic 업데이트
-            current_q = self.critic_network(states).squeeze()
-            with torch.no_grad():
-                next_q = self.target_critic_network(next_states).squeeze()
-                if len(next_q.shape) == 0:
-                    next_q = next_q.unsqueeze(0)
-                target_q = rewards + self.gamma * next_q * (~dones)
-            
-            critic_loss = F.mse_loss(current_q, target_q)
+            current_values = self.critic_network(states).squeeze()
+            critic_loss = F.mse_loss(current_values, td_targets.detach())
             
             self.critic_optimizer.zero_grad()
             critic_loss.backward()
@@ -367,16 +425,16 @@ class BCell(ImmuneCell):
             log_probs = torch.log(action_probs + 1e-8)
             
             with torch.no_grad():
-                advantages = target_q - current_q
-                # Advantage 정규화 (학습 안정성)
+                advantages = td_targets - current_values
+                # Advantage 정규화
                 if len(advantages) > 1:
                     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
             
             policy_loss = -torch.mean(torch.sum(log_probs * actions, dim=1) * advantages)
             
-            # 엔트로피 보너스 (탐험 장려)
+            # 엔트로피 정규화 (과도한 균등화 억제)
             entropy = -torch.mean(torch.sum(action_probs * torch.log(action_probs + 1e-8), dim=1))
-            total_actor_loss = policy_loss - ENTROPY_BONUS * entropy
+            total_actor_loss = policy_loss - self.entropy_coef * entropy
             
             self.actor_optimizer.zero_grad()
             total_actor_loss.backward()
@@ -388,14 +446,12 @@ class BCell(ImmuneCell):
             if self.update_counter % TARGET_UPDATE_FREQUENCY == 0:
                 self._soft_update_target_network()
             
-            # 스케줄러 업데이트
-            if len(rewards) > 0:
-                avg_reward = torch.mean(rewards).item()
-                self.actor_scheduler.step(avg_reward)
-                self.critic_scheduler.step(avg_reward)
-            
             # Epsilon 감소
             self.epsilon = max(self.min_epsilon, self.epsilon * self.epsilon_decay)
+            
+            # TD Error 저장
+            td_error = torch.mean(torch.abs(td_targets - current_values)).item()
+            self.td_errors.append(td_error)
             
             # 학습 통계 누적
             self.learning_stats['total_updates'] += 1
@@ -406,10 +462,12 @@ class BCell(ImmuneCell):
             if self.learning_stats['total_updates'] % 50 == 0:
                 avg_actor_loss = self.learning_stats['actor_loss_sum'] / 50
                 avg_critic_loss = self.learning_stats['critic_loss_sum'] / 50
+                avg_td_error = np.mean(list(self.td_errors)[-50:]) if self.td_errors else 0.0
                 
                 self.logger.debug(f"{self.risk_type} B-Cell 학습 요약 (50회): "
                                 f"평균 Actor 손실={avg_actor_loss:.6f}, "
-                                f"평균 Critic 손실={avg_critic_loss:.6f}")
+                                f"평균 Critic 손실={avg_critic_loss:.6f}, "
+                                f"평균 TD 오차={avg_td_error:.6f}")
                 
                 # 통계 초기화
                 self.learning_stats['actor_loss_sum'] = 0.0
@@ -418,17 +476,162 @@ class BCell(ImmuneCell):
             return True
             
         except Exception as e:
-            print(f"[경고] {self.risk_type} B-Cell 학습 오류: {e}")
+            self.logger.error(f"{self.risk_type} B-Cell 에피소드 버퍼 학습 오류: {e}")
+            return False
+    
+    def learn_from_batch(self):
+        """기존 방식 유지 - 하위 호환성"""
+        
+        # 새로운 방식이 가능하면 사용
+        if len(self.episode_buffer) >= self.batch_size // 2:
+            return self.learn_from_episode_buffer()
+        
+        # 기존 방식 폴백
+        min_experiences = self.batch_size // 2
+        if len(self.experience_buffer) < min_experiences:
+            return False
+            
+        try:
+            available_experiences = len(self.experience_buffer)
+            actual_batch_size = min(self.batch_size, available_experiences)
+            
+            if available_experiences >= self.batch_size:
+                indices = np.random.choice(available_experiences, actual_batch_size, replace=False)
+                batch = [self.experience_buffer.buffer[i] for i in indices]
+            else:
+                batch = list(self.experience_buffer.buffer)[-actual_batch_size:]
+            
+            # 차원 호환성을 위해 state를 combined_input으로 변환
+            processed_states = []
+            processed_next_states = []
+            
+            for exp in batch:
+                state = exp[0]
+                next_state = exp[3]
+                
+                # state가 12차원이면 combined_input으로 확장
+                if len(state) == 12:
+                    # market_features(12) + crisis_level(1) + specialization_weights(n_assets)
+                    crisis_level = 0.0  # 기본값
+                    combined_state = np.concatenate([state, [crisis_level], self.specialization_weights.numpy()])
+                    processed_states.append(combined_state)
+                else:
+                    processed_states.append(state)
+                    
+                # next_state도 동일하게 처리
+                if len(next_state) == 12:
+                    crisis_level = 0.0
+                    combined_next_state = np.concatenate([next_state, [crisis_level], self.specialization_weights.numpy()])
+                    processed_next_states.append(combined_next_state)
+                else:
+                    processed_next_states.append(next_state)
+            
+            states = torch.FloatTensor(processed_states)
+            actions = torch.FloatTensor([exp[1] for exp in batch])
+            rewards = torch.FloatTensor([exp[2] for exp in batch])
+            next_states = torch.FloatTensor(processed_next_states)
+            dones = torch.BoolTensor([exp[4] for exp in batch])
+            
+            current_q = self.critic_network(states).squeeze()
+            with torch.no_grad():
+                next_q = self.critic_target_network(next_states).squeeze()
+                if len(next_q.shape) == 0:
+                    next_q = next_q.unsqueeze(0)
+                target_q = rewards + self.gamma * next_q * (~dones)
+            
+            critic_loss = F.mse_loss(current_q, target_q)
+            
+            self.critic_optimizer.zero_grad()
+            critic_loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.critic_network.parameters(), 1.0)
+            self.critic_optimizer.step()
+            
+            action_probs = self.actor_network(states)
+            log_probs = torch.log(action_probs + 1e-8)
+            
+            with torch.no_grad():
+                advantages = target_q - current_q
+                if len(advantages) > 1:
+                    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+            
+            policy_loss = -torch.mean(torch.sum(log_probs * actions, dim=1) * advantages)
+            entropy = -torch.mean(torch.sum(action_probs * torch.log(action_probs + 1e-8), dim=1))
+            total_actor_loss = policy_loss - ENTROPY_BONUS * entropy
+            
+            self.actor_optimizer.zero_grad()
+            total_actor_loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.actor_network.parameters(), 1.0)
+            self.actor_optimizer.step()
+            
+            self.update_counter += 1
+            if self.update_counter % TARGET_UPDATE_FREQUENCY == 0:
+                self._soft_update_target_network()
+            
+            self.epsilon = max(self.min_epsilon, self.epsilon * self.epsilon_decay)
+            
+            self.learning_stats['total_updates'] += 1
+            self.learning_stats['actor_loss_sum'] += total_actor_loss.item()
+            self.learning_stats['critic_loss_sum'] += critic_loss.item()
+            
+            if self.learning_stats['total_updates'] % 50 == 0:
+                avg_actor_loss = self.learning_stats['actor_loss_sum'] / 50
+                avg_critic_loss = self.learning_stats['critic_loss_sum'] / 50
+                
+                self.logger.debug(f"{self.risk_type} B-Cell 기존 방식 학습 요약: "
+                                f"평균 Actor 손실={avg_actor_loss:.6f}, "
+                                f"평균 Critic 손실={avg_critic_loss:.6f}")
+                
+                self.learning_stats['actor_loss_sum'] = 0.0
+                self.learning_stats['critic_loss_sum'] = 0.0
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"{self.risk_type} B-Cell 기존 방식 학습 오류: {e}")
             return False
 
     def _soft_update_target_network(self):
         """타겟 네트워크 소프트 업데이트"""
         tau = self.tau
         for target_param, param in zip(
-            self.target_critic_network.parameters(), 
+            self.critic_target_network.parameters(), 
             self.critic_network.parameters()
         ):
             target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
+    
+    def finish_episode(self):
+        """에피소드 종료 시 호출 - 보류된 경험 처리 및 학습"""
+        
+        # 보류된 경험이 있으면 터미널로 처리
+        if self._pending_experience is not None:
+            self._pending_experience["next_state_value"] = 0.0
+            self._pending_experience["next_state"] = self._pending_experience["state"].copy()
+            self._pending_experience["done"] = True
+            self.episode_buffer.append(self._pending_experience)
+            self._pending_experience = None
+        
+        # 에피소드 종료 후 학습
+        if len(self.episode_buffer) >= self.batch_size // 2:
+            learning_success = self.learn_from_episode_buffer()
+            if learning_success:
+                self.logger.debug(f"{self.risk_type} B-Cell 에피소드 종료 후 학습 완료")
+        
+        # 에피소드 버퍼에서 Experience Replay Buffer로 데이터 이전
+        for exp in self.episode_buffer:
+            if exp.get("next_state") is not None:
+                self.experience_buffer.push(
+                    exp["state"], 
+                    exp["action"], 
+                    exp["reward"],
+                    exp["next_state"], 
+                    exp["done"]
+                )
+        
+        # 에피소드 버퍼 초기화
+        self.episode_buffer.clear()
+        self.last_combined_input = None
+        
+        return len(self.episode_buffer) == 0  # 성공적으로 정리되었는지 반환
 
 
     def _get_available_gpu_memory(self):

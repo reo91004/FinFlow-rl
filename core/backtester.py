@@ -758,50 +758,90 @@ class ImmunePortfolioBacktester:
                 self.previous_weights = getattr(self, 'current_weights', weights.copy())
                 self.current_weights = weights.copy()
                 
-                # 매 5일마다 중간 학습 (빠른 적응)
+                # 매 5일마다 중간 학습 (빠른 적응) - RJH 방식 적용
                 if immune_system.use_learning_bcells and i % 5 == 4:
                     for bcell in immune_system.bcells:
-                        if len(bcell.experience_buffer) >= bcell.batch_size // 2:
-                            bcell.learn_from_batch()
+                        # 현재까지의 경험을 queue_experience로 전달
+                        try:
+                            # 현재 상태에서 즉시 학습하기 위해 임시 경험 생성
+                            bcell.queue_experience(
+                                market_features=market_features,
+                                crisis_level=crisis_level,
+                                action=weights,
+                                reward=final_reward,
+                                tcell_contributions=None,
+                                done=False
+                            )
+                            
+                            # episode_buffer가 충분하면 학습
+                            if len(bcell.episode_buffer) >= bcell.batch_size // 2:
+                                bcell.learn_from_episode_buffer()
+                                learning_validator.log_learning_event(
+                                    f"{bcell.risk_type}_midstep_learning",
+                                    f"step={i}, buffer_size={len(bcell.episode_buffer)}"
+                                )
+                        except Exception as e:
+                            # 폴백: 기존 방식
+                            if len(bcell.experience_buffer) >= bcell.batch_size // 2:
+                                bcell.learn_from_batch()
                 
             except Exception as e:
                 print(f"[경고] 스텝 {i} 실행 오류: {e}")
                 continue
         
-        # 모든 B-Cell에 올바른 경험 전달
+        # RJH 브랜치 방식: queue_experience를 이용한 올바른 MDP 전이 구축
         if immune_system.use_learning_bcells and transitions:
             for bcell in immune_system.bcells:
                 try:
-                    for transition in transitions:
-                        bcell.add_experience(
-                            transition['state'],
-                            transition['action'], 
-                            transition['reward'],
-                            transition['next_state'],
-                            transition['done']
+                    # 모든 transition을 queue_experience로 처리
+                    for i, transition in enumerate(transitions):
+                        # market_features 추출 (첫 12개 요소)
+                        market_features = transition['state'][:12]
+                        crisis_level = transition['state'][12] if len(transition['state']) > 12 else 0.0
+                        action = transition['action']
+                        reward = transition['reward']
+                        done = transition['done']
+                        
+                        # queue_experience 메소드 사용
+                        bcell.queue_experience(
+                            market_features=market_features,
+                            crisis_level=crisis_level,
+                            action=action,
+                            reward=reward,
+                            tcell_contributions=None,
+                            done=done
                         )
                     
-                    # 배치 학습 (충분한 경험이 쌓였을 때만)
-                    if len(bcell.experience_buffer) >= bcell.batch_size // 2:  # 완화된 조건
-                        # 학습 전 가중치 저장 (검증용)
-                        old_state_dict = copy.deepcopy(bcell.actor_network.state_dict())
-                        
-                        loss = bcell.learn_from_batch()
-                        if loss is not None:
-                            self.rl_tracker.log_loss(bcell.risk_type, loss)
-                            learning_validator.log_learning_event(
-                                f"{bcell.risk_type}_learning", 
-                                f"loss={loss:.6f}"
-                            )
-                            
-                            # 가중치 업데이트 검증
-                            learning_validator.validate_weight_updates(
-                                bcell.actor_network, old_state_dict, f"{bcell.risk_type}_actor"
-                            )
+                    # 에피소드 종료 후 B-Cell 정리 및 학습
+                    # finish_episode에서 이미 모든 학습이 처리되므로 추가 학습 불필요
+                    finish_success = bcell.finish_episode()
+                    
+                    if finish_success:
+                        learning_validator.log_learning_event(
+                            f"{bcell.risk_type}_episode_finished", 
+                            f"transition_count={len(transitions)}"
+                        )
                             
                 except Exception as e:
-                    print(f"[경고] B-세포 {bcell.cell_id} 학습 오류: {e}")
-                    self.logger.error(f"B-세포 {bcell.cell_id} 학습 오류: {e}")
+                    print(f"[경고] B-세포 {bcell.cell_id} RJH 방식 학습 오류: {e}")
+                    self.logger.error(f"B-세포 {bcell.cell_id} RJH 방식 학습 오류: {e}")
+                    
+                    # 폴백: 기존 방식 사용
+                    try:
+                        for transition in transitions:
+                            bcell.add_experience(
+                                transition['state'],
+                                transition['action'], 
+                                transition['reward'],
+                                transition['next_state'],
+                                transition['done']
+                            )
+                        
+                        if len(bcell.experience_buffer) >= bcell.batch_size // 2:
+                            bcell.learn_from_batch()
+                            
+                    except Exception as fallback_e:
+                        self.logger.error(f"B-세포 {bcell.cell_id} 폴백 학습도 실패: {fallback_e}")
         
         # 메모리 시스템 업데이트
         if immune_system.crisis_level > 0.15 and transitions:
@@ -816,12 +856,8 @@ class ImmunePortfolioBacktester:
             except Exception as e:
                 print(f"[경고] 메모리 업데이트 오류: {e}")
         
-        # 에피소드 완료 후 집중 학습 (3회 추가)
-        if immune_system.use_learning_bcells:
-            for bcell in immune_system.bcells:
-                if len(bcell.experience_buffer) >= bcell.batch_size // 2:
-                    for _ in range(3):  # 3회 집중 학습
-                        bcell.learn_from_batch()
+        # RJH 방식에서는 finish_episode에서 모든 학습이 처리되므로 
+        # 추가 집중 학습은 필요 없음 (이미 위에서 finish_episode 호출됨)
         
         # 결과 계산
         if transitions:
