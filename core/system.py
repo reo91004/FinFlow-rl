@@ -6,15 +6,10 @@ from tqdm import tqdm
 import torch
 import torch.nn as nn
 import warnings
-from agents import TCell, BCell, MemoryCell
-from core.reward import RewardCalculator
-from core.hierarchical import HierarchicalController
+from agents import TCell, BCell, LegacyBCell, MemoryCell
 from xai import DecisionAnalyzer
 from constant import *
-from utils.logger import BIPDLogger
-from utils.expert_strategies import ExpertStrategies
-from utils.learning_validator import learning_validator
-import torch
+from .hierarchical import HierarchicalController
 
 warnings.filterwarnings("ignore")
 
@@ -29,14 +24,16 @@ class ImmunePortfolioSystem:
         n_bcells=DEFAULT_N_BCELLS,
         random_state=None,
         use_learning_bcells=True,
-        use_hierarchical=True,
         logging_level="full",
         output_dir=None,
+        activation_threshold=0.15,
+        use_rule_based_pretraining=False,
     ):
         self.n_assets = n_assets
         self.use_learning_bcells = use_learning_bcells
-        self.use_hierarchical = use_hierarchical
-        self.logging_level = logging_level
+        self.logging_level = logging_level  # 'full', 'sample', 'minimal'
+        self.activation_threshold = activation_threshold
+        self.use_rule_based_pretraining = use_rule_based_pretraining
 
         # T-세포 초기화
         self.tcells = [
@@ -44,6 +41,7 @@ class ImmunePortfolioSystem:
                 f"T{i}",
                 sensitivity=0.05 + i * 0.02,
                 random_state=None if random_state is None else random_state + i,
+                activation_threshold=self.activation_threshold,
             )
             for i in range(n_tcells)
         ]
@@ -61,65 +59,49 @@ class ImmunePortfolioSystem:
                 BCell("B5-Macro", "macro", input_size, n_assets),
             ]
             print("시스템 유형: 적응형 신경망 기반 BIPD 모델")
-
-            # 계층적 제어기 초기화
-            if use_hierarchical:
-                expert_names = [bcell.risk_type for bcell in self.bcells]
-                meta_input_size = feature_size + 4 + 5 + 5 + 3  # 29차원
-                self.hierarchical_controller = HierarchicalController(
-                    meta_input_size=meta_input_size,
-                    num_experts=len(self.bcells),
-                    expert_names=expert_names,
-                    learning_rate=0.001,
-                )
-                print("계층적 제어 시스템이 활성화되었습니다.")
-            else:
-                self.hierarchical_controller = None
         else:
-            # 레거시 모드 제거 - 모든 경우에 학습 기반 B-Cell 사용
-            feature_size = FEATURE_SIZE
-            input_size = feature_size + 1 + n_assets
-            
-            risk_types = ["volatility", "correlation", "momentum", "liquidity", "macro"]
             self.bcells = [
-                BCell(f"B{i+1}-{risk_type.title()}", risk_type, input_size, n_assets)
-                for i, risk_type in enumerate(risk_types)
+                LegacyBCell("LB1-Vol", "volatility", self._volatility_response),
+                LegacyBCell("LB2-Corr", "correlation", self._correlation_response),
+                LegacyBCell("LB3-Mom", "momentum", self._momentum_response),
+                LegacyBCell("LB4-Liq", "liquidity", self._liquidity_response),
+                LegacyBCell("LB5-Macro", "macro", self._macro_response),
             ]
-            print("시스템 유형: 학습 기반 BIPD 모델 (강제)")
-            
-            if use_hierarchical:
-                self.hierarchical_controller = HierarchicalController(
-                    n_experts=len(self.bcells),
-                    market_feature_dim=feature_size
-                )
-                print("계층적 제어 시스템이 활성화되었습니다.")
-            else:
-                self.hierarchical_controller = None
+            print("시스템 유형: 규칙 기반 레거시 BIPD 모델")
 
         # 기억 세포
         self.memory_cell = MemoryCell()
 
-        # 단순화된 보상 계산기 초기화
-        self.reward_calculator = RewardCalculator(
-            lookback_window=20,
-            transaction_cost_rate=0.001
-        )
-
         # 포트폴리오 가중치
         self.base_weights = np.ones(n_assets) / n_assets
         self.current_weights = self.base_weights.copy()
-        self.previous_weights = None
 
         # 시스템 상태
         self.immune_activation = 0.0
         self.crisis_level = 0.0
-        
-        # 로거 초기화
-        self.logger = BIPDLogger().get_system_logger()
 
         # 분석 시스템
-        self.analyzer = DecisionAnalyzer(output_dir=output_dir or ".")
+        self.analyzer = DecisionAnalyzer(
+            output_dir=output_dir or ".", detection_threshold=self.activation_threshold
+        )
         self.enable_logging = True
+
+        # 메타 컨트롤러 (전문가 선택 정책)
+        self.hierarchical_controller = None
+        self.last_meta_state = None
+        self.last_meta_action = None
+        if self.use_learning_bcells:
+            try:
+                expert_names = [b.risk_type for b in self.bcells]
+                # 메타 상태는 12(시장특성)+4(위기)+5(전문가성과)+5(선택분포)+3(시간)=29
+                self.hierarchical_controller = HierarchicalController(
+                    meta_input_size=29,
+                    num_experts=len(self.bcells),
+                    expert_names=expert_names,
+                )
+                print("메타 컨트롤러 활성화: 전문가 선택 정책 학습")
+            except Exception as e:
+                print(f"메타 컨트롤러 초기화 실패: {e}")
 
         # 로깅 레벨에 따른 설정
         if logging_level == "full":
@@ -134,29 +116,13 @@ class ImmunePortfolioSystem:
     def extract_market_features(self, market_data, lookback=DEFAULT_LOOKBACK):
         """시장 특성 추출"""
         if len(market_data) < lookback:
-            return np.zeros(FEATURE_SIZE, dtype=np.float32)  # 명시적 타입 지정
+            return np.zeros(FEATURE_SIZE)
 
-        features = self._extract_technical_features(market_data, lookback)
-
-        # 타입 검증 및 변환
-        if not isinstance(features, np.ndarray):
-            features = np.array(features, dtype=np.float32)
-
-        # NaN/Inf 값 안전 처리
-        features = np.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
-
-        # 크기 및 타입 검증
-        if features.shape[0] != FEATURE_SIZE:
-            if features.shape[0] > FEATURE_SIZE:
-                features = features[:FEATURE_SIZE]
-            else:
-                padding = np.zeros(FEATURE_SIZE - features.shape[0], dtype=np.float32)
-                features = np.concatenate([features, padding])
-
-        return features.astype(np.float32)
+        # 현재 날짜 기준으로 기술적 지표 데이터 활용
+        return self._extract_technical_features(market_data, lookback)
 
     def _extract_basic_features(self, market_data, lookback=DEFAULT_LOOKBACK):
-        """기본 특성 추출"""
+        """기본 특성 추출 (기존 방식)"""
         returns = market_data.pct_change().dropna()
         if len(returns) == 0:
             return np.zeros(8)
@@ -228,11 +194,14 @@ class ImmunePortfolioSystem:
     def _extract_technical_features(self, market_data, lookback=DEFAULT_LOOKBACK):
         """기술적 지표 기반 특성 추출"""
         if not hasattr(self, "train_features") or not hasattr(self, "test_features"):
+            # 기술적 지표 데이터가 없는 경우 기본 방식 사용
             basic_features = self._extract_basic_features(market_data, lookback)
             return self._expand_to_12_features(basic_features)
 
+        # 현재 날짜 기준으로 특성 데이터 선택
         current_date = market_data.index[-1]
 
+        # 훈련 또는 테스트 데이터에서 특성 추출
         if current_date in self.train_features.index:
             feature_data = self.train_features.loc[current_date]
         elif current_date in self.test_features.index:
@@ -241,23 +210,32 @@ class ImmunePortfolioSystem:
             basic_features = self._extract_basic_features(market_data, lookback)
             return self._expand_to_12_features(basic_features)
 
+        # 핵심 시장 지표 선택 (위기 감지에 중요한 지표들)
         selected_features = []
 
+        # 1. 시장 전체 변동성 (가장 중요한 위기 지표)
         market_volatility = feature_data.get("market_volatility", 0.0)
-        selected_features.append(np.clip(market_volatility * 5, 0, 1))
+        selected_features.append(
+            np.clip(market_volatility * 5, 0, 1)
+        )  # 증폭하여 민감도 증가
 
+        # 2. 시장 상관관계 (시스템적 위험 지표)
         market_correlation = feature_data.get("market_correlation", 0.5)
         selected_features.append(np.clip(abs(market_correlation), 0, 1))
 
+        # 3. 시장 수익률 (방향성 지표)
         market_return = feature_data.get("market_return", 0.0)
-        selected_features.append(np.clip(market_return * 10, -1, 1))
+        selected_features.append(np.clip(market_return * 10, -1, 1))  # 증폭
 
+        # 4. VIX 대용 지표 (변동성의 변동성)
         vix_proxy = feature_data.get("vix_proxy", 0.1)
-        selected_features.append(np.clip(vix_proxy * 3, 0, 1))
+        selected_features.append(np.clip(vix_proxy * 3, 0, 1))  # 증폭
 
+        # 5. 시장 스트레스 지수
         market_stress = feature_data.get("market_stress", 0.0)
-        selected_features.append(np.clip(market_stress / 10, 0, 1))
+        selected_features.append(np.clip(market_stress / 10, 0, 1))  # 정규화
 
+        # 6. 평균 RSI (과매수/과매도 지표)
         rsi_cols = [col for col in feature_data.index if "_rsi" in col]
         if rsi_cols:
             avg_rsi = np.mean(
@@ -267,11 +245,13 @@ class ImmunePortfolioSystem:
                     if not pd.isna(feature_data[col])
                 ]
             )
+            # RSI 50에서 벗어날수록 위험 증가
             rsi_risk = abs(avg_rsi - 50) / 50
             selected_features.append(np.clip(rsi_risk, 0, 1))
         else:
             selected_features.append(0.0)
 
+        # 7. 모멘텀 지표
         momentum_cols = [col for col in feature_data.index if "_momentum" in col]
         if momentum_cols:
             avg_momentum = np.mean(
@@ -285,16 +265,19 @@ class ImmunePortfolioSystem:
         else:
             selected_features.append(0.0)
 
+        # 8. 볼린저 밴드 위치 (극단적 위치일수록 위험)
         bb_cols = [col for col in feature_data.index if "_bb_position" in col]
         if bb_cols:
             avg_bb_position = np.mean(
                 [feature_data[col] for col in bb_cols if not pd.isna(feature_data[col])]
             )
+            # 0.5에서 벗어날수록 위험
             bb_risk = abs(avg_bb_position - 0.5) * 2
             selected_features.append(np.clip(bb_risk, 0, 1))
         else:
             selected_features.append(0.0)
 
+        # 9. 거래량 이상 지표
         volume_cols = [col for col in feature_data.index if "_volume_ratio" in col]
         if volume_cols:
             avg_volume_ratio = np.mean(
@@ -304,11 +287,13 @@ class ImmunePortfolioSystem:
                     if not pd.isna(feature_data[col])
                 ]
             )
+            # 정상 거래량(1.0)에서 벗어날수록 위험
             volume_risk = abs(avg_volume_ratio - 1.0) / 2
             selected_features.append(np.clip(volume_risk, 0, 1))
         else:
             selected_features.append(0.0)
 
+        # 10. 가격 범위 확장 지표
         range_cols = [col for col in feature_data.index if "_price_range" in col]
         if range_cols:
             avg_range = np.mean(
@@ -322,6 +307,7 @@ class ImmunePortfolioSystem:
         else:
             selected_features.append(0.1)
 
+        # 11. 이동평균 이탈도
         sma_cols = [col for col in feature_data.index if "_price_sma20_ratio" in col]
         if sma_cols:
             avg_sma_ratio = np.mean(
@@ -331,11 +317,13 @@ class ImmunePortfolioSystem:
                     if not pd.isna(feature_data[col])
                 ]
             )
+            # 1.0에서 벗어날수록 위험
             sma_risk = abs(avg_sma_ratio - 1.0)
             selected_features.append(np.clip(sma_risk, 0, 1))
         else:
             selected_features.append(0.0)
 
+        # 12. 종합 변동성 지표
         vol_cols = [col for col in feature_data.index if "_volatility" in col]
         if vol_cols:
             avg_volatility = np.mean(
@@ -345,13 +333,15 @@ class ImmunePortfolioSystem:
                     if not pd.isna(feature_data[col])
                 ]
             )
-            selected_features.append(np.clip(avg_volatility * 5, 0, 1))
+            selected_features.append(np.clip(avg_volatility * 5, 0, 1))  # 증폭
         else:
             selected_features.append(0.1)
 
+        # 12개 특성 보장
         while len(selected_features) < FEATURE_SIZE:
             selected_features.append(0.0)
 
+        # 최종 특성 배열 생성 (정확히 12개)
         features = np.array(selected_features[:FEATURE_SIZE])
         features = np.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
 
@@ -362,15 +352,18 @@ class ImmunePortfolioSystem:
         if len(basic_features) >= FEATURE_SIZE:
             return basic_features[:FEATURE_SIZE]
 
+        # 기본 8개 특성에 추가 특성 4개 추가
         expanded_features = list(basic_features)
 
+        # 추가 특성들 (기본값으로 설정)
         additional_features = [
-            0.5,
-            0.0,
-            0.5,
-            1.0,
+            0.5,  # RSI 중립값
+            0.0,  # 모멘텀 중립값
+            0.5,  # 볼린저 밴드 중립값
+            1.0,  # 거래량 비율 중립값
         ]
 
+        # 필요한 만큼 추가
         for i in range(FEATURE_SIZE - len(expanded_features)):
             if i < len(additional_features):
                 expanded_features.append(additional_features[i])
@@ -392,43 +385,8 @@ class ImmunePortfolioSystem:
         }
         return risk_map.get(dominant_risk_idx, "volatility")
 
-    def _extract_tcell_contributions(self, market_features):
-        """T-Cell 분석에서 특성 기여도 추출"""
-        tcell_contributions = {}
-
-        if hasattr(self, "detailed_tcell_analysis") and self.detailed_tcell_analysis:
-            detailed_logs = self.detailed_tcell_analysis.get("detailed_crisis_logs", [])
-
-            for log in detailed_logs:
-                feature_contributions = log.get("feature_contributions", {})
-                for feature, contribution in feature_contributions.items():
-                    if feature not in tcell_contributions:
-                        tcell_contributions[feature] = []
-                    tcell_contributions[feature].append(contribution)
-
-            for feature in tcell_contributions:
-                tcell_contributions[feature] = np.mean(tcell_contributions[feature])
-
-        if not tcell_contributions and len(market_features) >= 5:
-            risk_features = market_features[:5]
-            mean_risk = np.mean(risk_features)
-
-            tcell_contributions = {
-                "volatility": abs(risk_features[0] - mean_risk),
-                "correlation": abs(risk_features[1] - mean_risk),
-                "momentum": abs(risk_features[2] - mean_risk),
-                "liquidity": (
-                    abs(risk_features[3] - mean_risk) if len(risk_features) > 3 else 0.0
-                ),
-                "macro": (
-                    abs(risk_features[4] - mean_risk) if len(risk_features) > 4 else 0.0
-                ),
-            }
-
-        return tcell_contributions
-
     def immune_response(self, market_features, training=False):
-        """면역 반응 실행 (계층적 제어 적용)"""
+        """면역 반응 실행"""
 
         # T-세포 활성화 및 상세 위기 감지 로그 수집
         tcell_activations = []
@@ -438,6 +396,7 @@ class ImmunePortfolioSystem:
             activation = tcell.detect_anomaly(market_features)
             tcell_activations.append(activation)
 
+            # 상세 위기 감지 로그 수집 (활성화 레벨이 임계값 이상인 경우)
             if hasattr(tcell, "last_crisis_detection") and tcell.last_crisis_detection:
                 detailed_crisis_logs.append(tcell.last_crisis_detection)
 
@@ -449,18 +408,9 @@ class ImmunePortfolioSystem:
             "detailed_crisis_logs": detailed_crisis_logs,
         }
 
-        # T-Cell 특성 기여도 추출
-        tcell_contributions = self._extract_tcell_contributions(market_features)
-
         # 기억 세포 확인
-        memory_augmented_features = self.memory_cell.get_memory_augmented_features(
+        recalled_memory, memory_strength, _ = self.memory_cell.recall_memory(
             market_features
-        )
-        if memory_augmented_features is not None:
-            market_features = memory_augmented_features
-
-        recalled_memory, memory_strength, multiple_memories = (
-            self.memory_cell.recall_memory(market_features, return_multiple=True)
         )
 
         if recalled_memory and memory_strength > 0.8:
@@ -472,458 +422,278 @@ class ImmunePortfolioSystem:
                     "antibody_strength": memory_strength,
                     "strategy_contribution": 1.0,
                     "specialized_for_today": True,
-                    "multiple_memories_count": (
-                        len(multiple_memories) if multiple_memories else 0
-                    ),
-                    "memory_diversity": self._calculate_memory_diversity(
-                        multiple_memories
-                    ),
-                    "memory_details": self._extract_memory_details(multiple_memories),
                 }
             ]
             return recalled_memory["strategy"], "memory_response", bcell_decisions
 
-        # B-세포 활성화
-        if self.crisis_level > 0.15:
+        # B-세포 활성화 (시스템 임계값 적용)
+        if self.crisis_level > self.activation_threshold:
             if self.use_learning_bcells:
-                # 계층적 제어 사용 여부에 따른 분기
-                if self.use_hierarchical and self.hierarchical_controller:
-                    return self._hierarchical_immune_response(
-                        market_features, tcell_contributions, training
+                # 메타 컨트롤러가 있으면 전문가를 선택해 단일 전문가 정책 사용
+                if self.hierarchical_controller is not None:
+                    # T-Cell 분석 보완: 지배적 위험 등 메타 정보에 필요한 키 추가
+                    dominant_risk = self._get_dominant_risk(market_features)
+                    detected_risks = [dominant_risk]
+                    risk_diversity = 0.0
+                    self.detailed_tcell_analysis.update(
+                        {
+                            "dominant_risk": dominant_risk,
+                            "detected_risks": detected_risks,
+                            "risk_diversity": risk_diversity,
+                        }
                     )
-                else:
-                    return self._ensemble_immune_response(
-                        market_features, tcell_contributions, training
+
+                    selected_idx, selected_name, confidence, meta_info = (
+                        self.hierarchical_controller.select_expert(
+                            market_features,
+                            self.crisis_level,
+                            self.detailed_tcell_analysis,
+                            training=training,
+                        )
                     )
-            else:
-                return self._legacy_immune_response(market_features)
 
-        return self.base_weights, "normal", []
+                    # 선택된 전문가로부터 전략 생성
+                    chosen_bcell = self.bcells[selected_idx]
+                    strategy, antibody_strength = chosen_bcell.produce_antibody(
+                        market_features, self.crisis_level, training=training
+                    )
+                    weights = strategy / np.sum(strategy)
+                    self.immune_activation = antibody_strength
 
-    def _calculate_memory_diversity(self, multiple_memories):
-        """기억 다양성 계산 (안전한 방식)"""
-        if not multiple_memories:
-            return 0
+                    # 메타 학습용 상태/행동 저장
+                    self.last_meta_state = meta_info.get("state_vector")
+                    self.last_meta_action = int(selected_idx)
 
-        crisis_types = set()
-        for memory_item in multiple_memories:
-            # 안전한 키 접근
-            context = memory_item.get("context", {})
-            if isinstance(context, dict):
-                crisis_type = context.get("crisis_type", "unknown")
-                crisis_types.add(crisis_type)
-            else:
-                # context가 딕셔너리가 아닌 경우 대체 방법
-                memory_data = memory_item.get("memory", {})
-                if isinstance(memory_data, dict):
-                    # memory 내부의 패턴을 분석해서 위기 유형 추정
-                    crisis_types.add(self._infer_crisis_type_from_pattern(memory_data))
+                    # 로깅용 B-세포 결정 정보
+                    bcell_decisions = []
+                    for i, bcell in enumerate(self.bcells):
+                        prob = (
+                            float(meta_info["expert_probabilities"][i])
+                            if "expert_probabilities" in meta_info
+                            else (1.0 if i == selected_idx else 0.0)
+                        )
+                        bcell_decisions.append(
+                            {
+                                "id": bcell.cell_id,
+                                "risk_type": bcell.risk_type,
+                                "activation_level": prob,
+                                "antibody_strength": float(antibody_strength)
+                                if i == selected_idx
+                                else 0.0,
+                                "strategy_contribution": 1.0 if i == selected_idx else 0.0,
+                                "specialized_for_today": bcell.risk_type
+                                == dominant_risk,
+                            }
+                        )
+
+                    response_type = f"meta_{selected_name}"
+                    return weights, response_type, bcell_decisions
                 else:
-                    crisis_types.add("unknown")
+                    # 메타 컨트롤러가 없으면 기존 앙상블 경로 사용
+                    response_weights = []
+                    antibody_strengths = []
+                    for bcell in self.bcells:
+                        strategy, antibody_strength = bcell.produce_antibody(
+                            market_features, self.crisis_level, training=training
+                        )
+                        response_weights.append(strategy)
+                        antibody_strengths.append(antibody_strength)
 
-        return len(crisis_types)
+                    if len(antibody_strengths) > 0 and sum(antibody_strengths) > 0:
+                        normalized_strengths = np.array(antibody_strengths) / sum(
+                            antibody_strengths
+                        )
+                        ensemble_strategy = np.zeros(self.n_assets)
+                        for i, (strategy, weight) in enumerate(
+                            zip(response_weights, normalized_strengths)
+                        ):
+                            ensemble_strategy += strategy * weight
+                        ensemble_strategy = ensemble_strategy / np.sum(ensemble_strategy)
+                        self.immune_activation = np.mean(antibody_strengths)
+                        bcell_decisions = []
+                        dominant_risk = self._get_dominant_risk(market_features)
+                        for i, bcell in enumerate(self.bcells):
+                            bcell_decisions.append(
+                                {
+                                    "id": bcell.cell_id,
+                                    "risk_type": bcell.risk_type,
+                                    "activation_level": float(normalized_strengths[i]),
+                                    "antibody_strength": float(antibody_strengths[i]),
+                                    "strategy_contribution": float(normalized_strengths[i]),
+                                    "specialized_for_today": bcell.risk_type
+                                    == dominant_risk,
+                                }
+                            )
+                        dominant_bcell_idx = np.argmax(antibody_strengths)
+                        response_type = (
+                            f"ensemble_{self.bcells[dominant_bcell_idx].risk_type}"
+                        )
+                        return ensemble_strategy, response_type, bcell_decisions
+                    else:
+                        return self.base_weights, "fallback", []
+            else:
+                # 규칙 기반 시스템
+                response_weights = []
+                antibody_strengths = []
 
-    def _extract_memory_details(self, multiple_memories):
-        """기억 상세 정보 추출"""
-        if not multiple_memories:
-            return []
+                for bcell in self.bcells:
+                    antibody_strength = bcell.produce_antibody(market_features)
+                    response_weight = bcell.response_strategy(
+                        self.crisis_level * antibody_strength
+                    )
+                    response_weights.append(response_weight)
+                    antibody_strengths.append(antibody_strength)
 
-        details = []
-        for memory_item in multiple_memories:
-            detail = {
-                "similarity": memory_item.get("similarity", 0.0),
-                "memory_strength": memory_item.get("memory", {}).get("strength", 0.0),
-                "effectiveness": memory_item.get("memory", {}).get(
-                    "effectiveness", 0.0
-                ),
-                "crisis_type": self._extract_crisis_type_safely(memory_item),
-            }
-            details.append(detail)
+                best_response_idx = np.argmax(antibody_strengths)
+                self.immune_activation = antibody_strengths[best_response_idx]
 
-        return details
-
-    def _extract_crisis_type_safely(self, memory_item):
-        """안전한 위기 유형 추출"""
-        # 1순위: context에서 추출
-        context = memory_item.get("context", {})
-        if isinstance(context, dict) and "crisis_type" in context:
-            return context["crisis_type"]
-
-        # 2순위: memory 패턴에서 추정
-        memory_data = memory_item.get("memory", {})
-        if isinstance(memory_data, dict):
-            return self._infer_crisis_type_from_pattern(memory_data)
-
-        return "unknown"
-
-    def _infer_crisis_type_from_pattern(self, memory_data):
-        """메모리 패턴에서 위기 유형 추정"""
-        pattern = memory_data.get("pattern", [])
-        if not pattern or len(pattern) < 5:
-            return "unknown"
-
-        # 패턴의 특성을 분석해서 위기 유형 추정
-        volatility_signal = abs(pattern[0]) if len(pattern) > 0 else 0
-        correlation_signal = abs(pattern[1]) if len(pattern) > 1 else 0
-        momentum_signal = abs(pattern[2]) if len(pattern) > 2 else 0
-
-        max_signal = max(volatility_signal, correlation_signal, momentum_signal)
-
-        if volatility_signal == max_signal:
-            return "volatility_crisis"
-        elif correlation_signal == max_signal:
-            return "correlation_crisis"
-        elif momentum_signal == max_signal:
-            return "momentum_crisis"
-        else:
-            return "mixed_crisis"
-
-    def update_memory(self, crisis_pattern, response_strategy, effectiveness):
-        """기억 업데이트 (context 정보 포함)"""
-
-        # 현재 시장 상황을 분석해서 위기 유형 결정
-        crisis_type = self._determine_current_crisis_type(crisis_pattern)
-
-        # 컨텍스트 정보 구성
-        context = {
-            "crisis_type": crisis_type,
-            "crisis_level": self.crisis_level,
-            "timestamp": datetime.now().isoformat(),
-            "market_conditions": {
-                "volatility": (
-                    float(crisis_pattern[0]) if len(crisis_pattern) > 0 else 0.0
-                ),
-                "correlation": (
-                    float(crisis_pattern[1]) if len(crisis_pattern) > 1 else 0.0
-                ),
-                "momentum": (
-                    float(crisis_pattern[2]) if len(crisis_pattern) > 2 else 0.0
-                ),
-            },
-        }
-
-        # 컨텍스트와 함께 기억 저장
-        self.memory_cell.store_memory(
-            crisis_pattern, response_strategy, effectiveness, context=context
-        )
-
-    def _determine_current_crisis_type(self, crisis_pattern):
-        """현재 위기 유형 결정"""
-        if len(crisis_pattern) < 3:
-            return "unknown"
-
-        # 가장 강한 신호를 보이는 특성을 위기 유형으로 결정
-        signals = {
-            "volatility": abs(crisis_pattern[0]),
-            "correlation": abs(crisis_pattern[1]),
-            "momentum": abs(crisis_pattern[2]),
-        }
-
-        return max(signals, key=signals.get) + "_crisis"
-
-    def _hierarchical_immune_response(
-        self, market_features, tcell_contributions, training
-    ):
-        """계층적 제어를 사용한 면역 반응"""
-
-        # Meta-Controller로 전문가 선택
-        selected_expert_idx, selected_expert_name, selection_confidence, meta_info = (
-            self.hierarchical_controller.select_expert(
-                market_features=market_features,
-                crisis_level=self.crisis_level,
-                tcell_analysis=self.detailed_tcell_analysis,
-                training=training,
-            )
-        )
-
-        # 선택된 B-Cell 전문가로 전략 생성
-        selected_bcell = self.bcells[selected_expert_idx]
-        strategy, antibody_strength = selected_bcell.produce_antibody(
-            market_features,
-            self.crisis_level,
-            tcell_contributions=tcell_contributions,
-            training=training,
-        )
-
-        self.immune_activation = antibody_strength
-
-        # B-세포 결정 정보 구성
-        bcell_decisions = [
-            {
-                "id": selected_bcell.cell_id,
-                "risk_type": selected_bcell.risk_type,
-                "activation_level": 1.0,  # 선택된 전문가는 100% 활성화
-                "antibody_strength": float(antibody_strength),
-                "strategy_contribution": 1.0,
-                "specialized_for_today": True,
-                "selection_confidence": float(selection_confidence),
-                "meta_reasoning": meta_info.get("selection_reasoning", []),
-                "expert_probabilities": meta_info.get(
-                    "expert_probabilities", []
-                ).tolist(),
-            }
-        ]
-
-        # 가중치 업데이트
-        self.previous_weights = self.current_weights.copy()
-        self.current_weights = strategy
-
-        response_type = f"hierarchical_{selected_expert_name}"
-
-        return strategy, response_type, bcell_decisions
-
-    def _ensemble_immune_response(self, market_features, tcell_contributions, training):
-        """앙상블을 사용한 면역 반응 (기존 방식)"""
-
-        response_weights = []
-        antibody_strengths = []
-
-        for bcell in self.bcells:
-            strategy, antibody_strength = bcell.produce_antibody(
-                market_features,
-                self.crisis_level,
-                tcell_contributions=tcell_contributions,
-                training=training,
-            )
-            response_weights.append(strategy)
-            antibody_strengths.append(antibody_strength)
-
-        if len(antibody_strengths) > 0 and sum(antibody_strengths) > 0:
-            normalized_strengths = np.array(antibody_strengths) / sum(
-                antibody_strengths
-            )
-
-            ensemble_strategy = np.zeros(self.n_assets)
-            for i, (strategy, weight) in enumerate(
-                zip(response_weights, normalized_strengths)
-            ):
-                ensemble_strategy += strategy * weight
-
-            ensemble_strategy = ensemble_strategy / np.sum(ensemble_strategy)
-            self.immune_activation = np.mean(antibody_strengths)
-
-            # B-세포 정보 수집
-            bcell_decisions = []
-            dominant_risk = self._get_dominant_risk(market_features)
-
-            for i, bcell in enumerate(self.bcells):
-                bcell_decisions.append(
+                bcell_decisions = [
                     {
-                        "id": bcell.cell_id,
-                        "risk_type": bcell.risk_type,
-                        "activation_level": float(normalized_strengths[i]),
-                        "antibody_strength": float(antibody_strengths[i]),
-                        "strategy_contribution": float(normalized_strengths[i]),
-                        "specialized_for_today": bcell.risk_type == dominant_risk,
+                        "id": self.bcells[best_response_idx].cell_id,
+                        "risk_type": self.bcells[best_response_idx].risk_type,
+                        "activation_level": float(self.immune_activation),
+                        "antibody_strength": float(self.immune_activation),
+                        "strategy_contribution": 1.0,
+                        "specialized_for_today": True,
                     }
+                ]
+
+                return (
+                    response_weights[best_response_idx],
+                    f"legacy_{self.bcells[best_response_idx].risk_type}",
+                    bcell_decisions,
                 )
 
-            dominant_bcell_idx = np.argmax(antibody_strengths)
-            response_type = f"ensemble_{self.bcells[dominant_bcell_idx].risk_type}"
-
-            # 가중치 업데이트
-            self.previous_weights = self.current_weights.copy()
-            self.current_weights = ensemble_strategy
-
-            return ensemble_strategy, response_type, bcell_decisions
-        else:
-            # 오류 발생 시 균등 가중치 반환
-            equal_weights = np.ones(self.n_assets) / self.n_assets
-            return equal_weights, "error_recovery", []
-
-    def _legacy_immune_response(self, market_features):
-        """규칙 기반 면역 반응"""
-
-        response_weights = []
-        antibody_strengths = []
-
-        for bcell in self.bcells:
-            antibody_strength = bcell.produce_antibody(market_features)
-            response_weight = bcell.response_strategy(
-                self.crisis_level * antibody_strength
-            )
-            response_weights.append(response_weight)
-            antibody_strengths.append(antibody_strength)
-
-        best_response_idx = np.argmax(antibody_strengths)
-        self.immune_activation = antibody_strengths[best_response_idx]
-
-        bcell_decisions = [
-            {
-                "id": self.bcells[best_response_idx].cell_id,
-                "risk_type": self.bcells[best_response_idx].risk_type,
-                "activation_level": float(self.immune_activation),
-                "antibody_strength": float(self.immune_activation),
-                "strategy_contribution": 1.0,
-                "specialized_for_today": True,
-            }
-        ]
-
-        strategy = response_weights[best_response_idx]
-        self.previous_weights = self.current_weights.copy()
-        self.current_weights = strategy
-
-        return (
-            strategy,
-            f"legacy_{self.bcells[best_response_idx].risk_type}",
-            bcell_decisions,
-        )
-
-    def calculate_reward(self, portfolio_return):
-        """고도화된 보상 계산 사용"""
-        if self.previous_weights is None:
-            self.previous_weights = self.base_weights.copy()
-
-        reward_details = self.reward_calculator.calculate_comprehensive_reward(
-            current_return=portfolio_return,
-            previous_weights=self.previous_weights,
-            current_weights=self.current_weights,
-            market_features=getattr(self, "last_market_features", np.zeros(12)),
-            crisis_level=self.crisis_level,
-        )
-
-        return reward_details["total_reward"]
-
-    def update_hierarchical_learning(self, expert_performance):
-        """계층적 제어기 학습 업데이트"""
-        if self.use_hierarchical and self.hierarchical_controller:
-            # 현재 상태 벡터 구성
-            if hasattr(self, "last_market_features"):
-                state_vector = self.hierarchical_controller._construct_meta_state(
-                    self.last_market_features,
-                    self.crisis_level,
-                    self.detailed_tcell_analysis,
+        # 비위기: 기존 가중치를 유지하되, 소폭 관성 업데이트(알파)를 적용해 최근 정책 방향을 반영
+        if self.use_learning_bcells:
+            # 앙상블 제안 전략 계산(훈련 여부 무관하게 추론용)
+            response_weights = []
+            antibody_strengths = []
+            for bcell in self.bcells:
+                strategy, antibody_strength = bcell.produce_antibody(
+                    market_features, self.crisis_level, training=False
                 )
+                response_weights.append(strategy)
+                antibody_strengths.append(antibody_strength)
 
-                # 마지막 선택된 전문가 인덱스 가져오기
-                if hasattr(self.hierarchical_controller, "last_selected_expert"):
-                    selected_expert_idx = (
-                        self.hierarchical_controller.last_selected_expert
-                    )
+            if len(antibody_strengths) > 0 and sum(antibody_strengths) > 0:
+                normalized_strengths = np.array(antibody_strengths) / sum(
+                    antibody_strengths
+                )
+                ensemble_strategy = np.zeros(self.n_assets)
+                for strategy, weight in zip(response_weights, normalized_strengths):
+                    ensemble_strategy += strategy * weight
+                ensemble_strategy = ensemble_strategy / np.sum(ensemble_strategy)
 
-                    # 메타 경험 추가
-                    self.hierarchical_controller.add_meta_experience(
-                        state_vector=state_vector,
-                        selected_expert_idx=selected_expert_idx,
-                        expert_performance=expert_performance,
-                    )
+                inertia_alpha = 0.05  # 작은 관성 업데이트
+                new_weights = (
+                    (1 - inertia_alpha) * self.current_weights
+                    + inertia_alpha * ensemble_strategy
+                )
+                return new_weights, "normal_inertia", []
 
-                    # 주기적 메타 정책 학습
-                    if len(self.hierarchical_controller.experience_buffer) >= 32:
-                        self.hierarchical_controller.learn_meta_policy()
+        return self.current_weights, "normal", []
 
-    def pretrain_bcells(self, market_data, episodes=PRETRAIN_EPISODES):
-        """실제 사전훈련 구현 - 전문가 전략 모방"""
+    def _volatility_response(self, activation_level):
+        """변동성 위험 대응"""
+        risk_reduction = activation_level * 0.3
+        weights = self.base_weights * (1 - risk_reduction)
+        safe_indices = [6, 7, 8]
+        for idx in safe_indices:
+            if idx < len(weights):
+                weights[idx] += risk_reduction / len(safe_indices)
+        return weights / np.sum(weights)
+
+    def _correlation_response(self, activation_level):
+        """상관관계 위험 대응"""
+        diversification_boost = activation_level * 0.2
+        weights = self.base_weights.copy()
+        weights = weights * (1 - diversification_boost) + diversification_boost / len(
+            weights
+        )
+        return weights / np.sum(weights)
+
+    def _momentum_response(self, activation_level):
+        """모멘텀 위험 대응"""
+        neutral_adjustment = activation_level * 0.25
+        weights = self.base_weights * (1 - neutral_adjustment) + (
+            self.base_weights * neutral_adjustment
+        )
+        return weights / np.sum(weights)
+
+    def _liquidity_response(self, activation_level):
+        """유동성 위험 대응"""
+        large_cap_boost = activation_level * 0.2
+        weights = self.base_weights.copy()
+        large_cap_indices = [0, 1, 2, 3]
+        for idx in large_cap_indices:
+            if idx < len(weights):
+                weights[idx] += large_cap_boost / len(large_cap_indices)
+        return weights / np.sum(weights)
+
+    def _macro_response(self, activation_level):
+        """거시경제 위험 대응"""
+        defensive_boost = activation_level * 0.3
+        weights = self.base_weights * (1 - defensive_boost)
+        defensive_indices = [7, 8, 9]
+        for idx in defensive_indices:
+            if idx < len(weights):
+                weights[idx] += defensive_boost / len(defensive_indices)
+        return weights / np.sum(weights)
+
+    def pretrain_bcells(self, market_data, episodes=500):
+        """B-세포 사전 훈련"""
         if not self.use_learning_bcells:
             return
-            
-        # 로그에 사전훈련 섹션 헤더 추가
-        logger_instance = BIPDLogger()
-        logger_instance.write_section_header("B-Cell 사전훈련 (Imitation Learning)")
-        
-        self.logger.info(f"B-Cell 사전훈련 시작: {episodes}에피소드")
-        
-        # 전문가 전략 생성기 초기화
-        expert_strategies = ExpertStrategies(self.n_assets)
-        
-        # 다양한 전문가 전략으로 데이터 생성
-        strategies = ["equal_weight", "momentum", "mean_reversion", "volatility"]
-        all_expert_data = []
-        
-        print("전문가 전략 데이터 생성 중...")
-        for strategy in strategies:
-            expert_data = expert_strategies.generate_expert_data(market_data, strategy)
-            all_expert_data.extend(expert_data)
-            print(f"  ✓ {strategy} 전략: {len(expert_data)}개 샘플")
-        
-        if not all_expert_data:
-            print("❌ 전문가 데이터 생성 실패!")
+
+        # 규칙 기반 사전훈련 비활성화 시, 온폴리시 학습만 사용
+        if not self.use_rule_based_pretraining:
+            print("B-세포 네트워크 사전 훈련 스킵: 온폴리시 학습으로 직접 위험 대응 정책을 학습합니다.")
             return
-            
-        print(f"✅ 전체 전문가 데이터: {len(all_expert_data)}개 샘플 생성 완료")
-        
-        # 데이터를 훈련/검증으로 분할
-        train_data = all_expert_data[:int(0.8 * len(all_expert_data))]
-        val_data = all_expert_data[int(0.8 * len(all_expert_data)):]
-        
-        # 각 B-Cell에 대해 사전훈련 수행
-        print(f"\n사전훈련 시작: {len(self.bcells)}개 B-Cell, 각각 {episodes}에피소드")
-        
-        for bcell_idx, bcell in enumerate(self.bcells):
-            print(f"\n[{bcell_idx+1}/{len(self.bcells)}] {bcell.risk_type} B-Cell 사전훈련")
-            # 개별 B-Cell 시작 로그 제거
-            
-            # 훈련 데이터 준비
-            states = []
-            actions = []
-            
-            for state, action in train_data:
-                # 상태에 crisis_level과 current_weights 추가
-                crisis_level = np.random.uniform(0.0, 0.5)  # 사전훈련에서는 낮은 위기
-                current_weights = np.ones(self.n_assets) / self.n_assets
-                
-                full_state = np.concatenate([state, [crisis_level], current_weights])
-                states.append(full_state)
-                actions.append(action)
-            
-            # 텐서로 변환
-            states_tensor = torch.FloatTensor(states)
-            actions_tensor = torch.FloatTensor(actions)
-            
-            # 모방학습 수행
-            total_loss = 0.0
-            batch_size = min(32, len(states) // 10)  # 적절한 배치 크기
-            
-            with tqdm(range(episodes), desc=f"    {bcell.risk_type} 모방학습", 
-                     unit="episode", leave=True, ncols=100, 
-                     bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]') as pbar:
-                for episode in pbar:
-                    # 랜덤 배치 선택
-                    indices = torch.randperm(len(states))[:batch_size]
-                    batch_states = states_tensor[indices]
-                    batch_actions = actions_tensor[indices]
-                    
-                    # 모방학습
-                    loss = bcell.pretrain_with_imitation(batch_states, batch_actions)
-                    total_loss += loss
-                    
-                    # 진행바 업데이트
-                    if episode % 10 == 0:
-                        avg_loss = total_loss / (episode + 1)
-                        pbar.set_postfix({"평균 손실": f"{avg_loss:.6f}", "현재 손실": f"{loss:.6f}"})
-            
-            avg_loss = total_loss / episodes
-            print(f"    ✅ 평균 손실: {avg_loss:.6f}")
-            
-            # 검증 데이터로 성능 확인
-            if val_data:
-                val_states = []
-                for state, action in val_data[:100]:  # 일부만 사용
-                    crisis_level = np.random.uniform(0.0, 0.5)
-                    current_weights = np.ones(self.n_assets) / self.n_assets
-                    full_state = np.concatenate([state, [crisis_level], current_weights])
-                    val_states.append(full_state)
-                
-                val_states_tensor = torch.FloatTensor(val_states)
-                validation_result = bcell.validate_pretrained_policy(val_states_tensor)
-                
-                if validation_result["is_reasonable"]:
-                    print(f"    ✅ 정책 검증 통과")
-                else:
-                    print(f"    ⚠️ 정책 검증 실패 - 추가 학습 필요")
-                    self.logger.warning(f"{bcell.risk_type} B-Cell 사전훈련 품질 문제: {validation_result}")
-        
-        # 사전훈련 요약 통계 로깅
-        self.logger.info("=" * 60)
-        self.logger.info("B-Cell 사전훈련 완료 요약")
-        self.logger.info("=" * 60)
-        self.logger.info(f"훈련된 B-Cell 수: {len(self.bcells)}")
-        self.logger.info(f"각 B-Cell 훈련 에피소드: {episodes}")
-        self.logger.info(f"전문가 전략 데이터: {len(all_expert_data)} 샘플")
-        self.logger.info("강화학습 준비 완료")
-        self.logger.info("=" * 60)
-        
-        print("사전훈련 완료! 이제 실제 강화학습을 시작합니다.")
+
+        print(f"B-세포 네트워크 사전 훈련 시작 (에피소드: {episodes})")
+
+        expert_policy_functions = {
+            "volatility": self._volatility_response,
+            "correlation": self._correlation_response,
+            "momentum": self._momentum_response,
+            "liquidity": self._liquidity_response,
+            "macro": self._macro_response,
+        }
+
+        loss_function = nn.MSELoss()
+
+        for episode in tqdm(range(episodes), desc="사전 훈련 진행률"):
+            start_idx = np.random.randint(
+                20, len(market_data.pct_change().dropna()) - 50
+            )
+            current_data = market_data.iloc[:start_idx]
+            market_features = self.extract_market_features(current_data)
+            crisis_level = np.random.uniform(0.2, 0.8)
+
+            for bcell in self.bcells:
+                if bcell.risk_type in expert_policy_functions:
+                    expert_action = expert_policy_functions[bcell.risk_type](
+                        crisis_level
+                    )
+                    target_policy = torch.FloatTensor(expert_action)
+
+                    features_tensor = torch.FloatTensor(market_features)
+                    crisis_tensor = torch.FloatTensor([crisis_level])
+                    specialization_tensor = bcell.specialization_weights
+                    combined_input = torch.cat(
+                        [features_tensor, crisis_tensor, specialization_tensor]
+                    )
+                    current_policy = bcell.actor_network(
+                        combined_input.unsqueeze(0)
+                    ).squeeze(0)
+
+                    bcell.actor_optimizer.zero_grad()
+                    loss = loss_function(current_policy, target_policy)
+                    loss.backward()
+                    bcell.actor_optimizer.step()
+
+        print("B-세포 네트워크 사전 훈련이 완료되었습니다.")
 
     def update_memory(self, crisis_pattern, response_strategy, effectiveness):
         """기억 업데이트"""
@@ -931,16 +701,9 @@ class ImmunePortfolioSystem:
 
         if self.use_learning_bcells:
             for bcell in self.bcells:
-                # 배치 학습 실행 (충분한 경험이 있을 때)
-                if len(bcell.experience_buffer) >= bcell.batch_size:
-                    bcell.learn_from_batch()
+                bcell.learn_from_experience(
+                    crisis_pattern, self.crisis_level, effectiveness
+                )
         else:
             for bcell in self.bcells:
                 bcell.adapt_response(crisis_pattern, effectiveness)
-
-    def get_hierarchical_metrics(self):
-        """계층적 시스템 메트릭 반환"""
-        if self.use_hierarchical and self.hierarchical_controller:
-            return self.hierarchical_controller.get_hierarchical_metrics()
-        else:
-            return {"hierarchical_system": "disabled"}

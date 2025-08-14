@@ -9,13 +9,12 @@ from collections import deque
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional
 import pickle
-from constant import *
 
 
 class MemoryEmbedding(nn.Module):
     """기억 임베딩 네트워크"""
 
-    def __init__(self, input_dim, embedding_dim=MEMORY_EMBEDDING_DIM):
+    def __init__(self, input_dim, embedding_dim=64):
         super(MemoryEmbedding, self).__init__()
         self.embedding_net = nn.Sequential(
             nn.Linear(input_dim, embedding_dim),
@@ -32,7 +31,7 @@ class MemoryEmbedding(nn.Module):
 class MemoryRetrieval(nn.Module):
     """기억 검색 네트워크"""
 
-    def __init__(self, query_dim, memory_dim, hidden_dim=MEMORY_HIDDEN_DIM):
+    def __init__(self, query_dim, memory_dim, hidden_dim=64):
         super(MemoryRetrieval, self).__init__()
         self.query_projection = nn.Linear(query_dim, hidden_dim)
         self.memory_projection = nn.Linear(memory_dim, hidden_dim)
@@ -75,7 +74,7 @@ class MemoryRetrieval(nn.Module):
 class MemoryCell:
     """기억 기반 의사결정 지원 세포"""
 
-    def __init__(self, max_memories=MEMORY_MAX_MEMORIES, embedding_dim=MEMORY_DEFAULT_EMBEDDING_DIM, similarity_threshold=MEMORY_SIMILARITY_THRESHOLD):
+    def __init__(self, max_memories=100, embedding_dim=64, similarity_threshold=0.8):
         self.max_memories = max_memories
         self.embedding_dim = embedding_dim
         self.similarity_threshold = similarity_threshold
@@ -92,23 +91,23 @@ class MemoryCell:
             24, embedding_dim
         )  # 12 features + 12 strategy
         self.memory_retrieval_net = MemoryRetrieval(
-            12, 24
-        )  # query: 12 features, memory: 24 (features + strategy)
+            12, self.embedding_dim
+        )  # query: 12 features, memory: embedding_dim (64)
 
         # 기억 강도 관리
         self.memory_strengths = []
         self.memory_access_counts = []
-        self.decay_rate = MEMORY_DECAY_RATE
+        self.decay_rate = 0.05
 
         # 성과 추적
-        self.retrieval_success_rate = deque(maxlen=MEMORY_SHORT_TERM_BUFFER)
-        self.memory_utilization_rate = deque(maxlen=MEMORY_LONG_TERM_BUFFER)
+        self.retrieval_success_rate = deque(maxlen=50)
+        self.memory_utilization_rate = deque(maxlen=50)
 
         # 최적화
         self.optimizer = torch.optim.Adam(
             list(self.memory_embedding_net.parameters())
             + list(self.memory_retrieval_net.parameters()),
-            lr=DEFAULT_MEMORY_LR,
+            lr=0.001,
         )
 
     def store_memory(
@@ -199,19 +198,12 @@ class MemoryCell:
                 query_tensor, memory_bank
             )
 
-            # 계산 그래프에서 분리
-            attention_weights = attention_weights.detach()
-            retrieved_memory = retrieved_memory.detach()
-
             # 가장 유사한 기억 찾기
             best_memory_idx = torch.argmax(attention_weights[0]).item()
             best_similarity = attention_weights[0][best_memory_idx].item()
 
             # 임계값 확인
             if best_similarity < self.similarity_threshold:
-                # 명시적 해제
-                del query_tensor, memory_bank, attention_weights, retrieved_memory
-                torch.cuda.empty_cache() if torch.cuda.is_available() else None
                 return None, 0.0, None
 
             # 기억 강화
@@ -242,20 +234,9 @@ class MemoryCell:
 
                 return best_memory, best_similarity, multiple_memories
 
-            # 사용 후 텐서 정리
-            del query_tensor, memory_bank
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-
-            return best_memory, best_similarity, multiple_memories
+            return best_memory, best_similarity, None
 
         except Exception as e:
-            # 예외 발생 시에도 메모리 정리
-            if "query_tensor" in locals():
-                del query_tensor
-            if "memory_bank" in locals():
-                del memory_bank
-            torch.cuda.empty_cache() if torch.cuda.is_available() else None
             print(f"기억 회상 중 오류 발생: {e}")
             return None, 0.0, None
 
@@ -314,7 +295,7 @@ class MemoryCell:
                     memory["pattern"], recalled_memory["pattern"], atol=1e-6
                 ):
                     # 효과성 업데이트 (지수 이동 평균)
-                    alpha = MEMORY_BLENDING_ALPHA
+                    alpha = 0.3
                     old_effectiveness = self.memory_effectiveness[i]
                     new_effectiveness = (
                         alpha * actual_effectiveness + (1 - alpha) * old_effectiveness
@@ -438,7 +419,7 @@ class MemoryCell:
 
             # 최소 강도 보장
             if self.memory_strengths[i] < 0.1:
-                self.memory_strengths[i] = MEMORY_MIN_STRENGTH
+                self.memory_strengths[i] = 0.1
 
     def get_memory_statistics(self) -> Dict:
         """기억 시스템 통계"""

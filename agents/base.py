@@ -9,7 +9,3 @@ class ImmuneCell:
         self.activation_threshold = activation_threshold
         self.activation_level = 0.0
         self.memory_strength = 0.0
-
-    def should_activate(self, stimulus_level):
-        """활성화 임계값 기반 판단"""
-        return stimulus_level > self.activation_threshold

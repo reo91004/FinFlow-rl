@@ -5,17 +5,18 @@ import os
 import numpy as np
 from datetime import datetime
 from typing import Dict, List
-from constant import *
 
 
 class DecisionAnalyzer:
     """의사결정 과정 분석 클래스"""
 
-    def __init__(self, output_dir=None):
+    def __init__(self, output_dir=None, detection_threshold: float = 0.15):
         self.decision_log = []
-        self.risk_thresholds = RISK_THRESHOLDS
+        self.risk_thresholds = {"low": 0.3, "medium": 0.5, "high": 0.7, "critical": 0.9}
         self.crisis_detection_log = []  # 상세 위기 감지 로그
         self.output_dir = output_dir or "."
+        # 시스템에서 사용하는 활성화 임계값 (T-Cell/B-Cell 활성화와 일치하도록 설정)
+        self.detection_threshold = detection_threshold
 
     def _process_detailed_tcell_analysis(
         self, tcell_analysis, dominant_risk, risk_features, dominant_risk_idx
@@ -44,7 +45,7 @@ class DecisionAnalyzer:
             }
 
             for tcell_log in detailed_logs:
-                if tcell_log.get("activation_level", 0.0) > 0.15:  # 위기 감지 임계값
+                if tcell_log.get("activation_level", 0.0) > self.detection_threshold:
                     crisis_detection = {
                         "tcell_id": tcell_log.get("tcell_id", "unknown"),
                         "timestamp": tcell_log.get("timestamp", ""),
@@ -262,7 +263,9 @@ class DecisionAnalyzer:
         # 통계 계산 (더 민감한 임계값)
         total_days = len(period_records)
         crisis_days = sum(
-            1 for r in period_records if r["tcell_analysis"]["crisis_level"] > 0.15
+            1
+            for r in period_records
+            if r["tcell_analysis"]["crisis_level"] > self.detection_threshold
         )
         memory_activations = sum(1 for r in period_records if r["memory_activated"])
 
@@ -603,7 +606,7 @@ class DecisionAnalyzer:
                 )
                 time_diff = (crisis_time - last_crisis_time).total_seconds() / 3600
 
-                if time_diff <= REACTION_TIME_THRESHOLD:  # 6시간 이내
+                if time_diff <= 6:  # 6시간 이내
                     current_cluster.append(crisis_log)
                 else:
                     if len(current_cluster) > 1:
@@ -718,7 +721,7 @@ class DecisionAnalyzer:
         # JSON 파일 저장
         json_path = os.path.join(output_dir, f"{filename}.json")
         with open(json_path, "w", encoding="utf-8") as f:
-            json.dump(report, f, ensure_ascii=False, indent=JSON_INDENT)
+            json.dump(report, f, ensure_ascii=False, indent=2)
 
         # Markdown 보고서 생성
         md_content = self._generate_markdown_report(report)
