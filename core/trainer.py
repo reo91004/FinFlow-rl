@@ -25,11 +25,14 @@ class BIPDTrainer:
     """
     
     def __init__(self, train_data: pd.DataFrame, test_data: pd.DataFrame,
-                 save_dir: str = "models"):
+                 save_dir: Optional[str] = None):
         self.train_data = train_data
         self.test_data = test_data
-        self.save_dir = save_dir
-        os.makedirs(save_dir, exist_ok=True)
+        
+        # 세션 디렉토리 내에 models 폴더 생성
+        session_dir = get_session_directory()
+        self.save_dir = save_dir if save_dir else os.path.join(session_dir, "models")
+        os.makedirs(self.save_dir, exist_ok=True)
         
         # 컴포넌트 초기화
         self.feature_extractor = FeatureExtractor(LOOKBACK_WINDOW)
@@ -366,6 +369,8 @@ class BIPDTrainer:
         
         if success:
             self.logger.info(f"최종 모델이 저장되었습니다: {model_path}")
+        else:
+            self.logger.error(f"최종 모델 저장 실패: {model_path}")
     
     def _generate_training_summary(self) -> Dict:
         """훈련 요약 생성"""

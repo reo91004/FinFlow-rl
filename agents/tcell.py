@@ -269,6 +269,11 @@ class TCell:
             return False
         
         try:
+            # 저장 디렉토리 생성 보장
+            base_dir = os.path.dirname(filepath)
+            if base_dir:
+                os.makedirs(base_dir, exist_ok=True)
+            
             model_data = {
                 'detector': self.detector,
                 'scaler': self.scaler,

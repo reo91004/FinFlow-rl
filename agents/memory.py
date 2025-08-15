@@ -1,6 +1,7 @@
 # bipd/agents/memory.py
 
 import numpy as np
+import os
 from sklearn.metrics.pairwise import cosine_similarity
 from collections import deque
 import pickle
@@ -297,6 +298,11 @@ class MemoryCell:
     def save_memory(self, filepath):
         """메모리 저장"""
         try:
+            # 저장 디렉토리 생성 보장
+            base_dir = os.path.dirname(filepath)
+            if base_dir:
+                os.makedirs(base_dir, exist_ok=True)
+            
             memory_data = {
                 'memories': list(self.memories),
                 'embeddings': list(self.embeddings),

@@ -1,6 +1,7 @@
 # bipd/core/system.py
 
 import numpy as np
+import os
 from typing import Dict, Tuple, List, Optional
 from agents import TCell, BCell, MemoryCell
 from utils.logger import BIPDLogger
@@ -80,7 +81,8 @@ class ImmunePortfolioSystem:
         self.logger.info(
             f"면역 포트폴리오 시스템이 초기화되었습니다. "
             f"자산수={n_assets}, 상태차원={state_dim}, "
-            f"B-Cell={len(self.bcells)}개"
+            f"B-Cell={len(self.bcells)}개, "
+            f"Device={get_device_info()}"
         )
     
     def fit_tcell(self, historical_features: np.ndarray) -> bool:
@@ -482,22 +484,58 @@ class ImmunePortfolioSystem:
         return summary
     
     def save_system(self, base_path: str) -> bool:
-        """전체 시스템 저장"""
+        """전체 시스템을 단일 파일로 저장"""
         try:
-            # T-Cell 저장
-            tcell_path = f"{base_path}_tcell.pkl"
-            self.tcell.save_model(tcell_path)
+            # 저장 디렉토리 생성 보장
+            base_dir = os.path.dirname(base_path)
+            if base_dir:
+                os.makedirs(base_dir, exist_ok=True)
             
-            # B-Cell 저장
+            # 전체 시스템을 하나의 딕셔너리로 통합
+            system_data = {
+                'tcell': {
+                    'detector': self.tcell.detector if self.tcell.is_fitted else None,
+                    'scaler': self.tcell.scaler if self.tcell.is_fitted else None,
+                    'contamination': self.tcell.contamination,
+                    'sensitivity': self.tcell.sensitivity,
+                    'is_fitted': self.tcell.is_fitted
+                },
+                'bcells': {},
+                'memory': {
+                    'memories': list(self.memory.memories),
+                    'embeddings': list(self.memory.embeddings),
+                    'capacity': self.memory.capacity,
+                    'embedding_dim': self.memory.embedding_dim,
+                    'similarity_threshold': self.memory.similarity_threshold
+                },
+                'system_config': {
+                    'n_assets': self.n_assets,
+                    'state_dim': self.state_dim,
+                    'training_steps': self.training_steps,
+                    'decision_count': self.decision_count
+                }
+            }
+            
+            # B-Cell 데이터 추가
             for name, bcell in self.bcells.items():
-                bcell_path = f"{base_path}_bcell_{name}.pth"
-                bcell.save_model(bcell_path)
+                system_data['bcells'][name] = {
+                    'actor_state_dict': bcell.actor.state_dict(),
+                    'critic1_state_dict': bcell.critic1.state_dict(),
+                    'critic2_state_dict': bcell.critic2.state_dict(),
+                    'target_actor_state_dict': bcell.target_actor.state_dict(),
+                    'target_critic1_state_dict': bcell.target_critic1.state_dict(),
+                    'target_critic2_state_dict': bcell.target_critic2.state_dict(),
+                    'risk_type': bcell.risk_type,
+                    'epsilon': bcell.epsilon,
+                    'update_count': bcell.update_count
+                }
             
-            # Memory 저장
-            memory_path = f"{base_path}_memory.pkl"
-            self.memory.save_memory(memory_path)
+            # 단일 파일로 저장
+            import pickle
+            with open(f"{base_path}.pkl", 'wb') as f:
+                pickle.dump(system_data, f)
             
-            self.logger.info(f"면역 시스템이 저장되었습니다: {base_path}")
+            self.logger.info(f"면역 시스템이 저장되었습니다: {base_path}.pkl")
             return True
             
         except Exception as e:

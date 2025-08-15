@@ -5,9 +5,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import numpy as np
+import os
 from collections import deque
 import random
 from utils.logger import BIPDLogger
+from config import DEVICE
 
 class ActorNetwork(nn.Module):
     """Actor 네트워크: 포트폴리오 가중치 생성"""
@@ -150,17 +152,17 @@ class BCell:
         self.state_dim = state_dim
         self.action_dim = action_dim
         
-        # 신경망 초기화
-        self.actor = ActorNetwork(state_dim, action_dim, hidden_dim)
+        # 신경망 초기화 및 GPU로 이동
+        self.actor = ActorNetwork(state_dim, action_dim, hidden_dim).to(DEVICE)
         
         # Twin Critics (TD3)
-        self.critic1 = CriticNetwork(state_dim, action_dim, hidden_dim)
-        self.critic2 = CriticNetwork(state_dim, action_dim, hidden_dim)
+        self.critic1 = CriticNetwork(state_dim, action_dim, hidden_dim).to(DEVICE)
+        self.critic2 = CriticNetwork(state_dim, action_dim, hidden_dim).to(DEVICE)
         
         # 타겟 네트워크들
-        self.target_actor = ActorNetwork(state_dim, action_dim, hidden_dim)
-        self.target_critic1 = CriticNetwork(state_dim, action_dim, hidden_dim)
-        self.target_critic2 = CriticNetwork(state_dim, action_dim, hidden_dim)
+        self.target_actor = ActorNetwork(state_dim, action_dim, hidden_dim).to(DEVICE)
+        self.target_critic1 = CriticNetwork(state_dim, action_dim, hidden_dim).to(DEVICE)
+        self.target_critic2 = CriticNetwork(state_dim, action_dim, hidden_dim).to(DEVICE)
         
         # 타겟 네트워크 초기화 (메인 네트워크 복사)
         self.target_actor.load_state_dict(self.actor.state_dict())
@@ -202,7 +204,8 @@ class BCell:
         
         self.logger.info(
             f"{risk_type} B-Cell이 초기화되었습니다. "
-            f"상태차원={state_dim}, 행동차원={action_dim}"
+            f"상태차원={state_dim}, 행동차원={action_dim}, "
+            f"Device={DEVICE}"
         )
     
     def get_action(self, state, deterministic=False):
@@ -219,8 +222,8 @@ class BCell:
         self.actor.eval()
         
         with torch.no_grad():
-            state_tensor = torch.FloatTensor(state).unsqueeze(0)
-            weights = self.actor(state_tensor).squeeze(0).numpy()
+            state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(DEVICE)
+            weights = self.actor(state_tensor).squeeze(0).cpu().numpy()
         
         self.actor.train()
         
@@ -229,8 +232,8 @@ class BCell:
             # 온도를 높여서 더 균등한 분포로 탐험
             exploration_temp = 2.0 + random.random() * 3.0  # 2.0~5.0 사이
             with torch.no_grad():
-                state_tensor = torch.FloatTensor(state).unsqueeze(0)
-                weights = self.actor(state_tensor, temperature=exploration_temp).squeeze(0).numpy()
+                state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(DEVICE)
+                weights = self.actor(state_tensor, temperature=exploration_temp).squeeze(0).cpu().numpy()
         
         # 가중치 정규화 (안전장치)
         weights = weights / weights.sum()
@@ -252,12 +255,12 @@ class BCell:
         batch, is_weights, indices = self.replay_buffer.sample(self.batch_size)
         states, actions, rewards, next_states, dones = zip(*batch)
         
-        states = torch.FloatTensor(np.array(states))
-        actions = torch.FloatTensor(np.array(actions))
-        rewards = torch.FloatTensor(rewards)
-        next_states = torch.FloatTensor(np.array(next_states))
-        dones = torch.BoolTensor(dones)
-        is_weights = torch.FloatTensor(is_weights)
+        states = torch.tensor(np.array(states), dtype=torch.float32).to(DEVICE)
+        actions = torch.tensor(np.array(actions), dtype=torch.float32).to(DEVICE)
+        rewards = torch.tensor(rewards, dtype=torch.float32).to(DEVICE)
+        next_states = torch.tensor(np.array(next_states), dtype=torch.float32).to(DEVICE)
+        dones = torch.tensor(dones, dtype=torch.bool).to(DEVICE)
+        is_weights = torch.tensor(is_weights, dtype=torch.float32).to(DEVICE)
         
         # ===== Twin Critics 업데이트 =====
         with torch.no_grad():
@@ -456,9 +459,9 @@ class BCell:
             self.actor.eval()
             
             with torch.no_grad():
-                state_tensor = torch.FloatTensor(state).unsqueeze(0)
+                state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(DEVICE)
                 weights = self.actor(state_tensor).squeeze(0)
-                value = self.critic(state_tensor).squeeze(0)
+                value = self.critic1(state_tensor).squeeze(0)
             
             self.actor.train()
             
@@ -469,13 +472,13 @@ class BCell:
             
             explanation = {
                 'risk_type': self.risk_type,
-                'predicted_weights': weights.numpy().tolist(),
-                'predicted_value': float(value),
+                'predicted_weights': weights.cpu().numpy().tolist(),
+                'predicted_value': float(value.cpu()),
                 'specialization_score': self.get_specialization_score(crisis_level),
                 'crisis_level': float(crisis_level),
-                'max_weight_asset': int(weights.argmax()),
-                'min_weight_asset': int(weights.argmin()),
-                'weight_concentration': float((weights ** 2).sum()),
+                'max_weight_asset': int(weights.argmax().cpu()),
+                'min_weight_asset': int(weights.argmin().cpu()),
+                'weight_concentration': float((weights ** 2).sum().cpu()),
                 'epsilon': self.epsilon,
                 'update_count': self.update_count
             }
@@ -489,6 +492,11 @@ class BCell:
     def save_model(self, filepath):
         """모델 저장 (TD3)"""
         try:
+            # 저장 디렉토리 생성 보장
+            base_dir = os.path.dirname(filepath)
+            if base_dir:
+                os.makedirs(base_dir, exist_ok=True)
+            
             torch.save({
                 'actor_state_dict': self.actor.state_dict(),
                 'critic1_state_dict': self.critic1.state_dict(),
@@ -515,7 +523,7 @@ class BCell:
     def load_model(self, filepath):
         """모델 로드 (TD3)"""
         try:
-            checkpoint = torch.load(filepath)
+            checkpoint = torch.load(filepath, map_location=DEVICE)
             
             self.actor.load_state_dict(checkpoint['actor_state_dict'])
             self.critic1.load_state_dict(checkpoint['critic1_state_dict'])

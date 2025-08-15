@@ -8,12 +8,45 @@ import os
 GLOBAL_SEED = 42
 
 
+# Device 설정 (GPU 사용 가능시 자동 선택)
+def get_best_device():
+    """사용 가능한 최적의 디바이스 자동 선택"""
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return torch.device("mps")
+    else:
+        return torch.device("cpu")
+
+
+DEVICE = get_best_device()
+
+
 def set_seed(seed=GLOBAL_SEED):
     """재현 가능한 결과를 위한 시드 설정"""
     np.random.seed(seed)
     torch.manual_seed(seed)
+
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)  # 멀티 GPU 지원
+        # CUDA 최적화 설정
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        # MPS는 별도의 시드 설정이 필요하지 않음
+        # torch.manual_seed로 충분
+        pass
+
+
+def get_device_info():
+    """현재 사용 중인 device 정보 반환"""
+    if DEVICE.type == "cuda":
+        return f"CUDA GPU: {torch.cuda.get_device_name(0)} (Memory: {torch.cuda.get_device_properties(0).total_memory // 1024**3}GB)"
+    elif DEVICE.type == "mps":
+        return "Apple MPS GPU (Metal Performance Shaders)"
+    else:
+        return "CPU"
 
 
 # 디렉토리 설정
@@ -98,7 +131,7 @@ TRANSACTION_COST = 0.001
 MAX_STEPS = 252  # 1년 거래일
 
 # 학습 설정
-N_EPISODES = 1000
+N_EPISODES = 500
 LOG_INTERVAL = 10
 SAVE_INTERVAL = 100
 
