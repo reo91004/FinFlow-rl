@@ -1,0 +1,269 @@
+02:51:27 | INFO     | Main              | === BIPD 시스템 로깅 시작 ===
+02:51:27 | INFO     | Main              | 로그 파일: /Users/reo/Documents/Repositories/FinFlow/finflow-BIPD/bipd/logs/20250816_025127/bipd_training.log
+02:51:27 | INFO     | Main              | 타임스탬프: 20250816_025127
+02:51:27 | INFO     | Main              | ==================================================
+02:51:27 | DEBUG    | Main              | ================================================================================
+02:51:27 | DEBUG    | Main              | BIPD (Behavioral Immune Portfolio Defense) 시스템 시작
+02:51:27 | DEBUG    | Main              | ================================================================================
+02:51:27 | DEBUG    | Main              | 설정 요약:
+02:51:27 | DEBUG    | Main              |   - 종목: ['MMM', 'AXP', 'AMGN', 'AMZN', 'AAPL', 'BA', 'CAT', 'CVX', 'CSCO', 'KO', 'DIS', 'GS', 'HD', 'HON', 'IBM', 'JNJ', 'JPM', 'MCD', 'MRK', 'MSFT', 'NKE', 'NVDA', 'PG', 'CRM', 'SHW', 'TRV', 'UNH', 'VZ', 'V', 'WMT']
+02:51:27 | DEBUG    | Main              |   - 훈련기간: 2008-01-01 ~ 2020-12-31
+02:51:27 | DEBUG    | Main              |   - 테스트기간: 2021-01-01 ~ 2024-12-31
+02:51:27 | DEBUG    | Main              |   - 에피소드: 1000개
+02:51:27 | DEBUG    | Main              |   - 초기자본: 1,000,000원
+02:51:27 | INFO     | DataLoader        | 캐시에서 데이터를 로드했습니다: MMM_AXP_AMGN_AMZN_AAPL_BA_CAT_CVX_CSCO_KO_DIS_GS_HD_HON_IBM_JNJ_JPM_MCD_MRK_MSFT_NKE_NVDA_PG_CRM_SHW_TRV_UNH_VZ_V_WMT_2008-01-01_2024-12-31.pkl
+02:51:27 | INFO     | DataLoader        | 데이터 분할 완료: 훈련=3221일, 테스트=1004일
+02:51:27 | DEBUG    | Main              | 데이터 로드 완료:
+02:51:27 | DEBUG    | Main              |   - 훈련 데이터: 3221 거래일
+02:51:27 | DEBUG    | Main              |   - 테스트 데이터: 1004 거래일
+02:51:27 | DEBUG    | Main              |   - 종목 수: 30개
+02:51:27 | INFO     | FeatureExtractor  | 특성 추출기가 초기화되었습니다. 윈도우=20
+02:51:27 | INFO     | Environment       | 포트폴리오 환경이 초기화되었습니다. 자산수=30, 최대스텝=3200, 초기자본=1,000,000
+02:51:27 | INFO     | Environment       | 포트폴리오 환경이 초기화되었습니다. 자산수=30, 최대스텝=983, 초기자본=1,000,000
+02:51:27 | INFO     | TCell             | T-Cell이 초기화되었습니다. 오염율=0.1, 민감도=1.0
+02:51:28 | INFO     | BCell-volatility  | volatility B-Cell이 초기화되었습니다. 상태차원=43, 행동차원=30
+02:51:28 | INFO     | BCell-correlation | correlation B-Cell이 초기화되었습니다. 상태차원=43, 행동차원=30
+02:51:28 | INFO     | BCell-momentum    | momentum B-Cell이 초기화되었습니다. 상태차원=43, 행동차원=30
+02:51:28 | INFO     | BCell-defensive   | defensive B-Cell이 초기화되었습니다. 상태차원=43, 행동차원=30
+02:51:28 | INFO     | BCell-growth      | growth B-Cell이 초기화되었습니다. 상태차원=43, 행동차원=30
+02:51:28 | INFO     | MemoryCell        | Memory Cell이 초기화되었습니다. 용량=500, 임베딩차원=32
+02:51:28 | INFO     | ImmuneSystem      | 면역 포트폴리오 시스템이 초기화되었습니다. 자산수=30, 상태차원=43, B-Cell=5개
+02:51:28 | INFO     | Trainer           | BIPD 훈련자가 초기화되었습니다. 훈련데이터=3221일, 테스트데이터=1004일
+02:51:28 | INFO     | Trainer           | 시각화 결과 저장 위치: /Users/reo/Documents/Repositories/FinFlow/finflow-BIPD/bipd/logs/20250816_025127/visualizations
+02:51:28 | DEBUG    | Main              | BIPD 훈련자 초기화 완료
+02:51:28 | INFO     | Trainer           | BIPD 시스템 훈련을 시작합니다. 1000개 에피소드
+02:51:28 | INFO     | Trainer           | T-Cell 사전 훈련을 시작합니다.
+02:51:28 | INFO     | FeatureExtractor  | 배치 특성 추출을 시작합니다: 3221 거래일
+02:52:28 | INFO     | FeatureExtractor  | 배치 특성 추출 완료: (3201, 12)
+02:52:28 | INFO     | TCell             | T-Cell 학습 완료: 샘플수=3201, 정상비율=89.97%
+02:52:28 | INFO     | ImmuneSystem      | T-Cell 학습이 완료되었습니다.
+02:52:28 | INFO     | Trainer           | T-Cell 사전 훈련 완료: 3201개 샘플 학습
+02:52:28 | INFO     | Trainer           | ========================= 에피소드 1/1,000 시작 =========================
+02:52:28 | DEBUG    | Trainer           | 에피소드 1 시작: 초기 상태 크기=43, 환경 최대 스텝=3200
+02:52:29 | DEBUG    | ImmuneSystem      | 의사결정 #50: 위기수준=0.675, 선택전략=defensive, 메모리=True
+02:52:30 | DEBUG    | ImmuneSystem      | 의사결정 #100: 위기수준=0.843, 선택전략=volatility, 메모리=True
+02:52:30 | INFO     | ImmuneSystem      | 시스템 업데이트: 스텝=100, 보상=-6.7681, 메모리=100개
+02:52:32 | DEBUG    | ImmuneSystem      | 의사결정 #150: 위기수준=1.000, 선택전략=volatility, 메모리=True
+02:52:34 | DEBUG    | ImmuneSystem      | 의사결정 #200: 위기수준=1.000, 선택전략=volatility, 메모리=True
+02:52:34 | INFO     | ImmuneSystem      | 시스템 업데이트: 스텝=200, 보상=-10.0000, 메모리=200개
+02:52:35 | DEBUG    | Environment       | 가중치 검증 통계 (최근 100회): 음수 가중치 1회 (0.4%), 총 검증 241회
+02:52:36 | DEBUG    | ImmuneSystem      | 의사결정 #250: 위기수준=1.000, 선택전략=volatility, 메모리=True
+02:52:36 | DEBUG    | ImmuneSystem      | Memory 가이던스 통계 (최근 100회): 사용률=37.6%, 평균 신뢰도=0.987
+02:52:38 | DEBUG    | ImmuneSystem      | 의사결정 #300: 위기수준=0.583, 선택전략=correlation, 메모리=True
+02:52:38 | INFO     | ImmuneSystem      | 시스템 업데이트: 스텝=300, 보상=0.3091, 메모리=300개
+02:52:40 | DEBUG    | ImmuneSystem      | 의사결정 #350: 위기수준=0.477, 선택전략=correlation, 메모리=True
+02:52:42 | DEBUG    | ImmuneSystem      | Memory 가이던스 통계 (최근 100회): 사용률=52.6%, 평균 신뢰도=0.990
+02:52:43 | DEBUG    | ImmuneSystem      | 의사결정 #400: 위기수준=0.475, 선택전략=correlation, 메모리=True
+02:52:43 | INFO     | ImmuneSystem      | 시스템 업데이트: 스텝=400, 보상=10.0000, 메모리=400개
+02:52:46 | DEBUG    | ImmuneSystem      | 의사결정 #450: 위기수준=0.603, 선택전략=defensive, 메모리=True
+02:52:47 | DEBUG    | BCell-volatility  | [volatility] 업데이트 100: Actor 손실=-2.0489, Critic 손실=56.2332, 탐험률=0.545
+02:52:47 | DEBUG    | BCell-correlation | [correlation] 업데이트 100: Actor 손실=-0.9950, Critic 손실=56.0092, 탐험률=0.545
+02:52:47 | DEBUG    | BCell-momentum    | [momentum] 업데이트 100: Actor 손실=-1.8783, Critic 손실=55.1049, 탐험률=0.545
+02:52:47 | DEBUG    | BCell-defensive   | [defensive] 업데이트 100: Actor 손실=-0.4286, Critic 손실=56.2582, 탐험률=0.545
+02:52:47 | DEBUG    | BCell-growth      | [growth] 업데이트 100: Actor 손실=-1.6648, Critic 손실=57.2671, 탐험률=0.545
+02:52:49 | DEBUG    | ImmuneSystem      | Memory 가이던스 통계 (최근 100회): 사용률=60.6%, 평균 신뢰도=0.991
+02:52:49 | DEBUG    | ImmuneSystem      | 의사결정 #500: 위기수준=0.471, 선택전략=correlation, 메모리=True
+02:52:49 | DEBUG    | MemoryCell        | 메모리 저장: 500개 경험 보유 (총 500개 저장됨)
+02:52:49 | INFO     | ImmuneSystem      | 시스템 업데이트: 스텝=500, 보상=10.0000, 메모리=500개
+02:52:53 | DEBUG    | ImmuneSystem      | 의사결정 #550: 위기수준=0.481, 선택전략=correlation, 메모리=True
+02:52:53 | DEBUG    | Environment       | 가중치 검증 통계 (최근 100회): 음수 가중치 3회 (0.5%), 총 검증 553회
+02:52:56 | DEBUG    | ImmuneSystem      | 의사결정 #600: 위기수준=0.718, 선택전략=defensive, 메모리=True
+02:52:56 | INFO     | ImmuneSystem      | 시스템 업데이트: 스텝=600, 보상=-10.0000, 메모리=500개
+02:52:59 | DEBUG    | ImmuneSystem      | Memory 가이던스 통계 (최근 100회): 사용률=62.3%, 평균 신뢰도=0.991
+02:52:59 | DEBUG    | ImmuneSystem      | 의사결정 #650: 위기수준=0.471, 선택전략=correlation, 메모리=True
+02:53:00 | DEBUG    | Environment       | 가중치 검증 통계 (최근 100회): 음수 가중치 8회 (1.2%), 총 검증 661회
+02:53:03 | DEBUG    | ImmuneSystem      | 의사결정 #700: 위기수준=0.468, 선택전략=correlation, 메모리=True
+02:53:03 | INFO     | ImmuneSystem      | 시스템 업데이트: 스텝=700, 보상=10.0000, 메모리=500개
+02:53:06 | DEBUG    | ImmuneSystem      | 의사결정 #750: 위기수준=0.474, 선택전략=correlation, 메모리=True
+02:53:06 | DEBUG    | ImmuneSystem      | Memory 가이던스 통계 (최근 100회): 사용률=66.1%, 평균 신뢰도=0.992
+02:53:09 | DEBUG    | ImmuneSystem      | 의사결정 #800: 위기수준=0.809, 선택전략=volatility, 메모리=True
+02:53:09 | INFO     | ImmuneSystem      | 시스템 업데이트: 스텝=800, 보상=-10.0000, 메모리=500개
+02:53:11 | DEBUG    | Environment       | 가중치 검증 통계 (최근 100회): 음수 가중치 9회 (1.1%), 총 검증 827회
+02:53:13 | DEBUG    | ImmuneSystem      | 의사결정 #850: 위기수준=0.750, 선택전략=defensive, 메모리=True
+02:53:13 | DEBUG    | BCell-volatility  | [volatility] 업데이트 200: Actor 손실=-1.2699, Critic 손실=40.0955, 탐험률=0.330
+02:53:13 | DEBUG    | BCell-correlation | [correlation] 업데이트 200: Actor 손실=-0.3708, Critic 손실=40.0111, 탐험률=0.330
+02:53:13 | DEBUG    | BCell-momentum    | [momentum] 업데이트 200: Actor 손실=-1.5478, Critic 손실=36.6178, 탐험률=0.330
+02:53:13 | DEBUG    | BCell-defensive   | [defensive] 업데이트 200: Actor 손실=-0.0293, Critic 손실=40.5797, 탐험률=0.330
+02:53:13 | DEBUG    | BCell-growth      | [growth] 업데이트 200: Actor 손실=-0.8598, Critic 손실=40.2174, 탐험률=0.330
+02:53:16 | DEBUG    | ImmuneSystem      | 의사결정 #900: 위기수준=0.485, 선택전략=correlation, 메모리=True
+02:53:16 | INFO     | ImmuneSystem      | 시스템 업데이트: 스텝=900, 보상=10.0000, 메모리=500개
+02:53:18 | DEBUG    | Environment       | 가중치 검증 통계 (최근 100회): 음수 가중치 25회 (2.7%), 총 검증 929회
+02:53:18 | DEBUG    | ImmuneSystem      | Memory 가이던스 통계 (최근 100회): 사용률=63.9%, 평균 신뢰도=0.991
+02:53:19 | DEBUG    | ImmuneSystem      | 의사결정 #950: 위기수준=0.477, 선택전략=correlation, 메모리=True
+02:53:22 | DEBUG    | ImmuneSystem      | 의사결정 #1000: 위기수준=0.467, 선택전략=correlation, 메모리=True
+02:53:22 | INFO     | ImmuneSystem      | 시스템 업데이트: 스텝=1000, 보상=10.0000, 메모리=500개
+02:53:23 | DEBUG    | MemoryCell        | Memory 회상 통계 (1000회): 성공률=100.0%, 평균 유사도=0.995, 메모리 수=500
+02:53:26 | DEBUG    | ImmuneSystem      | 의사결정 #1050: 위기수준=0.817, 선택전략=volatility, 메모리=True
+02:53:26 | DEBUG    | Environment       | 가중치 검증 통계 (최근 100회): 음수 가중치 30회 (2.9%), 총 검증 1050회
+02:53:28 | DEBUG    | ImmuneSystem      | Memory 가이던스 통계 (최근 100회): 사용률=64.4%, 평균 신뢰도=0.991
+02:53:29 | DEBUG    | ImmuneSystem      | 의사결정 #1100: 위기수준=0.472, 선택전략=correlation, 메모리=True
+02:53:29 | INFO     | ImmuneSystem      | 시스템 업데이트: 스텝=1100, 보상=10.0000, 메모리=500개
+02:53:32 | DEBUG    | ImmuneSystem      | 의사결정 #1150: 위기수준=0.489, 선택전략=correlation, 메모리=True
+02:53:33 | DEBUG    | Environment       | 가중치 검증 통계 (최근 100회): 음수 가중치 41회 (3.5%), 총 검증 1158회
+02:53:36 | DEBUG    | ImmuneSystem      | 의사결정 #1200: 위기수준=0.472, 선택전략=correlation, 메모리=True
+02:53:36 | INFO     | ImmuneSystem      | 시스템 업데이트: 스텝=1200, 보상=10.0000, 메모리=500개
+02:53:38 | DEBUG    | ImmuneSystem      | Memory 가이던스 통계 (최근 100회): 사용률=64.9%, 평균 신뢰도=0.992
+02:53:39 | DEBUG    | ImmuneSystem      | 의사결정 #1250: 위기수준=0.470, 선택전략=correlation, 메모리=True
+02:53:40 | DEBUG    | Environment       | 가중치 검증 통계 (최근 100회): 음수 가중치 56회 (4.4%), 총 검증 1259회
+02:53:40 | DEBUG    | BCell-volatility  | [volatility] 업데이트 300: Actor 손실=-1.8332, Critic 손실=30.1387, 탐험률=0.200
+02:53:40 | DEBUG    | BCell-correlation | [correlation] 업데이트 300: Actor 손실=-0.5117, Critic 손실=29.1318, 탐험률=0.200
+02:53:40 | DEBUG    | BCell-momentum    | [momentum] 업데이트 300: Actor 손실=-1.0380, Critic 손실=27.3612, 탐험률=0.200
+02:53:40 | DEBUG    | BCell-defensive   | [defensive] 업데이트 300: Actor 손실=0.1677, Critic 손실=28.6573, 탐험률=0.200
+02:53:40 | DEBUG    | BCell-growth      | [growth] 업데이트 300: Actor 손실=-0.8760, Critic 손실=28.1316, 탐험률=0.200
+02:53:42 | DEBUG    | ImmuneSystem      | 의사결정 #1300: 위기수준=0.480, 선택전략=correlation, 메모리=True
+02:53:42 | INFO     | ImmuneSystem      | 시스템 업데이트: 스텝=1300, 보상=-10.0000, 메모리=500개
+02:53:46 | DEBUG    | ImmuneSystem      | Memory 가이던스 통계 (최근 100회): 사용률=66.7%, 평균 신뢰도=0.991
+02:53:46 | DEBUG    | ImmuneSystem      | 의사결정 #1350: 위기수준=0.488, 선택전략=correlation, 메모리=True
+02:53:47 | DEBUG    | Environment       | 가중치 검증 통계 (최근 100회): 음수 가중치 69회 (5.0%), 총 검증 1377회
+02:53:49 | DEBUG    | ImmuneSystem      | 의사결정 #1400: 위기수준=0.480, 선택전략=correlation, 메모리=True
+02:53:49 | INFO     | ImmuneSystem      | 시스템 업데이트: 스텝=1400, 보상=10.0000, 메모리=500개
+02:53:52 | DEBUG    | ImmuneSystem      | 의사결정 #1450: 위기수준=0.466, 선택전략=correlation, 메모리=True
+02:53:55 | DEBUG    | ImmuneSystem      | Memory 가이던스 통계 (최근 100회): 사용률=67.4%, 평균 신뢰도=0.991
+02:53:55 | DEBUG    | Environment       | 가중치 검증 통계 (최근 100회): 음수 가중치 77회 (5.2%), 총 검증 1494회
+02:53:56 | DEBUG    | ImmuneSystem      | 의사결정 #1500: 위기수준=0.471, 선택전략=correlation, 메모리=True
+02:53:56 | INFO     | ImmuneSystem      | 시스템 업데이트: 스텝=1500, 보상=-1.0415, 메모리=500개
+02:53:59 | DEBUG    | ImmuneSystem      | 의사결정 #1550: 위기수준=0.471, 선택전략=correlation, 메모리=True
+02:54:02 | DEBUG    | Environment       | 가중치 검증 통계 (최근 100회): 음수 가중치 93회 (5.8%), 총 검증 1594회
+02:54:03 | DEBUG    | ImmuneSystem      | 의사결정 #1600: 위기수준=0.470, 선택전략=correlation, 메모리=True
+02:54:03 | INFO     | ImmuneSystem      | 시스템 업데이트: 스텝=1600, 보상=10.0000, 메모리=500개
+02:54:04 | DEBUG    | ImmuneSystem      | Memory 가이던스 통계 (최근 100회): 사용률=68.1%, 평균 신뢰도=0.991
+02:54:07 | DEBUG    | ImmuneSystem      | 의사결정 #1650: 위기수준=0.481, 선택전략=correlation, 메모리=True
+02:54:07 | DEBUG    | BCell-volatility  | [volatility] 업데이트 400: Actor 손실=-1.0958, Critic 손실=33.0120, 탐험률=0.121
+02:54:07 | DEBUG    | BCell-correlation | [correlation] 업데이트 400: Actor 손실=-1.6740, Critic 손실=33.9073, 탐험률=0.121
+02:54:07 | DEBUG    | BCell-momentum    | [momentum] 업데이트 400: Actor 손실=-1.3017, Critic 손실=33.3011, 탐험률=0.121
+02:54:07 | DEBUG    | BCell-defensive   | [defensive] 업데이트 400: Actor 손실=1.1484, Critic 손실=33.7455, 탐험률=0.121
+02:54:07 | DEBUG    | BCell-growth      | [growth] 업데이트 400: Actor 손실=-0.6113, Critic 손실=33.9567, 탐험률=0.121
+02:54:10 | DEBUG    | Environment       | 가중치 검증 통계 (최근 100회): 음수 가중치 109회 (6.4%), 총 검증 1697회
+02:54:10 | DEBUG    | ImmuneSystem      | 의사결정 #1700: 위기수준=0.693, 선택전략=defensive, 메모리=True
+02:54:10 | INFO     | ImmuneSystem      | 시스템 업데이트: 스텝=1700, 보상=5.6585, 메모리=500개
+02:54:13 | DEBUG    | ImmuneSystem      | 의사결정 #1750: 위기수준=0.558, 선택전략=correlation, 메모리=True
+02:54:17 | DEBUG    | ImmuneSystem      | Memory 가이던스 통계 (최근 100회): 사용률=66.8%, 평균 신뢰도=0.991
+02:54:17 | DEBUG    | ImmuneSystem      | 의사결정 #1800: 위기수준=0.479, 선택전략=correlation, 메모리=True
+02:54:17 | INFO     | ImmuneSystem      | 시스템 업데이트: 스텝=1800, 보상=-10.0000, 메모리=500개
+02:54:17 | DEBUG    | Environment       | 가중치 검증 통계 (최근 100회): 음수 가중치 134회 (7.4%), 총 검증 1806회
+02:54:20 | DEBUG    | ImmuneSystem      | 의사결정 #1850: 위기수준=0.607, 선택전략=defensive, 메모리=True
+02:54:24 | DEBUG    | ImmuneSystem      | 의사결정 #1900: 위기수준=0.471, 선택전략=correlation, 메모리=True
+02:54:24 | INFO     | ImmuneSystem      | 시스템 업데이트: 스텝=1900, 보상=10.0000, 메모리=500개
+02:54:24 | DEBUG    | Environment       | 가중치 검증 통계 (최근 100회): 음수 가중치 148회 (7.8%), 총 검증 1908회
+02:54:27 | DEBUG    | ImmuneSystem      | 의사결정 #1950: 위기수준=0.744, 선택전략=defensive, 메모리=True
+02:54:30 | DEBUG    | ImmuneSystem      | 의사결정 #2000: 위기수준=0.475, 선택전략=correlation, 메모리=True
+02:54:30 | INFO     | ImmuneSystem      | 시스템 업데이트: 스텝=2000, 보상=10.0000, 메모리=500개
+02:54:31 | DEBUG    | MemoryCell        | Memory 회상 통계 (1000회): 성공률=100.0%, 평균 유사도=0.994, 메모리 수=500
+02:54:31 | DEBUG    | Environment       | 가중치 검증 통계 (최근 100회): 음수 가중치 163회 (8.1%), 총 검증 2013회
+02:54:32 | DEBUG    | ImmuneSystem      | Memory 가이던스 통계 (최근 100회): 사용률=64.1%, 평균 신뢰도=0.991
+02:54:34 | DEBUG    | ImmuneSystem      | 의사결정 #2050: 위기수준=0.465, 선택전략=correlation, 메모리=True
+02:54:34 | DEBUG    | BCell-volatility  | [volatility] 업데이트 500: Actor 손실=-2.4797, Critic 손실=35.4317, 탐험률=0.073
+02:54:34 | DEBUG    | BCell-correlation | [correlation] 업데이트 500: Actor 손실=-1.7565, Critic 손실=36.5320, 탐험률=0.073
+02:54:34 | DEBUG    | BCell-momentum    | [momentum] 업데이트 500: Actor 손실=-0.9433, Critic 손실=35.8972, 탐험률=0.073
+02:54:34 | DEBUG    | BCell-defensive   | [defensive] 업데이트 500: Actor 손실=-0.9634, Critic 손실=36.4475, 탐험률=0.073
+02:54:34 | DEBUG    | BCell-growth      | [growth] 업데이트 500: Actor 손실=-2.9827, Critic 손실=35.9956, 탐험률=0.073
+02:54:37 | DEBUG    | ImmuneSystem      | 의사결정 #2100: 위기수준=0.470, 선택전략=correlation, 메모리=True
+02:54:37 | INFO     | ImmuneSystem      | 시스템 업데이트: 스텝=2100, 보상=3.7114, 메모리=500개
+02:54:38 | DEBUG    | Environment       | 가중치 검증 통계 (최근 100회): 음수 가중치 178회 (8.4%), 총 검증 2116회
+02:54:40 | DEBUG    | ImmuneSystem      | 의사결정 #2150: 위기수준=0.485, 선택전략=correlation, 메모리=True
+02:54:43 | DEBUG    | ImmuneSystem      | Memory 가이던스 통계 (최근 100회): 사용률=64.1%, 평균 신뢰도=0.991
+02:54:44 | DEBUG    | ImmuneSystem      | 의사결정 #2200: 위기수준=0.467, 선택전략=correlation, 메모리=True
+02:54:44 | INFO     | ImmuneSystem      | 시스템 업데이트: 스텝=2200, 보상=10.0000, 메모리=500개
+02:54:46 | DEBUG    | Environment       | 가중치 검증 통계 (최근 100회): 음수 가중치 193회 (8.6%), 총 검증 2241회
+02:54:47 | DEBUG    | ImmuneSystem      | 의사결정 #2250: 위기수준=0.478, 선택전략=correlation, 메모리=True
+02:54:50 | DEBUG    | ImmuneSystem      | 의사결정 #2300: 위기수준=0.468, 선택전략=correlation, 메모리=True
+02:54:50 | INFO     | ImmuneSystem      | 시스템 업데이트: 스텝=2300, 보상=4.4510, 메모리=500개
+02:54:51 | DEBUG    | ImmuneSystem      | Memory 가이던스 통계 (최근 100회): 사용률=65.0%, 평균 신뢰도=0.991
+02:54:53 | DEBUG    | Environment       | 가중치 검증 통계 (최근 100회): 음수 가중치 215회 (9.2%), 총 검증 2349회
+02:54:54 | DEBUG    | ImmuneSystem      | 의사결정 #2350: 위기수준=0.472, 선택전략=correlation, 메모리=True
+02:54:57 | DEBUG    | ImmuneSystem      | 의사결정 #2400: 위기수준=0.488, 선택전략=correlation, 메모리=True
+02:54:57 | INFO     | ImmuneSystem      | 시스템 업데이트: 스텝=2400, 보상=10.0000, 메모리=500개
+02:54:59 | DEBUG    | ImmuneSystem      | Memory 가이던스 통계 (최근 100회): 사용률=65.8%, 평균 신뢰도=0.991
+02:55:00 | DEBUG    | Environment       | 가중치 검증 통계 (최근 100회): 음수 가중치 230회 (9.4%), 총 검증 2449회
+02:55:00 | DEBUG    | ImmuneSystem      | 의사결정 #2450: 위기수준=0.485, 선택전략=correlation, 메모리=True
+02:55:01 | DEBUG    | BCell-volatility  | [volatility] 업데이트 600: Actor 손실=-3.2737, Critic 손실=40.9877, 탐험률=0.050
+02:55:01 | DEBUG    | BCell-correlation | [correlation] 업데이트 600: Actor 손실=0.8391, Critic 손실=40.6567, 탐험률=0.050
+02:55:01 | DEBUG    | BCell-momentum    | [momentum] 업데이트 600: Actor 손실=-1.6068, Critic 손실=40.5306, 탐험률=0.050
+02:55:01 | DEBUG    | BCell-defensive   | [defensive] 업데이트 600: Actor 손실=-5.2804, Critic 손실=40.5502, 탐험률=0.050
+02:55:01 | DEBUG    | BCell-growth      | [growth] 업데이트 600: Actor 손실=-3.6227, Critic 손실=40.6535, 탐험률=0.050
+02:55:03 | DEBUG    | ImmuneSystem      | 의사결정 #2500: 위기수준=0.471, 선택전략=correlation, 메모리=True
+02:55:04 | INFO     | ImmuneSystem      | 시스템 업데이트: 스텝=2500, 보상=-10.0000, 메모리=500개
+02:55:07 | DEBUG    | ImmuneSystem      | 의사결정 #2550: 위기수준=0.498, 선택전략=correlation, 메모리=True
+02:55:08 | DEBUG    | Environment       | 가중치 검증 통계 (최근 100회): 음수 가중치 238회 (9.3%), 총 검증 2567회
+02:55:10 | DEBUG    | ImmuneSystem      | 의사결정 #2600: 위기수준=0.479, 선택전략=correlation, 메모리=True
+02:55:10 | INFO     | ImmuneSystem      | 시스템 업데이트: 스텝=2600, 보상=10.0000, 메모리=500개
+02:55:11 | DEBUG    | ImmuneSystem      | Memory 가이던스 통계 (최근 100회): 사용률=65.0%, 평균 신뢰도=0.990
+02:55:13 | DEBUG    | ImmuneSystem      | 의사결정 #2650: 위기수준=0.484, 선택전략=correlation, 메모리=True
+02:55:15 | DEBUG    | Environment       | 가중치 검증 통계 (최근 100회): 음수 가중치 253회 (9.5%), 총 검증 2668회
+02:55:17 | DEBUG    | ImmuneSystem      | 의사결정 #2700: 위기수준=0.560, 선택전략=correlation, 메모리=True
+02:55:17 | INFO     | ImmuneSystem      | 시스템 업데이트: 스텝=2700, 보상=1.2481, 메모리=500개
+02:55:20 | DEBUG    | ImmuneSystem      | 의사결정 #2750: 위기수준=0.469, 선택전략=correlation, 메모리=True
+02:55:21 | DEBUG    | Environment       | 가중치 검증 통계 (최근 100회): 음수 가중치 286회 (10.3%), 총 검증 2768회
+02:55:23 | DEBUG    | ImmuneSystem      | 의사결정 #2800: 위기수준=0.499, 선택전략=correlation, 메모리=True
+02:55:23 | INFO     | ImmuneSystem      | 시스템 업데이트: 스텝=2800, 보상=-10.0000, 메모리=500개
+02:55:24 | DEBUG    | ImmuneSystem      | Memory 가이던스 통계 (최근 100회): 사용률=64.0%, 평균 신뢰도=0.990
+02:55:27 | DEBUG    | ImmuneSystem      | 의사결정 #2850: 위기수준=0.540, 선택전략=correlation, 메모리=True
+02:55:28 | DEBUG    | BCell-volatility  | [volatility] 업데이트 700: Actor 손실=-3.1712, Critic 손실=43.3756, 탐험률=0.050
+02:55:28 | DEBUG    | BCell-correlation | [correlation] 업데이트 700: Actor 손실=-0.1230, Critic 손실=44.6063, 탐험률=0.050
+02:55:28 | DEBUG    | BCell-momentum    | [momentum] 업데이트 700: Actor 손실=-2.4608, Critic 손실=44.4807, 탐험률=0.050
+02:55:28 | DEBUG    | BCell-defensive   | [defensive] 업데이트 700: Actor 손실=-2.2077, Critic 손실=43.2859, 탐험률=0.050
+02:55:28 | DEBUG    | BCell-growth      | [growth] 업데이트 700: Actor 손실=-8.3518, Critic 손실=44.3041, 탐험률=0.050
+02:55:28 | DEBUG    | Environment       | 가중치 검증 통계 (최근 100회): 음수 가중치 306회 (10.7%), 총 검증 2869회
+02:55:31 | DEBUG    | ImmuneSystem      | 의사결정 #2900: 위기수준=0.470, 선택전략=correlation, 메모리=True
+02:55:31 | INFO     | ImmuneSystem      | 시스템 업데이트: 스텝=2900, 보상=2.2080, 메모리=500개
+02:55:34 | DEBUG    | ImmuneSystem      | Memory 가이던스 통계 (최근 100회): 사용률=64.5%, 평균 신뢰도=0.990
+02:55:34 | DEBUG    | ImmuneSystem      | 의사결정 #2950: 위기수준=0.473, 선택전략=correlation, 메모리=True
+02:55:36 | DEBUG    | Environment       | 가중치 검증 통계 (최근 100회): 음수 가중치 345회 (11.6%), 총 검증 2970회
+02:55:38 | DEBUG    | ImmuneSystem      | 의사결정 #3000: 위기수준=1.000, 선택전략=volatility, 메모리=True
+02:55:38 | INFO     | ImmuneSystem      | 시스템 업데이트: 스텝=3000, 보상=-10.0000, 메모리=500개
+02:55:38 | DEBUG    | MemoryCell        | Memory 회상 통계 (1000회): 성공률=100.0%, 평균 유사도=0.994, 메모리 수=500
+02:55:41 | DEBUG    | ImmuneSystem      | 의사결정 #3050: 위기수준=0.482, 선택전략=correlation, 메모리=True
+02:55:43 | DEBUG    | Environment       | 가중치 검증 통계 (최근 100회): 음수 가중치 381회 (12.4%), 총 검증 3070회
+02:55:44 | DEBUG    | ImmuneSystem      | Memory 가이던스 통계 (최근 100회): 사용률=64.8%, 평균 신뢰도=0.990
+02:55:45 | DEBUG    | ImmuneSystem      | 의사결정 #3100: 위기수준=0.479, 선택전략=correlation, 메모리=True
+02:55:45 | INFO     | ImmuneSystem      | 시스템 업데이트: 스텝=3100, 보상=10.0000, 메모리=500개
+02:55:48 | DEBUG    | ImmuneSystem      | 의사결정 #3150: 위기수준=0.492, 선택전략=correlation, 메모리=True
+02:55:49 | DEBUG    | Environment       | 가중치 검증 통계 (최근 100회): 음수 가중치 418회 (13.2%), 총 검증 3170회
+02:55:51 | DEBUG    | ImmuneSystem      | 의사결정 #3200: 위기수준=0.473, 선택전략=correlation, 메모리=True
+02:55:51 | INFO     | ImmuneSystem      | 시스템 업데이트: 스텝=3200, 보상=10.0000, 메모리=500개
+02:55:51 | INFO     | Trainer           | 에피소드 1 완료 요약:
+02:55:51 | INFO     | Trainer           |   • 총 스텝: 3,200단계
+02:55:51 | INFO     | Trainer           |   • 총 보상: 7,747.19
+02:55:51 | INFO     | Trainer           |   • 평균 보상: 2.4210
+02:55:51 | INFO     | Trainer           |   • 최종 가치: ₩3,086,329
+02:55:51 | INFO     | Trainer           |   • 수익률: +208.63%
+02:55:51 | INFO     | Trainer           |   • 샤프비율: 0.545
+02:55:51 | INFO     | Trainer           |   • 최대낙폭: -41.75%
+02:55:51 | INFO     | Trainer           |   • 위기수준: 평균 0.551, 최대 1.000
+02:55:51 | INFO     | Trainer           |   • 위기상황: 961회 / 3,200단계 (30.0%)
+02:55:51 | INFO     | Trainer           | 
+02:55:51 | INFO     | Trainer           |   B-Cell 전략 사용 비율:
+02:55:51 | INFO     | Trainer           |     - 변동성(volatility):  11.2%
+02:55:51 | INFO     | Trainer           |     - 상관관계(correlation):  80.4%
+02:55:51 | INFO     | Trainer           |     - 모멘텀(momentum):   0.0%
+02:55:51 | INFO     | Trainer           |     - 방어전략(defensive):   8.4%
+02:55:51 | INFO     | Trainer           |     - 성장전략(growth):   0.0%
+02:55:51 | INFO     | Trainer           | ============================================================ 에피소드 1 종료 =====
+02:55:56 | INFO     | Trainer           | 에피소드 1 시각화 완료: 5개 차트 생성
+02:55:56 | INFO     | Trainer           | ========================= 에피소드 2/1,000 시작 =========================
+02:55:56 | DEBUG    | Trainer           | 에피소드 2 시작: 초기 상태 크기=43, 환경 최대 스텝=3200
+02:55:57 | DEBUG    | ImmuneSystem      | Memory 가이던스 통계 (최근 100회): 사용률=65.2%, 평균 신뢰도=0.990
+02:56:00 | DEBUG    | ImmuneSystem      | 의사결정 #3250: 위기수준=0.679, 선택전략=defensive, 메모리=True
+02:56:00 | DEBUG    | BCell-volatility  | [volatility] 업데이트 800: Actor 손실=-11.1385, Critic 손실=50.3128, 탐험률=0.050
+02:56:00 | DEBUG    | BCell-correlation | [correlation] 업데이트 800: Actor 손실=-3.3326, Critic 손실=51.1731, 탐험률=0.050
+02:56:00 | DEBUG    | BCell-momentum    | [momentum] 업데이트 800: Actor 손실=-5.2945, Critic 손실=49.6544, 탐험률=0.050
+02:56:00 | DEBUG    | BCell-defensive   | [defensive] 업데이트 800: Actor 손실=-8.2652, Critic 손실=47.7511, 탐험률=0.050
+02:56:00 | DEBUG    | BCell-growth      | [growth] 업데이트 800: Actor 손실=-7.8621, Critic 손실=47.4507, 탐험률=0.050
+02:56:03 | DEBUG    | ImmuneSystem      | 의사결정 #3300: 위기수준=0.908, 선택전략=volatility, 메모리=True
+02:56:03 | INFO     | ImmuneSystem      | 시스템 업데이트: 스텝=3300, 보상=-3.9408, 메모리=500개
+02:56:03 | DEBUG    | Environment       | 가중치 검증 통계 (최근 100회): 음수 가중치 44회 (43.6%), 총 검증 101회
+02:56:06 | DEBUG    | ImmuneSystem      | 의사결정 #3350: 위기수준=1.000, 선택전략=volatility, 메모리=True
+02:56:10 | DEBUG    | ImmuneSystem      | 의사결정 #3400: 위기수준=1.000, 선택전략=volatility, 메모리=True
+02:56:10 | INFO     | ImmuneSystem      | 시스템 업데이트: 스텝=3400, 보상=-10.0000, 메모리=500개
+02:56:10 | DEBUG    | Environment       | 가중치 검증 통계 (최근 100회): 음수 가중치 60회 (29.1%), 총 검증 206회
+02:56:13 | DEBUG    | ImmuneSystem      | 의사결정 #3450: 위기수준=0.892, 선택전략=volatility, 메모리=True
+02:56:14 | DEBUG    | ImmuneSystem      | Memory 가이던스 통계 (최근 100회): 사용률=63.7%, 평균 신뢰도=0.990
+02:56:17 | DEBUG    | ImmuneSystem      | 의사결정 #3500: 위기수준=0.539, 선택전략=correlation, 메모리=True
+02:56:17 | INFO     | ImmuneSystem      | 시스템 업데이트: 스텝=3500, 보상=0.2299, 메모리=500개
+02:56:18 | DEBUG    | Environment       | 가중치 검증 통계 (최근 100회): 음수 가중치 99회 (31.6%), 총 검증 313회
+02:56:20 | DEBUG    | ImmuneSystem      | 의사결정 #3550: 위기수준=0.477, 선택전략=correlation, 메모리=True
+02:56:22 | DEBUG    | ImmuneSystem      | Memory 가이던스 통계 (최근 100회): 사용률=64.4%, 평균 신뢰도=0.990
+02:56:24 | DEBUG    | ImmuneSystem      | 의사결정 #3600: 위기수준=0.475, 선택전략=correlation, 메모리=True
+02:56:24 | INFO     | ImmuneSystem      | 시스템 업데이트: 스텝=3600, 보상=10.0000, 메모리=500개
+02:56:25 | DEBUG    | Environment       | 가중치 검증 통계 (최근 100회): 음수 가중치 140회 (33.9%), 총 검증 413회
+02:56:27 | WARNING  | Main              | 사용자에 의해 실행이 중단되었습니다.

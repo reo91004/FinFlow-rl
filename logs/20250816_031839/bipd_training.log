@@ -1,0 +1,36 @@
+03:18:39 | INFO     | Main              | === BIPD 시스템 로깅 시작 ===
+03:18:39 | INFO     | Main              | 로그 파일: /Users/reo/Documents/Repositories/FinFlow/finflow-BIPD/logs/20250816_031839/bipd_training.log
+03:18:39 | INFO     | Main              | 타임스탬프: 20250816_031839
+03:18:39 | INFO     | Main              | ==================================================
+03:18:39 | DEBUG    | Main              | ================================================================================
+03:18:39 | DEBUG    | Main              | BIPD (Behavioral Immune Portfolio Defense) 시스템 시작
+03:18:39 | DEBUG    | Main              | ================================================================================
+03:18:39 | DEBUG    | Main              | 설정 요약:
+03:18:39 | DEBUG    | Main              |   - 종목: ['MMM', 'AXP', 'AMGN', 'AMZN', 'AAPL', 'BA', 'CAT', 'CVX', 'CSCO', 'KO', 'DIS', 'GS', 'HD', 'HON', 'IBM', 'JNJ', 'JPM', 'MCD', 'MRK', 'MSFT', 'NKE', 'NVDA', 'PG', 'CRM', 'SHW', 'TRV', 'UNH', 'VZ', 'V', 'WMT']
+03:18:39 | DEBUG    | Main              |   - 훈련기간: 2008-01-01 ~ 2020-12-31
+03:18:39 | DEBUG    | Main              |   - 테스트기간: 2021-01-01 ~ 2024-12-31
+03:18:39 | DEBUG    | Main              |   - 에피소드: 1000개
+03:18:39 | DEBUG    | Main              |   - 초기자본: 1,000,000원
+03:18:39 | INFO     | DataLoader        | 캐시에서 데이터를 로드했습니다: MMM_AXP_AMGN_AMZN_AAPL_BA_CAT_CVX_CSCO_KO_DIS_GS_HD_HON_IBM_JNJ_JPM_MCD_MRK_MSFT_NKE_NVDA_PG_CRM_SHW_TRV_UNH_VZ_V_WMT_2008-01-01_2024-12-31.pkl
+03:18:39 | INFO     | DataLoader        | 데이터 분할 완료: 훈련=3221일, 테스트=1004일
+03:18:39 | DEBUG    | Main              | 데이터 로드 완료:
+03:18:39 | DEBUG    | Main              |   - 훈련 데이터: 3221 거래일
+03:18:39 | DEBUG    | Main              |   - 테스트 데이터: 1004 거래일
+03:18:39 | DEBUG    | Main              |   - 종목 수: 30개
+03:18:39 | INFO     | FeatureExtractor  | 특성 추출기가 초기화되었습니다. 윈도우=20
+03:18:39 | INFO     | Environment       | 포트폴리오 환경이 초기화되었습니다. 자산수=30, 최대스텝=3200, 초기자본=1,000,000
+03:18:39 | INFO     | Environment       | 포트폴리오 환경이 초기화되었습니다. 자산수=30, 최대스텝=983, 초기자본=1,000,000
+03:18:39 | INFO     | TCell             | T-Cell이 초기화되었습니다. 오염율=0.1, 민감도=1.0
+03:18:40 | INFO     | BCell-volatility  | volatility B-Cell이 초기화되었습니다. 상태차원=43, 행동차원=30
+03:18:40 | INFO     | BCell-correlation | correlation B-Cell이 초기화되었습니다. 상태차원=43, 행동차원=30
+03:18:40 | INFO     | BCell-momentum    | momentum B-Cell이 초기화되었습니다. 상태차원=43, 행동차원=30
+03:18:40 | INFO     | BCell-defensive   | defensive B-Cell이 초기화되었습니다. 상태차원=43, 행동차원=30
+03:18:40 | INFO     | BCell-growth      | growth B-Cell이 초기화되었습니다. 상태차원=43, 행동차원=30
+03:18:40 | INFO     | MemoryCell        | Memory Cell이 초기화되었습니다. 용량=500, 임베딩차원=32
+03:18:40 | INFO     | ImmuneSystem      | 면역 포트폴리오 시스템이 초기화되었습니다. 자산수=30, 상태차원=43, B-Cell=5개
+03:18:40 | INFO     | Trainer           | BIPD 훈련자가 초기화되었습니다. 훈련데이터=3221일, 테스트데이터=1004일
+03:18:40 | INFO     | Trainer           | 시각화 결과 저장 위치: /Users/reo/Documents/Repositories/FinFlow/finflow-BIPD/logs/20250816_031839/visualizations
+03:18:40 | DEBUG    | Main              | BIPD 훈련자 초기화 완료
+03:18:40 | INFO     | Trainer           | BIPD 시스템 훈련을 시작합니다. 1000개 에피소드
+03:18:40 | INFO     | Trainer           | T-Cell 사전 훈련을 시작합니다.
+03:18:40 | INFO     | FeatureExtractor  | 배치 특성 추출을 시작합니다: 3221 거래일
