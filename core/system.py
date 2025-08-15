@@ -28,11 +28,11 @@ class ImmunePortfolioSystem:
         
         # B-Cell 전문가 그룹 (위험 유형별 특화)
         self.bcells = {
-            'volatility': BCell('volatility', state_dim, n_assets, ACTOR_LR, CRITIC_LR),     # 고변동성 시장
-            'correlation': BCell('correlation', state_dim, n_assets, ACTOR_LR, CRITIC_LR),   # 상관관계 변화
-            'momentum': BCell('momentum', state_dim, n_assets, ACTOR_LR, CRITIC_LR),         # 모멘텀 추세
-            'defensive': BCell('defensive', state_dim, n_assets, ACTOR_LR, CRITIC_LR),       # 방어적 전략
-            'growth': BCell('growth', state_dim, n_assets, ACTOR_LR, CRITIC_LR)              # 성장 중심
+            'volatility': BCell('volatility', state_dim, n_assets, ACTOR_LR, CRITIC_LR, ALPHA_LR),     # 고변동성 시장
+            'correlation': BCell('correlation', state_dim, n_assets, ACTOR_LR, CRITIC_LR, ALPHA_LR),   # 상관관계 변화
+            'momentum': BCell('momentum', state_dim, n_assets, ACTOR_LR, CRITIC_LR, ALPHA_LR),         # 모멘텀 추세
+            'defensive': BCell('defensive', state_dim, n_assets, ACTOR_LR, CRITIC_LR, ALPHA_LR),       # 방어적 전략
+            'growth': BCell('growth', state_dim, n_assets, ACTOR_LR, CRITIC_LR, ALPHA_LR)              # 성장 중심
         }
         
         # Memory Cell (경험 저장 및 회상)
@@ -520,17 +520,17 @@ class ImmunePortfolioSystem:
                 }
             }
             
-            # B-Cell 데이터 추가
+            # B-Cell 데이터 추가 (SAC 버전)
             for name, bcell in self.bcells.items():
                 system_data['bcells'][name] = {
                     'actor_state_dict': bcell.actor.state_dict(),
                     'critic1_state_dict': bcell.critic1.state_dict(),
                     'critic2_state_dict': bcell.critic2.state_dict(),
-                    'target_actor_state_dict': bcell.target_actor.state_dict(),
                     'target_critic1_state_dict': bcell.target_critic1.state_dict(),
                     'target_critic2_state_dict': bcell.target_critic2.state_dict(),
+                    'log_alpha': bcell.log_alpha,
+                    'target_entropy': bcell.target_entropy,
                     'risk_type': bcell.risk_type,
-                    'epsilon': bcell.epsilon,
                     'update_count': bcell.update_count
                 }
             

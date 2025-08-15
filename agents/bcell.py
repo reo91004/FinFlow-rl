@@ -11,41 +11,63 @@ import random
 from utils.logger import BIPDLogger
 from config import DEVICE
 
-class ActorNetwork(nn.Module):
-    """Actor 네트워크: 포트폴리오 가중치 생성"""
+class SACActorNetwork(nn.Module):
+    """SAC Actor 네트워크: 확률적 포트폴리오 가중치 생성"""
     
     def __init__(self, state_dim, action_dim, hidden_dim=128):
-        super(ActorNetwork, self).__init__()
+        super(SACActorNetwork, self).__init__()
         
+        self.action_dim = action_dim
+        
+        # 공통 특성 추출 레이어
         self.fc1 = nn.Linear(state_dim, hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
-        self.fc3 = nn.Linear(hidden_dim, action_dim)
         
-        # 탐험용 온도 파라미터
-        self.temperature = 1.0
+        # Dirichlet 분포를 위한 concentration 파라미터 출력
+        # 포트폴리오 가중치는 simplex 위에 있어야 하므로 Dirichlet이 적합
+        self.concentration_head = nn.Linear(hidden_dim, action_dim)
         
         # 가중치 초기화
         self._init_weights()
     
     def _init_weights(self):
         """가중치 초기화"""
-        for layer in [self.fc1, self.fc2, self.fc3]:
+        for layer in [self.fc1, self.fc2, self.concentration_head]:
             nn.init.xavier_uniform_(layer.weight)
             nn.init.zeros_(layer.bias)
     
-    def forward(self, state, temperature=None):
+    def forward(self, state):
+        """
+        확률적 정책 출력
+        Returns:
+            concentration: Dirichlet 분포의 concentration 파라미터
+            weights: 샘플링된 포트폴리오 가중치
+            log_prob: 로그 확률
+        """
         x = F.relu(self.fc1(state))
         x = F.relu(self.fc2(x))
-        logits = self.fc3(x)
         
-        # 온도 조절된 Softmax로 가중치 합이 1이 되도록 보장
-        temp = temperature if temperature is not None else self.temperature
-        weights = F.softmax(logits / temp, dim=-1)
-        return weights
+        # Concentration 파라미터 (모두 양수여야 함)
+        concentration = F.softplus(self.concentration_head(x)) + 0.1  # 최소값 0.1
+        
+        # Dirichlet 분포에서 샘플링
+        if self.training:
+            # 훈련 시: 확률적 샘플링
+            dist = torch.distributions.Dirichlet(concentration)
+            weights = dist.rsample()  # reparameterization trick 사용
+            log_prob = dist.log_prob(weights)
+        else:
+            # 평가 시: 결정적 출력 (평균 사용)
+            # Dirichlet의 평균은 concentration / concentration.sum()
+            weights = concentration / concentration.sum(dim=-1, keepdim=True)
+            log_prob = torch.zeros(weights.shape[0], device=weights.device)
+        
+        return concentration, weights, log_prob
     
-    def set_temperature(self, temperature):
-        """탐험을 위한 온도 설정"""
-        self.temperature = max(0.1, temperature)  # 최소값 0.1로 제한
+    def get_action_and_log_prob(self, state):
+        """행동과 로그 확률을 함께 반환"""
+        concentration, weights, log_prob = self.forward(state)
+        return weights, log_prob
 
 class CriticNetwork(nn.Module):
     """Critic 네트워크: Q(s,a) 가치 함수"""
@@ -142,57 +164,50 @@ class BCell:
     """
     B-세포: 특정 위험 유형에 특화된 포트폴리오 전략 실행
     
-    Actor-Critic 강화학습을 사용하여 포트폴리오 가중치를 학습
+    SAC (Soft Actor-Critic) 강화학습을 사용하여 포트폴리오 가중치를 학습
     각 B-Cell은 특정 시장 상황(volatility, correlation, momentum)에 특화
     """
     
     def __init__(self, risk_type, state_dim, action_dim, 
-                 actor_lr=3e-4, critic_lr=6e-4, hidden_dim=128):
+                 actor_lr=3e-4, critic_lr=6e-4, alpha_lr=3e-4, hidden_dim=128):
         self.risk_type = risk_type
         self.state_dim = state_dim
         self.action_dim = action_dim
         
-        # 신경망 초기화 및 GPU로 이동
-        self.actor = ActorNetwork(state_dim, action_dim, hidden_dim).to(DEVICE)
+        # SAC 신경망 초기화 및 GPU로 이동
+        self.actor = SACActorNetwork(state_dim, action_dim, hidden_dim).to(DEVICE)
         
-        # Twin Critics (TD3)
+        # Twin Critics (SAC에서도 사용)
         self.critic1 = CriticNetwork(state_dim, action_dim, hidden_dim).to(DEVICE)
         self.critic2 = CriticNetwork(state_dim, action_dim, hidden_dim).to(DEVICE)
         
-        # 타겟 네트워크들
-        self.target_actor = ActorNetwork(state_dim, action_dim, hidden_dim).to(DEVICE)
+        # 타겟 네트워크들 (Critic만 필요, SAC에서는 Actor 타겟 없음)
         self.target_critic1 = CriticNetwork(state_dim, action_dim, hidden_dim).to(DEVICE)
         self.target_critic2 = CriticNetwork(state_dim, action_dim, hidden_dim).to(DEVICE)
         
-        # 타겟 네트워크 초기화 (메인 네트워크 복사)
-        self.target_actor.load_state_dict(self.actor.state_dict())
+        # 타겟 네트워크 초기화 (Critic만 복사)
         self.target_critic1.load_state_dict(self.critic1.state_dict())
         self.target_critic2.load_state_dict(self.critic2.state_dict())
+        
+        # SAC 엔트로피 계수 (자동 튜닝)
+        self.target_entropy = -float(action_dim)  # 포트폴리오 차원만큼 음수
+        self.log_alpha = torch.zeros(1, requires_grad=True, device=DEVICE)
+        self.alpha = self.log_alpha.exp()
         
         # 옵티마이저
         self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=actor_lr)
         self.critic1_optimizer = optim.Adam(self.critic1.parameters(), lr=critic_lr)
         self.critic2_optimizer = optim.Adam(self.critic2.parameters(), lr=critic_lr)
+        self.alpha_optimizer = optim.Adam([self.log_alpha], lr=alpha_lr)
         
         # 경험 재생 버퍼 (PER)
         self.replay_buffer = PrioritizedReplayBuffer(capacity=10000, alpha=0.6, beta=0.4)
         
-        # 학습 파라미터
+        # SAC 학습 파라미터
         self.gamma = 0.99
         self.tau = 0.005
         self.batch_size = 64
         self.update_frequency = 4
-        
-        # TD3 파라미터
-        self.target_noise = 0.2  # Target Policy Smoothing 노이즈
-        self.noise_clip = 0.5    # 노이즈 클리핑
-        self.policy_delay = 2    # Actor 업데이트 지연
-        self.policy_update_counter = 0
-        
-        # 탐험 파라미터
-        self.epsilon = 0.9
-        self.epsilon_decay = 0.995
-        self.epsilon_min = 0.05
         
         # 학습 통계
         self.update_count = 0
@@ -203,14 +218,15 @@ class BCell:
         self.logger = BIPDLogger(f"BCell-{risk_type}")
         
         self.logger.info(
-            f"{risk_type} B-Cell이 초기화되었습니다. "
+            f"{risk_type} SAC B-Cell이 초기화되었습니다. "
             f"상태차원={state_dim}, 행동차원={action_dim}, "
+            f"Target Entropy={self.target_entropy}, "
             f"Device={DEVICE}"
         )
     
     def get_action(self, state, deterministic=False):
         """
-        포트폴리오 가중치 생성
+        SAC 기반 포트폴리오 가중치 생성
         
         Args:
             state: np.array of shape (state_dim,)
@@ -219,24 +235,21 @@ class BCell:
         Returns:
             weights: np.array of shape (action_dim,)
         """
-        self.actor.eval()
-        
         with torch.no_grad():
             state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(DEVICE)
-            weights = self.actor(state_tensor).squeeze(0).cpu().numpy()
-        
-        self.actor.train()
-        
-        # 탐험 (훈련 시에만) - 온도 조절 방식
-        if not deterministic and random.random() < self.epsilon:
-            # 온도를 높여서 더 균등한 분포로 탐험
-            exploration_temp = 2.0 + random.random() * 3.0  # 2.0~5.0 사이
-            with torch.no_grad():
-                state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(DEVICE)
-                weights = self.actor(state_tensor, temperature=exploration_temp).squeeze(0).cpu().numpy()
+            
+            # SAC Actor에서 확률적 또는 결정적 행동 샘플링
+            if deterministic:
+                self.actor.eval()
+                concentration, weights, _ = self.actor(state_tensor)
+                weights = weights.squeeze(0).cpu().numpy()
+                self.actor.train()
+            else:
+                # 훈련 모드에서는 확률적 샘플링 (엔트로피 최대화)
+                concentration, weights, _ = self.actor(state_tensor)
+                weights = weights.squeeze(0).cpu().numpy()
         
         # 가중치 정규화 (안전장치)
-        weights = weights / weights.sum()
         weights = np.clip(weights, 0.001, 0.999)  # 극단값 방지
         weights = weights / weights.sum()  # 재정규화
         
@@ -251,7 +264,7 @@ class BCell:
         self.replay_buffer.push(state, action, reward, next_state, done)
     
     def update(self):
-        """네트워크 업데이트 (TD3 + PER)"""
+        """네트워크 업데이트 (SAC + PER)"""
         if len(self.replay_buffer) < self.batch_size:
             return
         
@@ -267,24 +280,21 @@ class BCell:
         dones = torch.tensor([bool(d) for d in dones], dtype=torch.bool).to(DEVICE)
         is_weights = torch.tensor(np.array(is_weights, dtype=np.float32), dtype=torch.float32).to(DEVICE)
         
-        # ===== Twin Critics 업데이트 =====
+        # 현재 alpha 값 업데이트
+        self.alpha = self.log_alpha.exp()
+        
+        # ===== SAC Twin Critics 업데이트 =====
         with torch.no_grad():
-            # Target Policy Smoothing: 타겟 액션에 노이즈 추가
-            noise = torch.clamp(
-                torch.randn_like(actions) * self.target_noise,
-                -self.noise_clip, self.noise_clip
-            )
-            next_actions = torch.clamp(
-                self.target_actor(next_states) + noise,
-                0.001, 0.999  # 포트폴리오 가중치 범위
-            )
+            # SAC에서는 다음 상태에서의 정책으로부터 행동과 로그 확률을 샘플링
+            _, next_actions, next_log_probs = self.actor(next_states)
             
-            # Twin Q-values에서 최소값 선택 (과대평가 방지)
+            # Twin Q-values 계산 (SAC는 엔트로피 항 포함)
             target_q1 = self.target_critic1(next_states, next_actions).squeeze()
             target_q2 = self.target_critic2(next_states, next_actions).squeeze()
-            target_q = torch.min(target_q1, target_q2)
+            target_q = torch.min(target_q1, target_q2) - self.alpha * next_log_probs
             
-            target_q_values = rewards + (self.gamma * target_q * ~dones)
+            # 타겟 Q-value 계산
+            target_q_values = rewards + self.gamma * target_q * (~dones)
         
         # Critic 1 업데이트
         current_q1 = self.critic1(states, actions).squeeze()
@@ -313,28 +323,30 @@ class BCell:
         priorities = td_errors + 1e-6
         self.replay_buffer.update_priorities(indices, priorities)
         
-        # ===== Delayed Policy Updates =====
-        self.policy_update_counter += 1
-        if self.policy_update_counter % self.policy_delay != 0:
-            return  # Actor 업데이트 건너뛰기
+        # ===== SAC Actor 업데이트 =====
+        _, current_actions, current_log_probs = self.actor(states)
         
-        # ===== Actor 업데이트 (TD3 방식) =====
-        predicted_actions = self.actor(states)
+        # Q-values for current actions
+        q1_current = self.critic1(states, current_actions).squeeze()
+        q2_current = self.critic2(states, current_actions).squeeze()
+        q_current = torch.min(q1_current, q2_current)
         
-        # Critic 1을 통한 정책 그래디언트 (TD3에서는 한 개만 사용)
-        actor_loss = -self.critic1(states, predicted_actions).mean()
-        
-        # 엔트로피 보너스 (다양성 증진)
-        log_probs = torch.log(predicted_actions + 1e-8)
-        entropy = -torch.mean(torch.sum(predicted_actions * log_probs, dim=1))
-        actor_loss -= 0.01 * entropy
+        # SAC Actor 손실 (엔트로피 정규화 포함)
+        actor_loss = (self.alpha * current_log_probs - q_current).mean()
         
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 1.0)
         self.actor_optimizer.step()
         
-        # 타겟 네트워크 소프트 업데이트 (TD3)
+        # ===== Alpha (엔트로피 계수) 자동 튜닝 =====
+        alpha_loss = -(self.log_alpha * (current_log_probs + self.target_entropy).detach()).mean()
+        
+        self.alpha_optimizer.zero_grad()
+        alpha_loss.backward()
+        self.alpha_optimizer.step()
+        
+        # 타겟 네트워크 소프트 업데이트
         self._soft_update_targets()
         
         # 통계 기록
@@ -342,30 +354,20 @@ class BCell:
         self.critic_losses.append((critic1_loss.item() + critic2_loss.item()) / 2)
         self.update_count += 1
         
-        # 엡실론 감소
-        self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
-        
         # 주기적 로깅
         if self.update_count % 100 == 0:
             avg_actor_loss = np.mean(self.actor_losses[-100:])
             avg_critic_loss = np.mean(self.critic_losses[-100:])
             
             self.logger.debug(
-                f"[{self.risk_type}] 업데이트 {self.update_count}: "
+                f"[{self.risk_type}] SAC 업데이트 {self.update_count}: "
                 f"Actor 손실={avg_actor_loss:.4f}, "
                 f"Critic 손실={avg_critic_loss:.4f}, "
-                f"탐험률={self.epsilon:.3f}"
+                f"Alpha={self.alpha.item():.3f}"
             )
     
     def _soft_update_targets(self):
-        """타겟 네트워크들 소프트 업데이트 (TD3)"""
-        # Target Actor 업데이트
-        for target_param, param in zip(self.target_actor.parameters(), 
-                                     self.actor.parameters()):
-            target_param.data.copy_(
-                self.tau * param.data + (1 - self.tau) * target_param.data
-            )
-        
+        """타겟 네트워크들 소프트 업데이트 (SAC - Critic만)"""
         # Target Critic 1 업데이트
         for target_param, param in zip(self.target_critic1.parameters(), 
                                      self.critic1.parameters()):
@@ -465,7 +467,8 @@ class BCell:
             
             with torch.no_grad():
                 state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(DEVICE)
-                weights = self.actor(state_tensor).squeeze(0)
+                concentration, weights, _ = self.actor(state_tensor)
+                weights = weights.squeeze(0)
                 value = self.critic1(state_tensor).squeeze(0)
             
             self.actor.train()
@@ -484,7 +487,7 @@ class BCell:
                 'max_weight_asset': int(weights.argmax().cpu()),
                 'min_weight_asset': int(weights.argmin().cpu()),
                 'weight_concentration': float((weights ** 2).sum().cpu()),
-                'epsilon': self.epsilon,
+                'alpha': float(self.alpha.item()),
                 'update_count': self.update_count
             }
             
@@ -495,7 +498,7 @@ class BCell:
             return {'error': str(e)}
     
     def save_model(self, filepath):
-        """모델 저장 (TD3)"""
+        """모델 저장 (SAC)"""
         try:
             # 저장 디렉토리 생성 보장
             base_dir = os.path.dirname(filepath)
@@ -506,19 +509,19 @@ class BCell:
                 'actor_state_dict': self.actor.state_dict(),
                 'critic1_state_dict': self.critic1.state_dict(),
                 'critic2_state_dict': self.critic2.state_dict(),
-                'target_actor_state_dict': self.target_actor.state_dict(),
                 'target_critic1_state_dict': self.target_critic1.state_dict(),
                 'target_critic2_state_dict': self.target_critic2.state_dict(),
                 'actor_optimizer_state_dict': self.actor_optimizer.state_dict(),
                 'critic1_optimizer_state_dict': self.critic1_optimizer.state_dict(),
                 'critic2_optimizer_state_dict': self.critic2_optimizer.state_dict(),
+                'alpha_optimizer_state_dict': self.alpha_optimizer.state_dict(),
+                'log_alpha': self.log_alpha,
+                'target_entropy': self.target_entropy,
                 'risk_type': self.risk_type,
-                'epsilon': self.epsilon,
-                'update_count': self.update_count,
-                'policy_update_counter': self.policy_update_counter
+                'update_count': self.update_count
             }, filepath)
             
-            self.logger.info(f"{self.risk_type} B-Cell 모델이 저장되었습니다: {filepath}")
+            self.logger.info(f"{self.risk_type} SAC B-Cell 모델이 저장되었습니다: {filepath}")
             return True
             
         except Exception as e:
@@ -526,26 +529,27 @@ class BCell:
             return False
     
     def load_model(self, filepath):
-        """모델 로드 (TD3)"""
+        """모델 로드 (SAC)"""
         try:
             checkpoint = torch.load(filepath, map_location=DEVICE)
             
             self.actor.load_state_dict(checkpoint['actor_state_dict'])
             self.critic1.load_state_dict(checkpoint['critic1_state_dict'])
             self.critic2.load_state_dict(checkpoint['critic2_state_dict'])
-            self.target_actor.load_state_dict(checkpoint['target_actor_state_dict'])
             self.target_critic1.load_state_dict(checkpoint['target_critic1_state_dict'])
             self.target_critic2.load_state_dict(checkpoint['target_critic2_state_dict'])
             
             self.actor_optimizer.load_state_dict(checkpoint['actor_optimizer_state_dict'])
             self.critic1_optimizer.load_state_dict(checkpoint['critic1_optimizer_state_dict'])
             self.critic2_optimizer.load_state_dict(checkpoint['critic2_optimizer_state_dict'])
+            self.alpha_optimizer.load_state_dict(checkpoint['alpha_optimizer_state_dict'])
             
-            self.epsilon = checkpoint['epsilon']
+            self.log_alpha = checkpoint['log_alpha'].to(DEVICE)
+            self.target_entropy = checkpoint['target_entropy']
+            self.alpha = self.log_alpha.exp()
             self.update_count = checkpoint['update_count']
-            self.policy_update_counter = checkpoint.get('policy_update_counter', 0)
             
-            self.logger.info(f"{self.risk_type} B-Cell 모델이 로드되었습니다: {filepath}")
+            self.logger.info(f"{self.risk_type} SAC B-Cell 모델이 로드되었습니다: {filepath}")
             return True
             
         except Exception as e:
