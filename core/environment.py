@@ -126,8 +126,8 @@ class PortfolioEnvironment:
         self.return_history.append(actual_return)
         self.cost_history.append(transaction_cost)
         
-        # 종료 조건
-        done = (self.current_step >= self.max_steps) or (self.portfolio_value <= 0)
+        # 종료 조건 (Python native bool로 변환)
+        done = bool((self.current_step >= self.max_steps) or (self.portfolio_value <= 0))
         
         # 정보 딕셔너리
         info = {

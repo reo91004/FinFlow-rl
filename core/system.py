@@ -305,7 +305,7 @@ class ImmunePortfolioSystem:
         self.logging_stats['penalty_applications'] = 0
     
     def update(self, state: np.ndarray, action: np.ndarray, reward: float, 
-              next_state: np.ndarray, done: bool) -> None:
+              next_state: np.ndarray, done) -> None:
         """
         시스템 업데이트 (학습)
         
@@ -317,9 +317,13 @@ class ImmunePortfolioSystem:
             done: 에피소드 종료 여부
         """
         try:
+            # NumPy 타입을 Python native 타입으로 안전하게 변환
+            done = bool(done)  # numpy.bool을 Python bool로 변환
+            reward = float(reward)  # numpy.float을 Python float로 변환
+            
             # 상태 분해
             market_features = state[:FEATURE_DIM]
-            crisis_level = state[FEATURE_DIM]
+            crisis_level = float(state[FEATURE_DIM])  # numpy scalar을 Python float로 변환
             
             # Memory에 경험 저장
             self.memory.store(
@@ -328,7 +332,7 @@ class ImmunePortfolioSystem:
                 reward=reward,
                 crisis_level=crisis_level,
                 additional_info={
-                    'step': self.training_steps,
+                    'step': int(self.training_steps),  # numpy int를 Python int로 변환
                     'done': done
                 }
             )

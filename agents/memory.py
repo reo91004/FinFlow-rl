@@ -49,7 +49,7 @@ class MemoryCell:
     
     def store(self, state, action, reward, crisis_level, additional_info=None):
         """
-        경험 저장
+        경험 저장 (CUDA 호환성을 위한 타입 변환)
         
         Args:
             state: np.array, 시장 상태
@@ -58,6 +58,9 @@ class MemoryCell:
             crisis_level: float, 위기 수준
             additional_info: dict, 추가 정보
         """
+        # NumPy 타입을 Python native 타입으로 안전하게 변환
+        reward = float(reward)
+        crisis_level = float(crisis_level)
         try:
             # 임베딩 생성
             embedding = self._create_embedding(state, crisis_level)

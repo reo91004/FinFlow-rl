@@ -243,7 +243,11 @@ class BCell:
         return weights
     
     def store_experience(self, state, action, reward, next_state, done):
-        """경험 저장"""
+        """경험 저장 (CUDA 호환성을 위한 타입 변환)"""
+        # NumPy 타입을 Python native 타입으로 안전하게 변환
+        done = bool(done)
+        reward = float(reward)
+        
         self.replay_buffer.push(state, action, reward, next_state, done)
     
     def update(self):
@@ -255,12 +259,13 @@ class BCell:
         batch, is_weights, indices = self.replay_buffer.sample(self.batch_size)
         states, actions, rewards, next_states, dones = zip(*batch)
         
-        states = torch.tensor(np.array(states), dtype=torch.float32).to(DEVICE)
-        actions = torch.tensor(np.array(actions), dtype=torch.float32).to(DEVICE)
-        rewards = torch.tensor(rewards, dtype=torch.float32).to(DEVICE)
-        next_states = torch.tensor(np.array(next_states), dtype=torch.float32).to(DEVICE)
-        dones = torch.tensor(dones, dtype=torch.bool).to(DEVICE)
-        is_weights = torch.tensor(is_weights, dtype=torch.float32).to(DEVICE)
+        # NumPy 배열을 안전하게 변환하여 CUDA 호환성 확보
+        states = torch.tensor(np.array(states, dtype=np.float32), dtype=torch.float32).to(DEVICE)
+        actions = torch.tensor(np.array(actions, dtype=np.float32), dtype=torch.float32).to(DEVICE)
+        rewards = torch.tensor([float(r) for r in rewards], dtype=torch.float32).to(DEVICE)
+        next_states = torch.tensor(np.array(next_states, dtype=np.float32), dtype=torch.float32).to(DEVICE)
+        dones = torch.tensor([bool(d) for d in dones], dtype=torch.bool).to(DEVICE)
+        is_weights = torch.tensor(np.array(is_weights, dtype=np.float32), dtype=torch.float32).to(DEVICE)
         
         # ===== Twin Critics 업데이트 =====
         with torch.no_grad():
