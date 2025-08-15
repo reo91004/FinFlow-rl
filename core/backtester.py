@@ -644,7 +644,7 @@ class ImmunePortfolioBacktester:
         print(f"커리큘럼 학습이 완료되었습니다. 요약: {summary_path}")
 
     def _run_training_episode(self, immune_system, episode_data, curriculum_config):
-        """올바른 State Transition을 보장하는 에피소드 실행 - 검증 시스템 통합"""
+        """State Transition을 보장하는 에피소드 실행 - 검증 시스템 통합"""
         
         # 에피소드 타이밍 시작
         learning_validator.start_episode_timing()
@@ -670,7 +670,21 @@ class ImmunePortfolioBacktester:
             f"({curriculum_config.get('name', 'unknown')})"
         )
         
-        self.logger.debug(f"데이터 크기={episode_data.shape}, "
+        # 상세한 에피소드 데이터 검증 및 로깅
+        actual_episode_length = len(episode_returns)
+        expected_length = EPISODE_LENGTH  # 252
+        data_efficiency = actual_episode_length / expected_length if expected_length > 0 else 0
+        
+        self.logger.info(f"=== 에피소드 {episode_num} 데이터 검증 ===")
+        self.logger.info(f"실제 에피소드 길이: {actual_episode_length}일")
+        self.logger.info(f"기대 길이: {expected_length}일")
+        self.logger.info(f"데이터 효율성: {data_efficiency:.2%}")
+        self.logger.info(f"커리큘럼 레벨: {curriculum_config.get('level', 'unknown')}")
+        
+        if data_efficiency < 0.8:  # 80% 미만이면 경고
+            self.logger.warning(f"에피소드 데이터가 예상보다 짧음: {data_efficiency:.2%}")
+            
+        self.logger.debug(f"원본 데이터 크기={episode_data.shape}, "
                         f"수익률 길이={len(episode_returns)}, "
                         f"커리큘럼={curriculum_config.get('level', 'unknown')}")
             
@@ -690,7 +704,7 @@ class ImmunePortfolioBacktester:
                 crisis_level = getattr(immune_system, 'crisis_level', 0.0)
                 current_weights = getattr(self, 'current_weights', np.ones(len(self.symbols)) / len(self.symbols))
                 
-                # 완전한 상태 벡터 구성 (market_features + crisis_level + weights)
+                # 상태 벡터 구성 (market_features + crisis_level + weights)
                 current_state = np.concatenate([
                     market_features,
                     [crisis_level],
@@ -736,7 +750,7 @@ class ImmunePortfolioBacktester:
                 # 에피소드 종료 플래그
                 done = (i == len(episode_returns) - 2)
                 
-                # 다음 상태의 완전한 벡터 구성
+                # 다음 상태 벡터 구성
                 next_crisis_level = getattr(immune_system, 'crisis_level', 0.0)
                 next_weights = weights  # 행동 후의 새로운 가중치
                 next_state = np.concatenate([
@@ -745,7 +759,7 @@ class ImmunePortfolioBacktester:
                     next_weights
                 ])
                 
-                # Transition 저장 (완전한 (s,a,r,s',done) 튜플)
+                # Transition 저장 (s,a,r,s',done)
                 transitions.append({
                     'state': current_state.copy(),
                     'action': weights.copy(),
@@ -758,12 +772,11 @@ class ImmunePortfolioBacktester:
                 self.previous_weights = getattr(self, 'current_weights', weights.copy())
                 self.current_weights = weights.copy()
                 
-                # 매 5일마다 중간 학습 (빠른 적응) - RJH 방식 적용
-                if immune_system.use_learning_bcells and i % 5 == 4:
+                # 모든 스텝에서 경험 추가, 주기적으로 학습
+                if immune_system.use_learning_bcells:
                     for bcell in immune_system.bcells:
-                        # 현재까지의 경험을 queue_experience로 전달
                         try:
-                            # 현재 상태에서 즉시 학습하기 위해 임시 경험 생성
+                            # 매 스텝마다 경험을 queue에 추가
                             bcell.queue_experience(
                                 market_features=market_features,
                                 crisis_level=crisis_level,
@@ -773,23 +786,27 @@ class ImmunePortfolioBacktester:
                                 done=False
                             )
                             
-                            # episode_buffer가 충분하면 학습
-                            if len(bcell.episode_buffer) >= bcell.batch_size // 2:
-                                bcell.learn_from_episode_buffer()
-                                learning_validator.log_learning_event(
-                                    f"{bcell.risk_type}_midstep_learning",
-                                    f"step={i}, buffer_size={len(bcell.episode_buffer)}"
-                                )
+                            # 중간 학습 빈도에 따라 학습 (충분한 경험이 쌓였을 때)
+                            if i % INTERMEDIATE_LEARNING_FREQUENCY == (INTERMEDIATE_LEARNING_FREQUENCY - 1) and len(bcell.episode_buffer) >= max(4, bcell.batch_size // 2):
+                                success = bcell.learn_from_episode_buffer()
+                                if success:
+                                    # 학습 카운터만 증가 (상세 로그는 skip)
+                                    learning_validator.learning_events += 1
+                                    # 50번마다만 요약 로그
+                                    if learning_validator.learning_events % 50 == 0:
+                                        self.logger.debug(f"중간 학습 진행: {bcell.risk_type} B-Cell, "
+                                                        f"총 {learning_validator.learning_events}회 학습")
+                                    
                         except Exception as e:
-                            # 폴백: 기존 방식
-                            if len(bcell.experience_buffer) >= bcell.batch_size // 2:
+                            # 폴백: 기존 방식으로 transition 저장
+                            if i % INTERMEDIATE_LEARNING_FREQUENCY == (INTERMEDIATE_LEARNING_FREQUENCY - 1) and len(bcell.experience_buffer) >= bcell.batch_size // 2:
                                 bcell.learn_from_batch()
                 
             except Exception as e:
                 print(f"[경고] 스텝 {i} 실행 오류: {e}")
                 continue
         
-        # RJH 브랜치 방식: queue_experience를 이용한 올바른 MDP 전이 구축
+        # queue_experience를 이용한 MDP 전이 구축
         if immune_system.use_learning_bcells and transitions:
             for bcell in immune_system.bcells:
                 try:
@@ -817,14 +834,12 @@ class ImmunePortfolioBacktester:
                     finish_success = bcell.finish_episode()
                     
                     if finish_success:
-                        learning_validator.log_learning_event(
-                            f"{bcell.risk_type}_episode_finished", 
-                            f"transition_count={len(transitions)}"
-                        )
+                        # 에피소드 완료 카운터만 증가 (로그 생략)
+                        learning_validator.learning_events += 1
                             
                 except Exception as e:
-                    print(f"[경고] B-세포 {bcell.cell_id} RJH 방식 학습 오류: {e}")
-                    self.logger.error(f"B-세포 {bcell.cell_id} RJH 방식 학습 오류: {e}")
+                    print(f"[경고] B-세포 {bcell.cell_id} 학습 오류: {e}")
+                    self.logger.error(f"B-세포 {bcell.cell_id} 학습 오류: {e}")
                     
                     # 폴백: 기존 방식 사용
                     try:
@@ -856,8 +871,7 @@ class ImmunePortfolioBacktester:
             except Exception as e:
                 print(f"[경고] 메모리 업데이트 오류: {e}")
         
-        # RJH 방식에서는 finish_episode에서 모든 학습이 처리되므로 
-        # 추가 집중 학습은 필요 없음 (이미 위에서 finish_episode 호출됨)
+        # finish_episode에서 모든 학습이 처리됨
         
         # 결과 계산
         if transitions:
@@ -876,7 +890,22 @@ class ImmunePortfolioBacktester:
         # 에피소드 타이밍 종료 및 검증
         learning_validator.end_episode_timing()
         
-        # 에피소드 결과 로깅
+        # 상세한 에피소드 결과 로깅
+        total_learning_events = sum([getattr(bcell, 'learning_stats', {}).get('total_updates', 0) 
+                                   for bcell in immune_system.bcells]) if immune_system.use_learning_bcells else 0
+        
+        self.logger.info(f"=== 에피소드 {episode_num} 완료 결과 ===")
+        self.logger.info(f"평균 보상: {avg_reward:.6f}")
+        self.logger.info(f"평균 수익률: {avg_return:.6f}")
+        self.logger.info(f"총 transition 수: {len(transitions)}")
+        self.logger.info(f"총 학습 이벤트: {total_learning_events}회")
+        self.logger.info(f"실제 실행 시간: {time.time() - learning_validator.episode_start_time:.2f}초")
+        
+        if total_learning_events == 0 and immune_system.use_learning_bcells:
+            self.logger.error("경고: 이 에피소드에서 학습이 전혀 일어나지 않았음!")
+        elif total_learning_events < 50:
+            self.logger.warning(f"학습 빈도 부족: {total_learning_events}회만 수행됨")
+        
         self.logger.debug(f"에피소드 완료: 평균 보상={avg_reward:.6f}, "
                         f"평균 수익률={avg_return:.6f}, "
                         f"transition 수={len(transitions)}")

@@ -42,16 +42,14 @@ class LearningValidator:
         self.episode_times.append(episode_duration)
         self.total_episodes += 1
         
-        # 실행 시간 검증 (로그 파일에만 기록)
+        # 실행 시간 검증 (축약)
         if episode_duration < 10.0:  # 10초 미만
-            self.logger.debug(f"에피소드 실행 시간이 너무 빠름: {episode_duration:.2f}초")
+            self.logger.warning(f"에피소드 {self.total_episodes} 실행 시간 빠름: {episode_duration:.2f}초")
             
-        if len(self.episode_times) >= 10:
-            avg_time = np.mean(self.episode_times[-10:])
-            if avg_time < 15.0:
-                self.logger.debug(f"최근 10 에피소드 평균 시간이 비정상적으로 빠름: {avg_time:.2f}초")
-                
-        self.logger.debug(f"에피소드 {self.total_episodes} 완료: {episode_duration:.2f}초")
+        # 10 에피소드마다만 요약
+        if self.total_episodes % 10 == 0:
+            avg_time = np.mean(self.episode_times[-10:]) if len(self.episode_times) >= 10 else np.mean(self.episode_times)
+            self.logger.info(f"에피소드 {self.total_episodes} 완료 (최근 평균: {avg_time:.2f}초)")
         
         # 주기적 검증 요약 (25 에피소드마다)
         if self.total_episodes % self.summary_interval == 0 and self.total_episodes > 0:
@@ -126,7 +124,9 @@ class LearningValidator:
             self.logger.warning(f"{model_name}: 가중치 변화가 매우 작음 (평균: {avg_change:.2e})")
             
         self.weight_updates += 1
-        self.logger.debug(f"{model_name}: 가중치 업데이트 확인 (평균 변화: {avg_change:.6f})")
+        # 100번마다만 요약 로그
+        if self.weight_updates % 100 == 0:
+            self.logger.debug(f"가중치 업데이트 요약: 총 {self.weight_updates}회")
         return True
         
     def validate_episode_data(self, episode_data, episode_features=None) -> Dict:
@@ -201,9 +201,11 @@ class LearningValidator:
         return True
         
     def log_learning_event(self, event_type: str, details: str = ""):
-        """학습 이벤트 기록"""
+        """학습 이벤트 기록 (100번마다 요약)"""
         self.learning_events += 1
-        self.logger.debug(f"학습 이벤트 #{self.learning_events}: {event_type} - {details}")
+        # 100번마다만 요약 로그
+        if self.learning_events % 100 == 0:
+            self.logger.debug(f"학습 이벤트 요약: 총 {self.learning_events}회 (최근: {event_type})")
         
     def get_validation_summary(self) -> Dict:
         """검증 결과 요약"""

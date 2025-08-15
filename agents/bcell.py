@@ -24,7 +24,7 @@ class ExperienceReplayBuffer:
         self.position = 0
 
     def push(self, state, action, reward, next_state, done):
-        """완전한 transition 저장"""
+        """transition 저장"""
         if len(self.buffer) < self.capacity:
             self.buffer.append(None)
         self.buffer[self.position] = (state, action, reward, next_state, done)
@@ -151,7 +151,7 @@ class BCell(ImmuneCell):
             self.attention_mechanism.parameters(), lr=DEFAULT_ATTENTION_LR
         )
 
-        # Experience Replay Buffer - 완전한 구현
+        # Experience Replay Buffer
         self.experience_buffer = ExperienceReplayBuffer(EXPERIENCE_BUFFER_SIZE)
         
         # MDP 전이 보존을 위한 에피소드 버퍼
@@ -304,7 +304,7 @@ class BCell(ImmuneCell):
 
     def queue_experience(self, market_features, crisis_level, action, reward, 
                         tcell_contributions=None, done=False):
-        """RJH 브랜치의 핵심: MDP 전이를 보존하면서 경험을 큐에 쌓는다"""
+        """MDP 전이를 보존하면서 경험을 큐에 쌓는다"""
         
         # 현재 상태 구성
         features_tensor = torch.FloatTensor(market_features)
@@ -382,9 +382,10 @@ class BCell(ImmuneCell):
             self.general_performance.append(reward)
 
     def learn_from_episode_buffer(self):
-        """RJH 브랜치 방식: episode_buffer를 사용한 올바른 TD 학습"""
+        """episode_buffer를 사용한 TD 학습"""
         
-        # 최소 경험 조건 완화
+        # 최소 경험 조건 - 배치 크기에 비례하되 더 관대하게
+        # batch_size의 절반이지만 최소 4개는 보장
         min_experiences = max(4, self.batch_size // 2)
         if len(self.episode_buffer) < min_experiences:
             return False
@@ -441,10 +442,9 @@ class BCell(ImmuneCell):
             torch.nn.utils.clip_grad_norm_(self.actor_network.parameters(), 1.0)
             self.actor_optimizer.step()
             
-            # 타겟 네트워크 소프트 업데이트
+            # 타겟 네트워크 소프트 업데이트 (매 학습마다 수행)
             self.update_counter += 1
-            if self.update_counter % TARGET_UPDATE_FREQUENCY == 0:
-                self._soft_update_target_network()
+            self._soft_update_target_network()  # 매번 업데이트
             
             # Epsilon 감소
             self.epsilon = max(self.min_epsilon, self.epsilon * self.epsilon_decay)
@@ -458,16 +458,16 @@ class BCell(ImmuneCell):
             self.learning_stats['actor_loss_sum'] += total_actor_loss.item()
             self.learning_stats['critic_loss_sum'] += critic_loss.item()
             
-            # 50번마다 학습 요약 로깅
-            if self.learning_stats['total_updates'] % 50 == 0:
-                avg_actor_loss = self.learning_stats['actor_loss_sum'] / 50
-                avg_critic_loss = self.learning_stats['critic_loss_sum'] / 50
-                avg_td_error = np.mean(list(self.td_errors)[-50:]) if self.td_errors else 0.0
+            # 200번마다 학습 요약 로깅 (50 → 200으로 축약)
+            if self.learning_stats['total_updates'] % 200 == 0:
+                avg_actor_loss = self.learning_stats['actor_loss_sum'] / 200
+                avg_critic_loss = self.learning_stats['critic_loss_sum'] / 200
+                avg_td_error = np.mean(list(self.td_errors)[-200:]) if self.td_errors else 0.0
                 
-                self.logger.debug(f"{self.risk_type} B-Cell 학습 요약 (50회): "
-                                f"평균 Actor 손실={avg_actor_loss:.6f}, "
-                                f"평균 Critic 손실={avg_critic_loss:.6f}, "
-                                f"평균 TD 오차={avg_td_error:.6f}")
+                self.logger.info(f"{self.risk_type} B-Cell 학습 요약 (200회): "
+                               f"Actor 손실={avg_actor_loss:.4f}, "
+                               f"Critic 손실={avg_critic_loss:.4f}, "
+                               f"TD 오차={avg_td_error:.4f}")
                 
                 # 통계 초기화
                 self.learning_stats['actor_loss_sum'] = 0.0
@@ -486,8 +486,8 @@ class BCell(ImmuneCell):
         if len(self.episode_buffer) >= self.batch_size // 2:
             return self.learn_from_episode_buffer()
         
-        # 기존 방식 폴백
-        min_experiences = self.batch_size // 2
+        # 기존 방식 폴백 - 배치 크기에 비례하되 더 관대하게
+        min_experiences = max(4, self.batch_size // 2)
         if len(self.experience_buffer) < min_experiences:
             return False
             
@@ -564,8 +564,7 @@ class BCell(ImmuneCell):
             self.actor_optimizer.step()
             
             self.update_counter += 1
-            if self.update_counter % TARGET_UPDATE_FREQUENCY == 0:
-                self._soft_update_target_network()
+            self._soft_update_target_network()  # 매번 업데이트
             
             self.epsilon = max(self.min_epsilon, self.epsilon * self.epsilon_decay)
             
@@ -573,13 +572,13 @@ class BCell(ImmuneCell):
             self.learning_stats['actor_loss_sum'] += total_actor_loss.item()
             self.learning_stats['critic_loss_sum'] += critic_loss.item()
             
-            if self.learning_stats['total_updates'] % 50 == 0:
-                avg_actor_loss = self.learning_stats['actor_loss_sum'] / 50
-                avg_critic_loss = self.learning_stats['critic_loss_sum'] / 50
+            if self.learning_stats['total_updates'] % 200 == 0:
+                avg_actor_loss = self.learning_stats['actor_loss_sum'] / 200
+                avg_critic_loss = self.learning_stats['critic_loss_sum'] / 200
                 
-                self.logger.debug(f"{self.risk_type} B-Cell 기존 방식 학습 요약: "
-                                f"평균 Actor 손실={avg_actor_loss:.6f}, "
-                                f"평균 Critic 손실={avg_critic_loss:.6f}")
+                self.logger.info(f"{self.risk_type} B-Cell 기존 방식 학습: "
+                                f"Actor={avg_actor_loss:.4f}, "
+                                f"Critic={avg_critic_loss:.4f}")
                 
                 self.learning_stats['actor_loss_sum'] = 0.0
                 self.learning_stats['critic_loss_sum'] = 0.0
@@ -610,11 +609,31 @@ class BCell(ImmuneCell):
             self.episode_buffer.append(self._pending_experience)
             self._pending_experience = None
         
-        # 에피소드 종료 후 학습
-        if len(self.episode_buffer) >= self.batch_size // 2:
-            learning_success = self.learn_from_episode_buffer()
-            if learning_success:
-                self.logger.debug(f"{self.risk_type} B-Cell 에피소드 종료 후 학습 완료")
+        # 에피소드 종료 후 집중 학습
+        min_for_learning = max(4, self.batch_size // 2)
+        
+        if len(self.episode_buffer) >= min_for_learning:
+            learning_count = 0
+            # 경험 수에 비례한 학습 횟수 (최대 20회)
+            max_iterations = min(20, len(self.episode_buffer) // min_for_learning * 2)
+            
+            for _ in range(max_iterations):
+                learning_success = self.learn_from_episode_buffer()
+                if learning_success:
+                    learning_count += 1
+                else:
+                    break  # 학습 실패 시 중단
+                    
+            # 10회 이상 학습했거나 10번마다만 로깅
+            if learning_count >= 10 or (learning_count > 0 and self.learning_stats.get('total_updates', 0) % 10 == 0):
+                self.logger.debug(f"{self.risk_type} B-Cell 집중 학습: {learning_count}회")
+                
+        # Experience Buffer에서도 비례적 학습
+        if len(self.experience_buffer) >= min_for_learning:
+            extra_iterations = min(10, len(self.experience_buffer) // self.batch_size)
+            for _ in range(extra_iterations):
+                if not self.learn_from_batch():
+                    break
         
         # 에피소드 버퍼에서 Experience Replay Buffer로 데이터 이전
         for exp in self.episode_buffer:
@@ -771,10 +790,15 @@ class BCell(ImmuneCell):
         )
         expertise_advantage = specialist_avg - general_avg if general_avg != 0 else 0
 
+        # 전문화 비율 계산
+        total_experiences = len(self.specialization_buffer) + len(self.general_buffer)
+        specialization_ratio = len(self.specialization_buffer) / max(1, total_experiences)
+        
         return {
             "specialization_strength": self.specialization_strength,
             "specialist_experiences": len(self.specialization_buffer),
             "general_experiences": len(self.general_buffer),
+            "specialization_ratio": specialization_ratio,
             "specialist_avg_reward": specialist_avg,
             "general_avg_reward": general_avg,
             "expertise_advantage": expertise_advantage,
