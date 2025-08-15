@@ -67,7 +67,7 @@ TRAIN_END_DATE = "2020-12-31"
 TEST_START_DATE = "2021-01-01"
 TEST_END_DATE = "2024-12-31"
 ANALYSIS_START_DATE = "2021-01-01"
-ANALYSIS_END_DATE = "2021-06-30"
+ANALYSIS_END_DATE = "2024-12-31"
 
 
 # ===== 에이전트 시스템 =====
@@ -103,13 +103,13 @@ DEFAULT_MIN_EPSILON = 0.05        # 유지
 # ===== 학습 프로세스 (빠른 시작) =====
 EPISODE_LENGTH = 252              # 유지
 PRETRAIN_EPISODES = 500           # 1000 → 500 (빠른 시작)
-TOTAL_EPISODES = 50000           # 유지
-CURRICULUM_TOTAL_EPISODES = 100000  # 유지
+TOTAL_EPISODES = 5000           # 유지
+CURRICULUM_TOTAL_EPISODES = 10000  # 유지
 
 CURRICULUM_MIN_EPISODES = {
-    0: 20000,
-    1: 30000,
-    2: 50000,
+    0: 2000,
+    1: 3000,
+    2: 5000,
 }
 
 
