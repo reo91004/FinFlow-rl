@@ -46,44 +46,92 @@ class ActorNetwork(nn.Module):
         self.temperature = max(0.1, temperature)  # 최소값 0.1로 제한
 
 class CriticNetwork(nn.Module):
-    """Critic 네트워크: 상태 가치 함수"""
+    """Critic 네트워크: Q(s,a) 가치 함수"""
     
-    def __init__(self, state_dim, hidden_dim=128):
+    def __init__(self, state_dim, action_dim, hidden_dim=128):
         super(CriticNetwork, self).__init__()
         
-        self.fc1 = nn.Linear(state_dim, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
-        self.fc3 = nn.Linear(hidden_dim, 1)
+        # state 처리용
+        self.state_fc = nn.Linear(state_dim, hidden_dim)
+        # action 처리용  
+        self.action_fc = nn.Linear(action_dim, hidden_dim)
+        # 결합 처리용
+        self.fc1 = nn.Linear(hidden_dim * 2, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, 1)
         
         # 가중치 초기화
         self._init_weights()
     
     def _init_weights(self):
         """가중치 초기화"""
-        for layer in [self.fc1, self.fc2, self.fc3]:
+        for layer in [self.state_fc, self.action_fc, self.fc1, self.fc2]:
             nn.init.xavier_uniform_(layer.weight)
             nn.init.zeros_(layer.bias)
     
-    def forward(self, state):
-        x = F.relu(self.fc1(state))
-        x = F.relu(self.fc2(x))
-        value = self.fc3(x)
-        return value
+    def forward(self, state, action=None):
+        # action이 제공되지 않으면 state만으로 계산 (이전 버전 호환성)
+        if action is None:
+            # 단순한 상태 가치 함수로 작동
+            state_value = F.relu(self.state_fc(state))
+            x = F.relu(self.fc1(torch.cat([state_value, torch.zeros_like(state_value)], dim=1)))
+            return self.fc2(x)
+        
+        # state와 action을 결합한 Q(s,a) 계산
+        state_value = F.relu(self.state_fc(state))
+        action_value = F.relu(self.action_fc(action))
+        x = F.relu(self.fc1(torch.cat([state_value, action_value], dim=1)))
+        q_value = self.fc2(x)
+        return q_value
 
-class ReplayBuffer:
-    """경험 재생 버퍼"""
+class PrioritizedReplayBuffer:
+    """우선순위 경험 재생 버퍼 (PER)"""
     
-    def __init__(self, capacity):
-        self.buffer = deque(maxlen=capacity)
-    
+    def __init__(self, capacity, alpha=0.6, beta=0.4):
+        self.capacity = capacity
+        self.alpha = alpha  # 우선순위 지수
+        self.beta = beta    # 중요도 샘플링 지수
+        self.priorities = np.zeros((capacity,), dtype=np.float32)
+        self.buffer = []
+        self.pos = 0
+        
     def push(self, state, action, reward, next_state, done):
-        """경험 저장"""
-        experience = (state, action, reward, next_state, done)
-        self.buffer.append(experience)
+        """경험 저장 (최대 우선순위로 초기 설정)"""
+        max_priority = self.priorities.max() if self.buffer else 1.0
+        
+        if len(self.buffer) < self.capacity:
+            self.buffer.append((state, action, reward, next_state, done))
+        else:
+            self.buffer[self.pos] = (state, action, reward, next_state, done)
+        
+        self.priorities[self.pos] = max_priority
+        self.pos = (self.pos + 1) % self.capacity
     
     def sample(self, batch_size):
-        """배치 샘플링"""
-        return random.sample(self.buffer, batch_size)
+        """우선순위 기반 배치 샘플링"""
+        if len(self.buffer) == self.capacity:
+            priorities = self.priorities
+        else:
+            priorities = self.priorities[:self.pos]
+        
+        # 우선순위 기반 확률 계산
+        probabilities = priorities ** self.alpha
+        probabilities /= probabilities.sum()
+        
+        # 샘플 인덱스 선택
+        indices = np.random.choice(len(self.buffer), batch_size, p=probabilities)
+        samples = [self.buffer[idx] for idx in indices]
+        
+        # 중요도 샘플링 가중치 계산
+        total = len(self.buffer)
+        weights = (total * probabilities[indices]) ** (-self.beta)
+        weights /= weights.max()  # 정규화
+        
+        return samples, weights, indices
+    
+    def update_priorities(self, indices, priorities):
+        """TD-error 기반 우선순위 업데이트"""
+        for idx, priority in zip(indices, priorities):
+            self.priorities[idx] = priority
     
     def __len__(self):
         return len(self.buffer)
@@ -104,24 +152,40 @@ class BCell:
         
         # 신경망 초기화
         self.actor = ActorNetwork(state_dim, action_dim, hidden_dim)
-        self.critic = CriticNetwork(state_dim, hidden_dim)
         
-        # 타겟 네트워크 (안정적 학습용)
-        self.target_critic = CriticNetwork(state_dim, hidden_dim)
-        self.target_critic.load_state_dict(self.critic.state_dict())
+        # Twin Critics (TD3)
+        self.critic1 = CriticNetwork(state_dim, action_dim, hidden_dim)
+        self.critic2 = CriticNetwork(state_dim, action_dim, hidden_dim)
+        
+        # 타겟 네트워크들
+        self.target_actor = ActorNetwork(state_dim, action_dim, hidden_dim)
+        self.target_critic1 = CriticNetwork(state_dim, action_dim, hidden_dim)
+        self.target_critic2 = CriticNetwork(state_dim, action_dim, hidden_dim)
+        
+        # 타겟 네트워크 초기화 (메인 네트워크 복사)
+        self.target_actor.load_state_dict(self.actor.state_dict())
+        self.target_critic1.load_state_dict(self.critic1.state_dict())
+        self.target_critic2.load_state_dict(self.critic2.state_dict())
         
         # 옵티마이저
         self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=actor_lr)
-        self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=critic_lr)
+        self.critic1_optimizer = optim.Adam(self.critic1.parameters(), lr=critic_lr)
+        self.critic2_optimizer = optim.Adam(self.critic2.parameters(), lr=critic_lr)
         
-        # 경험 재생 버퍼
-        self.replay_buffer = ReplayBuffer(capacity=10000)
+        # 경험 재생 버퍼 (PER)
+        self.replay_buffer = PrioritizedReplayBuffer(capacity=10000, alpha=0.6, beta=0.4)
         
         # 학습 파라미터
         self.gamma = 0.99
         self.tau = 0.005
         self.batch_size = 64
         self.update_frequency = 4
+        
+        # TD3 파라미터
+        self.target_noise = 0.2  # Target Policy Smoothing 노이즈
+        self.noise_clip = 0.5    # 노이즈 클리핑
+        self.policy_delay = 2    # Actor 업데이트 지연
+        self.policy_update_counter = 0
         
         # 탐험 파라미터
         self.epsilon = 0.9
@@ -180,12 +244,12 @@ class BCell:
         self.replay_buffer.push(state, action, reward, next_state, done)
     
     def update(self):
-        """네트워크 업데이트"""
+        """네트워크 업데이트 (TD3 + PER)"""
         if len(self.replay_buffer) < self.batch_size:
             return
         
-        # 배치 샘플링
-        batch = self.replay_buffer.sample(self.batch_size)
+        # PER 배치 샘플링
+        batch, is_weights, indices = self.replay_buffer.sample(self.batch_size)
         states, actions, rewards, next_states, dones = zip(*batch)
         
         states = torch.FloatTensor(np.array(states))
@@ -193,34 +257,67 @@ class BCell:
         rewards = torch.FloatTensor(rewards)
         next_states = torch.FloatTensor(np.array(next_states))
         dones = torch.BoolTensor(dones)
+        is_weights = torch.FloatTensor(is_weights)
         
-        # Critic 업데이트
-        current_q_values = self.critic(states).squeeze()
-        
+        # ===== Twin Critics 업데이트 =====
         with torch.no_grad():
-            next_q_values = self.target_critic(next_states).squeeze()
-            target_q_values = rewards + (self.gamma * next_q_values * ~dones)
+            # Target Policy Smoothing: 타겟 액션에 노이즈 추가
+            noise = torch.clamp(
+                torch.randn_like(actions) * self.target_noise,
+                -self.noise_clip, self.noise_clip
+            )
+            next_actions = torch.clamp(
+                self.target_actor(next_states) + noise,
+                0.001, 0.999  # 포트폴리오 가중치 범위
+            )
+            
+            # Twin Q-values에서 최소값 선택 (과대평가 방지)
+            target_q1 = self.target_critic1(next_states, next_actions).squeeze()
+            target_q2 = self.target_critic2(next_states, next_actions).squeeze()
+            target_q = torch.min(target_q1, target_q2)
+            
+            target_q_values = rewards + (self.gamma * target_q * ~dones)
         
-        critic_loss = F.mse_loss(current_q_values, target_q_values)
+        # Critic 1 업데이트
+        current_q1 = self.critic1(states, actions).squeeze()
+        critic1_loss = (is_weights * F.mse_loss(current_q1, target_q_values, reduction='none')).mean()
         
-        self.critic_optimizer.zero_grad()
-        critic_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.critic.parameters(), 1.0)
-        self.critic_optimizer.step()
+        self.critic1_optimizer.zero_grad()
+        critic1_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.critic1.parameters(), 1.0)
+        self.critic1_optimizer.step()
         
-        # Actor 업데이트
+        # Critic 2 업데이트
+        current_q2 = self.critic2(states, actions).squeeze()
+        critic2_loss = (is_weights * F.mse_loss(current_q2, target_q_values, reduction='none')).mean()
+        
+        self.critic2_optimizer.zero_grad()
+        critic2_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.critic2.parameters(), 1.0)
+        self.critic2_optimizer.step()
+        
+        # TD-error 계산 (PER 우선순위 업데이트용)
+        td_errors = torch.min(
+            (current_q1 - target_q_values).abs(),
+            (current_q2 - target_q_values).abs()
+        ).detach().cpu().numpy()
+        
+        priorities = td_errors + 1e-6
+        self.replay_buffer.update_priorities(indices, priorities)
+        
+        # ===== Delayed Policy Updates =====
+        self.policy_update_counter += 1
+        if self.policy_update_counter % self.policy_delay != 0:
+            return  # Actor 업데이트 건너뛰기
+        
+        # ===== Actor 업데이트 (TD3 방식) =====
         predicted_actions = self.actor(states)
         
-        # 정책 그래디언트
-        advantages = target_q_values - current_q_values.detach()
-        
-        # 로그 확률 계산 (포트폴리오 가중치용)
-        log_probs = torch.log(predicted_actions + 1e-8)
-        action_log_probs = torch.sum(log_probs * actions, dim=1)
-        
-        actor_loss = -torch.mean(action_log_probs * advantages)
+        # Critic 1을 통한 정책 그래디언트 (TD3에서는 한 개만 사용)
+        actor_loss = -self.critic1(states, predicted_actions).mean()
         
         # 엔트로피 보너스 (다양성 증진)
+        log_probs = torch.log(predicted_actions + 1e-8)
         entropy = -torch.mean(torch.sum(predicted_actions * log_probs, dim=1))
         actor_loss -= 0.01 * entropy
         
@@ -229,12 +326,12 @@ class BCell:
         torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 1.0)
         self.actor_optimizer.step()
         
-        # 타겟 네트워크 소프트 업데이트
-        self._soft_update_target()
+        # 타겟 네트워크 소프트 업데이트 (TD3)
+        self._soft_update_targets()
         
         # 통계 기록
         self.actor_losses.append(actor_loss.item())
-        self.critic_losses.append(critic_loss.item())
+        self.critic_losses.append((critic1_loss.item() + critic2_loss.item()) / 2)
         self.update_count += 1
         
         # 엡실론 감소
@@ -252,41 +349,101 @@ class BCell:
                 f"탐험률={self.epsilon:.3f}"
             )
     
-    def _soft_update_target(self):
-        """타겟 네트워크 소프트 업데이트"""
-        for target_param, param in zip(self.target_critic.parameters(), 
-                                     self.critic.parameters()):
+    def _soft_update_targets(self):
+        """타겟 네트워크들 소프트 업데이트 (TD3)"""
+        # Target Actor 업데이트
+        for target_param, param in zip(self.target_actor.parameters(), 
+                                     self.actor.parameters()):
+            target_param.data.copy_(
+                self.tau * param.data + (1 - self.tau) * target_param.data
+            )
+        
+        # Target Critic 1 업데이트
+        for target_param, param in zip(self.target_critic1.parameters(), 
+                                     self.critic1.parameters()):
+            target_param.data.copy_(
+                self.tau * param.data + (1 - self.tau) * target_param.data
+            )
+        
+        # Target Critic 2 업데이트
+        for target_param, param in zip(self.target_critic2.parameters(), 
+                                     self.critic2.parameters()):
             target_param.data.copy_(
                 self.tau * param.data + (1 - self.tau) * target_param.data
             )
     
-    def get_specialization_score(self, crisis_level):
+    def get_specialization_score(self, crisis_info):
         """
-        현재 상황에 대한 전문성 점수 계산
+        다차원 위기 정보에 대한 전문성 점수 계산
         
         Args:
-            crisis_level: float [0, 1]
+            crisis_info: dict or float - 다차원 위기 정보 또는 기존 crisis_level
             
         Returns:
             score: float [0, 1] - 높을수록 현재 상황에 특화됨
         """
+        # 하위 호환성: 기존 float crisis_level 지원
+        if isinstance(crisis_info, (int, float)):
+            return self._get_legacy_specialization_score(crisis_info)
+        
+        # 다차원 위기 벡터 기반 전문성 계산
+        if isinstance(crisis_info, dict):
+            overall_crisis = crisis_info.get('overall_crisis', 0.0)
+            volatility_crisis = crisis_info.get('volatility_crisis', 0.0)
+            correlation_crisis = crisis_info.get('correlation_crisis', 0.0)
+            volume_crisis = crisis_info.get('volume_crisis', 0.0)
+            
+            if self.risk_type == 'volatility':
+                # 변동성 전문가: 변동성 위기와 전체 위기에 특화
+                volatility_score = volatility_crisis * 1.5  # 변동성 위기에 높은 가중치
+                overall_score = overall_crisis * 0.8
+                return np.clip(volatility_score + overall_score * 0.5, 0.0, 1.0)
+                
+            elif self.risk_type == 'correlation':
+                # 상관관계 전문가: 상관관계 위기와 중간 수준 전체 위기에 특화
+                correlation_score = correlation_crisis * 1.8
+                optimal_overall = 1 - abs(overall_crisis - 0.55) * 2.0  # 중간 위기 수준 선호
+                return np.clip(correlation_score + optimal_overall * 0.3, 0.0, 1.0)
+                
+            elif self.risk_type == 'momentum':
+                # 모멘텀 전문가: 낮은 위기 상황과 거래량 이상에 특화
+                momentum_score = max(0, 1 - overall_crisis * 2.5)  # 낮은 위기 선호
+                volume_score = volume_crisis * 1.2  # 거래량 이상 활용
+                return np.clip(momentum_score + volume_score * 0.4, 0.0, 1.0)
+                
+            elif self.risk_type == 'defensive':
+                # 방어 전문가: 중고위기와 모든 위기 유형에 균형 있게 대응
+                defensive_score = 1 - abs(overall_crisis - 0.65) * 1.8  # 중고위기 선호
+                multi_crisis = (volatility_crisis + correlation_crisis + volume_crisis) / 3
+                return np.clip(defensive_score + multi_crisis * 0.6, 0.0, 1.0)
+                
+            elif self.risk_type == 'growth':
+                # 성장 전문가: 매우 낮은 위기 상황에 특화
+                growth_score = max(0, 1 - overall_crisis * 3.5)  # 매우 낮은 위기만
+                stability_bonus = max(0, 1 - volatility_crisis * 2)  # 낮은 변동성 보너스
+                return np.clip(growth_score + stability_bonus * 0.3, 0.0, 1.0)
+                
+            else:
+                return 0.5  # 기본값
+        
+        return 0.5  # 예외 상황
+    
+    def _get_legacy_specialization_score(self, crisis_level):
+        """
+        기존 단일 crisis_level 기반 전문성 점수 (하위 호환성)
+        """
         if self.risk_type == 'volatility':
-            # 고위기 상황에 특화 (crisis_level > 0.7)
             return crisis_level
         elif self.risk_type == 'correlation':
-            # 중상위기 상황에 특화 (crisis_level 0.4~0.7)
             return 1 - abs(crisis_level - 0.55) * 2.5
         elif self.risk_type == 'momentum':
-            # 저중위기 상황에 특화 (crisis_level < 0.4)
             return max(0, 1 - crisis_level * 2.5)
         elif self.risk_type == 'defensive':
-            # 중고위기 상황에 특화 (crisis_level 0.5~0.8)
             return 1 - abs(crisis_level - 0.65) * 2
         elif self.risk_type == 'growth':
-            # 저위기 안정 상황에 특화 (crisis_level < 0.3)
             return max(0, 1 - crisis_level * 3)
         else:
-            return 0.5  # 기본값
+            return 0.5
     
     def get_explanation(self, state):
         """
@@ -330,17 +487,22 @@ class BCell:
             return {'error': str(e)}
     
     def save_model(self, filepath):
-        """모델 저장"""
+        """모델 저장 (TD3)"""
         try:
             torch.save({
                 'actor_state_dict': self.actor.state_dict(),
-                'critic_state_dict': self.critic.state_dict(),
-                'target_critic_state_dict': self.target_critic.state_dict(),
+                'critic1_state_dict': self.critic1.state_dict(),
+                'critic2_state_dict': self.critic2.state_dict(),
+                'target_actor_state_dict': self.target_actor.state_dict(),
+                'target_critic1_state_dict': self.target_critic1.state_dict(),
+                'target_critic2_state_dict': self.target_critic2.state_dict(),
                 'actor_optimizer_state_dict': self.actor_optimizer.state_dict(),
-                'critic_optimizer_state_dict': self.critic_optimizer.state_dict(),
+                'critic1_optimizer_state_dict': self.critic1_optimizer.state_dict(),
+                'critic2_optimizer_state_dict': self.critic2_optimizer.state_dict(),
                 'risk_type': self.risk_type,
                 'epsilon': self.epsilon,
-                'update_count': self.update_count
+                'update_count': self.update_count,
+                'policy_update_counter': self.policy_update_counter
             }, filepath)
             
             self.logger.info(f"{self.risk_type} B-Cell 모델이 저장되었습니다: {filepath}")
@@ -351,18 +513,24 @@ class BCell:
             return False
     
     def load_model(self, filepath):
-        """모델 로드"""
+        """모델 로드 (TD3)"""
         try:
             checkpoint = torch.load(filepath)
             
             self.actor.load_state_dict(checkpoint['actor_state_dict'])
-            self.critic.load_state_dict(checkpoint['critic_state_dict'])
-            self.target_critic.load_state_dict(checkpoint['target_critic_state_dict'])
+            self.critic1.load_state_dict(checkpoint['critic1_state_dict'])
+            self.critic2.load_state_dict(checkpoint['critic2_state_dict'])
+            self.target_actor.load_state_dict(checkpoint['target_actor_state_dict'])
+            self.target_critic1.load_state_dict(checkpoint['target_critic1_state_dict'])
+            self.target_critic2.load_state_dict(checkpoint['target_critic2_state_dict'])
+            
             self.actor_optimizer.load_state_dict(checkpoint['actor_optimizer_state_dict'])
-            self.critic_optimizer.load_state_dict(checkpoint['critic_optimizer_state_dict'])
+            self.critic1_optimizer.load_state_dict(checkpoint['critic1_optimizer_state_dict'])
+            self.critic2_optimizer.load_state_dict(checkpoint['critic2_optimizer_state_dict'])
             
             self.epsilon = checkpoint['epsilon']
             self.update_count = checkpoint['update_count']
+            self.policy_update_counter = checkpoint.get('policy_update_counter', 0)
             
             self.logger.info(f"{self.risk_type} B-Cell 모델이 로드되었습니다: {filepath}")
             return True

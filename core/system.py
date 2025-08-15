@@ -100,14 +100,21 @@ class ImmunePortfolioSystem:
             crisis_level = state[FEATURE_DIM]
             prev_weights = state[FEATURE_DIM + 1:]
             
-            # T-Cell 위기 감지 (재검증)
-            detected_crisis = self.tcell.detect_crisis(market_features)
+            # T-Cell 다차원 위기 감지
+            crisis_detection = self.tcell.detect_crisis(market_features)
             
-            # 더 정확한 위기 수준 사용
-            final_crisis_level = max(crisis_level, detected_crisis)
+            # 기존 호환성을 위한 단일 위기 수준 계산
+            if isinstance(crisis_detection, dict):
+                detected_crisis = crisis_detection['overall_crisis']
+                final_crisis_level = max(crisis_level, detected_crisis)
+                crisis_info = crisis_detection  # 다차원 정보 보존
+            else:
+                # 하위 호환성 (단일 float 반환 시)
+                final_crisis_level = max(crisis_level, crisis_detection)
+                crisis_info = final_crisis_level
             
-            # B-Cell 선택 (위기 수준 기반)
-            selected_bcell_name = self._select_bcell(final_crisis_level)
+            # B-Cell 선택 (다차원 위기 정보 기반)
+            selected_bcell_name = self._select_bcell(crisis_info)
             selected_bcell = self.bcells[selected_bcell_name]
             
             # Memory 회상
@@ -148,7 +155,7 @@ class ImmunePortfolioSystem:
                 'memory_guidance': memory_guidance['has_guidance'],
                 'memory_confidence': memory_guidance.get('confidence', 0.0),
                 'specialization_scores': {
-                    name: bcell.get_specialization_score(final_crisis_level)
+                    name: bcell.get_specialization_score(crisis_info)
                     for name, bcell in self.bcells.items()
                 },
                 'weights_concentration': float(np.sum(weights ** 2)),
@@ -189,16 +196,16 @@ class ImmunePortfolioSystem:
             }
             return uniform_weights, fallback_info
     
-    def _select_bcell(self, crisis_level: float) -> str:
+    def _select_bcell(self, crisis_info) -> str:
         """
-        위기 수준에 따른 B-Cell 선택 (다양성 확보)
+        다차원 위기 정보에 따른 B-Cell 선택 (다양성 확보)
         
         성능 기반 동적 페널티 + 확률적 선택을 통한 편향성 해결
         """
-        # 각 B-Cell의 기본 전문성 점수 계산
+        # 각 B-Cell의 기본 전문성 점수 계산 (다차원 위기 정보 사용)
         scores = {}
         for name, bcell in self.bcells.items():
-            base_score = bcell.get_specialization_score(crisis_level)
+            base_score = bcell.get_specialization_score(crisis_info)
             
             # 최근 성과 기반 페널티 계산
             performance_data = self.bcell_performance[name]
@@ -331,11 +338,22 @@ class ImmunePortfolioSystem:
             market_features = state[:FEATURE_DIM]
             crisis_level = state[FEATURE_DIM]
             
+            # T-Cell 다차원 위기 감지
+            crisis_detection = self.tcell.detect_crisis(market_features)
+            
+            # 기존 호환성을 위한 처리
+            if isinstance(crisis_detection, dict):
+                crisis_info = crisis_detection
+                overall_crisis = crisis_detection['overall_crisis']
+            else:
+                crisis_info = crisis_level
+                overall_crisis = crisis_level
+            
             # T-Cell 설명
             tcell_explanation = self.tcell.get_anomaly_explanation(market_features)
             
-            # 선택된 B-Cell 설명
-            selected_bcell_name = self._select_bcell(crisis_level)
+            # 선택된 B-Cell 설명 (다차원 위기 정보 기반)
+            selected_bcell_name = self._select_bcell(crisis_info)
             bcell_explanation = self.bcells[selected_bcell_name].get_explanation(state)
             
             # Memory 통계
@@ -349,11 +367,12 @@ class ImmunePortfolioSystem:
                     'tcell_fitted': self.tcell.is_fitted
                 },
                 'crisis_detection': tcell_explanation,
+                'multidimensional_crisis': crisis_detection if isinstance(crisis_detection, dict) else None,
                 'strategy_selection': {
                     'selected_strategy': selected_bcell_name,
-                    'selection_reason': f'위기 수준 {crisis_level:.3f}에 최적화됨',
+                    'selection_reason': f'다차원 위기 분석 결과에 최적화됨 (전체: {overall_crisis:.3f})',
                     'all_specialization_scores': {
-                        name: bcell.get_specialization_score(crisis_level)
+                        name: bcell.get_specialization_score(crisis_info)
                         for name, bcell in self.bcells.items()
                     }
                 },
