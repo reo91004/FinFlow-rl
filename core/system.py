@@ -67,6 +67,14 @@ class ImmunePortfolioSystem:
             } for name in self.bcells.keys()
         }
         
+        # 로깅 통계 (장황한 로그 줄이기)
+        self.logging_stats = {
+            'random_selections': 0,
+            'penalty_applications': 0,
+            'last_log_report': 0,
+            'log_interval': 100  # 100번마다 통계 요약 출력
+        }
+        
         self.logger = BIPDLogger("ImmuneSystem")
         
         self.logger.info(
@@ -221,20 +229,26 @@ class ImmunePortfolioSystem:
             consecutive_count = performance_data['consecutive_selections']
             if consecutive_count >= 5:  # 5회 연속 선택시
                 base_score *= 0.3  # 점수 대폭 감소
-                self.logger.debug(f"{name} 전략이 {consecutive_count}회 연속 선택되어 페널티 적용")
+                self.logging_stats['penalty_applications'] += 1
             
             scores[name] = base_score
         
         # 확률적 선택 (완전 greedy 방지)
         if np.random.random() < 0.2:  # 20% 확률로 랜덤 선택
             selected = np.random.choice(list(self.bcells.keys()))
-            self.logger.debug(f"탐험적 랜덤 선택: {selected}")
+            self.logging_stats['random_selections'] += 1
         else:
             # 최고 점수 전략 선택
             selected = max(scores, key=scores.get)
         
         # 선택 통계 업데이트
         self._update_selection_stats(selected)
+        
+        # 주기적 로깅 통계 보고
+        decisions_since_last_report = self.decision_count - self.logging_stats['last_log_report']
+        if decisions_since_last_report >= self.logging_stats['log_interval']:
+            self._log_selection_statistics()
+            self.logging_stats['last_log_report'] = self.decision_count
         
         return selected
     
@@ -262,6 +276,31 @@ class ImmunePortfolioSystem:
     def _get_consecutive_count(self, bcell_name: str) -> int:
         """특정 B-Cell의 연속 선택 횟수 반환"""
         return self.bcell_performance[bcell_name]['consecutive_selections']
+    
+    def _log_selection_statistics(self) -> None:
+        """B-Cell 선택 통계 요약 로깅 (장황한 로그 대신)"""
+        interval = self.logging_stats['log_interval']
+        random_count = self.logging_stats['random_selections']
+        penalty_count = self.logging_stats['penalty_applications']
+        
+        # 현재 연속 선택 상황 체크
+        consecutive_issues = []
+        for name, data in self.bcell_performance.items():
+            consecutive = data['consecutive_selections']
+            if consecutive >= 3:  # 3회 이상 연속시 보고
+                consecutive_issues.append(f"{name}:{consecutive}회")
+        
+        # 통계 요약 로깅
+        self.logger.debug(
+            f"B-Cell 선택 통계 (최근 {interval}회): "
+            f"탐험적 선택 {random_count}회 ({random_count/interval:.1%}), "
+            f"페널티 적용 {penalty_count}회, "
+            f"연속선택: [{', '.join(consecutive_issues) if consecutive_issues else '정상'}]"
+        )
+        
+        # 통계 리셋
+        self.logging_stats['random_selections'] = 0
+        self.logging_stats['penalty_applications'] = 0
     
     def update(self, state: np.ndarray, action: np.ndarray, reward: float, 
               next_state: np.ndarray, done: bool) -> None:
