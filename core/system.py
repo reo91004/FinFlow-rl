@@ -13,7 +13,7 @@ from xai import DecisionAnalyzer
 from constant import *
 from utils.logger import BIPDLogger
 from utils.expert_strategies import ExpertStrategies
-from utils.learning_validator import learning_validator
+from utils.learning_validator import get_learning_validator
 import torch
 
 warnings.filterwarnings("ignore")

@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import torch
 import gc
 import copy
+import time
 from datetime import datetime, timedelta
 from constant import *
 from tqdm import tqdm
@@ -21,7 +22,7 @@ from utils.checkpoint import CheckpointManager
 from utils.validator import DataLeakageValidator, SystemValidator
 from utils.rl_tracker import RLTracker
 from utils.logger import BIPDLogger
-from utils.learning_validator import learning_validator
+from utils.learning_validator import get_learning_validator
 
 import warnings
 import json
@@ -42,10 +43,17 @@ class ImmunePortfolioBacktester:
         self.output_dir = os.path.join(RESULTS_DIR, f"analysis_{timestamp}")
         os.makedirs(self.output_dir, exist_ok=True)
 
+        # 로그 디렉토리를 먼저 설정 (로거 생성 전에)
+        logs_dir = os.path.join(self.output_dir, "logs")
+        BIPDLogger().set_log_directory(logs_dir)
+        
+        # 로거 초기화 - 시스템용(콘솔+파일), 에피소드용(파일만)
+        self.logger = BIPDLogger().get_system_logger()  # 콘솔 출력 있음
+        self.file_logger = BIPDLogger().get_file_only_logger()  # 파일만
+
         # RL Tracker 전용 디렉토리 생성
         self.rl_tracker_dir = os.path.join(self.output_dir, "rl_tracker")
         os.makedirs(self.rl_tracker_dir, exist_ok=True)
-
 
         # 체크포인트 관리자 초기화
         checkpoint_dir = os.path.join(self.output_dir, "checkpoints")
@@ -56,14 +64,10 @@ class ImmunePortfolioBacktester:
 
         # RLTracker 초기화
         self.rl_tracker = RLTracker(output_dir=self.rl_tracker_dir)
-        
-        # 로거 초기화
-        self.logger = BIPDLogger().get_system_logger()
 
         # 단순화된 보상 계산기 초기화
         self.reward_calculator = RewardCalculator(
-            lookback_window=20,
-            transaction_cost_rate=0.001
+            lookback_window=20, transaction_cost_rate=0.001
         )
 
         # 데이터 로드
@@ -107,7 +111,6 @@ class ImmunePortfolioBacktester:
 
         # 커리큘럼 학습 관리자 초기화
         self.curriculum_manager = None
-
 
     def _process_comprehensive_data(self, raw_data, symbols):
         """포괄적인 시장 데이터 처리"""
@@ -414,14 +417,18 @@ class ImmunePortfolioBacktester:
         # 커리큘럼 학습 초기화
         if use_curriculum and use_learning_bcells:
             self.curriculum_manager = CurriculumLearningManager(
-                market_data=self.train_data, total_episodes=TOTAL_EPISODES, episode_length=EPISODE_LENGTH
+                market_data=self.train_data,
+                total_episodes=TOTAL_EPISODES,
+                episode_length=EPISODE_LENGTH,
             )
             print("커리큘럼 학습이 활성화되었습니다.")
 
         try:
             # 사전 훈련
             if use_learning_bcells:
-                immune_system.pretrain_bcells(self.train_data, episodes=PRETRAIN_EPISODES)
+                immune_system.pretrain_bcells(
+                    self.train_data, episodes=PRETRAIN_EPISODES
+                )
 
             # 커리큘럼 기반 적응형 학습
             if use_curriculum and self.curriculum_manager:
@@ -645,97 +652,110 @@ class ImmunePortfolioBacktester:
 
     def _run_training_episode(self, immune_system, episode_data, curriculum_config):
         """State Transition을 보장하는 에피소드 실행 - 검증 시스템 통합"""
-        
+
         # 에피소드 타이밍 시작
-        learning_validator.start_episode_timing()
-        
+        get_get_learning_validator()().start_episode_timing()
+
         # 에피소드 데이터 검증
-        validation_result = learning_validator.validate_episode_data(episode_data)
+        validation_result = get_get_learning_validator()().validate_episode_data(episode_data)
         if not validation_result["data_valid"]:
-            self.logger.warning(f"에피소드 데이터 검증 실패: {validation_result['issues']}")
-        
+            self.logger.warning(
+                f"에피소드 데이터 검증 실패: {validation_result['issues']}"
+            )
+
         episode_returns = episode_data.pct_change().dropna()
         if len(episode_returns) < 2:
-            learning_validator.end_episode_timing()
+            get_learning_validator().end_episode_timing()
             return 0.0, 0.0
-            
+
         # 로그에 에피소드 헤더 추가
-        episode_num = getattr(self, '_episode_counter', 0) + 1
-        setattr(self, '_episode_counter', episode_num)
-        
+        episode_num = getattr(self, "_episode_counter", 0) + 1
+        setattr(self, "_episode_counter", episode_num)
+
         from utils.logger import BIPDLogger
+
         logger_instance = BIPDLogger()
         logger_instance.write_subsection_header(
             f"Episode {episode_num} - Level {curriculum_config.get('level', 0)} "
             f"({curriculum_config.get('name', 'unknown')})"
         )
-        
+
         # 상세한 에피소드 데이터 검증 및 로깅
         actual_episode_length = len(episode_returns)
         expected_length = EPISODE_LENGTH  # 252
-        data_efficiency = actual_episode_length / expected_length if expected_length > 0 else 0
-        
-        self.logger.info(f"=== 에피소드 {episode_num} 데이터 검증 ===")
-        self.logger.info(f"실제 에피소드 길이: {actual_episode_length}일")
-        self.logger.info(f"기대 길이: {expected_length}일")
-        self.logger.info(f"데이터 효율성: {data_efficiency:.2%}")
-        self.logger.info(f"커리큘럼 레벨: {curriculum_config.get('level', 'unknown')}")
-        
+        data_efficiency = (
+            actual_episode_length / expected_length if expected_length > 0 else 0
+        )
+
+        self.file_logger.info(f"=== 에피소드 {episode_num} 데이터 검증 ===")
+        self.file_logger.info(f"실제 에피소드 길이: {actual_episode_length}일")
+        self.file_logger.info(f"기대 길이: {expected_length}일")
+        self.file_logger.info(f"데이터 효율성: {data_efficiency:.2%}")
+        self.file_logger.info(f"커리큘럼 레벨: {curriculum_config.get('level', 'unknown')}")
+
         if data_efficiency < 0.8:  # 80% 미만이면 경고
-            self.logger.warning(f"에피소드 데이터가 예상보다 짧음: {data_efficiency:.2%}")
-            
-        self.logger.debug(f"원본 데이터 크기={episode_data.shape}, "
-                        f"수익률 길이={len(episode_returns)}, "
-                        f"커리큘럼={curriculum_config.get('level', 'unknown')}")
-            
+            self.file_logger.warning(
+                f"에피소드 데이터가 예상보다 짧음: {data_efficiency:.2%}"
+            )
+
+        self.file_logger.debug(
+            f"원본 데이터 크기={episode_data.shape}, "
+            f"수익률 길이={len(episode_returns)}, "
+            f"커리큘럼={curriculum_config.get('level', 'unknown')}"
+        )
+
         transitions = []
         portfolio_returns = []
-        
+
         # State Transition 올바르게 구축
         for i in range(len(episode_returns) - 1):
             try:
                 # 현재 상태
-                current_data = episode_data.iloc[:i+1]
+                current_data = episode_data.iloc[: i + 1]
                 market_features = immune_system.extract_market_features(current_data)
                 if market_features is None or len(market_features) == 0:
                     market_features = np.zeros(12, dtype=np.float32)
-                
+
                 # 현재 위기 수준과 포트폴리오 가중치
-                crisis_level = getattr(immune_system, 'crisis_level', 0.0)
-                current_weights = getattr(self, 'current_weights', np.ones(len(self.symbols)) / len(self.symbols))
-                
+                crisis_level = getattr(immune_system, "crisis_level", 0.0)
+                current_weights = getattr(
+                    self,
+                    "current_weights",
+                    np.ones(len(self.symbols)) / len(self.symbols),
+                )
+
                 # 상태 벡터 구성 (market_features + crisis_level + weights)
-                current_state = np.concatenate([
-                    market_features,
-                    [crisis_level],
-                    current_weights
-                ])
-                
-                # 다음 상태  
-                next_data = episode_data.iloc[:i+2]
+                current_state = np.concatenate(
+                    [market_features, [crisis_level], current_weights]
+                )
+
+                # 다음 상태
+                next_data = episode_data.iloc[: i + 2]
                 next_market_features = immune_system.extract_market_features(next_data)
                 if next_market_features is None or len(next_market_features) == 0:
                     next_market_features = np.zeros(12, dtype=np.float32)
-                
+
                 # 행동 실행 (market_features만 전달)
                 weights, response_type, bcell_decisions = immune_system.immune_response(
                     market_features, training=True
                 )
-                
+
                 # 가중치 검증
                 if weights is None or len(weights) != len(episode_returns.columns):
-                    weights = np.ones(len(episode_returns.columns)) / len(episode_returns.columns)
-                
+                    weights = np.ones(len(episode_returns.columns)) / len(
+                        episode_returns.columns
+                    )
+
                 # 포트폴리오 수익률 계산
                 portfolio_return = np.sum(weights * episode_returns.iloc[i])
                 portfolio_return = np.clip(portfolio_return, -0.5, 0.5)
                 portfolio_returns.append(portfolio_return)
-                
+
                 # 보상 계산 (단일 클리핑만)
                 try:
                     reward_details = self.reward_calculator.calculate_comprehensive_reward(
                         current_return=portfolio_return,
-                        previous_weights=getattr(self, 'previous_weights', None),
+                        previous_weights=getattr(self, "previous_weights", None),
                         current_weights=weights,
                         market_features=market_features,  # 12차원 market_features만 전달
                         crisis_level=immune_system.crisis_level,
@@ -743,35 +763,35 @@ class ImmunePortfolioBacktester:
                     total_reward = reward_details["total_reward"]
                 except Exception as e:
                     total_reward = 0.0
-                
+
                 # 단일 클리핑만 적용 (삼중 클리핑 제거)
                 final_reward = np.clip(total_reward, *REWARD_CLIPPING_RANGE)
-                
+
                 # 에피소드 종료 플래그
-                done = (i == len(episode_returns) - 2)
-                
+                done = i == len(episode_returns) - 2
+
                 # 다음 상태 벡터 구성
-                next_crisis_level = getattr(immune_system, 'crisis_level', 0.0)
+                next_crisis_level = getattr(immune_system, "crisis_level", 0.0)
                 next_weights = weights  # 행동 후의 새로운 가중치
-                next_state = np.concatenate([
-                    next_market_features,
-                    [next_crisis_level],
-                    next_weights
-                ])
-                
+                next_state = np.concatenate(
+                    [next_market_features, [next_crisis_level], next_weights]
+                )
+
                 # Transition 저장 (s,a,r,s',done)
-                transitions.append({
-                    'state': current_state.copy(),
-                    'action': weights.copy(),
-                    'reward': final_reward,
-                    'next_state': next_state.copy(),
-                    'done': done
-                })
-                
+                transitions.append(
+                    {
+                        "state": current_state.copy(),
+                        "action": weights.copy(),
+                        "reward": final_reward,
+                        "next_state": next_state.copy(),
+                        "done": done,
+                    }
+                )
+
                 # 가중치 업데이트
-                self.previous_weights = getattr(self, 'current_weights', weights.copy())
+                self.previous_weights = getattr(self, "current_weights", weights.copy())
                 self.current_weights = weights.copy()
-                
+
                 # 모든 스텝에서 경험 추가, 주기적으로 학습
                 if immune_system.use_learning_bcells:
                     for bcell in immune_system.bcells:
@@ -783,29 +803,40 @@ class ImmunePortfolioBacktester:
                                 action=weights,
                                 reward=final_reward,
                                 tcell_contributions=None,
-                                done=False
+                                done=False,
                             )
-                            
+
                             # 중간 학습 빈도에 따라 학습 (충분한 경험이 쌓였을 때)
-                            if i % INTERMEDIATE_LEARNING_FREQUENCY == (INTERMEDIATE_LEARNING_FREQUENCY - 1) and len(bcell.episode_buffer) >= max(4, bcell.batch_size // 2):
+                            if i % INTERMEDIATE_LEARNING_FREQUENCY == (
+                                INTERMEDIATE_LEARNING_FREQUENCY - 1
+                            ) and len(bcell.episode_buffer) >= max(
+                                4, bcell.batch_size // 2
+                            ):
                                 success = bcell.learn_from_episode_buffer()
                                 if success:
                                     # 학습 카운터만 증가 (상세 로그는 skip)
-                                    learning_validator.learning_events += 1
-                                    # 50번마다만 요약 로그
-                                    if learning_validator.learning_events % 50 == 0:
-                                        self.logger.debug(f"중간 학습 진행: {bcell.risk_type} B-Cell, "
-                                                        f"총 {learning_validator.learning_events}회 학습")
-                                    
+                                    get_learning_validator().learning_events += 1
+                                    # 50번마다만 요약 로그 (파일만)
+                                    if get_learning_validator().learning_events % 50 == 0:
+                                        self.file_logger.debug(
+                                            f"중간 학습 진행: {bcell.risk_type} B-Cell, "
+                                            f"총 {get_learning_validator().learning_events}회 학습"
+                                        )
+
                         except Exception as e:
                             # 폴백: 기존 방식으로 transition 저장
-                            if i % INTERMEDIATE_LEARNING_FREQUENCY == (INTERMEDIATE_LEARNING_FREQUENCY - 1) and len(bcell.experience_buffer) >= bcell.batch_size // 2:
+                            if (
+                                i % INTERMEDIATE_LEARNING_FREQUENCY
+                                == (INTERMEDIATE_LEARNING_FREQUENCY - 1)
+                                and len(bcell.experience_buffer)
+                                >= bcell.batch_size // 2
+                            ):
                                 bcell.learn_from_batch()
-                
+
             except Exception as e:
                 print(f"[경고] 스텝 {i} 실행 오류: {e}")
                 continue
-        
+
         # queue_experience를 이용한 MDP 전이 구축
         if immune_system.use_learning_bcells and transitions:
             for bcell in immune_system.bcells:
@@ -813,12 +844,16 @@ class ImmunePortfolioBacktester:
                     # 모든 transition을 queue_experience로 처리
                     for i, transition in enumerate(transitions):
                         # market_features 추출 (첫 12개 요소)
-                        market_features = transition['state'][:12]
-                        crisis_level = transition['state'][12] if len(transition['state']) > 12 else 0.0
-                        action = transition['action']
-                        reward = transition['reward']
-                        done = transition['done']
-                        
+                        market_features = transition["state"][:12]
+                        crisis_level = (
+                            transition["state"][12]
+                            if len(transition["state"]) > 12
+                            else 0.0
+                        )
+                        action = transition["action"]
+                        reward = transition["reward"]
+                        done = transition["done"]
+
                         # queue_experience 메소드 사용
                         bcell.queue_experience(
                             market_features=market_features,
@@ -826,90 +861,102 @@ class ImmunePortfolioBacktester:
                             action=action,
                             reward=reward,
                             tcell_contributions=None,
-                            done=done
+                            done=done,
                         )
-                    
+
                     # 에피소드 종료 후 B-Cell 정리 및 학습
                     # finish_episode에서 이미 모든 학습이 처리되므로 추가 학습 불필요
                     finish_success = bcell.finish_episode()
-                    
+
                     if finish_success:
                         # 에피소드 완료 카운터만 증가 (로그 생략)
-                        learning_validator.learning_events += 1
-                            
+                        get_learning_validator().learning_events += 1
+
                 except Exception as e:
                     print(f"[경고] B-세포 {bcell.cell_id} 학습 오류: {e}")
                     self.logger.error(f"B-세포 {bcell.cell_id} 학습 오류: {e}")
-                    
+
                     # 폴백: 기존 방식 사용
                     try:
                         for transition in transitions:
                             bcell.add_experience(
-                                transition['state'],
-                                transition['action'], 
-                                transition['reward'],
-                                transition['next_state'],
-                                transition['done']
+                                transition["state"],
+                                transition["action"],
+                                transition["reward"],
+                                transition["next_state"],
+                                transition["done"],
                             )
-                        
+
                         if len(bcell.experience_buffer) >= bcell.batch_size // 2:
                             bcell.learn_from_batch()
-                            
+
                     except Exception as fallback_e:
-                        self.logger.error(f"B-세포 {bcell.cell_id} 폴백 학습도 실패: {fallback_e}")
-        
+                        self.logger.error(
+                            f"B-세포 {bcell.cell_id} 폴백 학습도 실패: {fallback_e}"
+                        )
+
         # 메모리 시스템 업데이트
         if immune_system.crisis_level > 0.15 and transitions:
             try:
                 last_transition = transitions[-1]
-                memory_reward = np.clip(last_transition['reward'], -1.0, 1.0)
+                memory_reward = np.clip(last_transition["reward"], -1.0, 1.0)
                 immune_system.update_memory(
-                    last_transition['state'], 
-                    last_transition['action'], 
-                    memory_reward
+                    last_transition["state"], last_transition["action"], memory_reward
                 )
             except Exception as e:
                 print(f"[경고] 메모리 업데이트 오류: {e}")
-        
+
         # finish_episode에서 모든 학습이 처리됨
-        
+
         # 결과 계산
         if transitions:
-            avg_reward = np.mean([t['reward'] for t in transitions])
+            avg_reward = np.mean([t["reward"] for t in transitions])
             avg_return = np.mean(portfolio_returns) if portfolio_returns else 0.0
         else:
             avg_reward = 0.0
             avg_return = 0.0
-        
+
         # NaN/Inf 검증
         if np.isnan(avg_reward) or np.isinf(avg_reward):
             avg_reward = 0.0
         if np.isnan(avg_return) or np.isinf(avg_return):
             avg_return = 0.0
-        
+
         # 에피소드 타이밍 종료 및 검증
-        learning_validator.end_episode_timing()
-        
+        get_learning_validator().end_episode_timing()
+
         # 상세한 에피소드 결과 로깅
-        total_learning_events = sum([getattr(bcell, 'learning_stats', {}).get('total_updates', 0) 
-                                   for bcell in immune_system.bcells]) if immune_system.use_learning_bcells else 0
-        
-        self.logger.info(f"=== 에피소드 {episode_num} 완료 결과 ===")
-        self.logger.info(f"평균 보상: {avg_reward:.6f}")
-        self.logger.info(f"평균 수익률: {avg_return:.6f}")
-        self.logger.info(f"총 transition 수: {len(transitions)}")
-        self.logger.info(f"총 학습 이벤트: {total_learning_events}회")
-        self.logger.info(f"실제 실행 시간: {time.time() - learning_validator.episode_start_time:.2f}초")
-        
+        total_learning_events = (
+            sum(
+                [
+                    getattr(bcell, "learning_stats", {}).get("total_updates", 0)
+                    for bcell in immune_system.bcells
+                ]
+            )
+            if immune_system.use_learning_bcells
+            else 0
+        )
+
+        self.file_logger.info(f"=== 에피소드 {episode_num} 완료 결과 ===")
+        self.file_logger.info(f"평균 보상: {avg_reward:.6f}")
+        self.file_logger.info(f"평균 수익률: {avg_return:.6f}")
+        self.file_logger.info(f"총 transition 수: {len(transitions)}")
+        self.file_logger.info(f"총 학습 이벤트: {total_learning_events}회")
+        self.file_logger.info(
+            f"실제 실행 시간: {time.time() - get_learning_validator().episode_start_time:.2f}초"
+        )
+
         if total_learning_events == 0 and immune_system.use_learning_bcells:
-            self.logger.error("경고: 이 에피소드에서 학습이 전혀 일어나지 않았음!")
+            self.file_logger.error("경고: 이 에피소드에서 학습이 전혀 일어나지 않았음!")
         elif total_learning_events < 50:
-            self.logger.warning(f"학습 빈도 부족: {total_learning_events}회만 수행됨")
-        
-        self.logger.debug(f"에피소드 완료: 평균 보상={avg_reward:.6f}, "
-                        f"평균 수익률={avg_return:.6f}, "
-                        f"transition 수={len(transitions)}")
-            
+            self.file_logger.warning(f"학습 빈도 부족: {total_learning_events}회만 수행됨")
+
+        self.file_logger.debug(
+            f"에피소드 완료: 평균 보상={avg_reward:.6f}, "
+            f"평균 수익률={avg_return:.6f}, "
+            f"transition 수={len(transitions)}"
+        )
+
         return float(avg_reward), float(avg_return)
 
     def _traditional_training(self, immune_system):

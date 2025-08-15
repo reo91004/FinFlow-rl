@@ -262,4 +262,12 @@ class LearningValidator:
             self._last_weight_updates = self.weight_updates
             
 # 전역 검증자 인스턴스
-learning_validator = LearningValidator()
+# 전역 인스턴스 (지연 초기화로 logs 폴더 생성 방지)
+learning_validator = None
+
+def get_learning_validator():
+    """학습 검증기 싱글톤 획득"""
+    global learning_validator
+    if learning_validator is None:
+        learning_validator = LearningValidator()
+    return learning_validator

@@ -44,16 +44,16 @@ class RewardCalculator:
         목표: 클리핑 비율 20% 미만
         """
         
-        # 1. 수익률 보상 (스케일 축소)
-        return_reward = current_return * 2.0  # 20→2로 10배 축소
+        # 1. 수익률 보상 (더욱 축소)
+        return_reward = current_return * 0.5  # 2→0.5로 추가 축소
         
         # 2. 위험 조정 보상 (샤프 기반, 스케일 축소)
-        risk_adjusted_reward = self._calculate_simple_sharpe()
+        risk_adjusted_reward = self._calculate_simple_sharpe() * 0.1  # 추가 스케일 축소
         
         # 3. 거래 비용 패널티 (스케일 축소)
         transaction_penalty = self._calculate_simple_transaction_cost(
             previous_weights, current_weights
-        )
+        ) * 0.1  # 추가 스케일 축소
         
         # 단순 가중 평균 (복잡한 계산 제거)
         total_reward = (
@@ -62,14 +62,11 @@ class RewardCalculator:
             0.1 * transaction_penalty       # 거래 비용
         )
         
-        # 매우 보수적 정규화 (100개 데이터 후에만)
-        if len(self.reward_history) > 100:
-            normalized_reward = self._conservative_normalize(total_reward)
-        else:
-            normalized_reward = total_reward
+        # 정규화 완전 제거 (클리핑 문제 방지)
+        normalized_reward = total_reward
         
-        # 단일 클리핑 (범위 축소)
-        final_reward = np.clip(normalized_reward, -2.0, 2.0)
+        # 매우 관대한 클리핑 (거의 클리핑되지 않도록)
+        final_reward = np.clip(normalized_reward, -0.5, 0.5)
         
         # 에피소드 보상 통계 누적
         self.episode_rewards.append({
