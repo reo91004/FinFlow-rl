@@ -16,6 +16,7 @@ from config import *
 from data import DataLoader
 from core import BIPDTrainer
 from utils import BIPDLogger
+from utils.logger import get_session_directory
 
 def main():
     """BIPD 시스템 메인 실행 함수"""
@@ -137,7 +138,9 @@ def main():
         print("[6단계] 훈련 결과를 시각화합니다...")
         
         # 시각화 저장 경로
-        viz_dir = os.path.join(MODELS_DIR, "visualizations")
+        # 세션 디렉토리의 visualizations 폴더 사용
+        session_dir = get_session_directory()
+        viz_dir = os.path.join(session_dir, "visualizations")
         os.makedirs(viz_dir, exist_ok=True)
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
