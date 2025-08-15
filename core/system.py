@@ -58,6 +58,15 @@ class ImmunePortfolioSystem:
             'last_report_step': 0
         }
         
+        # B-Cell 성과 추적 시스템
+        self.bcell_performance = {
+            name: {
+                'recent_rewards': [],  # 최근 10회 성과
+                'consecutive_selections': 0,
+                'total_selections': 0
+            } for name in self.bcells.keys()
+        }
+        
         self.logger = BIPDLogger("ImmuneSystem")
         
         self.logger.info(
@@ -182,19 +191,70 @@ class ImmunePortfolioSystem:
     
     def _select_bcell(self, crisis_level: float) -> str:
         """
-        위기 수준에 따른 B-Cell 선택
+        위기 수준에 따른 B-Cell 선택 (다양성 확보)
         
-        각 B-Cell의 전문성을 고려하여 최적 전략 선택
+        성능 기반 동적 페널티 + 확률적 선택을 통한 편향성 해결
         """
-        # 각 B-Cell의 전문성 점수 계산
+        # 각 B-Cell의 기본 전문성 점수 계산
         scores = {}
         for name, bcell in self.bcells.items():
-            scores[name] = bcell.get_specialization_score(crisis_level)
+            base_score = bcell.get_specialization_score(crisis_level)
+            
+            # 최근 성과 기반 페널티 계산
+            performance_data = self.bcell_performance[name]
+            recent_rewards = performance_data['recent_rewards']
+            
+            if len(recent_rewards) > 5:
+                avg_reward = np.mean(recent_rewards)
+                # 성과가 나쁠수록 페널티 적용
+                performance_penalty = max(0, -avg_reward * 0.5)
+                base_score -= performance_penalty
+            
+            # 연속 선택 페널티 (강제 순환)
+            consecutive_count = performance_data['consecutive_selections']
+            if consecutive_count >= 5:  # 5회 연속 선택시
+                base_score *= 0.3  # 점수 대폭 감소
+                self.logger.debug(f"{name} 전략이 {consecutive_count}회 연속 선택되어 페널티 적용")
+            
+            scores[name] = base_score
         
-        # 최고 점수 B-Cell 선택
-        selected = max(scores, key=scores.get)
+        # 확률적 선택 (완전 greedy 방지)
+        if np.random.random() < 0.2:  # 20% 확률로 랜덤 선택
+            selected = np.random.choice(list(self.bcells.keys()))
+            self.logger.debug(f"탐험적 랜덤 선택: {selected}")
+        else:
+            # 최고 점수 전략 선택
+            selected = max(scores, key=scores.get)
+        
+        # 선택 통계 업데이트
+        self._update_selection_stats(selected)
         
         return selected
+    
+    def _update_selection_stats(self, selected_bcell: str) -> None:
+        """B-Cell 선택 통계 업데이트"""
+        # 선택된 B-Cell 통계 업데이트
+        self.bcell_performance[selected_bcell]['total_selections'] += 1
+        
+        # 연속 선택 카운트 업데이트
+        if (self.decision_history and 
+            self.decision_history[-1]['selected_bcell'] == selected_bcell):
+            self.bcell_performance[selected_bcell]['consecutive_selections'] += 1
+        else:
+            self.bcell_performance[selected_bcell]['consecutive_selections'] = 1
+        
+        # 다른 B-Cell들의 연속 선택 카운트 리셋
+        for name, data in self.bcell_performance.items():
+            if name != selected_bcell:
+                data['consecutive_selections'] = 0
+    
+    def _get_recent_rewards(self, bcell_name: str, window: int = 10) -> list:
+        """특정 B-Cell의 최근 성과 반환"""
+        return self.bcell_performance[bcell_name]['recent_rewards'][-window:]
+    
+    def _get_consecutive_count(self, bcell_name: str) -> int:
+        """특정 B-Cell의 연속 선택 횟수 반환"""
+        return self.bcell_performance[bcell_name]['consecutive_selections']
     
     def update(self, state: np.ndarray, action: np.ndarray, reward: float, 
               next_state: np.ndarray, done: bool) -> None:
@@ -239,6 +299,17 @@ class ImmunePortfolioSystem:
                 'reward': reward,
                 'crisis_level': crisis_level
             })
+            
+            # 마지막 선택된 B-Cell의 성과 추적 업데이트
+            if self.decision_history:
+                last_decision = self.decision_history[-1]
+                selected_bcell = last_decision['selected_bcell']
+                
+                # 최근 성과 리스트에 추가 (최대 10개 유지)
+                recent_rewards = self.bcell_performance[selected_bcell]['recent_rewards']
+                recent_rewards.append(reward)
+                if len(recent_rewards) > 10:
+                    recent_rewards.pop(0)  # 가장 오래된 것 제거
             
             self.training_steps += 1
             
@@ -311,6 +382,31 @@ class ImmunePortfolioSystem:
             bcell = decision['selected_bcell']
             bcell_usage[bcell] = bcell_usage.get(bcell, 0) + 1
         
+        # B-Cell 다양성 통계
+        bcell_diversity_stats = {}
+        total_selections = sum(self.bcell_performance[name]['total_selections'] 
+                             for name in self.bcells.keys())
+        
+        for name, data in self.bcell_performance.items():
+            recent_rewards = data['recent_rewards']
+            selection_rate = data['total_selections'] / max(total_selections, 1)
+            
+            bcell_diversity_stats[name] = {
+                'total_selections': data['total_selections'],
+                'selection_rate': selection_rate,
+                'consecutive_selections': data['consecutive_selections'],
+                'avg_recent_reward': np.mean(recent_rewards) if recent_rewards else 0.0,
+                'recent_performance_count': len(recent_rewards)
+            }
+        
+        # 다양성 지수 계산 (Shannon Entropy)
+        diversity_index = 0.0
+        if total_selections > 0:
+            for name in self.bcells.keys():
+                selection_rate = self.bcell_performance[name]['total_selections'] / total_selections
+                if selection_rate > 0:
+                    diversity_index -= selection_rate * np.log(selection_rate)
+        
         summary = {
             'training_steps': self.training_steps,
             'avg_reward': np.mean(rewards),
@@ -319,6 +415,8 @@ class ImmunePortfolioSystem:
             'avg_crisis_level': np.mean(crisis_levels),
             'crisis_std': np.std(crisis_levels),
             'bcell_usage': bcell_usage,
+            'bcell_diversity_stats': bcell_diversity_stats,
+            'bcell_diversity_index': diversity_index,
             'memory_size': len(self.memory.memories),
             'recent_performance': np.mean(rewards[-50:]) if len(rewards) >= 50 else np.mean(rewards)
         }
