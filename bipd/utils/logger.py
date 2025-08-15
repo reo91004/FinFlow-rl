@@ -5,8 +5,9 @@ import os
 import datetime
 from config import LOGS_DIR
 
-# 전역 타임스탬프 (모든 로거가 같은 파일 사용)
+# 전역 타임스탬프 및 디렉토리 (모든 로거가 같은 폴더 사용)
 _GLOBAL_TIMESTAMP = None
+_GLOBAL_SESSION_DIR = None
 
 
 def get_global_timestamp():
@@ -14,6 +15,21 @@ def get_global_timestamp():
     if _GLOBAL_TIMESTAMP is None:
         _GLOBAL_TIMESTAMP = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     return _GLOBAL_TIMESTAMP
+
+
+def get_session_directory():
+    """Logs/타임스탬프/ 폴더 생성 및 반환"""
+    global _GLOBAL_SESSION_DIR
+    if _GLOBAL_SESSION_DIR is None:
+        timestamp = get_global_timestamp()
+        _GLOBAL_SESSION_DIR = os.path.join(LOGS_DIR, timestamp)
+        os.makedirs(_GLOBAL_SESSION_DIR, exist_ok=True)
+        
+        # 시각화 하위 디렉토리 도 생성
+        os.makedirs(os.path.join(_GLOBAL_SESSION_DIR, "visualizations"), exist_ok=True)
+        os.makedirs(os.path.join(_GLOBAL_SESSION_DIR, "models"), exist_ok=True)
+        
+    return _GLOBAL_SESSION_DIR
 
 
 class BIPDLogger:
@@ -55,9 +71,9 @@ class BIPDLogger:
         console_handler.setFormatter(formatter)
         self.logger.addHandler(console_handler)
 
-        # 파일 핸들러 (모든 로그 저장) - 전역 타임스탬프 사용
-        timestamp = get_global_timestamp()
-        log_file = os.path.join(LOGS_DIR, f"bipd_{timestamp}.log")
+        # 파일 핸들러 (모든 로그 저장) - 세션 디렉토리 사용
+        session_dir = get_session_directory()
+        log_file = os.path.join(session_dir, "bipd_training.log")
         file_handler = logging.FileHandler(log_file, encoding="utf-8")
         file_handler.setLevel(logging.DEBUG)
         file_handler.setFormatter(formatter)
@@ -65,6 +81,7 @@ class BIPDLogger:
 
         # 초기화 메시지 (첫 번째 로거만)
         if self.name == "Main":
+            timestamp = get_global_timestamp()
             self.logger.info(f"=== BIPD 시스템 로깅 시작 ===")
             self.logger.info(f"로그 파일: {log_file}")
             self.logger.info(f"타임스탬프: {timestamp}")

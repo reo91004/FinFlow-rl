@@ -12,8 +12,9 @@ import time
 from .environment import PortfolioEnvironment
 from .system import ImmunePortfolioSystem
 from data.features import FeatureExtractor
-from utils.logger import BIPDLogger
+from utils.logger import BIPDLogger, get_session_directory
 from utils.metrics import calculate_portfolio_metrics
+from utils.visualization import create_episode_visualizations
 from config import *
 
 class BIPDTrainer:
@@ -55,10 +56,15 @@ class BIPDTrainer:
         
         self.logger = BIPDLogger("Trainer")
         
+        # 시각화 디렉토리 설정
+        self.session_dir = get_session_directory()
+        self.visualization_dir = os.path.join(self.session_dir, "visualizations")
+        
         self.logger.info(
             f"BIPD 훈련자가 초기화되었습니다. "
             f"훈련데이터={len(train_data)}일, 테스트데이터={len(test_data)}일"
         )
+        self.logger.info(f"시각화 결과 저장 위치: {self.visualization_dir}")
     
     def train(self, n_episodes: int = N_EPISODES, 
               save_interval: int = SAVE_INTERVAL) -> Dict:
@@ -94,6 +100,19 @@ class BIPDTrainer:
             
             # 에피소드 완료 로깅
             self._log_episode_completion(episode, episode_results)
+            
+            # XAI 시각화 생성 (매 10 에피소드마다)
+            if (episode + 1) % 10 == 0 or episode == 0:  # 첫 에피소드와 10의 배수에서 시각화
+                try:
+                    visualization_files = create_episode_visualizations(
+                        self, episode_results, self.visualization_dir
+                    )
+                    self.logger.info(
+                        f"에피소드 {episode + 1} 시각화 완료: "
+                        f"{len(visualization_files)}개 차트 생성"
+                    )
+                except Exception as e:
+                    self.logger.warning(f"시각화 생성 실패: {e}")
             
             # 진행바 정보 업데이트
             current_reward = episode_results['avg_reward']
@@ -142,6 +161,9 @@ class BIPDTrainer:
         
         # 최종 모델 저장
         self._save_final_model()
+        
+        # 최종 시각화 생성
+        self._create_final_visualizations()
         
         # 결과 요약
         training_summary = self._generate_training_summary()
@@ -520,3 +542,26 @@ class BIPDTrainer:
         )
         
         return comparison
+    
+    def _create_final_visualizations(self) -> None:
+        """최종 학습 결과 시각화 생성"""
+        try:
+            from utils.visualization import BIPDVisualizer
+            
+            visualizer = BIPDVisualizer()
+            
+            # 학습 진행 상황 시각화
+            if self.training_history and self.training_history.get('rewards'):
+                learning_path = os.path.join(self.visualization_dir, "final_learning_progress.png")
+                visualizer.plot_learning_progress(self.training_history, learning_path)
+                self.logger.info(f"최종 학습 진행 시각화 저장: {learning_path}")
+            
+            # 기존 matplotlib 기반 훈련 결과 차트도 생성
+            training_chart_path = os.path.join(self.visualization_dir, "training_results_detailed.png")
+            self.plot_training_results(training_chart_path)
+            self.logger.info(f"상세 훈련 결과 차트 저장: {training_chart_path}")
+            
+            self.logger.info("모든 시각화가 완료되었습니다.")
+            
+        except Exception as e:
+            self.logger.error(f"최종 시각화 생성 실패: {e}")
