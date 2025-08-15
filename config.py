@@ -135,10 +135,12 @@ N_EPISODES = int(500)
 LOG_INTERVAL = int(10)
 SAVE_INTERVAL = int(100)
 
-# 보상 설정
-SHARPE_WEIGHT = float(5.0)
-CONCENTRATION_PENALTY = float(10.0)
-CONCENTRATION_THRESHOLD = float(0.5)
+# 보상 설정 (간소화된 로그 수익률 기반)
+VOLATILITY_PENALTY_WEIGHT = float(2.0)  # 변동성 페널티 가중치
+CONCENTRATION_THRESHOLD = float(0.5)     # 집중도 임계값
+CONCENTRATION_PENALTY_WEIGHT = float(1.0)  # 집중도 페널티 가중치
+REWARD_CLIP_MIN = float(-5.0)            # 보상 최소값
+REWARD_CLIP_MAX = float(5.0)             # 보상 최대값
 
 # 위기 임계값
 CRISIS_HIGH = float(0.7)

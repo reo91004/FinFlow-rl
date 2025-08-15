@@ -213,52 +213,40 @@ class PortfolioEnvironment:
     def _calculate_reward(self, portfolio_return: float, weights: np.ndarray, 
                          asset_returns: np.ndarray) -> float:
         """
-        보상 계산 (tanh 기반 정규화)
+        간소화된 보상 계산 (로그 수익률 기반)
         
-        적응적 스케일링과 부드러운 정규화를 통해 학습 안정성 확보
+        복잡한 다중 구성요소 대신 명확하고 직관적인 목표 제시:
+        1. 로그 수익률 최대화 (복리 효과 반영)
+        2. 변동성 페널티 (위험 관리)
         """
-        # tanh 기반 부드러운 스케일링
-        base_reward = np.tanh(portfolio_return * 50)  # [-1, 1] 범위로 압축
+        # 1. 로그 수익률 계산 (복리 효과와 장기 성장 반영)
+        # 극단적 손실 방지를 위해 -99% 하한선 적용
+        if portfolio_return > -0.99:
+            log_return = np.log(1 + portfolio_return)
+        else:
+            log_return = -5.0  # 극단적 손실에 대한 강한 페널티
         
-        # 적응적 정규화 (충분한 히스토리가 있을 때)
-        if len(self.return_history) > 50:
-            recent_returns = np.array(self.return_history[-50:])
-            std_returns = recent_returns.std()
-            if std_returns > 0:
-                normalized_return = (portfolio_return - recent_returns.mean()) / std_returns
-                base_reward = np.tanh(normalized_return)
+        # 2. 변동성 페널티 (위험 대비 수익률 최적화)
+        volatility_penalty = 0.0
+        if len(self.return_history) >= 10:  # 충분한 히스토리가 있을 때만
+            recent_volatility = np.std(self.return_history[-10:])
+            # 간단한 선형 페널티 (복잡한 tanh 변환 제거)
+            from config import VOLATILITY_PENALTY_WEIGHT
+            volatility_penalty = recent_volatility * VOLATILITY_PENALTY_WEIGHT
         
-        # 샤프 비율 보상 (부드럽게 적용)
-        sharpe_component = 0.0
-        if len(self.return_history) >= 20:
-            returns_array = np.array(self.return_history[-20:])
-            if returns_array.std() > 0:
-                sharpe_ratio = returns_array.mean() / returns_array.std() * np.sqrt(252)
-                sharpe_component = np.tanh(sharpe_ratio * 0.5) * 0.3  # 부드러운 스케일링
-        
-        # 집중도 페널티 (부드럽게 적용)
+        # 3. 집중도 페널티 (포트폴리오 다양성 유지)
         concentration = calculate_concentration_index(weights)
         concentration_penalty = 0.0
-        if concentration > 0.4:  # 임계값 완화
-            excess_concentration = concentration - 0.4
-            concentration_penalty = np.tanh(excess_concentration * 5) * 0.2
+        from config import CONCENTRATION_THRESHOLD, CONCENTRATION_PENALTY_WEIGHT
+        if concentration > CONCENTRATION_THRESHOLD:
+            concentration_penalty = (concentration - CONCENTRATION_THRESHOLD) * CONCENTRATION_PENALTY_WEIGHT
         
-        # 변동성 페널티 (부드럽게 적용)
-        volatility_penalty = 0.0
-        if len(self.return_history) >= 5:
-            recent_volatility = np.std(self.return_history[-5:])
-            if recent_volatility > 0.015:  # 임계값 완화 (1.5%)
-                excess_volatility = recent_volatility - 0.015
-                volatility_penalty = np.tanh(excess_volatility * 100) * 0.2
+        # 4. 최종 보상 (간소화된 구조)
+        final_reward = log_return - volatility_penalty - concentration_penalty
         
-        # 최종 보상 계산 (각 구성요소의 기여도 조정)
-        final_reward = (base_reward * 1.0 +  # 기본 수익률 (가중치 1.0)
-                       sharpe_component +    # 샤프 비율 (가중치 0.3)
-                       -concentration_penalty -  # 집중도 페널티
-                       volatility_penalty)   # 변동성 페널티
-        
-        # 최종 클리핑 (더 관대한 범위)
-        final_reward = np.clip(final_reward, -3.0, 3.0)
+        # 5. 적절한 범위로 클리핑
+        from config import REWARD_CLIP_MIN, REWARD_CLIP_MAX
+        final_reward = np.clip(final_reward, REWARD_CLIP_MIN, REWARD_CLIP_MAX)
         
         return float(final_reward)
     
