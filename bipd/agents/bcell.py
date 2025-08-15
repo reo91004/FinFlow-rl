@@ -19,6 +19,9 @@ class ActorNetwork(nn.Module):
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
         self.fc3 = nn.Linear(hidden_dim, action_dim)
         
+        # 탐험용 온도 파라미터
+        self.temperature = 1.0
+        
         # 가중치 초기화
         self._init_weights()
     
@@ -28,14 +31,19 @@ class ActorNetwork(nn.Module):
             nn.init.xavier_uniform_(layer.weight)
             nn.init.zeros_(layer.bias)
     
-    def forward(self, state):
+    def forward(self, state, temperature=None):
         x = F.relu(self.fc1(state))
         x = F.relu(self.fc2(x))
         logits = self.fc3(x)
         
-        # Softmax로 가중치 합이 1이 되도록 보장
-        weights = F.softmax(logits, dim=-1)
+        # 온도 조절된 Softmax로 가중치 합이 1이 되도록 보장
+        temp = temperature if temperature is not None else self.temperature
+        weights = F.softmax(logits / temp, dim=-1)
         return weights
+    
+    def set_temperature(self, temperature):
+        """탐험을 위한 온도 설정"""
+        self.temperature = max(0.1, temperature)  # 최소값 0.1로 제한
 
 class CriticNetwork(nn.Module):
     """Critic 네트워크: 상태 가치 함수"""
@@ -152,12 +160,13 @@ class BCell:
         
         self.actor.train()
         
-        # 탐험 (훈련 시에만)
+        # 탐험 (훈련 시에만) - 온도 조절 방식
         if not deterministic and random.random() < self.epsilon:
-            # Dirichlet 분포를 사용한 탐험
-            alpha = np.ones(self.action_dim) * 10  # 높은 alpha로 균등 분포에 가깝게
-            noise = np.random.dirichlet(alpha)
-            weights = 0.8 * weights + 0.2 * noise
+            # 온도를 높여서 더 균등한 분포로 탐험
+            exploration_temp = 2.0 + random.random() * 3.0  # 2.0~5.0 사이
+            with torch.no_grad():
+                state_tensor = torch.FloatTensor(state).unsqueeze(0)
+                weights = self.actor(state_tensor, temperature=exploration_temp).squeeze(0).numpy()
         
         # 가중치 정규화 (안전장치)
         weights = weights / weights.sum()

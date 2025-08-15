@@ -42,7 +42,8 @@ class PortfolioEnvironment:
         self.validation_stats = {
             'negative_weights': 0,
             'invalid_weights': 0,
-            'total_validations': 0
+            'total_validations': 0,
+            'last_log_step': 0
         }
         
         self.logger = BIPDLogger("Environment")
@@ -71,7 +72,8 @@ class PortfolioEnvironment:
         self.validation_stats = {
             'negative_weights': 0,
             'invalid_weights': 0,
-            'total_validations': 0
+            'total_validations': 0,
+            'last_log_step': 0
         }
         
         return self._get_state()
@@ -179,11 +181,20 @@ class PortfolioEnvironment:
             self.logger.debug("가중치에 NaN/Inf가 포함되어 균등 가중치로 대체합니다.")
             weights = np.ones(self.n_assets) / self.n_assets
         
-        # 음수 체크
+        # 음수 체크 (통계적 로깅)
         if np.any(weights < 0):
             self.validation_stats['negative_weights'] += 1
-            self.logger.debug("음의 가중치가 발견되어 0으로 대체합니다.")
             weights = np.maximum(weights, 0)
+            
+            # 주기적 통계 로깅 (100회마다)
+            if (self.validation_stats['total_validations'] - self.validation_stats['last_log_step']) >= 100:
+                negative_rate = self.validation_stats['negative_weights'] / self.validation_stats['total_validations']
+                self.logger.debug(
+                    f"가중치 검증 통계 (최근 100회): "
+                    f"음수 가중치 {self.validation_stats['negative_weights']}회 ({negative_rate:.1%}), "
+                    f"총 검증 {self.validation_stats['total_validations']}회"
+                )
+                self.validation_stats['last_log_step'] = self.validation_stats['total_validations']
         
         # 정규화
         if weights.sum() == 0:

@@ -84,10 +84,16 @@ class BIPDTrainer:
         pbar = tqdm(range(n_episodes), desc="BIPD Training")
         
         for episode in pbar:
+            # 에피소드 시작 로깅
+            self.logger.info("=" * 25 + f" 에피소드 {episode + 1:,}/{n_episodes:,} 시작 " + "=" * 25)
+            
             episode_results = self._run_episode(episode, training=True)
             
             # 통계 기록
             self._record_episode(episode, episode_results)
+            
+            # 에피소드 완료 로깅
+            self._log_episode_completion(episode, episode_results)
             
             # 진행바 정보 업데이트
             current_reward = episode_results['avg_reward']
@@ -117,7 +123,7 @@ class BIPDTrainer:
                 # 환경 검증 통계 로깅 (매 50 에피소드마다)
                 if (episode + 1) % 50 == 0:
                     validation_summary = self.train_env.get_validation_summary()
-                    self.logger.debug(f"환경 통계: {validation_summary}")
+                    self.logger.info(f"환경 통계 요약 (에피소드 {episode + 1}): {validation_summary}")
             
             # 모델 저장
             if (episode + 1) % save_interval == 0:
@@ -168,6 +174,12 @@ class BIPDTrainer:
         state = env.reset()
         total_reward = 0
         steps = 0
+        
+        # 에피소드 시작 디버그 로깅
+        self.logger.debug(
+            f"에피소드 {episode + 1} 시작: 초기 상태 크기={len(state)}, "
+            f"환경 최대 스텝={env.max_steps}"
+        )
         
         episode_data = {
             'rewards': [],
@@ -245,6 +257,45 @@ class BIPDTrainer:
         bcell_usage = results['bcell_usage']
         most_used = max(bcell_usage, key=bcell_usage.get)
         history['selected_bcells'].append(most_used)
+    
+    def _log_episode_completion(self, episode: int, results: Dict) -> None:
+        """에피소드 완료 로깅"""
+        metrics = results['portfolio_metrics']
+        crisis_stats = results['crisis_stats']
+        bcell_usage = results['bcell_usage']
+        
+        # B-Cell 사용률 계산
+        total_decisions = sum(bcell_usage.values())
+        bcell_percentages = {
+            name: (count / total_decisions * 100) if total_decisions > 0 else 0
+            for name, count in bcell_usage.items()
+        }
+        
+        # 상세 에피소드 요약
+        episode_summary = [
+            f"에피소드 {episode + 1} 완료 요약:",
+            f"  • 총 스텝: {results['steps']:,}단계",
+            f"  • 총 보상: {results['total_reward']:,.2f}",
+            f"  • 평균 보상: {results['avg_reward']:.4f}",
+            f"  • 최종 가치: ₩{results['final_value']:,.0f}",
+            f"  • 수익률: {metrics.get('total_return', 0):+.2%}",
+            f"  • 샤프비율: {metrics.get('sharpe_ratio', 0):.3f}",
+            f"  • 최대낙폭: {metrics.get('max_drawdown', 0):.2%}",
+            f"  • 위기수준: 평균 {crisis_stats['avg_crisis']:.3f}, 최대 {crisis_stats['max_crisis']:.3f}",
+            f"  • 위기상황: {crisis_stats['crisis_episodes']:,}회 / {results['steps']:,}단계 ({crisis_stats['crisis_episodes']/results['steps']*100:.1f}%)",
+            "",
+            "  B-Cell 전략 사용 비율:",
+            f"    - 변동성(volatility): {bcell_percentages['volatility']:5.1f}%",
+            f"    - 상관관계(correlation): {bcell_percentages['correlation']:5.1f}%",
+            f"    - 모멘텀(momentum): {bcell_percentages['momentum']:5.1f}%",
+            f"    - 방어전략(defensive): {bcell_percentages['defensive']:5.1f}%",
+            f"    - 성장전략(growth): {bcell_percentages['growth']:5.1f}%"
+        ]
+        
+        for line in episode_summary:
+            self.logger.info(line)
+        
+        self.logger.info("=" * 60 + f" 에피소드 {episode + 1} 종료 " + "=" * 5)
     
     def _log_progress(self, episode: int, results: Dict) -> None:
         """진행 상황 로깅"""
