@@ -59,22 +59,6 @@ class ImmunePortfolioSystem:
             'last_report_step': 0
         }
         
-        # B-Cell 성과 추적 시스템
-        self.bcell_performance = {
-            name: {
-                'recent_rewards': [],  # 최근 10회 성과
-                'consecutive_selections': 0,
-                'total_selections': 0
-            } for name in self.bcells.keys()
-        }
-        
-        # 로깅 통계 (장황한 로그 줄이기)
-        self.logging_stats = {
-            'random_selections': 0,
-            'penalty_applications': 0,
-            'last_log_report': 0,
-            'log_interval': 100  # 100번마다 통계 요약 출력
-        }
         
         self.logger = BIPDLogger("ImmuneSystem")
         
@@ -110,21 +94,12 @@ class ImmunePortfolioSystem:
             crisis_level = state[FEATURE_DIM]
             prev_weights = state[FEATURE_DIM + 1:]
             
-            # T-Cell 다차원 위기 감지
-            crisis_detection = self.tcell.detect_crisis(market_features)
+            # T-Cell 위기 감지 (단일 값)
+            detected_crisis = self.tcell.detect_crisis(market_features)
+            final_crisis_level = max(crisis_level, detected_crisis)
             
-            # 기존 호환성을 위한 단일 위기 수준 계산
-            if isinstance(crisis_detection, dict):
-                detected_crisis = crisis_detection['overall_crisis']
-                final_crisis_level = max(crisis_level, detected_crisis)
-                crisis_info = crisis_detection  # 다차원 정보 보존
-            else:
-                # 하위 호환성 (단일 float 반환 시)
-                final_crisis_level = max(crisis_level, crisis_detection)
-                crisis_info = final_crisis_level
-            
-            # B-Cell 선택 (다차원 위기 정보 기반)
-            selected_bcell_name = self._select_bcell(crisis_info)
+            # B-Cell 선택 (단일 위기 수준 기반)
+            selected_bcell_name = self._select_bcell(final_crisis_level)
             selected_bcell = self.bcells[selected_bcell_name]
             
             # Memory 회상
@@ -165,7 +140,7 @@ class ImmunePortfolioSystem:
                 'memory_guidance': memory_guidance['has_guidance'],
                 'memory_confidence': memory_guidance.get('confidence', 0.0),
                 'specialization_scores': {
-                    name: bcell.get_specialization_score(crisis_info)
+                    name: bcell.get_specialization_score(final_crisis_level)
                     for name, bcell in self.bcells.items()
                 },
                 'weights_concentration': float(np.sum(weights ** 2)),
@@ -206,103 +181,22 @@ class ImmunePortfolioSystem:
             }
             return uniform_weights, fallback_info
     
-    def _select_bcell(self, crisis_info) -> str:
+    def _select_bcell(self, crisis_level) -> str:
         """
-        다차원 위기 정보에 따른 B-Cell 선택 (다양성 확보)
+        위기 수준에 따른 B-Cell 선택
         
-        성능 기반 동적 페널티 + 확률적 선택을 통한 편향성 해결
+        각 B-Cell의 전문성을 고려하여 최적 전략 선택
         """
-        # 각 B-Cell의 기본 전문성 점수 계산 (다차원 위기 정보 사용)
+        # 각 B-Cell의 전문성 점수 계산
         scores = {}
         for name, bcell in self.bcells.items():
-            base_score = bcell.get_specialization_score(crisis_info)
-            
-            # 최근 성과 기반 페널티 계산
-            performance_data = self.bcell_performance[name]
-            recent_rewards = performance_data['recent_rewards']
-            
-            if len(recent_rewards) > 5:
-                avg_reward = np.mean(recent_rewards)
-                # 성과가 나쁠수록 페널티 적용
-                performance_penalty = max(0, -avg_reward * 0.5)
-                base_score -= performance_penalty
-            
-            # 연속 선택 페널티 (강제 순환)
-            consecutive_count = performance_data['consecutive_selections']
-            if consecutive_count >= 5:  # 5회 연속 선택시
-                base_score *= 0.3  # 점수 대폭 감소
-                self.logging_stats['penalty_applications'] += 1
-            
-            scores[name] = base_score
+            scores[name] = bcell.get_specialization_score(crisis_level)
         
-        # 확률적 선택 (완전 greedy 방지)
-        if np.random.random() < 0.2:  # 20% 확률로 랜덤 선택
-            selected = np.random.choice(list(self.bcells.keys()))
-            self.logging_stats['random_selections'] += 1
-        else:
-            # 최고 점수 전략 선택
-            selected = max(scores, key=scores.get)
-        
-        # 선택 통계 업데이트
-        self._update_selection_stats(selected)
-        
-        # 주기적 로깅 통계 보고
-        decisions_since_last_report = self.decision_count - self.logging_stats['last_log_report']
-        if decisions_since_last_report >= self.logging_stats['log_interval']:
-            self._log_selection_statistics()
-            self.logging_stats['last_log_report'] = self.decision_count
+        # 최고 점수 B-Cell 선택
+        selected = max(scores, key=scores.get)
         
         return selected
     
-    def _update_selection_stats(self, selected_bcell: str) -> None:
-        """B-Cell 선택 통계 업데이트"""
-        # 선택된 B-Cell 통계 업데이트
-        self.bcell_performance[selected_bcell]['total_selections'] += 1
-        
-        # 연속 선택 카운트 업데이트
-        if (self.decision_history and 
-            self.decision_history[-1]['selected_bcell'] == selected_bcell):
-            self.bcell_performance[selected_bcell]['consecutive_selections'] += 1
-        else:
-            self.bcell_performance[selected_bcell]['consecutive_selections'] = 1
-        
-        # 다른 B-Cell들의 연속 선택 카운트 리셋
-        for name, data in self.bcell_performance.items():
-            if name != selected_bcell:
-                data['consecutive_selections'] = 0
-    
-    def _get_recent_rewards(self, bcell_name: str, window: int = 10) -> list:
-        """특정 B-Cell의 최근 성과 반환"""
-        return self.bcell_performance[bcell_name]['recent_rewards'][-window:]
-    
-    def _get_consecutive_count(self, bcell_name: str) -> int:
-        """특정 B-Cell의 연속 선택 횟수 반환"""
-        return self.bcell_performance[bcell_name]['consecutive_selections']
-    
-    def _log_selection_statistics(self) -> None:
-        """B-Cell 선택 통계 요약 로깅 (장황한 로그 대신)"""
-        interval = self.logging_stats['log_interval']
-        random_count = self.logging_stats['random_selections']
-        penalty_count = self.logging_stats['penalty_applications']
-        
-        # 현재 연속 선택 상황 체크
-        consecutive_issues = []
-        for name, data in self.bcell_performance.items():
-            consecutive = data['consecutive_selections']
-            if consecutive >= 3:  # 3회 이상 연속시 보고
-                consecutive_issues.append(f"{name}:{consecutive}회")
-        
-        # 통계 요약 로깅
-        self.logger.debug(
-            f"B-Cell 선택 통계 (최근 {interval}회): "
-            f"탐험적 선택 {random_count}회 ({random_count/interval:.1%}), "
-            f"페널티 적용 {penalty_count}회, "
-            f"연속선택: [{', '.join(consecutive_issues) if consecutive_issues else '정상'}]"
-        )
-        
-        # 통계 리셋
-        self.logging_stats['random_selections'] = 0
-        self.logging_stats['penalty_applications'] = 0
     
     def update(self, state: np.ndarray, action: np.ndarray, reward: float, 
               next_state: np.ndarray, done) -> None:
@@ -352,16 +246,6 @@ class ImmunePortfolioSystem:
                 'crisis_level': crisis_level
             })
             
-            # 마지막 선택된 B-Cell의 성과 추적 업데이트
-            if self.decision_history:
-                last_decision = self.decision_history[-1]
-                selected_bcell = last_decision['selected_bcell']
-                
-                # 최근 성과 리스트에 추가 (최대 10개 유지)
-                recent_rewards = self.bcell_performance[selected_bcell]['recent_rewards']
-                recent_rewards.append(reward)
-                if len(recent_rewards) > 10:
-                    recent_rewards.pop(0)  # 가장 오래된 것 제거
             
             self.training_steps += 1
             
@@ -383,22 +267,15 @@ class ImmunePortfolioSystem:
             market_features = state[:FEATURE_DIM]
             crisis_level = state[FEATURE_DIM]
             
-            # T-Cell 다차원 위기 감지
-            crisis_detection = self.tcell.detect_crisis(market_features)
-            
-            # 기존 호환성을 위한 처리
-            if isinstance(crisis_detection, dict):
-                crisis_info = crisis_detection
-                overall_crisis = crisis_detection['overall_crisis']
-            else:
-                crisis_info = crisis_level
-                overall_crisis = crisis_level
+            # T-Cell 위기 감지
+            detected_crisis = self.tcell.detect_crisis(market_features)
+            final_crisis_level = max(crisis_level, detected_crisis)
             
             # T-Cell 설명
             tcell_explanation = self.tcell.get_anomaly_explanation(market_features)
             
-            # 선택된 B-Cell 설명 (다차원 위기 정보 기반)
-            selected_bcell_name = self._select_bcell(crisis_info)
+            # 선택된 B-Cell 설명
+            selected_bcell_name = self._select_bcell(final_crisis_level)
             bcell_explanation = self.bcells[selected_bcell_name].get_explanation(state)
             
             # Memory 통계
@@ -412,12 +289,11 @@ class ImmunePortfolioSystem:
                     'tcell_fitted': self.tcell.is_fitted
                 },
                 'crisis_detection': tcell_explanation,
-                'multidimensional_crisis': crisis_detection if isinstance(crisis_detection, dict) else None,
                 'strategy_selection': {
                     'selected_strategy': selected_bcell_name,
-                    'selection_reason': f'다차원 위기 분석 결과에 최적화됨 (전체: {overall_crisis:.3f})',
+                    'selection_reason': f'위기 수준 분석 결과에 최적화됨 (위기 수준: {final_crisis_level:.3f})',
                     'all_specialization_scores': {
-                        name: bcell.get_specialization_score(crisis_info)
+                        name: bcell.get_specialization_score(final_crisis_level)
                         for name, bcell in self.bcells.items()
                     }
                 },
@@ -446,30 +322,6 @@ class ImmunePortfolioSystem:
             bcell = decision['selected_bcell']
             bcell_usage[bcell] = bcell_usage.get(bcell, 0) + 1
         
-        # B-Cell 다양성 통계
-        bcell_diversity_stats = {}
-        total_selections = sum(self.bcell_performance[name]['total_selections'] 
-                             for name in self.bcells.keys())
-        
-        for name, data in self.bcell_performance.items():
-            recent_rewards = data['recent_rewards']
-            selection_rate = data['total_selections'] / max(total_selections, 1)
-            
-            bcell_diversity_stats[name] = {
-                'total_selections': data['total_selections'],
-                'selection_rate': selection_rate,
-                'consecutive_selections': data['consecutive_selections'],
-                'avg_recent_reward': np.mean(recent_rewards) if recent_rewards else 0.0,
-                'recent_performance_count': len(recent_rewards)
-            }
-        
-        # 다양성 지수 계산 (Shannon Entropy)
-        diversity_index = 0.0
-        if total_selections > 0:
-            for name in self.bcells.keys():
-                selection_rate = self.bcell_performance[name]['total_selections'] / total_selections
-                if selection_rate > 0:
-                    diversity_index -= selection_rate * np.log(selection_rate)
         
         summary = {
             'training_steps': self.training_steps,
@@ -479,8 +331,6 @@ class ImmunePortfolioSystem:
             'avg_crisis_level': np.mean(crisis_levels),
             'crisis_std': np.std(crisis_levels),
             'bcell_usage': bcell_usage,
-            'bcell_diversity_stats': bcell_diversity_stats,
-            'bcell_diversity_index': diversity_index,
             'memory_size': len(self.memory.memories),
             'recent_performance': np.mean(rewards[-50:]) if len(rewards) >= 50 else np.mean(rewards)
         }
@@ -524,11 +374,8 @@ class ImmunePortfolioSystem:
             for name, bcell in self.bcells.items():
                 system_data['bcells'][name] = {
                     'actor_state_dict': bcell.actor.state_dict(),
-                    'critic1_state_dict': bcell.critic1.state_dict(),
-                    'critic2_state_dict': bcell.critic2.state_dict(),
-                    'target_actor_state_dict': bcell.target_actor.state_dict(),
-                    'target_critic1_state_dict': bcell.target_critic1.state_dict(),
-                    'target_critic2_state_dict': bcell.target_critic2.state_dict(),
+                    'critic_state_dict': bcell.critic.state_dict(),
+                    'target_critic_state_dict': bcell.target_critic.state_dict(),
                     'risk_type': bcell.risk_type,
                     'epsilon': bcell.epsilon,
                     'update_count': bcell.update_count

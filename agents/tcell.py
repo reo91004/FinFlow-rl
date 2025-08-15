@@ -78,143 +78,39 @@ class TCell:
     
     def detect_crisis(self, features):
         """
-        다차원 위기 감지 시스템
+        현재 시장 상황의 위기 수준 감지
         
         Args:
-            features: np.array of shape (feature_dim,) - 시장 특성
+            features: np.array of shape (feature_dim,)
             
         Returns:
-            crisis_vector: dict containing multiple crisis dimensions
+            crisis_level: float [0, 1] - 0: 정상, 1: 극심한 위기
         """
         if not self.is_fitted:
             self.logger.warning("T-Cell이 학습되지 않았습니다.")
-            return {
-                'overall_crisis': 0.0,
-                'volatility_crisis': 0.0,
-                'correlation_crisis': 0.0,
-                'volume_crisis': 0.0,
-                'crisis_vector': np.array([0.0, 0.0, 0.0])
-            }
+            return 0.0
         
         try:
             # 특성 정규화
             features_scaled = self.scaler.transform(features.reshape(1, -1))
             
-            # 전체 이상치 점수 계산 (기존 방식)
+            # Isolation Forest 이상치 점수 계산
+            # decision_function: 양수(정상), 음수(이상)
             anomaly_score = self.detector.decision_function(features_scaled)[0]
-            overall_crisis = 1 / (1 + np.exp(anomaly_score * self.sensitivity))
-            overall_crisis = np.clip(overall_crisis, 0.0, 1.0)
             
-            # 다차원 위기 분석
-            volatility_crisis = self._detect_volatility_crisis(features)
-            correlation_crisis = self._detect_correlation_crisis(features)
-            volume_crisis = self._detect_volume_crisis(features)
+            # 위기 수준으로 변환 [0, 1]
+            # sigmoid 변환으로 부드러운 확률값 생성
+            crisis_level = 1 / (1 + np.exp(anomaly_score * self.sensitivity))
             
-            # 위기 벡터 생성
-            crisis_vector = np.array([volatility_crisis, correlation_crisis, volume_crisis])
+            # 안전한 범위로 클리핑
+            crisis_level = np.clip(crisis_level, 0.0, 1.0)
             
-            return {
-                'overall_crisis': float(overall_crisis),
-                'volatility_crisis': float(volatility_crisis),
-                'correlation_crisis': float(correlation_crisis),
-                'volume_crisis': float(volume_crisis),
-                'crisis_vector': crisis_vector
-            }
+            return float(crisis_level)
             
         except Exception as e:
-            self.logger.error(f"다차원 위기 감지 실패: {e}")
-            return {
-                'overall_crisis': 0.0,
-                'volatility_crisis': 0.0,
-                'correlation_crisis': 0.0,
-                'volume_crisis': 0.0,
-                'crisis_vector': np.array([0.0, 0.0, 0.0])
-            }
-    
-    def _detect_volatility_crisis(self, features):
-        """
-        변동성 위기 감지
-        
-        특성 벡터에서 변동성 관련 지표들을 추출하여 위기 수준 계산
-        """
-        try:
-            # features 구조 가정: [returns, volatilities, correlations, volumes, ...]
-            # 변동성 관련 특성 추출 (인덱스는 FeatureExtractor 구조에 따라 조정 필요)
-            if len(features) >= 4:
-                volatility_indicators = features[1:4]  # 변동성 관련 특성들
-                
-                # 평균 변동성 계산
-                avg_volatility = np.mean(volatility_indicators)
-                
-                # 임계값 기반 위기 수준 계산
-                volatility_threshold = 0.02  # 2% 일일 변동성 임계값
-                if avg_volatility > volatility_threshold:
-                    crisis_level = min(1.0, (avg_volatility - volatility_threshold) / volatility_threshold)
-                    return np.tanh(crisis_level * 3) # 부드러운 스케일링
-                else:
-                    return 0.0
-            else:
-                return 0.0
-                
-        except Exception as e:
-            self.logger.error(f"변동성 위기 감지 실패: {e}")
+            self.logger.error(f"위기 감지 실패: {e}")
             return 0.0
     
-    def _detect_correlation_crisis(self, features):
-        """
-        상관관계 위기 감지
-        
-        자산 간 상관관계 변화를 통한 위기 감지
-        """
-        try:
-            # 상관관계 관련 특성 추출
-            if len(features) >= 8:
-                correlation_indicators = features[4:8]  # 상관관계 관련 특성들
-                
-                # 상관관계 변화 계산
-                correlation_change = np.std(correlation_indicators)
-                
-                # 임계값 기반 위기 수준 계산
-                correlation_threshold = 0.3  # 상관관계 변화 임계값
-                if correlation_change > correlation_threshold:
-                    crisis_level = min(1.0, (correlation_change - correlation_threshold) / correlation_threshold)
-                    return np.tanh(crisis_level * 2)
-                else:
-                    return 0.0
-            else:
-                return 0.0
-                
-        except Exception as e:
-            self.logger.error(f"상관관계 위기 감지 실패: {e}")
-            return 0.0
-    
-    def _detect_volume_crisis(self, features):
-        """
-        거래량 위기 감지
-        
-        비정상적인 거래량 변화를 통한 위기 감지
-        """
-        try:
-            # 거래량 관련 특성 추출
-            if len(features) >= 12:
-                volume_indicators = features[8:12]  # 거래량 관련 특성들
-                
-                # 거래량 변화 계산
-                volume_change = np.mean(np.abs(volume_indicators))
-                
-                # 임계값 기반 위기 수준 계산
-                volume_threshold = 0.5  # 거래량 변화 임계값
-                if volume_change > volume_threshold:
-                    crisis_level = min(1.0, (volume_change - volume_threshold) / volume_threshold)
-                    return np.tanh(crisis_level * 1.5)
-                else:
-                    return 0.0
-            else:
-                return 0.0
-                
-        except Exception as e:
-            self.logger.error(f"거래량 위기 감지 실패: {e}")
-            return 0.0
     
     def get_anomaly_explanation(self, features):
         """

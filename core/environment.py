@@ -213,54 +213,42 @@ class PortfolioEnvironment:
     def _calculate_reward(self, portfolio_return: float, weights: np.ndarray, 
                          asset_returns: np.ndarray) -> float:
         """
-        보상 계산 (tanh 기반 정규화)
+        보상 계산
         
-        적응적 스케일링과 부드러운 정규화를 통해 학습 안정성 확보
+        샤프 비율 기반 보상 + 리스크 페널티 + 집중도 페널티
         """
-        # tanh 기반 부드러운 스케일링
-        base_reward = np.tanh(portfolio_return * 50)  # [-1, 1] 범위로 압축
+        # 기본 수익률 보상
+        reward = portfolio_return * 100  # 스케일링
         
-        # 적응적 정규화 (충분한 히스토리가 있을 때)
-        if len(self.return_history) > 50:
-            recent_returns = np.array(self.return_history[-50:])
-            std_returns = recent_returns.std()
-            if std_returns > 0:
-                normalized_return = (portfolio_return - recent_returns.mean()) / std_returns
-                base_reward = np.tanh(normalized_return)
-        
-        # 샤프 비율 보상 (부드럽게 적용)
-        sharpe_component = 0.0
+        # 샤프 비율 보상 (충분한 히스토리가 있을 때)
         if len(self.return_history) >= 20:
             returns_array = np.array(self.return_history[-20:])
             if returns_array.std() > 0:
                 sharpe_ratio = returns_array.mean() / returns_array.std() * np.sqrt(252)
-                sharpe_component = np.tanh(sharpe_ratio * 0.5) * 0.3  # 부드러운 스케일링
+                reward += sharpe_ratio * 5.0  # 샤프 비율 가중치
         
-        # 집중도 페널티 (부드럽게 적용)
+        # 집중도 페널티 (분산투자 장려)
         concentration = calculate_concentration_index(weights)
-        concentration_penalty = 0.0
-        if concentration > 0.4:  # 임계값 완화
-            excess_concentration = concentration - 0.4
-            concentration_penalty = np.tanh(excess_concentration * 5) * 0.2
+        if concentration > 0.5:  # 임계값
+            concentration_penalty = (concentration - 0.5) * 10
+            reward -= concentration_penalty
         
-        # 변동성 페널티 (부드럽게 적용)
-        volatility_penalty = 0.0
+        # 극단적 손실 페널티
+        if portfolio_return < -0.05:  # 일일 5% 이상 손실
+            extreme_loss_penalty = abs(portfolio_return) * 50
+            reward -= extreme_loss_penalty
+        
+        # 변동성 페널티
         if len(self.return_history) >= 5:
             recent_volatility = np.std(self.return_history[-5:])
-            if recent_volatility > 0.015:  # 임계값 완화 (1.5%)
-                excess_volatility = recent_volatility - 0.015
-                volatility_penalty = np.tanh(excess_volatility * 100) * 0.2
+            if recent_volatility > 0.02:  # 일일 변동성 2% 초과
+                volatility_penalty = (recent_volatility - 0.02) * 100
+                reward -= volatility_penalty
         
-        # 최종 보상 계산 (각 구성요소의 기여도 조정)
-        final_reward = (base_reward * 1.0 +  # 기본 수익률 (가중치 1.0)
-                       sharpe_component +    # 샤프 비율 (가중치 0.3)
-                       -concentration_penalty -  # 집중도 페널티
-                       volatility_penalty)   # 변동성 페널티
+        # 보상 클리핑
+        reward = np.clip(reward, -10.0, 10.0)
         
-        # 최종 클리핑 (더 관대한 범위)
-        final_reward = np.clip(final_reward, -3.0, 3.0)
-        
-        return float(final_reward)
+        return float(reward)
     
     def get_portfolio_metrics(self) -> Dict[str, float]:
         """포트폴리오 성과 메트릭 계산"""
