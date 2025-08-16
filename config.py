@@ -107,9 +107,9 @@ ACTION_DIM = len(SYMBOLS)  # 포트폴리오 가중치
 HIDDEN_DIM = 128
 
 # 강화학습 하이퍼파라미터 (CUDA 호환성을 위해 Python native 타입 사용)
-ACTOR_LR = float(3e-4)
-CRITIC_LR = float(6e-4)
-ALPHA_LR = float(3e-4)  # SAC 엔트로피 계수 학습률
+ACTOR_LR = float(1e-4)  # 3e-4 → 1e-4 (안정성 향상)
+CRITIC_LR = float(1e-4)  # 6e-4 → 1e-4 (NaN 방지)
+ALPHA_LR = float(1e-4)  # SAC 엔트로피 계수 학습률
 GAMMA = float(0.99)
 TAU = float(0.005)
 BATCH_SIZE = int(64)

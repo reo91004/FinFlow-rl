@@ -102,7 +102,9 @@ class PortfolioEnvironment:
         current_prices = self.price_data.iloc[self.current_step + self.feature_extractor.lookback_window]
         next_prices = self.price_data.iloc[self.current_step + self.feature_extractor.lookback_window + 1]
         
+        # 안전한 수익률 계산 (극단값 클리핑)
         asset_returns = (next_prices - current_prices) / current_prices
+        asset_returns = np.clip(asset_returns, -0.5, 0.5)  # 일일 수익률 50% 제한
         portfolio_return = np.dot(new_weights, asset_returns)
         
         # 포트폴리오 가치 업데이트
@@ -160,6 +162,8 @@ class PortfolioEnvironment:
             crisis_level = 0.0
         
         # 상태 벡터: [market_features(12), crisis_level(1), prev_weights(n_assets)]
+        # 상태 정규화를 위한 클리핑 (안정성 향상)
+        market_features = np.clip(market_features, -10.0, 10.0)
         state = np.concatenate([
             market_features,
             [crisis_level],

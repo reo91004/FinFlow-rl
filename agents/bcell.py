@@ -47,8 +47,9 @@ class SACActorNetwork(nn.Module):
         x = F.relu(self.fc1(state))
         x = F.relu(self.fc2(x))
         
-        # Concentration 파라미터 (모두 양수여야 함)
-        concentration = F.softplus(self.concentration_head(x)) + 0.1  # 최소값 0.1
+        # Concentration 파라미터 (안정성을 위한 클램핑 후 softplus)
+        x_clamped = torch.clamp(self.concentration_head(x), min=-10.0, max=10.0)
+        concentration = F.softplus(x_clamped) + 0.1  # 최소값 0.1
         
         # Dirichlet 분포에서 샘플링
         if self.training:
@@ -110,10 +111,12 @@ class CriticNetwork(nn.Module):
 class PrioritizedReplayBuffer:
     """우선순위 경험 재생 버퍼 (PER)"""
     
-    def __init__(self, capacity, alpha=0.6, beta=0.4):
+    def __init__(self, capacity, alpha=0.6, beta=0.4, beta_increment=0.001):
         self.capacity = capacity
         self.alpha = alpha  # 우선순위 지수
-        self.beta = beta    # 중요도 샘플링 지수
+        self.beta = beta    # 중요도 샘플링 지수 (초기값)
+        self.beta_increment = beta_increment  # 베타 증가율
+        self.max_beta = 1.0  # 베타 최대값
         self.priorities = np.zeros((capacity,), dtype=np.float32)
         self.buffer = []
         self.pos = 0
@@ -132,6 +135,9 @@ class PrioritizedReplayBuffer:
     
     def sample(self, batch_size):
         """우선순위 기반 배치 샘플링"""
+        # Beta annealing: 점진적으로 1.0에 수렴
+        self.beta = min(self.max_beta, self.beta + self.beta_increment)
+        
         if len(self.buffer) == self.capacity:
             priorities = self.priorities
         else:
@@ -214,6 +220,15 @@ class BCell:
         self.actor_losses = []
         self.critic_losses = []
         
+        # 모니터링 통계 (축약형)
+        self.monitoring_stats = {
+            'q_value_range': {'min': [], 'max': []},
+            'gradient_norms': {'actor': [], 'critic': []},
+            'alpha_history': [],
+            'td_error_stats': {'mean': [], 'max': []},
+            'last_report': 0
+        }
+        
         # 로거
         self.logger = BIPDLogger(f"BCell-{risk_type}")
         
@@ -293,8 +308,9 @@ class BCell:
             target_q2 = self.target_critic2(next_states, next_actions).squeeze()
             target_q = torch.min(target_q1, target_q2) - self.alpha * next_log_probs
             
-            # 타겟 Q-value 계산
+            # 타겟 Q-value 계산 (안정성을 위한 클리핑 추가)
             target_q_values = rewards + self.gamma * target_q * (~dones)
+            target_q_values = torch.clamp(target_q_values, min=-50.0, max=50.0)
         
         # Critic 1 업데이트
         current_q1 = self.critic1(states, actions).squeeze()
@@ -302,7 +318,7 @@ class BCell:
         
         self.critic1_optimizer.zero_grad()
         critic1_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.critic1.parameters(), 1.0)
+        critic1_grad_norm = torch.nn.utils.clip_grad_norm_(self.critic1.parameters(), 1.0)
         self.critic1_optimizer.step()
         
         # Critic 2 업데이트
@@ -311,7 +327,7 @@ class BCell:
         
         self.critic2_optimizer.zero_grad()
         critic2_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.critic2.parameters(), 1.0)
+        critic2_grad_norm = torch.nn.utils.clip_grad_norm_(self.critic2.parameters(), 1.0)
         self.critic2_optimizer.step()
         
         # TD-error 계산 (PER 우선순위 업데이트용)
@@ -320,7 +336,8 @@ class BCell:
             (current_q2 - target_q_values).abs()
         ).detach().cpu().numpy()
         
-        priorities = td_errors + 1e-6
+        # Priority clipping으로 극단값 방지
+        priorities = np.clip(td_errors + 1e-6, a_min=0.0, a_max=100.0)
         self.replay_buffer.update_priorities(indices, priorities)
         
         # ===== SAC Actor 업데이트 =====
@@ -336,7 +353,7 @@ class BCell:
         
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 1.0)
+        actor_grad_norm = torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 1.0)
         self.actor_optimizer.step()
         
         # ===== Alpha (엔트로피 계수) 자동 튜닝 =====
@@ -354,17 +371,99 @@ class BCell:
         self.critic_losses.append((critic1_loss.item() + critic2_loss.item()) / 2)
         self.update_count += 1
         
-        # 주기적 로깅
-        if self.update_count % 100 == 0:
-            avg_actor_loss = np.mean(self.actor_losses[-100:])
-            avg_critic_loss = np.mean(self.critic_losses[-100:])
+        # 모니터링 통계 수집 (메모리 효율적인 방식)
+        with torch.no_grad():
+            # Q-value 범위
+            self.monitoring_stats['q_value_range']['min'].append(target_q.min().item())
+            self.monitoring_stats['q_value_range']['max'].append(target_q.max().item())
             
-            self.logger.debug(
-                f"[{self.risk_type}] SAC 업데이트 {self.update_count}: "
-                f"Actor 손실={avg_actor_loss:.4f}, "
-                f"Critic 손실={avg_critic_loss:.4f}, "
-                f"Alpha={self.alpha.item():.3f}"
+            # Gradient norms
+            self.monitoring_stats['gradient_norms']['actor'].append(actor_grad_norm.item())
+            self.monitoring_stats['gradient_norms']['critic'].append(
+                (critic1_grad_norm.item() + critic2_grad_norm.item()) / 2
             )
+            
+            # Alpha 추적
+            self.monitoring_stats['alpha_history'].append(self.alpha.item())
+            
+            # TD error 통계
+            self.monitoring_stats['td_error_stats']['mean'].append(td_errors.mean())
+            self.monitoring_stats['td_error_stats']['max'].append(td_errors.max())
+        
+        # 주기적 요약 로깅 (100회마다)
+        if self.update_count % 100 == 0:
+            self._log_monitoring_summary()
+            
+        # 메모리 관리: 오래된 통계 제거 (최근 1000개만 유지)
+        if self.update_count % 500 == 0:
+            self._cleanup_monitoring_stats()
+    
+    def _log_monitoring_summary(self):
+        """모니터링 통계 요약 로깅"""
+        window = min(100, len(self.monitoring_stats['q_value_range']['min']))
+        
+        if window == 0:
+            return
+            
+        # 최근 통계 계산
+        q_min = np.mean(self.monitoring_stats['q_value_range']['min'][-window:])
+        q_max = np.mean(self.monitoring_stats['q_value_range']['max'][-window:])
+        grad_actor = np.mean(self.monitoring_stats['gradient_norms']['actor'][-window:])
+        grad_critic = np.mean(self.monitoring_stats['gradient_norms']['critic'][-window:])
+        alpha_current = self.monitoring_stats['alpha_history'][-1] if self.monitoring_stats['alpha_history'] else 0
+        td_mean = np.mean(self.monitoring_stats['td_error_stats']['mean'][-window:])
+        td_max = np.mean(self.monitoring_stats['td_error_stats']['max'][-window:])
+        
+        # 손실 통계
+        avg_actor_loss = np.mean(self.actor_losses[-window:])
+        avg_critic_loss = np.mean(self.critic_losses[-window:])
+        
+        # 안정성 체크
+        is_stable = (
+            not np.isnan(avg_actor_loss) and 
+            not np.isnan(avg_critic_loss) and
+            avg_critic_loss < 1e6 and
+            q_max < 100
+        )
+        
+        stability_marker = "✓" if is_stable else "⚠"
+        
+        self.logger.debug(
+            f"[{self.risk_type}] {stability_marker} 업데이트 {self.update_count}: "
+            f"손실(A:{avg_actor_loss:.2f}/C:{avg_critic_loss:.2f}) "
+            f"Q범위[{q_min:.1f},{q_max:.1f}] "
+            f"Grad(A:{grad_actor:.2f}/C:{grad_critic:.2f}) "
+            f"α={alpha_current:.3f} "
+            f"TD({td_mean:.2f}/{td_max:.2f})"
+        )
+        
+        # 위험 신호 감지
+        if avg_critic_loss > 1e5:
+            self.logger.warning(
+                f"[{self.risk_type}] Critic 손실 급증 감지: {avg_critic_loss:.2e}"
+            )
+        if q_max > 50:
+            self.logger.warning(
+                f"[{self.risk_type}] Q-value 범위 확대 감지: max={q_max:.2f}"
+            )
+    
+    def _cleanup_monitoring_stats(self):
+        """오래된 모니터링 통계 정리 (메모리 효율성)"""
+        max_history = 1000
+        
+        for key in ['q_value_range', 'gradient_norms', 'td_error_stats']:
+            for subkey in self.monitoring_stats[key]:
+                if len(self.monitoring_stats[key][subkey]) > max_history:
+                    self.monitoring_stats[key][subkey] = self.monitoring_stats[key][subkey][-max_history:]
+        
+        if len(self.monitoring_stats['alpha_history']) > max_history:
+            self.monitoring_stats['alpha_history'] = self.monitoring_stats['alpha_history'][-max_history:]
+        
+        # 손실 히스토리도 정리
+        if len(self.actor_losses) > max_history:
+            self.actor_losses = self.actor_losses[-max_history:]
+        if len(self.critic_losses) > max_history:
+            self.critic_losses = self.critic_losses[-max_history:]
     
     def _soft_update_targets(self):
         """타겟 네트워크들 소프트 업데이트 (SAC - Critic만)"""
