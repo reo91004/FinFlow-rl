@@ -7,6 +7,34 @@ from data.features import FeatureExtractor
 from utils.logger import BIPDLogger
 from utils.metrics import calculate_concentration_index
 
+class RunningNormalizer:
+    """실시간 평균/표준편차 정규화"""
+    
+    def __init__(self, feature_dim: int, momentum: float = 0.99):
+        self.momentum = momentum
+        self.running_mean = np.zeros(feature_dim, dtype=np.float32)
+        self.running_var = np.ones(feature_dim, dtype=np.float32)
+        self.count = 0
+    
+    def update_and_normalize(self, features: np.ndarray) -> np.ndarray:
+        """특성 업데이트 및 정규화"""
+        if self.count == 0:
+            self.running_mean = features.copy()
+            self.running_var = np.ones_like(features)
+        else:
+            # Exponential moving average
+            self.running_mean = self.momentum * self.running_mean + (1 - self.momentum) * features
+            diff = features - self.running_mean
+            self.running_var = self.momentum * self.running_var + (1 - self.momentum) * (diff ** 2)
+        
+        self.count += 1
+        
+        # 정규화 (0으로 나누기 방지)
+        std = np.sqrt(self.running_var + 1e-8)
+        normalized = (features - self.running_mean) / std
+        
+        return np.clip(normalized, -5.0, 5.0)  # 극단값 클리핑
+
 class PortfolioEnvironment:
     """
     포트폴리오 관리 환경
@@ -45,6 +73,9 @@ class PortfolioEnvironment:
             'total_validations': 0,
             'last_log_step': 0
         }
+        
+        # 상태 정규화기 추가
+        self.state_normalizer = RunningNormalizer(feature_dim=12)  # 시장 특성 12차원
         
         self.logger = BIPDLogger("Environment")
         
@@ -154,21 +185,27 @@ class PortfolioEnvironment:
             self.price_data, current_idx
         )
         
-        # 위기 수준 (임시로 변동성 기반 계산)
+        # 시장 특성 정규화 적용
+        normalized_features = self.state_normalizer.update_and_normalize(market_features)
+        
+        # 위기 수준 계산
         if len(self.return_history) >= 5:
             recent_volatility = np.std(self.return_history[-5:])
-            crisis_level = np.clip(recent_volatility * 50, 0, 1)  # 스케일링
+            crisis_level = np.clip(recent_volatility * 50, 0, 1)
         else:
             crisis_level = 0.0
         
-        # 상태 벡터: [market_features(12), crisis_level(1), prev_weights(n_assets)]
-        # 상태 정규화를 위한 클리핑 (안정성 향상)
-        market_features = np.clip(market_features, -10.0, 10.0)
+        # 상태 벡터 구성
         state = np.concatenate([
-            market_features,
+            normalized_features,  # 정규화된 시장 특성
             [crisis_level],
             self.weights
         ]).astype(np.float32)
+        
+        # 디버그 로깅 (첫 실행 시)
+        if not hasattr(self, '_normalization_logged'):
+            self.logger.info("상태 정규화가 활성화되었습니다")
+            self._normalization_logged = True
         
         return state
     
