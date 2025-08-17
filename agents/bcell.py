@@ -195,8 +195,8 @@ class BCell:
         self.target_critic1.load_state_dict(self.critic1.state_dict())
         self.target_critic2.load_state_dict(self.critic2.state_dict())
         
-        # SAC 엔트로피 계수 (자동 튜닝)
-        self.target_entropy = -float(action_dim)  # 포트폴리오 차원만큼 음수
+        # SAC 엔트로피 계수 (탐험 완화)
+        self.target_entropy = -float(action_dim) * 0.5  # 기존 1.0에서 0.5로 변경하여 탐험 완화
         self.log_alpha = torch.zeros(1, requires_grad=True, device=DEVICE)
         self.alpha = self.log_alpha.exp()
         
