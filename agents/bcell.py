@@ -47,9 +47,9 @@ class SACActorNetwork(nn.Module):
         x = F.relu(self.fc1(state))
         x = F.relu(self.fc2(x))
         
-        # Concentration 파라미터 (안정성을 위한 클램핑 후 softplus)
+        # Concentration 파라미터 (수치 안정성 개선)
         x_clamped = torch.clamp(self.concentration_head(x), min=-10.0, max=10.0)
-        concentration = F.softplus(x_clamped) + 0.1  # 최소값 0.1
+        concentration = F.softplus(x_clamped) + 1.0  # 최소값 0.1 → 1.0 변경 (안정성 향상)
         
         # Dirichlet 분포에서 샘플링
         if self.training:
