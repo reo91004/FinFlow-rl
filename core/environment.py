@@ -217,40 +217,47 @@ class PortfolioEnvironment:
     def _calculate_reward(self, portfolio_return: float, weights: np.ndarray, 
                          asset_returns: np.ndarray) -> float:
         """
-        간소화된 보상 계산 (로그 수익률 기반)
+        Sharpe ratio 기반 보상 함수
         
-        복잡한 다중 구성요소 대신 명확하고 직관적인 목표 제시:
-        1. 로그 수익률 최대화 (복리 효과 반영)
-        2. 변동성 페널티 (위험 관리)
+        위험 조정 수익률을 직접 최적화하여 안정적인 학습 유도
         """
-        # 1. 로그 수익률 계산 (복리 효과와 장기 성장 반영)
-        # 극단적 손실 방지를 위해 -99% 하한선 적용
-        if portfolio_return > -0.99:
-            log_return = np.log(1 + portfolio_return)
-        else:
-            log_return = -5.0  # 극단적 손실에 대한 강한 페널티
+        # 1. 기본 수익률 보상
+        base_reward = portfolio_return
         
-        # 2. 변동성 페널티 (위험 대비 수익률 최적화)
-        volatility_penalty = 0.0
-        if len(self.return_history) >= 10:  # 충분한 히스토리가 있을 때만
-            recent_volatility = np.std(self.return_history[-10:])
-            # 간단한 선형 페널티 (복잡한 tanh 변환 제거)
-            from config import VOLATILITY_PENALTY_WEIGHT
-            volatility_penalty = recent_volatility * VOLATILITY_PENALTY_WEIGHT
+        # 2. Sharpe ratio 보상 (충분한 히스토리가 있을 때)
+        sharpe_window = 20
+        sharpe_reward = 0.0
         
-        # 3. 집중도 페널티 (포트폴리오 다양성 유지)
+        if len(self.return_history) >= sharpe_window:
+            recent_returns = np.array(self.return_history[-sharpe_window:])
+            mean_return = recent_returns.mean()
+            std_return = recent_returns.std()
+            
+            if std_return > 1e-8:  # 0으로 나누기 방지
+                sharpe_ratio = mean_return / std_return
+                # Sharpe ratio를 보상 스케일에 맞게 조정
+                sharpe_reward = np.tanh(sharpe_ratio * 0.1)  # [-1, 1] 범위로 제한
+            else:
+                sharpe_reward = 0.0
+        
+        # 3. 완화된 집중도 페널티
         concentration = calculate_concentration_index(weights)
+        concentration_threshold = 0.6  # 기존 0.5에서 완화
         concentration_penalty = 0.0
-        from config import CONCENTRATION_THRESHOLD, CONCENTRATION_PENALTY_WEIGHT
-        if concentration > CONCENTRATION_THRESHOLD:
-            concentration_penalty = (concentration - CONCENTRATION_THRESHOLD) * CONCENTRATION_PENALTY_WEIGHT
         
-        # 4. 최종 보상 (간소화된 구조)
-        final_reward = log_return - volatility_penalty - concentration_penalty
+        if concentration > concentration_threshold:
+            concentration_penalty = (concentration - concentration_threshold) * 0.1  # 기존 1.0에서 완화
         
-        # 5. 적절한 범위로 클리핑
-        from config import REWARD_CLIP_MIN, REWARD_CLIP_MAX
-        final_reward = np.clip(final_reward, REWARD_CLIP_MIN, REWARD_CLIP_MAX)
+        # 4. 최종 보상 (변동성 페널티 제거, Sharpe ratio로 대체)
+        final_reward = base_reward + sharpe_reward - concentration_penalty
+        
+        # 5. 보상 클리핑 (더 좁은 범위로 안정화)
+        final_reward = np.clip(final_reward, -2.0, 2.0)
+        
+        # 디버그 로깅 (첫 실행 시)
+        if not hasattr(self, '_reward_logged'):
+            self.logger.info("보상 함수가 Sharpe ratio 기반으로 변경되었습니다")
+            self._reward_logged = True
         
         return float(final_reward)
     
