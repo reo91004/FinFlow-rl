@@ -308,9 +308,9 @@ class BCell:
             target_q2 = self.target_critic2(next_states, next_actions).squeeze()
             target_q = torch.min(target_q1, target_q2) - self.alpha * next_log_probs
             
-            # 타겟 Q-value 계산 (안정성을 위한 클리핑 추가)
+            # 타겟 Q-value 계산 (보상 범위와 일치하도록 조정)
             target_q_values = rewards + self.gamma * target_q * (~dones)
-            target_q_values = torch.clamp(target_q_values, min=-50.0, max=50.0)
+            target_q_values = torch.clamp(target_q_values, min=-10.0, max=10.0)  # 기존 [-50, 50]에서 조정
         
         # Critic 1 업데이트
         current_q1 = self.critic1(states, actions).squeeze()
@@ -393,6 +393,10 @@ class BCell:
         # 주기적 요약 로깅 (100회마다)
         if self.update_count % 100 == 0:
             self._log_monitoring_summary()
+            
+        # Q-value 범위 조정 확인 로깅 (첫 실행 시)
+        if self.update_count == 1:
+            self.logger.info("Q-value 범위가 [-10, 10]으로 조정되었습니다")
             
         # 메모리 관리: 오래된 통계 제거 (최근 1000개만 유지)
         if self.update_count % 500 == 0:
