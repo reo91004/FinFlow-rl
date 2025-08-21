@@ -7,6 +7,10 @@ from collections import deque
 from data.features import FeatureExtractor
 from utils.logger import BIPDLogger
 from utils.metrics import calculate_concentration_index
+from config import (
+    SHARPE_WINDOW, SHARPE_SCALE, REWARD_BUFFER_SIZE, 
+    REWARD_OUTLIER_SIGMA, REWARD_CLIP_MIN, REWARD_CLIP_MAX
+)
 
 class RunningNormalizer:
     """실시간 평균/표준편차 정규화"""
@@ -203,9 +207,8 @@ class PortfolioEnvironment:
             self.weights
         ]).astype(np.float32)
         
-        # 디버그 로깅 (첫 실행 시)
         if not hasattr(self, '_normalization_logged'):
-            self.logger.info("상태 정규화가 활성화되었습니다")
+            self.logger.info("상태 정규화 활성화")
             self._normalization_logged = True
         
         return state
@@ -262,73 +265,61 @@ class PortfolioEnvironment:
         # 1. 기본 수익률 보상
         base_reward = portfolio_return
         
-        # 2. Sharpe ratio 보상 (더 빠른 피드백을 위해 윈도우 감소)
-        sharpe_window = 10  # 20 → 10으로 변경하여 더 빠른 피드백
+        # 2. Sharpe ratio 보상
         sharpe_reward = 0.0
         
-        if len(self.return_history) >= sharpe_window:
-            recent_returns = np.array(self.return_history[-sharpe_window:])
+        if len(self.return_history) >= SHARPE_WINDOW:
+            recent_returns = np.array(self.return_history[-SHARPE_WINDOW:])
             mean_return = recent_returns.mean()
             std_return = recent_returns.std()
             
-            if std_return > 1e-8:  # 0으로 나누기 방지
+            if std_return > 1e-8:
                 sharpe_ratio = mean_return / std_return
-                # Sharpe ratio를 보상 스케일에 맞게 조정 (clipping으로 대체)
-                # tanh 대신 사용하여 vanishing gradient 방지
-                sharpe_reward = np.clip(sharpe_ratio * 0.15, -1.0, 1.0)
+                sharpe_reward = np.clip(sharpe_ratio * SHARPE_SCALE, -1.0, 1.0)
             else:
                 sharpe_reward = 0.0
         
-        # 3. 집중도 페널티 제거 (학습 안정성을 위해)
-        # 집중도 관리는 가중치 검증 단계에서 처리
-        concentration_penalty = 0.0
-        
-        # 4. 최종 보상 (단순화)
+        # 3. 최종 보상 계산
         final_reward = base_reward + sharpe_reward
         
-        # 5. 최신 연구 기반 극단적 보상 처리 (2024-2025 논문 기반)
+        # 4. 3-sigma 필터링 및 robust 정규화
         if not hasattr(self, 'reward_buffer'):
-            self.reward_buffer = deque(maxlen=1000)  # 보상 히스토리 유지
+            self.reward_buffer = deque(maxlen=REWARD_BUFFER_SIZE)
         
         self.reward_buffer.append(final_reward)
         
-        # 3-sigma 아웃라이어 필터링 (최신 연구 권장 방법)
+        # 3-sigma 아웃라이어 필터링
         if len(self.reward_buffer) >= 20:
             reward_array = np.array(self.reward_buffer)
             mean = reward_array.mean()
             std = reward_array.std()
             
-            # 3-sigma 범위 밖의 극단값 처리
             if std > 1e-8:
                 z_score = abs((final_reward - mean) / std)
-                if z_score > 3.0:  # 3-sigma 기준
-                    # 극단값을 3-sigma 경계로 클리핑
-                    final_reward = mean + 3.0 * std * np.sign(final_reward - mean)
+                if z_score > REWARD_OUTLIER_SIGMA:
+                    original_reward = final_reward  # 원본 보상 저장
+                    final_reward = mean + REWARD_OUTLIER_SIGMA * std * np.sign(final_reward - mean)
                     if not hasattr(self, '_outlier_count'):
                         self._outlier_count = 0
                     self._outlier_count += 1
                     
-                    # 극단값 감지 로깅
                     if self._outlier_count % 10 == 1:
-                        self.logger.warning(f"극단적 보상 감지 및 필터링: 원본={final_reward:.2f}, 조정후={final_reward:.2f}")
+                        self.logger.warning(f"극단적 보상 감지 및 필터링: 원본={original_reward:.2f}, 조정후={final_reward:.2f}")
         
-        # Robust 정규화 (median 기반, 극단값에 덜 민감)
+        # MAD 기반 robust 정규화
         if len(self.reward_buffer) >= 10:
             reward_array = np.array(self.reward_buffer)
             median = np.median(reward_array)
-            mad = np.median(np.abs(reward_array - median))  # Median Absolute Deviation
+            mad = np.median(np.abs(reward_array - median))
             
             if mad > 1e-8:
-                # Robust z-score 계산
-                final_reward = (final_reward - median) / (1.4826 * mad)  # 1.4826은 정규분포 조정 상수
+                final_reward = (final_reward - median) / (1.4826 * mad)
             
-        # 최종 보상 범위 제한 (SAC 호환성 고려)
-        # tanh 대신 clipping 사용 (vanishing gradient 문제 방지)
-        final_reward = np.clip(final_reward, -2.0, 2.0)
+        # 최종 클리핑
+        final_reward = np.clip(final_reward, REWARD_CLIP_MIN, REWARD_CLIP_MAX)
         
-        # 디버그 로깅 (첫 실행 시)
         if not hasattr(self, '_reward_logged'):
-            self.logger.info("보상 함수 최적화 완료: Sharpe 윈도우=10, 집중도 페널티 제거, 보상 정규화 활성화")
+            self.logger.info("보상 함수 초기화: 3-sigma 필터링, MAD 정규화, Sharpe 기반")
             self._reward_logged = True
         
         return float(final_reward)

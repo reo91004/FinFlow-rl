@@ -106,20 +106,18 @@ STATE_DIM = FEATURE_DIM + 1 + len(SYMBOLS)  # features + crisis + prev_weights
 ACTION_DIM = len(SYMBOLS)  # 포트폴리오 가중치
 HIDDEN_DIM = 128
 
-# 강화학습 하이퍼파라미터 (최적화된 설정)
-ACTOR_LR = float(3e-4)  # 1e-4 → 3e-4 (학습 속도 향상)
-CRITIC_LR = float(3e-4)  # 1e-4 → 3e-4 (학습 속도 향상)
-ALPHA_LR = float(3e-4)  # 1e-4 → 3e-4 (엔트로피 자동 조정 강화)
+# 강화학습 하이퍼파라미터
+ACTOR_LR = float(3e-4)
+CRITIC_LR = float(3e-4)
+ALPHA_LR = float(3e-4)
 GAMMA = float(0.99)
-TAU = float(0.001)  # 0.005 → 0.001 (타겟 네트워크 안정성 향상)
-BATCH_SIZE = int(32)  # 64 → 32 (더 빠른 학습)
+TAU = float(0.001)
+BATCH_SIZE = int(32)
 BUFFER_SIZE = int(10000)
 UPDATE_FREQUENCY = int(4)
 
-# 탐험-활용
-EPSILON_START = float(0.9)
-EPSILON_END = float(0.05)
-EPSILON_DECAY = float(0.995)
+# SAC 엔트로피 설정
+TARGET_ENTROPY_SCALE = float(0.25)
 
 # Memory Cell 설정
 MEMORY_CAPACITY = int(500)
@@ -136,16 +134,17 @@ N_EPISODES = int(500)
 LOG_INTERVAL = int(10)
 SAVE_INTERVAL = int(100)
 
-# 초기 탐험 강화 설정 (신규)
-INITIAL_EXPLORATION_STEPS = int(1000)  # 초기 랜덤 탐험 스텝
-MIN_BUFFER_SIZE = int(500)  # 최소 버퍼 크기 (학습 시작 조건)
+# 초기 탐험 설정
+INITIAL_EXPLORATION_STEPS = int(1000)
+MIN_BUFFER_SIZE = int(500)
 
-# 보상 설정 (간소화된 로그 수익률 기반)
-VOLATILITY_PENALTY_WEIGHT = float(2.0)  # 변동성 페널티 가중치
-CONCENTRATION_THRESHOLD = float(0.5)  # 집중도 임계값
-CONCENTRATION_PENALTY_WEIGHT = float(1.0)  # 집중도 페널티 가중치
-REWARD_CLIP_MIN = float(-5.0)  # 보상 최소값
-REWARD_CLIP_MAX = float(5.0)  # 보상 최대값
+# 보상 함수 설정
+SHARPE_WINDOW = int(10)
+SHARPE_SCALE = float(0.15)
+REWARD_BUFFER_SIZE = int(1000)  # 3-sigma 필터링용
+REWARD_OUTLIER_SIGMA = float(3.0)
+REWARD_CLIP_MIN = float(-2.0)
+REWARD_CLIP_MAX = float(2.0)
 
 # 위기 임계값
 CRISIS_HIGH = float(0.7)

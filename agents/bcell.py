@@ -9,7 +9,10 @@ import os
 from collections import deque
 import random
 from utils.logger import BIPDLogger
-from config import DEVICE
+from config import (
+    DEVICE, ACTOR_LR, CRITIC_LR, ALPHA_LR, GAMMA, TAU, BATCH_SIZE, 
+    BUFFER_SIZE, TARGET_ENTROPY_SCALE, REWARD_CLIP_MIN, REWARD_CLIP_MAX
+)
 
 class SACActorNetwork(nn.Module):
     """SAC Actor 네트워크: 확률적 포트폴리오 가중치 생성"""
@@ -47,9 +50,9 @@ class SACActorNetwork(nn.Module):
         x = F.relu(self.fc1(state))
         x = F.relu(self.fc2(x))
         
-        # Concentration 파라미터 (안정성 강화)
+        # Concentration 파라미터
         x_clamped = torch.clamp(self.concentration_head(x), min=-10.0, max=10.0)
-        concentration = F.softplus(x_clamped) + 2.0  # 1.0 → 2.0 변경 (안정성 향상)
+        concentration = F.softplus(x_clamped) + 2.0
         
         # Dirichlet 분포에서 샘플링
         if self.training:
@@ -175,7 +178,10 @@ class BCell:
     """
     
     def __init__(self, risk_type, state_dim, action_dim, 
-                 actor_lr=3e-4, critic_lr=6e-4, alpha_lr=3e-4, hidden_dim=128):
+                 actor_lr=None, critic_lr=None, alpha_lr=None, hidden_dim=128):
+        self.actor_lr = actor_lr or ACTOR_LR
+        self.critic_lr = critic_lr or CRITIC_LR  
+        self.alpha_lr = alpha_lr or ALPHA_LR
         self.risk_type = risk_type
         self.state_dim = state_dim
         self.action_dim = action_dim
@@ -195,24 +201,24 @@ class BCell:
         self.target_critic1.load_state_dict(self.critic1.state_dict())
         self.target_critic2.load_state_dict(self.critic2.state_dict())
         
-        # SAC 엔트로피 계수 (탐험 강화)
-        self.target_entropy = -float(action_dim) * 0.25  # 0.5 → 0.25로 변경하여 탐험 강화
+        # SAC 엔트로피 계수
+        self.target_entropy = -float(action_dim) * TARGET_ENTROPY_SCALE
         self.log_alpha = torch.zeros(1, requires_grad=True, device=DEVICE)
         self.alpha = self.log_alpha.exp()
         
         # 옵티마이저
-        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=actor_lr)
-        self.critic1_optimizer = optim.Adam(self.critic1.parameters(), lr=critic_lr)
-        self.critic2_optimizer = optim.Adam(self.critic2.parameters(), lr=critic_lr)
-        self.alpha_optimizer = optim.Adam([self.log_alpha], lr=alpha_lr)
+        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=self.actor_lr)
+        self.critic1_optimizer = optim.Adam(self.critic1.parameters(), lr=self.critic_lr)
+        self.critic2_optimizer = optim.Adam(self.critic2.parameters(), lr=self.critic_lr)
+        self.alpha_optimizer = optim.Adam([self.log_alpha], lr=self.alpha_lr)
         
-        # 경험 재생 버퍼 (PER)
-        self.replay_buffer = PrioritizedReplayBuffer(capacity=10000, alpha=0.6, beta=0.4)
+        # 경험 재생 버퍼
+        self.replay_buffer = PrioritizedReplayBuffer(capacity=BUFFER_SIZE, alpha=0.6, beta=0.4)
         
         # SAC 학습 파라미터
-        self.gamma = 0.99
-        self.tau = 0.005
-        self.batch_size = 64
+        self.gamma = GAMMA
+        self.tau = TAU
+        self.batch_size = BATCH_SIZE
         self.update_frequency = 4
         
         # 학습 통계
@@ -308,9 +314,9 @@ class BCell:
             target_q2 = self.target_critic2(next_states, next_actions).squeeze()
             target_q = torch.min(target_q1, target_q2) - self.alpha * next_log_probs
             
-            # 타겟 Q-value 계산 (보상 범위와 일치하도록 조정)
+            # 타겟 Q-value 계산
             target_q_values = rewards + self.gamma * target_q * (~dones)
-            target_q_values = torch.clamp(target_q_values, min=-10.0, max=10.0)  # 기존 [-50, 50]에서 조정
+            target_q_values = torch.clamp(target_q_values, min=-10.0, max=10.0)
         
         # Critic 1 업데이트
         current_q1 = self.critic1(states, actions).squeeze()
