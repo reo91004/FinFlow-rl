@@ -47,9 +47,9 @@ class SACActorNetwork(nn.Module):
         x = F.relu(self.fc1(state))
         x = F.relu(self.fc2(x))
         
-        # Concentration 파라미터 (수치 안정성 개선)
+        # Concentration 파라미터 (안정성 강화)
         x_clamped = torch.clamp(self.concentration_head(x), min=-10.0, max=10.0)
-        concentration = F.softplus(x_clamped) + 1.0  # 최소값 0.1 → 1.0 변경 (안정성 향상)
+        concentration = F.softplus(x_clamped) + 2.0  # 1.0 → 2.0 변경 (안정성 향상)
         
         # Dirichlet 분포에서 샘플링
         if self.training:
@@ -195,8 +195,8 @@ class BCell:
         self.target_critic1.load_state_dict(self.critic1.state_dict())
         self.target_critic2.load_state_dict(self.critic2.state_dict())
         
-        # SAC 엔트로피 계수 (탐험 완화)
-        self.target_entropy = -float(action_dim) * 0.5  # 기존 1.0에서 0.5로 변경하여 탐험 완화
+        # SAC 엔트로피 계수 (탐험 강화)
+        self.target_entropy = -float(action_dim) * 0.25  # 0.5 → 0.25로 변경하여 탐험 강화
         self.log_alpha = torch.zeros(1, requires_grad=True, device=DEVICE)
         self.alpha = self.log_alpha.exp()
         

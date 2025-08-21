@@ -106,13 +106,13 @@ STATE_DIM = FEATURE_DIM + 1 + len(SYMBOLS)  # features + crisis + prev_weights
 ACTION_DIM = len(SYMBOLS)  # 포트폴리오 가중치
 HIDDEN_DIM = 128
 
-# 강화학습 하이퍼파라미터 (CUDA 호환성을 위해 Python native 타입 사용)
-ACTOR_LR = float(1e-4)  # 3e-4 → 1e-4 (안정성 향상)
-CRITIC_LR = float(1e-4)  # 6e-4 → 1e-4 (NaN 방지)
-ALPHA_LR = float(1e-4)  # SAC 엔트로피 계수 학습률
+# 강화학습 하이퍼파라미터 (최적화된 설정)
+ACTOR_LR = float(3e-4)  # 1e-4 → 3e-4 (학습 속도 향상)
+CRITIC_LR = float(3e-4)  # 1e-4 → 3e-4 (학습 속도 향상)
+ALPHA_LR = float(3e-4)  # 1e-4 → 3e-4 (엔트로피 자동 조정 강화)
 GAMMA = float(0.99)
-TAU = float(0.005)
-BATCH_SIZE = int(64)
+TAU = float(0.001)  # 0.005 → 0.001 (타겟 네트워크 안정성 향상)
+BATCH_SIZE = int(32)  # 64 → 32 (더 빠른 학습)
 BUFFER_SIZE = int(10000)
 UPDATE_FREQUENCY = int(4)
 
@@ -135,6 +135,10 @@ MAX_STEPS = int(252)  # 1년 거래일
 N_EPISODES = int(500)
 LOG_INTERVAL = int(10)
 SAVE_INTERVAL = int(100)
+
+# 초기 탐험 강화 설정 (신규)
+INITIAL_EXPLORATION_STEPS = int(1000)  # 초기 랜덤 탐험 스텝
+MIN_BUFFER_SIZE = int(500)  # 최소 버퍼 크기 (학습 시작 조건)
 
 # 보상 설정 (간소화된 로그 수익률 기반)
 VOLATILITY_PENALTY_WEIGHT = float(2.0)  # 변동성 페널티 가중치

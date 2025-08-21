@@ -261,8 +261,8 @@ class PortfolioEnvironment:
         # 1. 기본 수익률 보상
         base_reward = portfolio_return
         
-        # 2. Sharpe ratio 보상 (충분한 히스토리가 있을 때)
-        sharpe_window = 20
+        # 2. Sharpe ratio 보상 (더 빠른 피드백을 위해 윈도우 감소)
+        sharpe_window = 10  # 20 → 10으로 변경하여 더 빠른 피드백
         sharpe_reward = 0.0
         
         if len(self.return_history) >= sharpe_window:
@@ -272,28 +272,32 @@ class PortfolioEnvironment:
             
             if std_return > 1e-8:  # 0으로 나누기 방지
                 sharpe_ratio = mean_return / std_return
-                # Sharpe ratio를 보상 스케일에 맞게 조정
-                sharpe_reward = np.tanh(sharpe_ratio * 0.1)  # [-1, 1] 범위로 제한
+                # Sharpe ratio를 보상 스케일에 맞게 조정 (스케일링 강화)
+                sharpe_reward = np.tanh(sharpe_ratio * 0.15)  # 0.1 → 0.15로 강화
             else:
                 sharpe_reward = 0.0
         
-        # 3. 완화된 집중도 페널티
-        concentration = calculate_concentration_index(weights)
-        concentration_threshold = 0.6  # 기존 0.5에서 완화
+        # 3. 집중도 페널티 제거 (학습 안정성을 위해)
+        # 집중도 관리는 가중치 검증 단계에서 처리
         concentration_penalty = 0.0
         
-        if concentration > concentration_threshold:
-            concentration_penalty = (concentration - concentration_threshold) * 0.1  # 기존 1.0에서 완화
+        # 4. 최종 보상 (단순화)
+        final_reward = base_reward + sharpe_reward
         
-        # 4. 최종 보상 (변동성 페널티 제거, Sharpe ratio로 대체)
-        final_reward = base_reward + sharpe_reward - concentration_penalty
+        # 5. 보상 정규화 및 스케일링 (학습 안정성 향상)
+        if hasattr(self, 'reward_normalizer'):
+            final_reward = self.reward_normalizer.update_and_normalize(np.array([final_reward]))[0]
+        else:
+            # 첫 실행 시 정규화기 초기화
+            self.reward_normalizer = RunningNormalizer(feature_dim=1, momentum=0.95)
+            final_reward = self.reward_normalizer.update_and_normalize(np.array([final_reward]))[0]
         
-        # 5. 보상 클리핑 (더 좁은 범위로 안정화)
-        final_reward = np.clip(final_reward, -2.0, 2.0)
+        # 안정적인 학습을 위한 보상 범위 제한
+        final_reward = np.clip(final_reward, -3.0, 3.0)
         
         # 디버그 로깅 (첫 실행 시)
         if not hasattr(self, '_reward_logged'):
-            self.logger.info("보상 함수가 Sharpe ratio 기반으로 변경되었습니다")
+            self.logger.info("보상 함수 최적화 완료: Sharpe 윈도우=10, 집중도 페널티 제거, 보상 정규화 활성화")
             self._reward_logged = True
         
         return float(final_reward)
