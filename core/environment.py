@@ -3,6 +3,7 @@
 import numpy as np
 import pandas as pd
 from typing import Tuple, Dict, Any
+from collections import deque
 from data.features import FeatureExtractor
 from utils.logger import BIPDLogger
 from utils.metrics import calculate_concentration_index
@@ -272,8 +273,9 @@ class PortfolioEnvironment:
             
             if std_return > 1e-8:  # 0으로 나누기 방지
                 sharpe_ratio = mean_return / std_return
-                # Sharpe ratio를 보상 스케일에 맞게 조정 (스케일링 강화)
-                sharpe_reward = np.tanh(sharpe_ratio * 0.15)  # 0.1 → 0.15로 강화
+                # Sharpe ratio를 보상 스케일에 맞게 조정 (clipping으로 대체)
+                # tanh 대신 사용하여 vanishing gradient 방지
+                sharpe_reward = np.clip(sharpe_ratio * 0.15, -1.0, 1.0)
             else:
                 sharpe_reward = 0.0
         
@@ -284,16 +286,45 @@ class PortfolioEnvironment:
         # 4. 최종 보상 (단순화)
         final_reward = base_reward + sharpe_reward
         
-        # 5. 보상 정규화 및 스케일링 (학습 안정성 향상)
-        if hasattr(self, 'reward_normalizer'):
-            final_reward = self.reward_normalizer.update_and_normalize(np.array([final_reward]))[0]
-        else:
-            # 첫 실행 시 정규화기 초기화
-            self.reward_normalizer = RunningNormalizer(feature_dim=1, momentum=0.95)
-            final_reward = self.reward_normalizer.update_and_normalize(np.array([final_reward]))[0]
+        # 5. 최신 연구 기반 극단적 보상 처리 (2024-2025 논문 기반)
+        if not hasattr(self, 'reward_buffer'):
+            self.reward_buffer = deque(maxlen=1000)  # 보상 히스토리 유지
         
-        # 안정적인 학습을 위한 보상 범위 제한
-        final_reward = np.clip(final_reward, -3.0, 3.0)
+        self.reward_buffer.append(final_reward)
+        
+        # 3-sigma 아웃라이어 필터링 (최신 연구 권장 방법)
+        if len(self.reward_buffer) >= 20:
+            reward_array = np.array(self.reward_buffer)
+            mean = reward_array.mean()
+            std = reward_array.std()
+            
+            # 3-sigma 범위 밖의 극단값 처리
+            if std > 1e-8:
+                z_score = abs((final_reward - mean) / std)
+                if z_score > 3.0:  # 3-sigma 기준
+                    # 극단값을 3-sigma 경계로 클리핑
+                    final_reward = mean + 3.0 * std * np.sign(final_reward - mean)
+                    if not hasattr(self, '_outlier_count'):
+                        self._outlier_count = 0
+                    self._outlier_count += 1
+                    
+                    # 극단값 감지 로깅
+                    if self._outlier_count % 10 == 1:
+                        self.logger.warning(f"극단적 보상 감지 및 필터링: 원본={final_reward:.2f}, 조정후={final_reward:.2f}")
+        
+        # Robust 정규화 (median 기반, 극단값에 덜 민감)
+        if len(self.reward_buffer) >= 10:
+            reward_array = np.array(self.reward_buffer)
+            median = np.median(reward_array)
+            mad = np.median(np.abs(reward_array - median))  # Median Absolute Deviation
+            
+            if mad > 1e-8:
+                # Robust z-score 계산
+                final_reward = (final_reward - median) / (1.4826 * mad)  # 1.4826은 정규분포 조정 상수
+            
+        # 최종 보상 범위 제한 (SAC 호환성 고려)
+        # tanh 대신 clipping 사용 (vanishing gradient 문제 방지)
+        final_reward = np.clip(final_reward, -2.0, 2.0)
         
         # 디버그 로깅 (첫 실행 시)
         if not hasattr(self, '_reward_logged'):
