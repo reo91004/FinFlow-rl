@@ -123,7 +123,7 @@ class PortfolioEnvironment:
             'return_ema': 0.0,
             'volatility_ema': 1e-8,  # 0 방지
             'count': 0,
-            'decay': 0.95
+            'decay': 0.9  # 더 빠른 반응을 위해 감소
         }
         
         # 보상-성과 상관성 추적
@@ -409,7 +409,7 @@ class PortfolioEnvironment:
         else:
             recent_volatility = abs(portfolio_return)  # 단일 관측치로 추정
         
-        risk_penalty = 0.1 * recent_volatility  # λ_risk = 0.1
+        risk_penalty = 0.05 * recent_volatility  # λ_risk = 0.05 (완화)
         
         # 4. 거래비용 페널티 (가중치 변화)
         if len(self.weight_history) > 0:
@@ -418,7 +418,7 @@ class PortfolioEnvironment:
         else:
             weight_change = 0.0
         
-        transaction_penalty = 0.05 * weight_change  # λ_tc = 0.05
+        transaction_penalty = 0.025 * weight_change  # λ_tc = 0.025 (완화)
         
         # 5. 원시 보상 계산 (Sharpe proxy 포함)
         raw_reward = log_return - risk_penalty - transaction_penalty + sharpe_reward
@@ -632,8 +632,8 @@ class PortfolioEnvironment:
         sigma_t = max(np.sqrt(tracker['volatility_ema']), 1e-6)  # 0 방지
         sharpe_estimate = mu_t / sigma_t
         
-        # Sharpe 보상 (클리핑으로 폭주 방지)
-        lambda_s = 0.02  # 보수적인 가중치
+        # Sharpe 보상 (가중치 상향으로 성과 정렬 강화)
+        lambda_s = 0.05  # 가중치 상향 (0.02 → 0.05)
         sharpe_reward = lambda_s * np.clip(sharpe_estimate, -2.0, 2.0)
         
         return sharpe_reward

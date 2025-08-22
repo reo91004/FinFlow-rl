@@ -121,7 +121,7 @@ TARGET_ENTROPY_SCALE = float(0.25)  # 기존 호환성 유지
 
 # SAC 안정화 파라미터 (Phase 1: 핵심 안정화)
 ALPHA_MIN = float(1e-4)  # 온도 최소값
-ALPHA_MAX = float(1.0)   # 온도 최대값
+ALPHA_MAX = float(0.5)   # 온도 최대값 (상한 고착 방지)
 CONCENTRATION_MIN = float(0.2)   # Dirichlet 농도 파라미터 최소값
 CONCENTRATION_MAX = float(100.0) # Dirichlet 농도 파라미터 최대값
 WEIGHT_EPSILON = float(1e-6)     # 포트폴리오 가중치 보호 임계값
@@ -131,7 +131,9 @@ MAX_GRAD_NORM = float(1.0)  # 그래디언트 클리핑 최대 norm
 HUBER_DELTA = float(1.0)    # Huber loss delta 파라미터
 
 # CQL 정규화 (Phase 2)
-CQL_ALPHA = float(0.1)      # CQL 정규화 강도
+CQL_ALPHA_START = float(0.05)  # CQL 정규화 시작 강도 (점진적 증가)
+CQL_ALPHA_END = float(0.1)     # CQL 정규화 최종 강도
+CQL_NUM_SAMPLES = int(10)      # CQL LogSumExp 샘플 수
 
 # Memory Cell 설정
 MEMORY_CAPACITY = int(500)

@@ -14,7 +14,7 @@ from config import (
     DEVICE, ACTOR_LR, CRITIC_LR, ALPHA_LR, GAMMA, TAU, BATCH_SIZE, 
     BUFFER_SIZE, TARGET_ENTROPY_SCALE, REWARD_CLIP_MIN, REWARD_CLIP_MAX,
     ALPHA_MIN, ALPHA_MAX, CONCENTRATION_MIN, CONCENTRATION_MAX, WEIGHT_EPSILON,
-    MAX_GRAD_NORM, HUBER_DELTA, CQL_ALPHA, N_EPISODES
+    MAX_GRAD_NORM, HUBER_DELTA, CQL_ALPHA_START, CQL_ALPHA_END, CQL_NUM_SAMPLES, N_EPISODES
 )
 
 class SACActorNetwork(nn.Module):
@@ -333,11 +333,11 @@ class BCell:
             digamma = None
             loggamma = None
         
-        # 1) 균등 농도 설정 (기본: 1.0) 또는 다양도 기반 c
+        # 1) 균등 농도 설정 (과탐색 방지를 위해 0.5로 하향) 또는 다양도 기반 c
         if D_target is not None:
             c = dirichlet_c_from_diversity(action_dim, D_target)
         else:
-            c = 1.0  # 기존값 유지
+            c = 0.5  # 과탐색 방지를 위해 하향 조정
         
         self._alpha_prior_scalar = c
         alpha0 = action_dim * c
@@ -380,7 +380,7 @@ class BCell:
         
         # 정책-적응형 혼합 (옵션)
         if self._policy_entropy_ema is not None:
-            lam = max(0.3, 1.0 - self.episode_progress)  # 초기엔 prior 비중↑, 점차 낮춤
+            lam = max(0.2, 1.0 - self.episode_progress)  # α 상한 고착 방지를 위해 λ 하향 조정
             self.target_entropy = lam * base + (1-lam) * self._policy_entropy_ema
         else:
             self.target_entropy = base
@@ -489,41 +489,39 @@ class BCell:
         critic1_huber = F.smooth_l1_loss(current_q1, target_q_values, reduction='none', beta=HUBER_DELTA)
         critic2_huber = F.smooth_l1_loss(current_q2, target_q_values, reduction='none', beta=HUBER_DELTA)
         
-        # CQL 정규화: 과대 Q 추정 억제
-        # 무작위 행동에 대한 Q-value (과대추정 방지)
-        batch_size = states.shape[0]
-        random_actions = torch.rand(batch_size, actions.shape[1], device=DEVICE)
-        random_actions = random_actions / random_actions.sum(dim=1, keepdim=True)  # 정규화
+        # CQL 정규화: LogSumExp 기반 표준 CQL 구현
+        # 점진적 CQL 강도 스케줄링
+        progress = self.episode_progress if hasattr(self, 'episode_progress') else 0.0
+        current_cql_alpha = CQL_ALPHA_START + progress * (CQL_ALPHA_END - CQL_ALPHA_START)
         
-        q1_random = self.critic1(states, random_actions).squeeze()
-        q2_random = self.critic2(states, random_actions).squeeze()
+        # 표준 CQL: 무작위 샘플링된 행동들에 대한 LogSumExp
+        batch_size = states.shape[0]
+        num_samples = CQL_NUM_SAMPLES
+        
+        # 무작위 행동 샘플링 (포트폴리오 제약 유지)
+        random_actions = torch.rand(batch_size * num_samples, actions.shape[1], device=DEVICE)
+        random_actions = random_actions / random_actions.sum(dim=1, keepdim=True)
+        
+        # 상태 확장 (각 상태에 대해 num_samples개 행동)
+        expanded_states = states.repeat_interleave(num_samples, dim=0)
+        
+        # Q-values 계산
+        q1_random = self.critic1(expanded_states, random_actions).view(batch_size, num_samples)
+        q2_random = self.critic2(expanded_states, random_actions).view(batch_size, num_samples)
+        
+        # LogSumExp 계산 (안정화된 버전)
+        logsumexp_q1 = torch.logsumexp(q1_random, dim=1)
+        logsumexp_q2 = torch.logsumexp(q2_random, dim=1)
+        
+        # 데이터 Q-values (현재 배치)
         q1_data = current_q1
         q2_data = current_q2
         
-        # Phase 1: 적응형 CQL (꼬리 이상 시만 강화) + 추가 안정성 개선
-        q_values_combined = torch.cat([current_q1, current_q2], dim=0)
-        q_p5 = torch.quantile(q_values_combined, 0.05)
-        q_p95 = torch.quantile(q_values_combined, 0.95)
-        q_range = q_p95 - q_p5
+        # CQL 손실 계산 (표준 LogSumExp - 데이터 Q)
+        cql_penalty1 = current_cql_alpha * (logsumexp_q1.mean() - q1_data.mean())
+        cql_penalty2 = current_cql_alpha * (logsumexp_q2.mean() - q2_data.mean())
         
-        # 꼬리 이상 감지 (범위 기반 적응 CQL)
-        base_cql_alpha = CQL_ALPHA
-        if q_p5 < -15.0 or q_p95 > 15.0:  # 극단 꼬리
-            adaptive_cql_alpha = 0.3  # 강한 정규화
-        elif q_range > 20.0:  # 과도한 범위 확산
-            adaptive_cql_alpha = 0.2  # 중간 정규화
-        else:
-            adaptive_cql_alpha = base_cql_alpha  # 평시 유지
-            
-        # CQL 페널티 계산 (안정화된 버전)
-        cql_penalty1 = adaptive_cql_alpha * torch.clamp(
-            q1_random.mean() - q1_data.mean(), min=-5.0, max=5.0
-        )
-        cql_penalty2 = adaptive_cql_alpha * torch.clamp(
-            q2_random.mean() - q2_data.mean(), min=-5.0, max=5.0
-        )
-        
-        # 최종 손실 (Huber + CQL)
+        # 최종 손실 (Huber + 표준 CQL)
         critic1_loss = (is_weights * critic1_huber).mean() + cql_penalty1
         critic2_loss = (is_weights * critic2_huber).mean() + cql_penalty2
         
@@ -617,11 +615,11 @@ class BCell:
                     self._alpha_clipping_count = 0
                 self._alpha_clipping_count += 1
                 
-                # 지속적 클리핑 경고
-                if self._alpha_clipping_count % 100 == 1:
+                # 지속적 클리핑 경고 (rate limit 적용)
+                if self._alpha_clipping_count % 1000 == 1:  # 1000회마다 1회만 경고
                     self.logger.warning(
-                        f"[{self.risk_type}] 온도 파라미터 지속적 클리핑 발생: "
-                        f"log_α={post_update_log_alpha:.4f}, 카운트={self._alpha_clipping_count}"
+                        f"[{self.risk_type}] 온도 파라미터 클리핑 발생 {self._alpha_clipping_count}회 - "
+                        f"log_α={post_update_log_alpha:.4f}"
                     )
         
         # 타겟 네트워크 소프트 업데이트
@@ -642,13 +640,18 @@ class BCell:
         alpha_stable = torch.isfinite(self.alpha) and 0.0001 <= self.alpha.item() <= 2.0
         
         if not (losses_finite and q_values_in_range and alpha_stable):
-            self.logger.error(
-                f"[안정성 실패] 손실: A={actor_loss.item():.6f}, "
-                f"C1={critic1_loss.item():.6f}, C2={critic2_loss.item():.6f}, α_loss={alpha_loss.item():.6f} | "
-                f"Q범위: Q1[{current_q1.min().item():.2f}, {current_q1.max().item():.2f}], "
-                f"Q2[{current_q2.min().item():.2f}, {current_q2.max().item():.2f}] | "
-                f"α={self.alpha.item():.6f}"
-            )
+            # Rate limiting: 매 500스텝마다만 자세한 로그 출력
+            if not hasattr(self, '_stability_log_count'):
+                self._stability_log_count = 0
+            self._stability_log_count += 1
+            
+            if self._stability_log_count % 500 == 1:
+                self.logger.warning(
+                    f"[안정성 문제 요약] 최근 500스텝 중 {self._stability_log_count % 500}번째 발생 - "
+                    f"손실: A={actor_loss.item():.3f}, C_avg={(critic1_loss.item()+critic2_loss.item())/2:.3f} | "
+                    f"Q범위: [{current_q1.min().item():.1f}, {current_q1.max().item():.1f}] | "
+                    f"α={self.alpha.item():.3f}"
+                )
             
             # 비상 대응: 모델 리셋 신호
             if not hasattr(self, '_stability_failure_count'):
@@ -743,12 +746,12 @@ class BCell:
                 self.target_entropy
             )
         
-        # 주기적 요약 로깅 (100회마다) - 통합 슬라이딩 윈도우 기반
-        if self.rolling_stats.should_report(self.update_count, report_interval=100):
+        # 주기적 요약 로깅 (500회마다) - 통합 슬라이딩 윈도우 기반
+        if self.rolling_stats.should_report(self.update_count, report_interval=500):
             self._log_unified_monitoring_summary()
         
-        # Phase 3: 안정성 경고 확인 (50회마다) - 슬라이딩 윈도우 기반
-        if self.update_count % 50 == 0:
+        # Phase 3: 안정성 경고 확인 (200회마다) - 슬라이딩 윈도우 기반  
+        if self.update_count % 200 == 0:
             self._check_stability_warnings_unified()
         
         # Phase 4: PER 베타 어닐링 (매 업데이트마다)
