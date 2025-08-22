@@ -5,7 +5,56 @@ from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import StandardScaler
 import pickle
 import os
+from collections import deque
+from typing import Dict
 from utils.logger import BIPDLogger
+
+class AdaptiveThresholdDetector:
+    """분위수 기반 적응형 임계값 감지기"""
+    
+    def __init__(self, window_size=512, target_quantile=0.975, target_crisis_rate=0.4):
+        self.window_size = window_size
+        self.target_quantile = target_quantile
+        self.target_crisis_rate = target_crisis_rate  # 목표 위기율 (40%)
+        self.buffer = deque(maxlen=window_size)
+        self.crisis_history = deque(maxlen=100)  # 최근 100회 위기 판정 기록
+        
+    def update_and_detect(self, metric_value):
+        """메트릭 값 업데이트 및 위기 감지"""
+        self.buffer.append(float(metric_value))
+        
+        # 충분한 데이터가 없으면 기본값 반환
+        if len(self.buffer) < 50:
+            is_crisis = metric_value > 0.7  # 기본 임계값
+            threshold = 0.7
+        else:
+            # 분위수 기반 임계값 계산
+            current_quantile = self.target_quantile
+            
+            # 위기율 피드백을 통한 임계값 조정
+            if len(self.crisis_history) >= 50:
+                recent_crisis_rate = sum(self.crisis_history) / len(self.crisis_history)
+                
+                # 위기율이 너무 높으면 임계값 상향 조정
+                if recent_crisis_rate > self.target_crisis_rate + 0.1:
+                    current_quantile = min(0.99, current_quantile + 0.01)
+                # 위기율이 너무 낮으면 임계값 하향 조정
+                elif recent_crisis_rate < self.target_crisis_rate - 0.1:
+                    current_quantile = max(0.8, current_quantile - 0.01)
+            
+            threshold = np.quantile(list(self.buffer), current_quantile)
+            is_crisis = metric_value >= threshold
+        
+        # 위기 히스토리 기록
+        self.crisis_history.append(is_crisis)
+        
+        return is_crisis, threshold
+    
+    def get_crisis_rate(self):
+        """최근 위기율 반환"""
+        if not self.crisis_history:
+            return 0.0
+        return sum(self.crisis_history) / len(self.crisis_history)
 
 class TCell:
     """
@@ -33,6 +82,20 @@ class TCell:
         # 학습 상태
         self.is_fitted = False
         self.training_features = []
+        
+        # 적응형 임계값 감지기들
+        self.volatility_detector = AdaptiveThresholdDetector(
+            window_size=512, target_quantile=0.95, target_crisis_rate=0.3
+        )
+        self.correlation_detector = AdaptiveThresholdDetector(
+            window_size=512, target_quantile=0.97, target_crisis_rate=0.25
+        )
+        self.volume_detector = AdaptiveThresholdDetector(
+            window_size=512, target_quantile=0.96, target_crisis_rate=0.35
+        )
+        self.overall_detector = AdaptiveThresholdDetector(
+            window_size=512, target_quantile=0.975, target_crisis_rate=0.4
+        )
         
         # 로거
         self.logger = BIPDLogger("TCell")
@@ -67,7 +130,8 @@ class TCell:
             self.logger.info(
                 f"T-Cell 학습 완료: "
                 f"샘플수={len(historical_features)}, "
-                f"정상비율={normal_ratio:.2%}"
+                f"정상비율={normal_ratio:.2%}, "
+                f"적응형 임계값 감지기 활성화"
             )
             
             return True
@@ -102,8 +166,15 @@ class TCell:
             
             # 전체 이상치 점수 계산 (기존 방식)
             anomaly_score = self.detector.decision_function(features_scaled)[0]
-            overall_crisis = 1 / (1 + np.exp(anomaly_score * self.sensitivity))
-            overall_crisis = np.clip(overall_crisis, 0.0, 1.0)
+            
+            # 적응형 임계값 기반 전체 위기 감지
+            raw_crisis = 1 / (1 + np.exp(anomaly_score * self.sensitivity))
+            is_overall_crisis, overall_threshold = self.overall_detector.update_and_detect(raw_crisis)
+            
+            if is_overall_crisis:
+                overall_crisis = np.clip(raw_crisis, 0.0, 1.0)
+            else:
+                overall_crisis = np.clip(raw_crisis * 0.5, 0.0, 0.5)  # 위기 아니면 최대 0.5로 제한
             
             # 다차원 위기 분석
             volatility_crisis = self._detect_volatility_crisis(features)
@@ -133,7 +204,7 @@ class TCell:
     
     def _detect_volatility_crisis(self, features):
         """
-        변동성 위기 감지
+        변동성 위기 감지 (적응형 임계값)
         
         특성 벡터에서 변동성 관련 지표들을 추출하여 위기 수준 계산
         """
@@ -146,11 +217,16 @@ class TCell:
                 # 평균 변동성 계산
                 avg_volatility = np.mean(volatility_indicators)
                 
-                # 임계값 기반 위기 수준 계산
-                volatility_threshold = 0.02  # 2% 일일 변동성 임계값
-                if avg_volatility > volatility_threshold:
-                    crisis_level = min(1.0, (avg_volatility - volatility_threshold) / volatility_threshold)
-                    return np.tanh(crisis_level * 3) # 부드러운 스케일링
+                # 적응형 임계값 감지
+                is_crisis, threshold = self.volatility_detector.update_and_detect(avg_volatility)
+                
+                if is_crisis:
+                    # 0과 threshold 사이의 비율로 위기 수준 계산
+                    if threshold > 0:
+                        crisis_level = min(1.0, avg_volatility / threshold)
+                        return np.tanh(crisis_level) # 부드러운 스케일링
+                    else:
+                        return 0.5  # 기본값
                 else:
                     return 0.0
             else:
@@ -162,7 +238,7 @@ class TCell:
     
     def _detect_correlation_crisis(self, features):
         """
-        상관관계 위기 감지
+        상관관계 위기 감지 (적응형 임계값)
         
         자산 간 상관관계 변화를 통한 위기 감지
         """
@@ -174,11 +250,16 @@ class TCell:
                 # 상관관계 변화 계산
                 correlation_change = np.std(correlation_indicators)
                 
-                # 임계값 기반 위기 수준 계산
-                correlation_threshold = 0.3  # 상관관계 변화 임계값
-                if correlation_change > correlation_threshold:
-                    crisis_level = min(1.0, (correlation_change - correlation_threshold) / correlation_threshold)
-                    return np.tanh(crisis_level * 2)
+                # 적응형 임계값 감지
+                is_crisis, threshold = self.correlation_detector.update_and_detect(correlation_change)
+                
+                if is_crisis:
+                    # 0과 threshold 사이의 비율로 위기 수준 계산
+                    if threshold > 0:
+                        crisis_level = min(1.0, correlation_change / threshold)
+                        return np.tanh(crisis_level)
+                    else:
+                        return 0.5  # 기본값
                 else:
                     return 0.0
             else:
@@ -190,7 +271,7 @@ class TCell:
     
     def _detect_volume_crisis(self, features):
         """
-        거래량 위기 감지
+        거래량 위기 감지 (적응형 임계값)
         
         비정상적인 거래량 변화를 통한 위기 감지
         """
@@ -202,11 +283,16 @@ class TCell:
                 # 거래량 변화 계산
                 volume_change = np.mean(np.abs(volume_indicators))
                 
-                # 임계값 기반 위기 수준 계산
-                volume_threshold = 0.5  # 거래량 변화 임계값
-                if volume_change > volume_threshold:
-                    crisis_level = min(1.0, (volume_change - volume_threshold) / volume_threshold)
-                    return np.tanh(crisis_level * 1.5)
+                # 적응형 임계값 감지
+                is_crisis, threshold = self.volume_detector.update_and_detect(volume_change)
+                
+                if is_crisis:
+                    # 0과 threshold 사이의 비율로 위기 수준 계산
+                    if threshold > 0:
+                        crisis_level = min(1.0, volume_change / threshold)
+                        return np.tanh(crisis_level)
+                    else:
+                        return 0.5  # 기본값
                 else:
                     return 0.0
             else:
@@ -257,10 +343,34 @@ class TCell:
             }
             
             return explanation
-            
+
         except Exception as e:
-            self.logger.error(f"설명 생성 실패: {e}")
-            return {'error': str(e)}
+            self.logger.error(f"Explanation generation failed: {e}")
+            return {'error': f"Explanation generation failed: {e}"}
+    def get_crisis_statistics(self):
+        """위기 감지 통계 요약"""
+        return {
+            'volatility_crisis_rate': self.volatility_detector.get_crisis_rate(),
+            'correlation_crisis_rate': self.correlation_detector.get_crisis_rate(),
+            'volume_crisis_rate': self.volume_detector.get_crisis_rate(),
+            'overall_crisis_rate': self.overall_detector.get_crisis_rate()
+        }
+    
+    def reset_detectors(self):
+        """모든 감지기 재설정"""
+        self.volatility_detector = AdaptiveThresholdDetector(
+            window_size=512, target_quantile=0.95, target_crisis_rate=0.3
+        )
+        self.correlation_detector = AdaptiveThresholdDetector(
+            window_size=512, target_quantile=0.97, target_crisis_rate=0.25
+        )
+        self.volume_detector = AdaptiveThresholdDetector(
+            window_size=512, target_quantile=0.96, target_crisis_rate=0.35
+        )
+        self.overall_detector = AdaptiveThresholdDetector(
+            window_size=512, target_quantile=0.975, target_crisis_rate=0.4
+        )
+        self.logger.info("적응형 임계값 감지기들이 재설정되었습니다.")
     
     def save_model(self, filepath):
         """모델 저장"""

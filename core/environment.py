@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 from typing import Tuple, Dict, Any
 from collections import deque
+import collections
 from data.features import FeatureExtractor
 from utils.logger import BIPDLogger
 from utils.metrics import calculate_concentration_index
@@ -40,6 +41,42 @@ class RunningNormalizer:
         
         return np.clip(normalized, -5.0, 5.0)  # 극단값 클리핑
 
+class EMARewardNormalizer:
+    """EMA 기반 보상 정규화 (MAD 정규화 대체)"""
+    
+    def __init__(self, beta: float = 0.99, eps: float = 1e-8):
+        self.beta = beta
+        self.eps = eps
+        self.mean = 0.0
+        self.var = 1.0
+        self.count = 0
+    
+    def normalize(self, reward: float) -> float:
+        """보상 정규화"""
+        if self.count == 0:
+            self.mean = reward
+            self.var = 1.0
+        else:
+            # EMA 업데이트
+            self.mean = self.beta * self.mean + (1 - self.beta) * reward
+            delta = reward - self.mean
+            self.var = self.beta * self.var + (1 - self.beta) * (delta ** 2)
+        
+        self.count += 1
+        
+        # 정규화
+        std = np.sqrt(self.var + self.eps)
+        normalized = (reward - self.mean) / std
+        
+        # 소프트 클리핑 (극단값만 완화)
+        return np.tanh(normalized)
+    
+    def reset(self):
+        """정규화기 초기화"""
+        self.mean = 0.0
+        self.var = 1.0
+        self.count = 0
+
 class PortfolioEnvironment:
     """
     포트폴리오 관리 환경
@@ -71,12 +108,29 @@ class PortfolioEnvironment:
         self.return_history = []
         self.cost_history = []
         
-        # 가중치 검증 통계
-        self.validation_stats = {
-            'negative_weights': 0,
-            'invalid_weights': 0,
-            'total_validations': 0,
-            'last_log_step': 0
+        # 슬라이딩 윈도우 기반 가중치 검증 통계
+        self.weight_validation_window = collections.deque(maxlen=100)  # 최근 100회 기록
+        self.weight_validation_stats = {
+            'total_validations': 0,  # 누적 검증 횟수
+            'last_report_step': 0   # 마지막 리포트 시점
+        }
+        
+        # 보상 정규화기
+        self.reward_normalizer = EMARewardNormalizer()
+        
+        # Sharpe 비율 EMA 추적기 (개선사항)
+        self.sharpe_tracker = {
+            'return_ema': 0.0,
+            'volatility_ema': 1e-8,  # 0 방지
+            'count': 0,
+            'decay': 0.95
+        }
+        
+        # 보상-성과 상관성 추적
+        self.reward_performance_tracker = {
+            'rewards': [],
+            'returns': [],
+            'last_correlation_check': 0
         }
         
         # 상태 정규화기 추가
@@ -104,12 +158,21 @@ class PortfolioEnvironment:
         self.return_history = []
         self.cost_history = []
         
-        # 통계 초기화
-        self.validation_stats = {
-            'negative_weights': 0,
-            'invalid_weights': 0,
+        # 검증 통계 초기화
+        self.weight_validation_window.clear()
+        self.weight_validation_stats = {
             'total_validations': 0,
-            'last_log_step': 0
+            'last_report_step': 0
+        }
+        
+        # 보상 정규화기 초기화
+        self.reward_normalizer.reset()
+        
+        # 상관성 추적 초기화
+        self.reward_performance_tracker = {
+            'rewards': [],
+            'returns': [],
+            'last_correlation_check': 0
         }
         
         return self._get_state()
@@ -154,35 +217,34 @@ class PortfolioEnvironment:
         # 보상 계산
         reward = self._calculate_reward(actual_return, new_weights, asset_returns)
         
-        # Phase 2: 단체 재투영 (거래비용 후 최종 정규화)
+        # Phase 2: 최종 실행 포트폴리오 준비 (거래비용 후 최종 정규화)
         # 거래비용과 슬리피지 적용 후 음수/합≠1 문제 해결
-        if new_weights.sum() == 0:
-            new_weights = np.ones(self.n_assets) / self.n_assets
-        else:
-            # 음수 제거 후 재정규화
-            new_weights = np.maximum(new_weights, 0.0)
-            new_weights = new_weights / new_weights.sum()
+        final_weights = self._prepare_final_portfolio(new_weights)
         
-        # 상태 업데이트
-        self.weights = new_weights.copy()
+        # 최종 실행 포트폴리오로 검증 및 로깅
+        self._validate_and_log_weights(final_weights, "FINAL_EXECUTION")
+        
+        # 상태 업데이트 (최종 실행 가중치 사용)
+        self.weights = final_weights.copy()
         self.current_step += 1
         
-        # 히스토리 업데이트
+        # 히스토리 업데이트 (최종 실행 가중치 사용)
         self.portfolio_history.append(self.portfolio_value)
-        self.weight_history.append(new_weights.copy())
+        self.weight_history.append(final_weights.copy())
         self.return_history.append(actual_return)
         self.cost_history.append(transaction_cost)
         
         # 종료 조건 (Python native bool로 변환)
         done = bool((self.current_step >= self.max_steps) or (self.portfolio_value <= 0))
         
-        # 정보 딕셔너리
+        # 정보 딕셔너리 (최종 실행 가중치 기준)
         info = {
             'portfolio_value': self.portfolio_value,
             'portfolio_return': actual_return,
             'transaction_cost': transaction_cost,
             'weight_change': weight_change,
-            'concentration': calculate_concentration_index(new_weights)
+            'concentration': calculate_concentration_index(final_weights),
+            'final_weights': final_weights.copy()  # 최종 실행 가중치 추가
         }
         
         return self._get_state(), reward, done, info
@@ -223,115 +285,198 @@ class PortfolioEnvironment:
         return state
     
     def _validate_weights(self, weights: np.ndarray) -> np.ndarray:
-        """가중치 검증 및 정규화"""
+        """기본 가중치 검증 및 정규화 (초기 전처리용)"""
         weights = np.array(weights, dtype=np.float32)
-        
-        # 가중치 검증 통계 업데이트
-        self.validation_stats['total_validations'] += 1
         
         # NaN/Inf 체크
         if np.any(~np.isfinite(weights)):
-            self.validation_stats['invalid_weights'] += 1
             self.logger.debug("가중치에 NaN/Inf가 포함되어 균등 가중치로 대체합니다.")
             weights = np.ones(self.n_assets) / self.n_assets
         
-        # 음수 체크 (통계적 로깅)
-        if np.any(weights < 0):
-            self.validation_stats['negative_weights'] += 1
-            weights = np.maximum(weights, 0)
-            
-            # 주기적 통계 로깅 (100회마다)
-            if (self.validation_stats['total_validations'] - self.validation_stats['last_log_step']) >= 100:
-                negative_rate = self.validation_stats['negative_weights'] / self.validation_stats['total_validations']
-                self.logger.debug(
-                    f"가중치 검증 통계 (최근 100회): "
-                    f"음수 가중치 {self.validation_stats['negative_weights']}회 ({negative_rate:.1%}), "
-                    f"총 검증 {self.validation_stats['total_validations']}회"
-                )
-                self.validation_stats['last_log_step'] = self.validation_stats['total_validations']
+        # 기본 정규화 (음수 및 합 처리)
+        weights = np.maximum(weights, 0.0)  # 음수 제거
         
-        # 정규화
         if weights.sum() == 0:
             weights = np.ones(self.n_assets) / self.n_assets
         else:
             weights = weights / weights.sum()
         
-        # 극단값 제한
-        min_weight = 0.001
-        max_weight = 0.8
-        weights = np.clip(weights, min_weight, max_weight)
-        weights = weights / weights.sum()  # 재정규화
-        
         return weights
+    
+    def _prepare_final_portfolio(self, weights: np.ndarray) -> np.ndarray:
+        """최종 실행 포트폴리오 준비 (거래비용 적용 후 완전한 비음수 보장)"""
+        final_weights = np.array(weights, dtype=np.float32)
+        
+        # 1. 음수 제거
+        final_weights = np.maximum(final_weights, 0.0)
+        
+        # 2. 영 벡터 방지
+        if final_weights.sum() <= 1e-12:
+            final_weights = np.ones(self.n_assets) / self.n_assets
+        else:
+            final_weights = final_weights / final_weights.sum()
+        
+        # 3. 극단값 방지 (최소 가중치 보장)
+        min_weight = 1e-6  # 매우 작은 최소값
+        final_weights = np.maximum(final_weights, min_weight)
+        final_weights = final_weights / final_weights.sum()  # 재정규화
+        
+        # 4. 최대 가중치 제한 (80%)
+        max_weight = 0.8
+        final_weights = np.minimum(final_weights, max_weight)
+        final_weights = final_weights / final_weights.sum()  # 재정규화
+        
+        return final_weights
+    
+    def _validate_and_log_weights(self, weights: np.ndarray, context: str = "UNKNOWN"):
+        """최종 가중치 검증 및 로깅 (슬라이딩 윈도우 기반)"""
+        # 검증 대상을 가중치로 제한
+        if context != "FINAL_EXECUTION":
+            return  # 최종 실행 가중치만 검증
+        
+        # 검증 수행
+        has_negative = np.any(weights < 0)
+        has_invalid = np.any(~np.isfinite(weights))
+        sum_close_to_one = abs(weights.sum() - 1.0) < 1e-6
+        
+        # 슬라이딩 윈도우에 기록
+        validation_result = {
+            'has_negative': has_negative,
+            'has_invalid': has_invalid,
+            'sum_valid': sum_close_to_one,
+            'min_weight': float(weights.min()),
+            'max_weight': float(weights.max())
+        }
+        self.weight_validation_window.append(validation_result)
+        
+        # 누적 카운터 업데이트
+        self.weight_validation_stats['total_validations'] += 1
+        
+        # 주기적 리포트 (100회마다)
+        if (self.weight_validation_stats['total_validations'] - 
+            self.weight_validation_stats['last_report_step']) >= 100:
+            self._report_weight_validation_statistics()
+            self.weight_validation_stats['last_report_step'] = self.weight_validation_stats['total_validations']
+    
+    def _report_weight_validation_statistics(self):
+        """가중치 검증 통계 리포트"""
+        if not self.weight_validation_window:
+            return
+        
+        # 슬라이딩 윈도우 통계 계산
+        recent_count = len(self.weight_validation_window)
+        negative_count = sum(1 for r in self.weight_validation_window if r['has_negative'])
+        invalid_count = sum(1 for r in self.weight_validation_window if r['has_invalid'])
+        sum_invalid_count = sum(1 for r in self.weight_validation_window if not r['sum_valid'])
+        
+        negative_rate = negative_count / recent_count if recent_count > 0 else 0.0
+        invalid_rate = invalid_count / recent_count if recent_count > 0 else 0.0
+        
+        # 누적 통계
+        total_validations = self.weight_validation_stats['total_validations']
+        
+        self.logger.debug(
+            f"최종 실행 가중치 검증 통계: "
+            f"슬라이딩(최근 {recent_count}회) - "
+            f"음수: {negative_count}회 ({negative_rate:.1%}), "
+            f"무효값: {invalid_count}회 ({invalid_rate:.1%}), "
+            f"합불일치: {sum_invalid_count}회 | "
+            f"누적: {total_validations}회"
+        )
+        
+        # 경고 발생
+        if negative_rate > 0.01:  # 1% 초과 시 경고
+            self.logger.warning(f"최종 실행 가중치에서 음수값 비율이 높음: {negative_rate:.1%}")
+        if invalid_rate > 0.01:
+            self.logger.warning(f"최종 실행 가중치에서 무효값 비율이 높음: {invalid_rate:.1%}")
     
     def _calculate_reward(self, portfolio_return: float, weights: np.ndarray, 
                          asset_returns: np.ndarray) -> float:
         """
-        Sharpe ratio 기반 보상 함수
+        개선된 보상 함수 (Sharpe proxy 통합)
         
-        위험 조정 수익률을 직접 최적화하여 안정적인 학습 유도
+        r_t = log(V_{t+1}/V_t) - λ_risk*σ_t - λ_tc*||Δw_t||_1 + λ_S*Sharpe_EMA
         """
-        # 1. 기본 수익률 보상
-        base_reward = portfolio_return
+        # 1. 기본 로그 수익률 보상 (안전한 로그 계산)
+        log_return = np.log(max(1 + portfolio_return, 1e-12))
         
-        # 2. Sharpe ratio 보상
-        sharpe_reward = 0.0
+        # 2. Sharpe proxy EMA 업데이트 및 보상 항목
+        sharpe_reward = self._update_and_get_sharpe_reward(portfolio_return)
         
-        if len(self.return_history) >= SHARPE_WINDOW:
-            recent_returns = np.array(self.return_history[-SHARPE_WINDOW:])
-            mean_return = recent_returns.mean()
-            std_return = recent_returns.std()
-            
-            if std_return > 1e-8:
-                sharpe_ratio = mean_return / std_return
-                sharpe_reward = np.clip(sharpe_ratio * SHARPE_SCALE, -1.0, 1.0)
-            else:
-                sharpe_reward = 0.0
+        # 3. 리스크 페널티 (최근 변동성 추정)
+        if len(self.return_history) >= 5:
+            recent_volatility = np.std(self.return_history[-5:])
+        else:
+            recent_volatility = abs(portfolio_return)  # 단일 관측치로 추정
         
-        # 3. 최종 보상 계산
-        final_reward = base_reward + sharpe_reward
+        risk_penalty = 0.1 * recent_volatility  # λ_risk = 0.1
         
-        # 4. 3-sigma 필터링 및 robust 정규화
-        if not hasattr(self, 'reward_buffer'):
-            self.reward_buffer = deque(maxlen=REWARD_BUFFER_SIZE)
+        # 4. 거래비용 페널티 (가중치 변화)
+        if len(self.weight_history) > 0:
+            prev_weights = self.weight_history[-1]
+            weight_change = np.abs(weights - prev_weights).sum()
+        else:
+            weight_change = 0.0
         
-        self.reward_buffer.append(final_reward)
+        transaction_penalty = 0.05 * weight_change  # λ_tc = 0.05
         
-        # 3-sigma 아웃라이어 필터링
-        if len(self.reward_buffer) >= 20:
-            reward_array = np.array(self.reward_buffer)
-            mean = reward_array.mean()
-            std = reward_array.std()
-            
-            if std > 1e-8:
-                z_score = abs((final_reward - mean) / std)
-                if z_score > REWARD_OUTLIER_SIGMA:
-                    original_reward = final_reward  # 원본 보상 저장
-                    final_reward = mean + REWARD_OUTLIER_SIGMA * std * np.sign(final_reward - mean)
-                    if not hasattr(self, '_outlier_count'):
-                        self._outlier_count = 0
-                    self._outlier_count += 1
-                    
-                    if self._outlier_count % 10 == 1:
-                        self.logger.warning(f"극단적 보상 감지 및 필터링: 원본={original_reward:.2f}, 조정후={final_reward:.2f}")
+        # 5. 원시 보상 계산 (Sharpe proxy 포함)
+        raw_reward = log_return - risk_penalty - transaction_penalty + sharpe_reward
         
-        # MAD 기반 robust 정규화
-        if len(self.reward_buffer) >= 10:
-            reward_array = np.array(self.reward_buffer)
-            median = np.median(reward_array)
-            mad = np.median(np.abs(reward_array - median))
-            
-            if mad > 1e-8:
-                final_reward = (final_reward - median) / (1.4826 * mad)
-            
-        # 최종 클리핑
-        final_reward = np.clip(final_reward, REWARD_CLIP_MIN, REWARD_CLIP_MAX)
+        # 5. EMA 기반 정규화 (MAD 정규화 대체)
+        normalized_reward = self.reward_normalizer.normalize(raw_reward)
+        
+        # 6. 보상-성과 상관성 추적
+        self.reward_performance_tracker['rewards'].append(normalized_reward)
+        self.reward_performance_tracker['returns'].append(portfolio_return)
+        
+        # 주기적 상관성 체크 (100 스텝마다)
+        if len(self.reward_performance_tracker['rewards']) >= 100:
+            if (len(self.reward_performance_tracker['rewards']) - 
+                self.reward_performance_tracker['last_correlation_check']) >= 100:
+                self._check_reward_performance_correlation()
+                self.reward_performance_tracker['last_correlation_check'] = \
+                    len(self.reward_performance_tracker['rewards'])
+        
+        # 디버그 정보 (50스텝마다)
+        if self.current_step % 50 == 0:
+            current_sharpe_estimate = self.sharpe_tracker['return_ema'] / max(np.sqrt(self.sharpe_tracker['volatility_ema']), 1e-6)
+            self.logger.debug(
+                f"보상 구성 (step {self.current_step}): "
+                f"log_ret={log_return:.4f}, risk_pen={risk_penalty:.4f}, "
+                f"tc_pen={transaction_penalty:.4f}, sharpe_rew={sharpe_reward:.4f}, "
+                f"Sharpe_EMA={current_sharpe_estimate:.3f}, raw_rew={raw_reward:.4f}"
+            )
         
         if not hasattr(self, '_reward_logged'):
-            self.logger.info("보상 함수 초기화: 3-sigma 필터링, MAD 정규화, Sharpe 기반")
+            self.logger.info("보상 함수 개선: log-return 기반, EMA 정규화, Sharpe proxy 통합")
             self._reward_logged = True
         
-        return float(final_reward)
+        return float(normalized_reward)
+    
+    def _check_reward_performance_correlation(self):
+        """보상-성과 상관성 검증"""
+        if len(self.reward_performance_tracker['rewards']) < 50:
+            return
+        
+        # 최근 100개 데이터로 상관관계 계산
+        recent_rewards = np.array(self.reward_performance_tracker['rewards'][-100:])
+        recent_returns = np.array(self.reward_performance_tracker['returns'][-100:])
+        
+        # 상관계수 계산
+        if recent_rewards.std() > 1e-8 and recent_returns.std() > 1e-8:
+            correlation = np.corrcoef(recent_rewards, recent_returns)[0, 1]
+            
+            if not np.isnan(correlation):
+                self.logger.debug(f"보상-성과 상관성: {correlation:.3f} (목표: >0)")
+                
+                # 경고 발생 (음의 상관관계)
+                if correlation < -0.1:
+                    self.logger.warning(f"보상-성과 역상관 감지: {correlation:.3f}")
+                elif correlation > 0.3:
+                    self.logger.info(f"보상-성과 정렬 양호: {correlation:.3f}")
+        
+        return self._get_state(), reward, done, info
     
     def get_portfolio_metrics(self) -> Dict[str, float]:
         """포트폴리오 성과 메트릭 계산"""
@@ -434,14 +579,61 @@ class PortfolioEnvironment:
         return summary.strip()
     
     def get_validation_summary(self) -> str:
-        """가중치 검증 통계 요약"""
-        if self.validation_stats['total_validations'] == 0:
-            return "가중치 검증 통계 없음"
+        """최종 실행 가중치 검증 통계 요약"""
+        if not self.weight_validation_window:
+            return "최종 실행 가중치 검증 통계 없음"
         
-        negative_rate = self.validation_stats['negative_weights'] / self.validation_stats['total_validations']
-        invalid_rate = self.validation_stats['invalid_weights'] / self.validation_stats['total_validations']
+        # 슬라이딩 윈도우 통계
+        recent_count = len(self.weight_validation_window)
+        negative_count = sum(1 for r in self.weight_validation_window if r['has_negative'])
+        invalid_count = sum(1 for r in self.weight_validation_window if r['has_invalid'])
+        sum_invalid_count = sum(1 for r in self.weight_validation_window if not r['sum_valid'])
         
-        return (f"가중치 검증 통계: "
-                f"음수 {self.validation_stats['negative_weights']}회 ({negative_rate:.1%}), "
-                f"무효값 {self.validation_stats['invalid_weights']}회 ({invalid_rate:.1%}), "
-                f"총 {self.validation_stats['total_validations']}회 검증")
+        negative_rate = negative_count / recent_count if recent_count > 0 else 0.0
+        invalid_rate = invalid_count / recent_count if recent_count > 0 else 0.0
+        
+        # 누적 통계
+        total_validations = self.weight_validation_stats['total_validations']
+        
+        return (f"최종 실행 가중치 검증 통계: "
+                f"슬라이딩(최근 {recent_count}회) - "
+                f"음수: {negative_count}회 ({negative_rate:.1%}), "
+                f"무효값: {invalid_count}회 ({invalid_rate:.1%}), "
+                f"합불일치: {sum_invalid_count}회 | "
+                f"누적: {total_validations}회")
+    
+    def _update_and_get_sharpe_reward(self, portfolio_return: float) -> float:
+        """
+        EMA 기반 Sharpe 비율 추정 및 보상 항목 계산
+        
+        Args:
+            portfolio_return: 현재 포트폴리오 수익률
+            
+        Returns:
+            sharpe_reward: Sharpe 기반 보상 항목
+        """
+        tracker = self.sharpe_tracker
+        decay = tracker['decay']
+        
+        if tracker['count'] == 0:
+            # 초기화
+            tracker['return_ema'] = portfolio_return
+            tracker['volatility_ema'] = (portfolio_return ** 2)
+        else:
+            # EMA 업데이트
+            tracker['return_ema'] = decay * tracker['return_ema'] + (1 - decay) * portfolio_return
+            return_deviation = (portfolio_return - tracker['return_ema'])
+            tracker['volatility_ema'] = decay * tracker['volatility_ema'] + (1 - decay) * (return_deviation ** 2)
+        
+        tracker['count'] += 1
+        
+        # Sharpe 비율 추정 (분모 안정화)
+        mu_t = tracker['return_ema']
+        sigma_t = max(np.sqrt(tracker['volatility_ema']), 1e-6)  # 0 방지
+        sharpe_estimate = mu_t / sigma_t
+        
+        # Sharpe 보상 (클리핑으로 폭주 방지)
+        lambda_s = 0.02  # 보수적인 가중치
+        sharpe_reward = lambda_s * np.clip(sharpe_estimate, -2.0, 2.0)
+        
+        return sharpe_reward

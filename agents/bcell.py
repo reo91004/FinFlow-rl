@@ -9,6 +9,7 @@ import os
 from collections import deque
 import random
 from utils.logger import BIPDLogger
+from utils.rolling_stats import MultiRollingStats
 from config import (
     DEVICE, ACTOR_LR, CRITIC_LR, ALPHA_LR, GAMMA, TAU, BATCH_SIZE, 
     BUFFER_SIZE, TARGET_ENTROPY_SCALE, REWARD_CLIP_MIN, REWARD_CLIP_MAX,
@@ -180,6 +181,24 @@ class PrioritizedReplayBuffer:
     def __len__(self):
         return len(self.buffer)
 
+def dirichlet_c_from_diversity(K, D_target, eps=1e-6):
+    """
+    원하는 다양도 D_target로부터 균등 Dirichlet 농도 c를 설정
+    
+    Args:
+        K: 자산 개수
+        D_target: 목표 다양도 E[sum w_i^2] (낮을수록 더 다양)
+        eps: 수치 안전망
+        
+    Returns:
+        c: Dirichlet 농도 파라미터
+    """
+    denom = K * D_target - 1.0
+    if denom <= eps:
+        return 1.0
+    c = (1.0 - D_target) / denom
+    return float(max(c, 1e-3))
+
 class BCell:
     """
     B-세포: 특정 위험 유형에 특화된 포트폴리오 전략 실행
@@ -218,12 +237,26 @@ class BCell:
         # SAC 엔트로피 계수 (Phase 1: 개선된 온도 제어)
         # Dirichlet 분포에 맞춘 초기 타겟 엔트로피 설정
         self._compute_dirichlet_entropy_prior(action_dim)
-        self.log_alpha = torch.tensor(np.log(0.1), requires_grad=True, device=DEVICE)  # 초기값 0.1
+        
+        # log-α 안전 범위 설정 (초기값: 0.1, 범위: [1e-4, 1.0])
+        init_log_alpha = np.log(0.1)
+        self.log_alpha_min = np.log(ALPHA_MIN)  # -9.21
+        self.log_alpha_max = np.log(ALPHA_MAX)  # 0.0
+        
+        self.log_alpha = torch.tensor(
+            np.clip(init_log_alpha, self.log_alpha_min, self.log_alpha_max), 
+            requires_grad=True, 
+            device=DEVICE
+        )
         self.alpha = self.log_alpha.exp()
         
-        # Phase 1: 에피소드 진행률 추적을 위한 변수
+        # Phase 1: 에피소드 진행률 추적 및 엔트로피 스케줄링
         self.episode_progress = 0.0
-        self.total_episodes = 500  # config에서 가져와야 함
+        self.total_episodes = N_EPISODES  # config에서 가져옴
+        
+        # 엔트로피 스케줄링 파라미터
+        self.entropy_schedule_warmup = 0.2  # 20% 예열 기간
+        self.entropy_schedule_cooldown = 0.8  # 80%부터 쿨다운
         
         # 옵티마이저
         self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=self.actor_lr)
@@ -253,7 +286,25 @@ class BCell:
         # Phase 1: 정책 지연 업데이트를 위한 카운터
         self.policy_update_frequency = 2  # 2스텝에 1회 Actor 업데이트
         
-        # 모니터링 통계 (축약형)
+        # 통합 슬라이딩 윈도우 통계 관리자
+        self.rolling_stats = MultiRollingStats(window_size=100)
+        
+        # 주요 통계 지표 등록
+        self.q_min_stats = self.rolling_stats.add_statistics('q_min')
+        self.q_max_stats = self.rolling_stats.add_statistics('q_max')
+        self.q_range_stats = self.rolling_stats.add_statistics('q_range')
+        self.actor_loss_stats = self.rolling_stats.add_statistics('actor_loss')
+        self.critic_loss_stats = self.rolling_stats.add_statistics('critic_loss')
+        self.alpha_stats = self.rolling_stats.add_statistics('alpha')
+        self.td_error_stats = self.rolling_stats.add_statistics('td_error')
+        self.target_entropy_stats = self.rolling_stats.add_statistics('target_entropy')
+        
+        # 주요 카운터 등록
+        self.nan_loss_counter = self.rolling_stats.add_counter('nan_loss')
+        self.extreme_q_counter = self.rolling_stats.add_counter('extreme_q')  # |Q| > 100
+        self.high_alpha_counter = self.rolling_stats.add_counter('high_alpha')  # α > 0.5
+        
+        # 기존 호환성을 위한 레거시 통계 (deprecated)
         self.monitoring_stats = {
             'q_value_range': {'min': [], 'max': []},
             'gradient_norms': {'actor': [], 'critic': []},
@@ -270,46 +321,69 @@ class BCell:
             f"Device={DEVICE}"
         )
     
-    def _compute_dirichlet_entropy_prior(self, action_dim):
+    def _compute_dirichlet_entropy_prior(self, action_dim, D_target=None):
         """
-        Dirichlet 분포에 맞춘 타겟 엔트로피 계산
-        Phase 1: 온도 제어 개선
+        Dirichlet 목표 엔트로피 초기화
+        D_target: 원하는 다양도 E[sum w_i^2] (optional). 없으면 α_i=1 사용
         """
         import math
+        try:
+            from scipy.special import digamma, loggamma
+        except ImportError:
+            digamma = None
+            loggamma = None
         
-        # 균등한 Dirichlet 분포 (alpha_i = 1.0)의 엔트로피를 사전으로 사용
-        alpha_prior = 1.0
-        alpha_0 = action_dim * alpha_prior
+        # 1) 균등 농도 설정 (기본: 1.0) 또는 다양도 기반 c
+        if D_target is not None:
+            c = dirichlet_c_from_diversity(action_dim, D_target)
+        else:
+            c = 1.0  # 기존값 유지
         
-        # Dirichlet 엔트로피 해석식: 
-        # H = log(B(α)) + (α_0 - K) * ψ(α_0) - Σ(α_i - 1) * ψ(α_i)
-        # 균등 분포에서는 간단히 계산 가능
-        from scipy.special import digamma, loggamma
+        self._alpha_prior_scalar = c
+        alpha0 = action_dim * c
         
-        log_beta = action_dim * loggamma(alpha_prior) - loggamma(alpha_0)
-        digamma_sum = (alpha_0 - action_dim) * digamma(alpha_0)
-        digamma_individual = action_dim * (alpha_prior - 1) * digamma(alpha_prior)
+        # 2) Dirichlet(c*1) 엔트로피 계산
+        if loggamma is not None and digamma is not None:
+            log_beta = action_dim * loggamma(c) - loggamma(alpha0)
+            h_prior = log_beta + (alpha0 - action_dim) * digamma(alpha0) \
+                            - action_dim * (c - 1.0) * digamma(c)
+        else:
+            # 간단 근사(스털링) 또는 안전한 대체
+            h_prior = math.log(action_dim) - 1.0
         
-        h_prior = log_beta + digamma_sum - digamma_individual
+        h_min = -math.log(action_dim)  # 최소(집중) 근사치
         
-        # 최소 엔트로피 (집중된 분포)
-        h_min = -np.log(action_dim)  # 델타 함수에 가까운 분포
-        
-        self.target_entropy_prior = h_prior
+        self.target_entropy_max = h_prior
         self.target_entropy_min = h_min
-        self.target_entropy = h_prior  # 초기값
+        self.target_entropy = h_prior
         
-        # Phase 3: 엔트로피 표기 정정 (음수 혼동 제거)
-        self.logger.debug(f"Dirichlet 엔트로피 범위: {abs(h_prior):.3f} (최대) ~ {abs(h_min):.3f} (최소)")
+        # 정책 엔트로피 EMA 초기화 (정책-적응형 스케줄링용)
+        self._policy_entropy_ema = None
+        
+        self.logger.debug(
+            f"Dirichlet prior: α_i={c:.3f}, H_max≈{abs(h_prior):.3f}, H_min≈{abs(h_min):.3f}"
+        )
     
     def _update_target_entropy(self):
         """
-        Phase 1: 목표 엔트로피 스케줄링 
+        목표 엔트로피 스케줄링 (정책-적응형 혼합 포함)
         에피소드 진행률에 따라 탐색에서 활용으로 점진적 전환
         """
-        lambda_t = max(0.0, 1.0 - self.episode_progress)
-        self.target_entropy = (lambda_t * self.target_entropy_prior + 
-                              (1.0 - lambda_t) * self.target_entropy_min)
+        # 기존 진행률 스케줄
+        if self.episode_progress <= self.entropy_schedule_warmup:
+            base = self.target_entropy_max
+        elif self.episode_progress >= self.entropy_schedule_cooldown:
+            k = (self.episode_progress - self.entropy_schedule_cooldown) / (1.0 - self.entropy_schedule_cooldown)
+            base = (1-k) * self.target_entropy_max + k * self.target_entropy_min
+        else:
+            base = 0.5 * (self.target_entropy_max + self.target_entropy_min)
+        
+        # 정책-적응형 혼합 (옵션)
+        if self._policy_entropy_ema is not None:
+            lam = max(0.3, 1.0 - self.episode_progress)  # 초기엔 prior 비중↑, 점차 낮춤
+            self.target_entropy = lam * base + (1-lam) * self._policy_entropy_ema
+        else:
+            self.target_entropy = base
     
     def set_episode_progress(self, current_episode, total_episodes):
         """에피소드 진행률 업데이트"""
@@ -426,19 +500,28 @@ class BCell:
         q1_data = current_q1
         q2_data = current_q2
         
-        # Phase 1: 적응형 CQL (꼬리 이상 시만 강화)
+        # Phase 1: 적응형 CQL (꼬리 이상 시만 강화) + 추가 안정성 개선
         q_values_combined = torch.cat([current_q1, current_q2], dim=0)
         q_p5 = torch.quantile(q_values_combined, 0.05)
+        q_p95 = torch.quantile(q_values_combined, 0.95)
+        q_range = q_p95 - q_p5
         
-        # 꼬리 이상 감지 (p5 < -12 등)
-        adaptive_cql_alpha = CQL_ALPHA
-        if q_p5 < -12.0:
-            adaptive_cql_alpha = 0.2  # 일시적 강화
+        # 꼬리 이상 감지 (범위 기반 적응 CQL)
+        base_cql_alpha = CQL_ALPHA
+        if q_p5 < -15.0 or q_p95 > 15.0:  # 극단 꼬리
+            adaptive_cql_alpha = 0.3  # 강한 정규화
+        elif q_range > 20.0:  # 과도한 범위 확산
+            adaptive_cql_alpha = 0.2  # 중간 정규화
         else:
-            adaptive_cql_alpha = 0.1  # 평시 유지
+            adaptive_cql_alpha = base_cql_alpha  # 평시 유지
             
-        cql_penalty1 = adaptive_cql_alpha * (q1_random.mean() - q1_data.mean())
-        cql_penalty2 = adaptive_cql_alpha * (q2_random.mean() - q2_data.mean())
+        # CQL 페널티 계산 (안정화된 버전)
+        cql_penalty1 = adaptive_cql_alpha * torch.clamp(
+            q1_random.mean() - q1_data.mean(), min=-5.0, max=5.0
+        )
+        cql_penalty2 = adaptive_cql_alpha * torch.clamp(
+            q2_random.mean() - q2_data.mean(), min=-5.0, max=5.0
+        )
         
         # 최종 손실 (Huber + CQL)
         critic1_loss = (is_weights * critic1_huber).mean() + cql_penalty1
@@ -456,14 +539,21 @@ class BCell:
         critic2_grad_norm = torch.nn.utils.clip_grad_norm_(self.critic2.parameters(), MAX_GRAD_NORM)
         self.critic2_optimizer.step()
         
-        # TD-error 계산 (PER 우선순위 업데이트용)
-        td_errors = torch.min(
-            (current_q1 - target_q_values).abs(),
-            (current_q2 - target_q_values).abs()
-        ).detach().cpu().numpy()
+        # TD-error 계산 (PER 우선순위 업데이트용) + 강화된 안정화
+        td_errors_1 = (current_q1 - target_q_values).abs()
+        td_errors_2 = (current_q2 - target_q_values).abs()
+        td_errors = torch.min(td_errors_1, td_errors_2).detach().cpu().numpy()
         
-        # Priority clipping으로 극단값 방지
-        priorities = np.clip(td_errors + 1e-6, a_min=0.0, a_max=100.0)
+        # 강화된 TD 오류 클리핑 (마이너 TD 및 로그 스케일 적용)
+        td_errors_clipped = np.clip(td_errors, a_min=0.0, a_max=50.0)  # 최대 50으로 제한
+        
+        # 로그 스케일 TD 오류 (양극단 억제)
+        log_scale_td_errors = np.log1p(td_errors_clipped)  # log(1 + td_error)
+        
+        # 최종 우선순위 (안정화된 버전)
+        priorities = log_scale_td_errors + 1e-6
+        priorities = np.clip(priorities, a_min=1e-6, a_max=10.0)  # 안전 범위
+        
         self.replay_buffer.update_priorities(indices, priorities)
         
         # Phase 1: 정책 지연 업데이트 (2스텝에 1회만 Actor 업데이트)
@@ -492,60 +582,135 @@ class BCell:
             with torch.no_grad():
                 _, current_actions, current_log_probs = self.actor(states)
         
-        # ===== Alpha (엔트로피 계수) 자동 튜닝 (Phase 1: 개선) =====
+        # ===== Alpha (엔트로피 계수) 자동 튜닝 (개선된 버전) =====
+        # 정책 엔트로피 EMA 업데이트 (정책-적응형 스케줄링용)
+        current_policy_entropy = -current_log_probs.mean().item()
+        if self._policy_entropy_ema is None:
+            self._policy_entropy_ema = current_policy_entropy
+        else:
+            self._policy_entropy_ema = 0.95 * self._policy_entropy_ema + 0.05 * current_policy_entropy
+        
+        # 목표 엔트로피 스케줄링 적용
+        self._update_target_entropy()
+        
         alpha_loss = -(self.log_alpha * (current_log_probs + self.target_entropy).detach()).mean()
         
         self.alpha_optimizer.zero_grad()
         alpha_loss.backward()
         # Phase 1: 온도 파라미터 그래디언트 클리핑
-        torch.nn.utils.clip_grad_norm_([self.log_alpha], MAX_GRAD_NORM)
+        alpha_grad_norm = torch.nn.utils.clip_grad_norm_([self.log_alpha], MAX_GRAD_NORM)
+        
+        # 업데이트 전 log-alpha 값 저장 (로깅용)
+        pre_update_log_alpha = self.log_alpha.item()
+        
         self.alpha_optimizer.step()
         
-        # Phase 1: 로그-온도 안전 범위 클리핑
+        # Phase 1: 로그-온도 안전 범위 클리핑 (업데이트 후)
         with torch.no_grad():
-            self.log_alpha.clamp_(np.log(ALPHA_MIN), np.log(ALPHA_MAX))
+            self.log_alpha.data.clamp_(self.log_alpha_min, self.log_alpha_max)
             self.alpha = self.log_alpha.exp()
+            
+            # 클리핑 발생 횟수 추적
+            post_update_log_alpha = self.log_alpha.item()
+            if abs(post_update_log_alpha - pre_update_log_alpha) < 1e-8:
+                if not hasattr(self, '_alpha_clipping_count'):
+                    self._alpha_clipping_count = 0
+                self._alpha_clipping_count += 1
+                
+                # 지속적 클리핑 경고
+                if self._alpha_clipping_count % 100 == 1:
+                    self.logger.warning(
+                        f"[{self.risk_type}] 온도 파라미터 지속적 클리핑 발생: "
+                        f"log_α={post_update_log_alpha:.4f}, 카운트={self._alpha_clipping_count}"
+                    )
         
         # 타겟 네트워크 소프트 업데이트
         self._soft_update_targets()
         
-        # Phase 3: NaN/Inf 안전장치
-        if not (torch.isfinite(actor_loss) and 
-                torch.isfinite(critic1_loss) and 
-                torch.isfinite(critic2_loss) and 
-                torch.isfinite(alpha_loss)):
+        # Phase 3: 강화된 NaN/Inf 안전장치 + 추가 안정성 체크
+        losses_finite = torch.isfinite(actor_loss) and torch.isfinite(critic1_loss) and torch.isfinite(critic2_loss) and torch.isfinite(alpha_loss)
+        
+        # Q-value 범위 체크
+        q_values_in_range = (
+            torch.all(torch.isfinite(current_q1)) and 
+            torch.all(torch.isfinite(current_q2)) and
+            current_q1.abs().max() < 500.0 and  # Q-value 극단값 체크
+            current_q2.abs().max() < 500.0
+        )
+        
+        # 엔트로피 계수 안정성 체크
+        alpha_stable = torch.isfinite(self.alpha) and 0.0001 <= self.alpha.item() <= 2.0
+        
+        if not (losses_finite and q_values_in_range and alpha_stable):
             self.logger.error(
-                f"NaN/Inf 손실 감지: Actor={actor_loss.item():.6f}, "
-                f"Critic1={critic1_loss.item():.6f}, Critic2={critic2_loss.item():.6f}, "
-                f"Alpha={alpha_loss.item():.6f}"
+                f"[안정성 실패] 손실: A={actor_loss.item():.6f}, "
+                f"C1={critic1_loss.item():.6f}, C2={critic2_loss.item():.6f}, α_loss={alpha_loss.item():.6f} | "
+                f"Q범위: Q1[{current_q1.min().item():.2f}, {current_q1.max().item():.2f}], "
+                f"Q2[{current_q2.min().item():.2f}, {current_q2.max().item():.2f}] | "
+                f"α={self.alpha.item():.6f}"
             )
+            
+            # 비상 대응: 모델 리셋 신호
+            if not hasattr(self, '_stability_failure_count'):
+                self._stability_failure_count = 0
+            self._stability_failure_count += 1
+            
+            if self._stability_failure_count >= 10:
+                self.logger.critical(
+                    f"[중대] {self.risk_type} B-Cell 안정성 실패 지속: {self._stability_failure_count}회 "
+                    f"- 모델 재초기화 필요"
+                )
+            
             return False  # 업데이트 실패 신호
         
-        # 통계 기록
+        # 통계 기록 및 안정성 카운터 리셋
         self.actor_losses.append(actor_loss.item())
         self.critic_losses.append((critic1_loss.item() + critic2_loss.item()) / 2)
         self.update_count += 1
         
-        # Phase 3: 강화된 모니터링 통계 수집 (메모리 효율적인 방식)
+        # 성공적인 업데이트 시 안정성 카운터 리셋
+        if hasattr(self, '_stability_failure_count'):
+            self._stability_failure_count = max(0, self._stability_failure_count - 1)
+        
+        # Phase 3: 통합 슬라이딩 윈도우 통계 수집 (메모리 효율적인 방식)
         with torch.no_grad():
-            # Q-value 범위
+            # Q-value 통계 업데이트
             current_q_min = torch.min(current_q1.min(), current_q2.min()).item()
             current_q_max = torch.max(current_q1.max(), current_q2.max()).item()
+            current_q_range = current_q_max - current_q_min
+            
+            self.q_min_stats.update(current_q_min)
+            self.q_max_stats.update(current_q_max)
+            self.q_range_stats.update(current_q_range)
+            
+            # 손실 통계 업데이트
+            self.actor_loss_stats.update(actor_loss.item())
+            self.critic_loss_stats.update((critic1_loss.item() + critic2_loss.item()) / 2)
+            
+            # Alpha 및 목표 엔트로피 업데이트
+            current_alpha = self.alpha.item()
+            self.alpha_stats.update(current_alpha)
+            self.target_entropy_stats.update(self.target_entropy)
+            
+            # TD 오류 통계 업데이트
+            td_error_mean = td_errors_clipped.mean()
+            self.td_error_stats.update(td_error_mean)
+            
+            # 카운터 업데이트
+            self.nan_loss_counter.update(not losses_finite)
+            self.extreme_q_counter.update(abs(current_q_min) > 100 or abs(current_q_max) > 100)
+            self.high_alpha_counter.update(current_alpha > 0.5)
+            
+            # 레거시 호환성 (deprecated - 향후 제거 예정)
             self.monitoring_stats['q_value_range']['min'].append(current_q_min)
             self.monitoring_stats['q_value_range']['max'].append(current_q_max)
-            
-            # Gradient norms
             self.monitoring_stats['gradient_norms']['actor'].append(actor_grad_norm.item())
             self.monitoring_stats['gradient_norms']['critic'].append(
                 (critic1_grad_norm.item() + critic2_grad_norm.item()) / 2
             )
-            
-            # Alpha 추적 (목표 엔트로피와 함께)
-            self.monitoring_stats['alpha_history'].append(self.alpha.item())
-            
-            # TD error 통계
-            self.monitoring_stats['td_error_stats']['mean'].append(td_errors.mean())
-            self.monitoring_stats['td_error_stats']['max'].append(td_errors.max())
+            self.monitoring_stats['alpha_history'].append(current_alpha)
+            self.monitoring_stats['td_error_stats']['mean'].append(td_error_mean)
+            self.monitoring_stats['td_error_stats']['max'].append(td_errors_clipped.max())
             
             # Phase 3: 추가 안정성 지표
             if not hasattr(self.monitoring_stats, 'stability_indicators'):
@@ -578,13 +743,13 @@ class BCell:
                 self.target_entropy
             )
         
-        # 주기적 요약 로깅 (100회마다)
-        if self.update_count % 100 == 0:
-            self._log_monitoring_summary()
+        # 주기적 요약 로깅 (100회마다) - 통합 슬라이딩 윈도우 기반
+        if self.rolling_stats.should_report(self.update_count, report_interval=100):
+            self._log_unified_monitoring_summary()
         
-        # Phase 3: 안정성 경고 확인 (50회마다)
+        # Phase 3: 안정성 경고 확인 (50회마다) - 슬라이딩 윈도우 기반
         if self.update_count % 50 == 0:
-            self._check_stability_warnings()
+            self._check_stability_warnings_unified()
         
         # Phase 4: PER 베타 어닐링 (매 업데이트마다)
         self.replay_buffer.beta = min(1.0, self.replay_buffer.beta + self.replay_buffer.beta_increment)
@@ -593,13 +758,69 @@ class BCell:
         if self.update_count == 1:
             self.logger.info("Q-value 범위가 [-10, 10]으로 조정되었습니다")
             
-        # 메모리 관리: 오래된 통계 제거 (최근 1000개만 유지)
+        # 메모리 관리: 슬라이딩 윈도우는 자동으로 관리되므로 레거시만 정리
         if self.update_count % 500 == 0:
-            self._cleanup_monitoring_stats()
+            self._cleanup_legacy_stats()
         
         return True  # 성공적인 업데이트
     
-    def _log_monitoring_summary(self):
+    def _log_unified_monitoring_summary(self):
+        """통합 슬라이딩 윈도우 모니터링 요약"""
+        try:
+            # Q-value 요약
+            q_min_stats = self.q_min_stats.get_stats()
+            q_max_stats = self.q_max_stats.get_stats()
+            q_range_stats = self.q_range_stats.get_stats()
+            
+            # 손실 요약
+            actor_loss_stats = self.actor_loss_stats.get_stats()
+            critic_loss_stats = self.critic_loss_stats.get_stats()
+            
+            # Alpha 요약
+            alpha_stats = self.alpha_stats.get_stats()
+            target_entropy_stats = self.target_entropy_stats.get_stats()
+            
+            # 카운터 요약
+            nan_counter = self.nan_loss_counter.get_stats()
+            extreme_q_counter = self.extreme_q_counter.get_stats()
+            high_alpha_counter = self.high_alpha_counter.get_stats()
+            
+            # 안정성 체크
+            is_stable = (
+                critic_loss_stats['sliding_mean'] < 1e6 and
+                q_range_stats['sliding_mean'] < 200 and
+                alpha_stats['sliding_mean'] < 1.0
+            )
+            stability_marker = "✓" if is_stable else "⚠"
+            
+            self.logger.debug(
+                f"[{self.risk_type}] {stability_marker} 업데이트 {self.update_count} (통합스텋): "
+                f"손실(A:{actor_loss_stats['sliding_mean']:.2f}/C:{critic_loss_stats['sliding_mean']:.2f}) "
+                f"Q범위[μ{q_min_stats['sliding_mean']:.1f},μ{q_max_stats['sliding_mean']:.1f}] "
+                f"Q렉μ{q_range_stats['sliding_mean']:.1f} "
+                f"αμ{alpha_stats['sliding_mean']:.3f}(H_tμ{target_entropy_stats['sliding_mean']:.2f}) "
+                f"EP={getattr(self, 'episode_progress', 0.0):.1%} | "
+                f"이상(NaN:{nan_counter['sliding_rate']:.1%}, Q>{extreme_q_counter['sliding_rate']:.1%}, α>{high_alpha_counter['sliding_rate']:.1%})"
+            )
+            
+            # 경고 체크
+            if not is_stable:
+                issues = []
+                if critic_loss_stats['sliding_mean'] > 1e6:
+                    issues.append(f"C손실 {critic_loss_stats['sliding_mean']:.1e}")
+                if q_range_stats['sliding_mean'] > 200:
+                    issues.append(f"Q범위 {q_range_stats['sliding_mean']:.1f}")
+                if alpha_stats['sliding_mean'] > 1.0:
+                    issues.append(f"α {alpha_stats['sliding_mean']:.3f}")
+                
+                self.logger.warning(f"[{self.risk_type}] 안정성 문제: {', '.join(issues)}")
+                
+        except Exception as e:
+            self.logger.error(f"[{self.risk_type}] 통합 모니터링 요약 실패: {e}")
+            # 폴백으로 레거시 모니터링 사용
+            self._log_monitoring_summary_legacy()
+    
+    def _log_monitoring_summary_legacy(self):
         """모니터링 통계 요약 로깅"""
         window = min(100, len(self.monitoring_stats['q_value_range']['min']))
         
@@ -648,8 +869,53 @@ class BCell:
                 f"[{self.risk_type}] Q-value 범위 확대 감지: max={q_max:.2f}"
             )
     
-    def _cleanup_monitoring_stats(self):
-        """오래된 모니터링 통계 정리 (메모리 효율성)"""
+    def _check_stability_warnings_unified(self):
+        """통합 슬라이딩 윈도우 기반 안정성 경고"""
+        if self.update_count < 50:
+            return
+        
+        # Alpha 발산 경고
+        alpha_stats = self.alpha_stats.get_stats()
+        if alpha_stats['sliding_size'] >= 25:
+            alpha_mean = alpha_stats['sliding_mean']
+            alpha_std = alpha_stats['sliding_std']
+            
+            if alpha_mean > 0.8:
+                self.logger.warning(
+                    f"[통합] 높은 온도 계수: 슬라이딩 평균 α={alpha_mean:.4f}±{alpha_std:.4f}"
+                )
+            elif alpha_mean < 0.001:
+                self.logger.warning(
+                    f"[통합] 낮은 온도 계수: 슬라이딩 평균 α={alpha_mean:.4f}±{alpha_std:.4f}"
+                )
+        
+        # Q-value 범위 경고
+        q_range_stats = self.q_range_stats.get_stats()
+        if q_range_stats['sliding_size'] >= 25:
+            q_range_mean = q_range_stats['sliding_mean']
+            if q_range_mean > 100:
+                self.logger.warning(
+                    f"[통합] Q-value 범위 확대: 슬라이딩 평균 {q_range_mean:.2f}"
+                )
+        
+        # 이상치 비율 경고
+        nan_stats = self.nan_loss_counter.get_stats()
+        extreme_q_stats = self.extreme_q_counter.get_stats()
+        
+        if nan_stats['sliding_rate'] > 0.05:  # 5% 초과
+            self.logger.warning(
+                f"[통합] 높은 NaN 비율: {nan_stats['sliding_rate']:.1%} "
+                f"({nan_stats['sliding_count']}/{nan_stats['sliding_size']})"
+            )
+        
+        if extreme_q_stats['sliding_rate'] > 0.1:  # 10% 초과
+            self.logger.warning(
+                f"[통합] 높은 극단 Q-value 비율: {extreme_q_stats['sliding_rate']:.1%} "
+                f"({extreme_q_stats['sliding_count']}/{extreme_q_stats['sliding_size']})"
+            )
+    
+    def _cleanup_legacy_stats(self):
+        """레거시 통계 정리 (메모리 효율성) - 슬라이딩 윈도우는 자동 관리됨"""
         max_history = 1000
         
         for key in ['q_value_range', 'gradient_norms', 'td_error_stats']:
