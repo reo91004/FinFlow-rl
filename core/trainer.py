@@ -93,6 +93,10 @@ class BIPDTrainer:
         pbar = tqdm(range(n_episodes), desc="BIPD Training")
         
         for episode in pbar:
+            # Phase 2: B-Cell들의 에피소드 진행률 업데이트
+            for bcell in self.immune_system.bcells.values():
+                bcell.set_episode_progress(episode, n_episodes)
+            
             # 에피소드 시작 로깅
             self.logger.info("=" * 25 + f" 에피소드 {episode + 1:,}/{n_episodes:,} 시작 " + "=" * 25)
             

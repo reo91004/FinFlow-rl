@@ -116,8 +116,22 @@ BATCH_SIZE = int(32)
 BUFFER_SIZE = int(10000)
 UPDATE_FREQUENCY = int(4)
 
-# SAC 엔트로피 설정
-TARGET_ENTROPY_SCALE = float(0.25)
+# SAC 엔트로피 설정 (개선된 안정화 파라미터)
+TARGET_ENTROPY_SCALE = float(0.25)  # 기존 호환성 유지
+
+# SAC 안정화 파라미터 (Phase 1: 핵심 안정화)
+ALPHA_MIN = float(1e-4)  # 온도 최소값
+ALPHA_MAX = float(1.0)   # 온도 최대값
+CONCENTRATION_MIN = float(0.2)   # Dirichlet 농도 파라미터 최소값
+CONCENTRATION_MAX = float(100.0) # Dirichlet 농도 파라미터 최대값
+WEIGHT_EPSILON = float(1e-6)     # 포트폴리오 가중치 보호 임계값
+
+# 그래디언트 안정화
+MAX_GRAD_NORM = float(1.0)  # 그래디언트 클리핑 최대 norm
+HUBER_DELTA = float(1.0)    # Huber loss delta 파라미터
+
+# CQL 정규화 (Phase 2)
+CQL_ALPHA = float(0.1)      # CQL 정규화 강도
 
 # Memory Cell 설정
 MEMORY_CAPACITY = int(500)

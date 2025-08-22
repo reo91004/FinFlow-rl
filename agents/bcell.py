@@ -11,7 +11,9 @@ import random
 from utils.logger import BIPDLogger
 from config import (
     DEVICE, ACTOR_LR, CRITIC_LR, ALPHA_LR, GAMMA, TAU, BATCH_SIZE, 
-    BUFFER_SIZE, TARGET_ENTROPY_SCALE, REWARD_CLIP_MIN, REWARD_CLIP_MAX
+    BUFFER_SIZE, TARGET_ENTROPY_SCALE, REWARD_CLIP_MIN, REWARD_CLIP_MAX,
+    ALPHA_MIN, ALPHA_MAX, CONCENTRATION_MIN, CONCENTRATION_MAX, WEIGHT_EPSILON,
+    MAX_GRAD_NORM, HUBER_DELTA, CQL_ALPHA
 )
 
 class SACActorNetwork(nn.Module):
@@ -50,20 +52,29 @@ class SACActorNetwork(nn.Module):
         x = F.relu(self.fc1(state))
         x = F.relu(self.fc2(x))
         
-        # Concentration 파라미터
+        # Concentration 파라미터 (안정화된 클리핑)
         x_clamped = torch.clamp(self.concentration_head(x), min=-10.0, max=10.0)
-        concentration = F.softplus(x_clamped) + 2.0
+        concentration = F.softplus(x_clamped) + 1e-3
+        # Phase 1: 농도 파라미터 안전 범위 클리핑
+        concentration = torch.clamp(concentration, CONCENTRATION_MIN, CONCENTRATION_MAX)
         
         # Dirichlet 분포에서 샘플링
         if self.training:
             # 훈련 시: 확률적 샘플링
             dist = torch.distributions.Dirichlet(concentration)
             weights = dist.rsample()  # reparameterization trick 사용
+            # Phase 1: 포트폴리오 가중치 보호 로직
+            weights = torch.clamp(weights, WEIGHT_EPSILON, 1.0 - WEIGHT_EPSILON)
+            # 재정규화 (안전장치)
+            weights = weights / weights.sum(dim=-1, keepdim=True)
             log_prob = dist.log_prob(weights)
         else:
             # 평가 시: 결정적 출력 (평균 사용)
             # Dirichlet의 평균은 concentration / concentration.sum()
             weights = concentration / concentration.sum(dim=-1, keepdim=True)
+            # Phase 1: 평가 시에도 가중치 보호 적용
+            weights = torch.clamp(weights, WEIGHT_EPSILON, 1.0 - WEIGHT_EPSILON)
+            weights = weights / weights.sum(dim=-1, keepdim=True)
             log_prob = torch.zeros(weights.shape[0], device=weights.device)
         
         return concentration, weights, log_prob
@@ -201,10 +212,18 @@ class BCell:
         self.target_critic1.load_state_dict(self.critic1.state_dict())
         self.target_critic2.load_state_dict(self.critic2.state_dict())
         
-        # SAC 엔트로피 계수
-        self.target_entropy = -float(action_dim) * TARGET_ENTROPY_SCALE
-        self.log_alpha = torch.zeros(1, requires_grad=True, device=DEVICE)
+        # 로거 먼저 초기화
+        self.logger = BIPDLogger(f"BCell-{risk_type}")
+        
+        # SAC 엔트로피 계수 (Phase 1: 개선된 온도 제어)
+        # Dirichlet 분포에 맞춘 초기 타겟 엔트로피 설정
+        self._compute_dirichlet_entropy_prior(action_dim)
+        self.log_alpha = torch.tensor(np.log(0.1), requires_grad=True, device=DEVICE)  # 초기값 0.1
         self.alpha = self.log_alpha.exp()
+        
+        # Phase 1: 에피소드 진행률 추적을 위한 변수
+        self.episode_progress = 0.0
+        self.total_episodes = 500  # config에서 가져와야 함
         
         # 옵티마이저
         self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=self.actor_lr)
@@ -235,15 +254,58 @@ class BCell:
             'last_report': 0
         }
         
-        # 로거
-        self.logger = BIPDLogger(f"BCell-{risk_type}")
-        
+        # 로거는 이미 초기화됨
         self.logger.info(
             f"{risk_type} SAC B-Cell이 초기화되었습니다. "
             f"상태차원={state_dim}, 행동차원={action_dim}, "
             f"Target Entropy={self.target_entropy}, "
             f"Device={DEVICE}"
         )
+    
+    def _compute_dirichlet_entropy_prior(self, action_dim):
+        """
+        Dirichlet 분포에 맞춘 타겟 엔트로피 계산
+        Phase 1: 온도 제어 개선
+        """
+        import math
+        
+        # 균등한 Dirichlet 분포 (alpha_i = 1.0)의 엔트로피를 사전으로 사용
+        alpha_prior = 1.0
+        alpha_0 = action_dim * alpha_prior
+        
+        # Dirichlet 엔트로피 해석식: 
+        # H = log(B(α)) + (α_0 - K) * ψ(α_0) - Σ(α_i - 1) * ψ(α_i)
+        # 균등 분포에서는 간단히 계산 가능
+        from scipy.special import digamma, loggamma
+        
+        log_beta = action_dim * loggamma(alpha_prior) - loggamma(alpha_0)
+        digamma_sum = (alpha_0 - action_dim) * digamma(alpha_0)
+        digamma_individual = action_dim * (alpha_prior - 1) * digamma(alpha_prior)
+        
+        h_prior = log_beta + digamma_sum - digamma_individual
+        
+        # 최소 엔트로피 (집중된 분포)
+        h_min = -np.log(action_dim)  # 델타 함수에 가까운 분포
+        
+        self.target_entropy_prior = h_prior
+        self.target_entropy_min = h_min
+        self.target_entropy = h_prior  # 초기값
+        
+        self.logger.debug(f"Dirichlet 엔트로피 범위: {h_min:.3f} ~ {h_prior:.3f}")
+    
+    def _update_target_entropy(self):
+        """
+        Phase 1: 목표 엔트로피 스케줄링 
+        에피소드 진행률에 따라 탐색에서 활용으로 점진적 전환
+        """
+        lambda_t = max(0.0, 1.0 - self.episode_progress)
+        self.target_entropy = (lambda_t * self.target_entropy_prior + 
+                              (1.0 - lambda_t) * self.target_entropy_min)
+    
+    def set_episode_progress(self, current_episode, total_episodes):
+        """에피소드 진행률 업데이트"""
+        self.episode_progress = current_episode / total_episodes
+        self._update_target_entropy()
     
     def get_action(self, state, deterministic=False):
         """
@@ -318,22 +380,43 @@ class BCell:
             target_q_values = rewards + self.gamma * target_q * (~dones)
             target_q_values = torch.clamp(target_q_values, min=-10.0, max=10.0)
         
-        # Critic 1 업데이트
+        # Phase 2: Critic 업데이트 (Huber loss + CQL 정규화)
         current_q1 = self.critic1(states, actions).squeeze()
-        critic1_loss = (is_weights * F.mse_loss(current_q1, target_q_values, reduction='none')).mean()
+        current_q2 = self.critic2(states, actions).squeeze()
         
+        # Huber loss 적용 (아웃라이어에 덜 민감)
+        critic1_huber = F.smooth_l1_loss(current_q1, target_q_values, reduction='none', beta=HUBER_DELTA)
+        critic2_huber = F.smooth_l1_loss(current_q2, target_q_values, reduction='none', beta=HUBER_DELTA)
+        
+        # CQL 정규화: 과대 Q 추정 억제
+        # 무작위 행동에 대한 Q-value (과대추정 방지)
+        batch_size = states.shape[0]
+        random_actions = torch.rand(batch_size, actions.shape[1], device=DEVICE)
+        random_actions = random_actions / random_actions.sum(dim=1, keepdim=True)  # 정규화
+        
+        q1_random = self.critic1(states, random_actions).squeeze()
+        q2_random = self.critic2(states, random_actions).squeeze()
+        q1_data = current_q1
+        q2_data = current_q2
+        
+        # CQL 페널티 (보수적 정규화)
+        cql_penalty1 = CQL_ALPHA * (q1_random.mean() - q1_data.mean())
+        cql_penalty2 = CQL_ALPHA * (q2_random.mean() - q2_data.mean())
+        
+        # 최종 손실 (Huber + CQL)
+        critic1_loss = (is_weights * critic1_huber).mean() + cql_penalty1
+        critic2_loss = (is_weights * critic2_huber).mean() + cql_penalty2
+        
+        # Critic 1 업데이트
         self.critic1_optimizer.zero_grad()
         critic1_loss.backward()
-        critic1_grad_norm = torch.nn.utils.clip_grad_norm_(self.critic1.parameters(), 1.0)
+        critic1_grad_norm = torch.nn.utils.clip_grad_norm_(self.critic1.parameters(), MAX_GRAD_NORM)
         self.critic1_optimizer.step()
         
         # Critic 2 업데이트
-        current_q2 = self.critic2(states, actions).squeeze()
-        critic2_loss = (is_weights * F.mse_loss(current_q2, target_q_values, reduction='none')).mean()
-        
         self.critic2_optimizer.zero_grad()
         critic2_loss.backward()
-        critic2_grad_norm = torch.nn.utils.clip_grad_norm_(self.critic2.parameters(), 1.0)
+        critic2_grad_norm = torch.nn.utils.clip_grad_norm_(self.critic2.parameters(), MAX_GRAD_NORM)
         self.critic2_optimizer.step()
         
         # TD-error 계산 (PER 우선순위 업데이트용)
@@ -359,29 +442,51 @@ class BCell:
         
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
-        actor_grad_norm = torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 1.0)
+        # Phase 2: Actor 그래디언트 클리핑 강화
+        actor_grad_norm = torch.nn.utils.clip_grad_norm_(self.actor.parameters(), MAX_GRAD_NORM)
         self.actor_optimizer.step()
         
-        # ===== Alpha (엔트로피 계수) 자동 튜닝 =====
+        # ===== Alpha (엔트로피 계수) 자동 튜닝 (Phase 1: 개선) =====
         alpha_loss = -(self.log_alpha * (current_log_probs + self.target_entropy).detach()).mean()
         
         self.alpha_optimizer.zero_grad()
         alpha_loss.backward()
+        # Phase 1: 온도 파라미터 그래디언트 클리핑
+        torch.nn.utils.clip_grad_norm_([self.log_alpha], MAX_GRAD_NORM)
         self.alpha_optimizer.step()
+        
+        # Phase 1: 로그-온도 안전 범위 클리핑
+        with torch.no_grad():
+            self.log_alpha.clamp_(np.log(ALPHA_MIN), np.log(ALPHA_MAX))
+            self.alpha = self.log_alpha.exp()
         
         # 타겟 네트워크 소프트 업데이트
         self._soft_update_targets()
+        
+        # Phase 3: NaN/Inf 안전장치
+        if not (torch.isfinite(actor_loss) and 
+                torch.isfinite(critic1_loss) and 
+                torch.isfinite(critic2_loss) and 
+                torch.isfinite(alpha_loss)):
+            self.logger.error(
+                f"NaN/Inf 손실 감지: Actor={actor_loss.item():.6f}, "
+                f"Critic1={critic1_loss.item():.6f}, Critic2={critic2_loss.item():.6f}, "
+                f"Alpha={alpha_loss.item():.6f}"
+            )
+            return False  # 업데이트 실패 신호
         
         # 통계 기록
         self.actor_losses.append(actor_loss.item())
         self.critic_losses.append((critic1_loss.item() + critic2_loss.item()) / 2)
         self.update_count += 1
         
-        # 모니터링 통계 수집 (메모리 효율적인 방식)
+        # Phase 3: 강화된 모니터링 통계 수집 (메모리 효율적인 방식)
         with torch.no_grad():
             # Q-value 범위
-            self.monitoring_stats['q_value_range']['min'].append(target_q.min().item())
-            self.monitoring_stats['q_value_range']['max'].append(target_q.max().item())
+            current_q_min = torch.min(current_q1.min(), current_q2.min()).item()
+            current_q_max = torch.max(current_q1.max(), current_q2.max()).item()
+            self.monitoring_stats['q_value_range']['min'].append(current_q_min)
+            self.monitoring_stats['q_value_range']['max'].append(current_q_max)
             
             # Gradient norms
             self.monitoring_stats['gradient_norms']['actor'].append(actor_grad_norm.item())
@@ -389,16 +494,51 @@ class BCell:
                 (critic1_grad_norm.item() + critic2_grad_norm.item()) / 2
             )
             
-            # Alpha 추적
+            # Alpha 추적 (목표 엔트로피와 함께)
             self.monitoring_stats['alpha_history'].append(self.alpha.item())
             
             # TD error 통계
             self.monitoring_stats['td_error_stats']['mean'].append(td_errors.mean())
             self.monitoring_stats['td_error_stats']['max'].append(td_errors.max())
+            
+            # Phase 3: 추가 안정성 지표
+            if not hasattr(self.monitoring_stats, 'stability_indicators'):
+                self.monitoring_stats['stability_indicators'] = {
+                    'log_prob_mean': [],
+                    'log_prob_std': [],
+                    'concentration_range': [],
+                    'target_entropy_progress': []
+                }
+            
+            # 정책 안정성 지표
+            self.monitoring_stats['stability_indicators']['log_prob_mean'].append(
+                current_log_probs.mean().item()
+            )
+            self.monitoring_stats['stability_indicators']['log_prob_std'].append(
+                current_log_probs.std().item()
+            )
+            
+            # 농도 파라미터 범위 (현재 배치에서 계산)
+            _, current_actions, _ = self.actor(states)
+            with torch.no_grad():
+                concentration, _, _ = self.actor(states[:1])  # 첫 번째 상태로 농도 계산
+                concentration_range = (concentration.max() - concentration.min()).item()
+                self.monitoring_stats['stability_indicators']['concentration_range'].append(
+                    concentration_range
+                )
+            
+            # 목표 엔트로피 진행률
+            self.monitoring_stats['stability_indicators']['target_entropy_progress'].append(
+                self.target_entropy
+            )
         
         # 주기적 요약 로깅 (100회마다)
         if self.update_count % 100 == 0:
             self._log_monitoring_summary()
+        
+        # Phase 3: 안정성 경고 확인 (50회마다)
+        if self.update_count % 50 == 0:
+            self._check_stability_warnings()
             
         # Q-value 범위 조정 확인 로깅 (첫 실행 시)
         if self.update_count == 1:
@@ -407,6 +547,8 @@ class BCell:
         # 메모리 관리: 오래된 통계 제거 (최근 1000개만 유지)
         if self.update_count % 500 == 0:
             self._cleanup_monitoring_stats()
+        
+        return True  # 성공적인 업데이트
     
     def _log_monitoring_summary(self):
         """모니터링 통계 요약 로깅"""
@@ -664,3 +806,46 @@ class BCell:
         except Exception as e:
             self.logger.error(f"모델 로드 실패: {e}")
             return False
+    
+    def _check_stability_warnings(self):
+        """
+        Phase 3: 안정성 경고 확인
+        잠재적 문제를 조기에 감지하여 로깅
+        """
+        if self.update_count < 50:
+            return
+        
+        window = min(50, len(self.monitoring_stats['alpha_history']))
+        
+        # Alpha 발산 경고
+        recent_alphas = self.monitoring_stats['alpha_history'][-window:]
+        alpha_mean = np.mean(recent_alphas)
+        alpha_std = np.std(recent_alphas)
+        
+        if alpha_mean > 0.5:
+            self.logger.warning(f"높은 온도 계수: 평균 α={alpha_mean:.4f}, 탐색이 과도할 수 있음")
+        elif alpha_mean < 0.01:
+            self.logger.warning(f"낮은 온도 계수: 평균 α={alpha_mean:.4f}, 탐색 부족 가능")
+        
+        # 그래디언트 노름 경고
+        if hasattr(self.monitoring_stats['gradient_norms'], 'actor'):
+            recent_actor_grads = self.monitoring_stats['gradient_norms']['actor'][-window:]
+            actor_grad_mean = np.mean(recent_actor_grads)
+            
+            if actor_grad_mean > 0.8:
+                self.logger.warning(f"높은 Actor 그래디언트: 평균={actor_grad_mean:.4f}, 학습 불안정 가능")
+        
+        # Q-value 발산 경고  
+        recent_q_max = self.monitoring_stats['q_value_range']['max'][-window:]
+        recent_q_min = self.monitoring_stats['q_value_range']['min'][-window:]
+        
+        if any(q > 5.0 for q in recent_q_max) or any(q < -5.0 for q in recent_q_min):
+            self.logger.warning(f"Q-value 극단값: 범위=[{min(recent_q_min):.2f}, {max(recent_q_max):.2f}]")
+        
+        # 정책 안정성 확인
+        if 'stability_indicators' in self.monitoring_stats:
+            indicators = self.monitoring_stats['stability_indicators']
+            if len(indicators['log_prob_std']) >= window:
+                recent_logprob_std = indicators['log_prob_std'][-window:]
+                if np.mean(recent_logprob_std) > 3.0:
+                    self.logger.warning(f"정책 불안정: log_prob 표준편차={np.mean(recent_logprob_std):.3f}")
