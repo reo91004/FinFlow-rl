@@ -5,6 +5,26 @@ import os
 import datetime
 from config import LOGS_DIR
 
+# Phase 3: tqdm 호환성을 위한 import
+try:
+    from tqdm import tqdm
+    _TQDM_AVAILABLE = True
+except ImportError:
+    _TQDM_AVAILABLE = False
+
+class TqdmLoggingHandler(logging.StreamHandler):
+    """tqdm 진행바를 방해하지 않는 로깅 핸들러"""
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            if _TQDM_AVAILABLE:
+                tqdm.write(msg, file=self.stream)
+            else:
+                self.stream.write(msg + '\n')
+            self.flush()
+        except Exception:
+            self.handleError(record)
+
 # 전역 타임스탬프 및 디렉토리 (모든 로거가 같은 폴더 사용)
 _GLOBAL_TIMESTAMP = None
 _GLOBAL_SESSION_DIR = None
@@ -35,7 +55,7 @@ def get_session_directory():
 class BIPDLogger:
     """BIPD 시스템 전용 로거"""
 
-    def __init__(self, name="BIPD", level=logging.DEBUG, console_level=logging.WARNING):
+    def __init__(self, name="BIPD", level=logging.DEBUG, console_level=logging.INFO):  # Phase 3: WARNING → INFO
         self.name = name
         self.level = level
         self.console_level = console_level
@@ -65,8 +85,8 @@ class BIPDLogger:
             datefmt="%H:%M:%S",
         )
 
-        # 콘솔 핸들러 (WARNING 이상만 출력)
-        console_handler = logging.StreamHandler()
+        # Phase 3: tqdm 호환 콘솔 핸들러 (INFO 이상만 출력)
+        console_handler = TqdmLoggingHandler()
         console_handler.setLevel(self.console_level)
         console_handler.setFormatter(formatter)
         self.logger.addHandler(console_handler)

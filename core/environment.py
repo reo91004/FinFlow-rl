@@ -154,6 +154,15 @@ class PortfolioEnvironment:
         # 보상 계산
         reward = self._calculate_reward(actual_return, new_weights, asset_returns)
         
+        # Phase 2: 단체 재투영 (거래비용 후 최종 정규화)
+        # 거래비용과 슬리피지 적용 후 음수/합≠1 문제 해결
+        if new_weights.sum() == 0:
+            new_weights = np.ones(self.n_assets) / self.n_assets
+        else:
+            # 음수 제거 후 재정규화
+            new_weights = np.maximum(new_weights, 0.0)
+            new_weights = new_weights / new_weights.sum()
+        
         # 상태 업데이트
         self.weights = new_weights.copy()
         self.current_step += 1

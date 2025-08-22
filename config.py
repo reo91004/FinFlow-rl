@@ -108,7 +108,7 @@ HIDDEN_DIM = 128
 
 # 강화학습 하이퍼파라미터
 ACTOR_LR = float(3e-4)
-CRITIC_LR = float(3e-4)
+CRITIC_LR = float(1e-4)  # Phase 4: 안정성을 위해 감소
 ALPHA_LR = float(3e-4)
 GAMMA = float(0.99)
 TAU = float(0.001)

@@ -13,7 +13,7 @@ from config import (
     DEVICE, ACTOR_LR, CRITIC_LR, ALPHA_LR, GAMMA, TAU, BATCH_SIZE, 
     BUFFER_SIZE, TARGET_ENTROPY_SCALE, REWARD_CLIP_MIN, REWARD_CLIP_MAX,
     ALPHA_MIN, ALPHA_MAX, CONCENTRATION_MIN, CONCENTRATION_MAX, WEIGHT_EPSILON,
-    MAX_GRAD_NORM, HUBER_DELTA, CQL_ALPHA
+    MAX_GRAD_NORM, HUBER_DELTA, CQL_ALPHA, N_EPISODES
 )
 
 class SACActorNetwork(nn.Module):
@@ -231,8 +231,13 @@ class BCell:
         self.critic2_optimizer = optim.Adam(self.critic2.parameters(), lr=self.critic_lr)
         self.alpha_optimizer = optim.Adam([self.log_alpha], lr=self.alpha_lr)
         
-        # 경험 재생 버퍼
-        self.replay_buffer = PrioritizedReplayBuffer(capacity=BUFFER_SIZE, alpha=0.6, beta=0.4)
+        # Phase 4: 베타 어닐링을 위한 PER 설정 
+        self.replay_buffer = PrioritizedReplayBuffer(
+            capacity=BUFFER_SIZE, 
+            alpha=0.6, 
+            beta=0.4,
+            beta_increment=1.0 / N_EPISODES  # 전체 에피소드에 걸쳐 1.0까지 증가
+        )
         
         # SAC 학습 파라미터
         self.gamma = GAMMA
@@ -244,6 +249,9 @@ class BCell:
         self.update_count = 0
         self.actor_losses = []
         self.critic_losses = []
+        
+        # Phase 1: 정책 지연 업데이트를 위한 카운터
+        self.policy_update_frequency = 2  # 2스텝에 1회 Actor 업데이트
         
         # 모니터링 통계 (축약형)
         self.monitoring_stats = {
@@ -291,7 +299,8 @@ class BCell:
         self.target_entropy_min = h_min
         self.target_entropy = h_prior  # 초기값
         
-        self.logger.debug(f"Dirichlet 엔트로피 범위: {h_min:.3f} ~ {h_prior:.3f}")
+        # Phase 3: 엔트로피 표기 정정 (음수 혼동 제거)
+        self.logger.debug(f"Dirichlet 엔트로피 범위: {abs(h_prior):.3f} (최대) ~ {abs(h_min):.3f} (최소)")
     
     def _update_target_entropy(self):
         """
@@ -376,9 +385,27 @@ class BCell:
             target_q2 = self.target_critic2(next_states, next_actions).squeeze()
             target_q = torch.min(target_q1, target_q2) - self.alpha * next_log_probs
             
-            # 타겟 Q-value 계산
+            # Phase 1: 소프트 Q-클램프 (퍼센타일 기반)
             target_q_values = rewards + self.gamma * target_q * (~dones)
-            target_q_values = torch.clamp(target_q_values, min=-10.0, max=10.0)
+            
+            # 배치별 퍼센타일 기반 정규화 (하드 클립 대신)
+            q_p5 = torch.quantile(target_q_values, 0.05)
+            q_p95 = torch.quantile(target_q_values, 0.95)
+            q_median = torch.median(target_q_values)
+            
+            # z-score 기반 소프트 클램프 (극단값만 완화)
+            q_std = target_q_values.std()
+            if q_std > 1e-6:
+                # 3-sigma 범위를 벗어나는 값들만 소프트 클램프
+                z_scores = (target_q_values - q_median) / q_std
+                extreme_mask = torch.abs(z_scores) > 3.0
+                if extreme_mask.any():
+                    # 극단값을 3-sigma 경계로 소프트하게 조정
+                    target_q_values = torch.where(
+                        extreme_mask,
+                        q_median + 3.0 * q_std * torch.sign(z_scores),
+                        target_q_values
+                    )
         
         # Phase 2: Critic 업데이트 (Huber loss + CQL 정규화)
         current_q1 = self.critic1(states, actions).squeeze()
@@ -399,9 +426,19 @@ class BCell:
         q1_data = current_q1
         q2_data = current_q2
         
-        # CQL 페널티 (보수적 정규화)
-        cql_penalty1 = CQL_ALPHA * (q1_random.mean() - q1_data.mean())
-        cql_penalty2 = CQL_ALPHA * (q2_random.mean() - q2_data.mean())
+        # Phase 1: 적응형 CQL (꼬리 이상 시만 강화)
+        q_values_combined = torch.cat([current_q1, current_q2], dim=0)
+        q_p5 = torch.quantile(q_values_combined, 0.05)
+        
+        # 꼬리 이상 감지 (p5 < -12 등)
+        adaptive_cql_alpha = CQL_ALPHA
+        if q_p5 < -12.0:
+            adaptive_cql_alpha = 0.2  # 일시적 강화
+        else:
+            adaptive_cql_alpha = 0.1  # 평시 유지
+            
+        cql_penalty1 = adaptive_cql_alpha * (q1_random.mean() - q1_data.mean())
+        cql_penalty2 = adaptive_cql_alpha * (q2_random.mean() - q2_data.mean())
         
         # 최종 손실 (Huber + CQL)
         critic1_loss = (is_weights * critic1_huber).mean() + cql_penalty1
@@ -429,22 +466,31 @@ class BCell:
         priorities = np.clip(td_errors + 1e-6, a_min=0.0, a_max=100.0)
         self.replay_buffer.update_priorities(indices, priorities)
         
-        # ===== SAC Actor 업데이트 =====
-        _, current_actions, current_log_probs = self.actor(states)
+        # Phase 1: 정책 지연 업데이트 (2스텝에 1회만 Actor 업데이트)
+        actor_loss = torch.tensor(0.0, device=DEVICE)
+        actor_grad_norm = torch.tensor(0.0, device=DEVICE)
         
-        # Q-values for current actions
-        q1_current = self.critic1(states, current_actions).squeeze()
-        q2_current = self.critic2(states, current_actions).squeeze()
-        q_current = torch.min(q1_current, q2_current)
-        
-        # SAC Actor 손실 (엔트로피 정규화 포함)
-        actor_loss = (self.alpha * current_log_probs - q_current).mean()
-        
-        self.actor_optimizer.zero_grad()
-        actor_loss.backward()
-        # Phase 2: Actor 그래디언트 클리핑 강화
-        actor_grad_norm = torch.nn.utils.clip_grad_norm_(self.actor.parameters(), MAX_GRAD_NORM)
-        self.actor_optimizer.step()
+        if self.update_count % self.policy_update_frequency == 0:
+            # ===== SAC Actor 업데이트 =====
+            _, current_actions, current_log_probs = self.actor(states)
+            
+            # Q-values for current actions
+            q1_current = self.critic1(states, current_actions).squeeze()
+            q2_current = self.critic2(states, current_actions).squeeze()
+            q_current = torch.min(q1_current, q2_current)
+            
+            # SAC Actor 손실 (엔트로피 정규화 포함)
+            actor_loss = (self.alpha * current_log_probs - q_current).mean()
+            
+            self.actor_optimizer.zero_grad()
+            actor_loss.backward()
+            # Phase 2: Actor 그래디언트 클리핑 강화
+            actor_grad_norm = torch.nn.utils.clip_grad_norm_(self.actor.parameters(), MAX_GRAD_NORM)
+            self.actor_optimizer.step()
+        else:
+            # Actor 업데이트 생략 (Critic만 업데이트)
+            with torch.no_grad():
+                _, current_actions, current_log_probs = self.actor(states)
         
         # ===== Alpha (엔트로피 계수) 자동 튜닝 (Phase 1: 개선) =====
         alpha_loss = -(self.log_alpha * (current_log_probs + self.target_entropy).detach()).mean()
@@ -539,6 +585,9 @@ class BCell:
         # Phase 3: 안정성 경고 확인 (50회마다)
         if self.update_count % 50 == 0:
             self._check_stability_warnings()
+        
+        # Phase 4: PER 베타 어닐링 (매 업데이트마다)
+        self.replay_buffer.beta = min(1.0, self.replay_buffer.beta + self.replay_buffer.beta_increment)
             
         # Q-value 범위 조정 확인 로깅 (첫 실행 시)
         if self.update_count == 1:
@@ -835,12 +884,21 @@ class BCell:
             if actor_grad_mean > 0.8:
                 self.logger.warning(f"높은 Actor 그래디언트: 평균={actor_grad_mean:.4f}, 학습 불안정 가능")
         
-        # Q-value 발산 경고  
+        # Phase 1: 퍼센타일 기반 Q-value 모니터링
         recent_q_max = self.monitoring_stats['q_value_range']['max'][-window:]
         recent_q_min = self.monitoring_stats['q_value_range']['min'][-window:]
         
-        if any(q > 5.0 for q in recent_q_max) or any(q < -5.0 for q in recent_q_min):
-            self.logger.warning(f"Q-value 극단값: 범위=[{min(recent_q_min):.2f}, {max(recent_q_max):.2f}]")
+        # p5-p95 퍼센타일 계산
+        q_all = recent_q_min + recent_q_max
+        p5 = np.percentile(q_all, 5)
+        p95 = np.percentile(q_all, 95)
+        
+        # 임계값 초과 비율 계산 (±10 범위를 벗어나는 비율)
+        outlier_ratio = sum(1 for q in q_all if q > 10.0 or q < -10.0) / len(q_all)
+        
+        # 5% 초과 시만 경고 (개별 극값 대신 통계적 접근)
+        if outlier_ratio > 0.05:
+            self.logger.warning(f"Q-value 분포 이상: p5={p5:.2f}, p95={p95:.2f}, 이상치비율={outlier_ratio:.1%}")
         
         # 정책 안정성 확인
         if 'stability_indicators' in self.monitoring_stats:
