@@ -476,7 +476,7 @@ class PortfolioEnvironment:
                 elif correlation > 0.3:
                     self.logger.info(f"보상-성과 정렬 양호: {correlation:.3f}")
         
-        return self._get_state(), reward, done, info
+        return
     
     def get_portfolio_metrics(self) -> Dict[str, float]:
         """포트폴리오 성과 메트릭 계산"""
