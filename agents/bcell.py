@@ -451,9 +451,9 @@ class BCell:
 
     def store_experience(self, state, action, reward, next_state, done):
         """경험 저장 (CUDA 호환성을 위한 타입 변환)"""
-        # NumPy 타입을 Python native 타입으로 안전하게 변환
-        done = bool(done)
-        reward = float(reward)
+        # NumPy/Torch 타입을 Python native 타입으로 안전하게 변환
+        done = bool(done.item() if hasattr(done, 'item') else done)
+        reward = float(reward.item() if hasattr(reward, 'item') else reward)
 
         self.replay_buffer.push(state, action, reward, next_state, done)
 
@@ -497,25 +497,28 @@ class BCell:
             target_q2 = self.target_critic2(next_states, next_actions).squeeze()
             target_q = torch.min(target_q1, target_q2) - self.alpha * next_log_probs
 
-            # Phase 1: 소프트 Q-클램프 (퍼센타일 기반)
+            # Phase 1: 강화된 Q-타깃 클리핑 (극단값 억제)
             target_q_values = rewards + self.gamma * target_q * (~dones)
 
-            # 배치별 퍼센타일 기반 정규화 (하드 클립 대신)
+            # 1단계: 절대값 기반 하드 클리핑 (매우 극단적인 값 제거)
+            target_q_values = torch.clamp(target_q_values, min=-100.0, max=100.0)
+
+            # 2단계: 배치별 퍼센타일 기반 정규화
             q_p5 = torch.quantile(target_q_values, 0.05)
             q_p95 = torch.quantile(target_q_values, 0.95)
             q_median = torch.median(target_q_values)
 
-            # z-score 기반 소프트 클램프 (극단값만 완화)
+            # 3단계: z-score 기반 소프트 클램프 (2-sigma로 강화)
             q_std = target_q_values.std()
             if q_std > 1e-6:
-                # 3-sigma 범위를 벗어나는 값들만 소프트 클램프
+                # 2-sigma 범위를 벗어나는 값들을 소프트 클램프 (더 엄격)
                 z_scores = (target_q_values - q_median) / q_std
-                extreme_mask = torch.abs(z_scores) > 3.0
+                extreme_mask = torch.abs(z_scores) > 2.0  # 3.0 → 2.0으로 강화
                 if extreme_mask.any():
-                    # 극단값을 3-sigma 경계로 소프트하게 조정
+                    # 극단값을 2-sigma 경계로 소프트하게 조정
                     target_q_values = torch.where(
                         extreme_mask,
-                        q_median + 3.0 * q_std * torch.sign(z_scores),
+                        q_median + 2.0 * q_std * torch.sign(z_scores),  # 2.0으로 강화
                         target_q_values,
                     )
 

@@ -12,10 +12,10 @@ from utils.logger import BIPDLogger
 class AdaptiveThresholdDetector:
     """분위수 기반 적응형 임계값 감지기"""
     
-    def __init__(self, window_size=512, target_quantile=0.975, target_crisis_rate=0.4):
+    def __init__(self, window_size=512, target_quantile=0.975, target_crisis_rate=0.15):
         self.window_size = window_size
         self.target_quantile = target_quantile
-        self.target_crisis_rate = target_crisis_rate  # 목표 위기율 (40%)
+        self.target_crisis_rate = target_crisis_rate  # 목표 위기율 (15%)
         self.buffer = deque(maxlen=window_size)
         self.crisis_history = deque(maxlen=100)  # 최근 100회 위기 판정 기록
         
@@ -83,18 +83,18 @@ class TCell:
         self.is_fitted = False
         self.training_features = []
         
-        # 적응형 임계값 감지기들
+        # 적응형 임계값 감지기들 (위기율 10-15%로 재조정)
         self.volatility_detector = AdaptiveThresholdDetector(
-            window_size=512, target_quantile=0.95, target_crisis_rate=0.3
+            window_size=512, target_quantile=0.90, target_crisis_rate=0.12
         )
         self.correlation_detector = AdaptiveThresholdDetector(
-            window_size=512, target_quantile=0.97, target_crisis_rate=0.25
+            window_size=512, target_quantile=0.92, target_crisis_rate=0.10
         )
         self.volume_detector = AdaptiveThresholdDetector(
-            window_size=512, target_quantile=0.96, target_crisis_rate=0.35
+            window_size=512, target_quantile=0.91, target_crisis_rate=0.13
         )
         self.overall_detector = AdaptiveThresholdDetector(
-            window_size=512, target_quantile=0.975, target_crisis_rate=0.4
+            window_size=512, target_quantile=0.925, target_crisis_rate=0.15
         )
         
         # 로거

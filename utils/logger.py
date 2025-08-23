@@ -122,6 +122,10 @@ class BIPDLogger:
     def error(self, message):
         """오류 로그"""
         self.logger.error(message)
+    
+    def critical(self, message):
+        """치명적 오류 로그"""
+        self.logger.critical(message)
 
     def log_episode(
         self, episode, reward, portfolio_return, crisis_level, selected_bcell

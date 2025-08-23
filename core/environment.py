@@ -7,7 +7,7 @@ from collections import deque
 import collections
 from data.features import FeatureExtractor
 from utils.logger import BIPDLogger
-from utils.metrics import calculate_concentration_index
+from utils.metrics import calculate_concentration_index, calculate_comprehensive_metrics
 from config import (
     SHARPE_WINDOW, SHARPE_SCALE, REWARD_BUFFER_SIZE, 
     REWARD_OUTLIER_SIGMA, REWARD_CLIP_MIN, REWARD_CLIP_MAX
@@ -41,40 +41,29 @@ class RunningNormalizer:
         
         return np.clip(normalized, -5.0, 5.0)  # 극단값 클리핑
 
-class EMARewardNormalizer:
-    """EMA 기반 보상 정규화 (MAD 정규화 대체)"""
+class FixedRewardNormalizer:
+    """고정 스케일러 기반 보상 정규화 (에피소드 일관성 확보)"""
     
-    def __init__(self, beta: float = 0.99, eps: float = 1e-8):
-        self.beta = beta
-        self.eps = eps
-        self.mean = 0.0
-        self.var = 1.0
+    def __init__(self, target_mean: float = 0.0, target_std: float = 1.0):
+        self.target_mean = target_mean
+        self.target_std = target_std
+        # 훈련 데이터 기반 사전 추정값 (경험적으로 설정)
+        self.empirical_mean = 0.002  # 일일 평균 수익률 추정
+        self.empirical_std = 0.02   # 일일 변동성 추정
         self.count = 0
     
     def normalize(self, reward: float) -> float:
-        """보상 정규화"""
-        if self.count == 0:
-            self.mean = reward
-            self.var = 1.0
-        else:
-            # EMA 업데이트
-            self.mean = self.beta * self.mean + (1 - self.beta) * reward
-            delta = reward - self.mean
-            self.var = self.beta * self.var + (1 - self.beta) * (delta ** 2)
-        
+        """고정 스케일러 기반 정규화"""
         self.count += 1
         
-        # 정규화
-        std = np.sqrt(self.var + self.eps)
-        normalized = (reward - self.mean) / std
+        # 고정 스케일링 (에피소드 간 일관성 보장)
+        normalized = (reward - self.empirical_mean) / self.empirical_std
         
-        # 소프트 클리핑 (극단값만 완화)
-        return np.tanh(normalized)
+        # 하드 클리핑 (±3 시그마)
+        return np.clip(normalized, -3.0, 3.0)
     
     def reset(self):
-        """정규화기 초기화"""
-        self.mean = 0.0
-        self.var = 1.0
+        """정규화기 초기화 (고정 파라미터는 유지)"""
         self.count = 0
 
 class PortfolioEnvironment:
@@ -115,8 +104,8 @@ class PortfolioEnvironment:
             'last_report_step': 0   # 마지막 리포트 시점
         }
         
-        # 보상 정규화기
-        self.reward_normalizer = EMARewardNormalizer()
+        # 보상 정규화기 (고정 스케일러로 변경)
+        self.reward_normalizer = FixedRewardNormalizer()
         
         # Sharpe 비율 EMA 추적기 (개선사항)
         self.sharpe_tracker = {
@@ -135,6 +124,17 @@ class PortfolioEnvironment:
         
         # 상태 정규화기 추가
         self.state_normalizer = RunningNormalizer(feature_dim=12)  # 시장 특성 12차원
+        
+        # 변동성 타깃팅 파라미터
+        self.target_volatility = 0.10  # 연간 목표 변동성 (10%)
+        self.volatility_window = 20    # 변동성 추정 윈도우 (20일)
+        self.min_leverage = 0.5        # 최소 레버리지
+        self.max_leverage = 2.0        # 최대 레버리지
+        
+        # 거래비용 최적화 파라미터
+        self.no_trade_band = 0.02      # 노-트레이드 밴드 (2% 이내 변화는 거래 안함)
+        self.max_turnover = 0.5        # 최대 턴오버 (50% 제한)
+        self.turnover_penalty_weight = 0.1  # 턴오버 페널티 가중치
         
         self.logger = BIPDLogger("Environment")
         
@@ -192,6 +192,12 @@ class PortfolioEnvironment:
         
         # 가중치 검증 및 정규화
         new_weights = self._validate_weights(new_weights)
+        
+        # 변동성 타깃팅 적용
+        new_weights = self._apply_volatility_targeting(new_weights)
+        
+        # 거래비용 최적화 적용 (노-트레이드 밴드 & 턴오버 캡)
+        new_weights = self._apply_trading_constraints(new_weights)
         
         # 리밸런싱 비용 계산
         weight_change = np.abs(new_weights - self.weights).sum()
@@ -328,6 +334,96 @@ class PortfolioEnvironment:
         
         return final_weights
     
+    def _apply_volatility_targeting(self, weights: np.ndarray) -> np.ndarray:
+        """변동성 타깃팅 오버레이 적용"""
+        if len(self.return_history) < self.volatility_window:
+            # 초기에는 변동성 타깃팅 미적용
+            return weights
+        
+        # 최근 변동성 추정 (일일 기준)
+        recent_returns = np.array(self.return_history[-self.volatility_window:])
+        current_volatility = recent_returns.std()
+        
+        # 연간 변동성으로 환산
+        annualized_volatility = current_volatility * np.sqrt(252)
+        
+        # 레버리지 스케일 계산
+        if annualized_volatility > 1e-6:
+            leverage_scale = self.target_volatility / annualized_volatility
+        else:
+            leverage_scale = 1.0
+        
+        # 레버리지 클리핑
+        leverage_scale = np.clip(leverage_scale, self.min_leverage, self.max_leverage)
+        
+        # 가중치 스케일링
+        scaled_weights = weights * leverage_scale
+        
+        # 재정규화 (합이 1이 되도록)
+        if scaled_weights.sum() > 0:
+            scaled_weights = scaled_weights / scaled_weights.sum()
+        else:
+            scaled_weights = weights  # 백업
+        
+        # 변동성 타깃팅 로그 (100스텝마다)
+        if self.current_step % 100 == 0:
+            self.logger.debug(
+                f"변동성 타깃팅 (step {self.current_step}): "
+                f"현재_vol={annualized_volatility:.3f}, 목표_vol={self.target_volatility:.3f}, "
+                f"레버리지={leverage_scale:.2f}"
+            )
+        
+        if not hasattr(self, '_volatility_logged'):
+            self.logger.info(f"변동성 타깃팅 활성화: 목표={self.target_volatility:.1%}, 윈도우={self.volatility_window}일")
+            self._volatility_logged = True
+        
+        return scaled_weights
+    
+    def _apply_trading_constraints(self, new_weights: np.ndarray) -> np.ndarray:
+        """노-트레이드 밴드 및 턴오버 캡 적용"""
+        current_weights = self.weights
+        
+        # 1. 노-트레이드 밴드 적용
+        weight_changes = new_weights - current_weights
+        
+        # 각 자산별로 노-트레이드 밴드 적용
+        small_change_mask = np.abs(weight_changes) <= self.no_trade_band
+        constrained_weights = np.where(small_change_mask, current_weights, new_weights)
+        
+        # 2. 턴오버 캡 적용
+        total_turnover = np.abs(constrained_weights - current_weights).sum()
+        
+        if total_turnover > self.max_turnover:
+            # 턴오버가 제한을 초과하면 스케일링
+            scale_factor = self.max_turnover / total_turnover
+            # 변화량을 스케일링하고 현재 가중치에 더함
+            scaled_changes = (constrained_weights - current_weights) * scale_factor
+            constrained_weights = current_weights + scaled_changes
+        
+        # 3. 재정규화 (합이 1이 되도록)
+        if constrained_weights.sum() > 0:
+            constrained_weights = constrained_weights / constrained_weights.sum()
+        else:
+            constrained_weights = new_weights  # 백업
+        
+        # 4. 로깅 (100스텝마다)
+        if self.current_step % 100 == 0:
+            original_turnover = np.abs(new_weights - current_weights).sum()
+            final_turnover = np.abs(constrained_weights - current_weights).sum()
+            band_applied = np.sum(small_change_mask)
+            
+            self.logger.debug(
+                f"거래 제약 (step {self.current_step}): "
+                f"원래_턴오버={original_turnover:.3f}, 최종_턴오버={final_turnover:.3f}, "
+                f"밴드적용={band_applied}/{len(new_weights)}"
+            )
+        
+        if not hasattr(self, '_trading_constraints_logged'):
+            self.logger.info(f"거래 제약 활성화: 노트레이드밴드={self.no_trade_band:.1%}, 최대턴오버={self.max_turnover:.1%}")
+            self._trading_constraints_logged = True
+        
+        return constrained_weights
+    
     def _validate_and_log_weights(self, weights: np.ndarray, context: str = "UNKNOWN"):
         """최종 가중치 검증 및 로깅 (슬라이딩 윈도우 기반)"""
         # 검증 대상을 가중치로 제한
@@ -418,15 +514,20 @@ class PortfolioEnvironment:
         else:
             weight_change = 0.0
         
-        transaction_penalty = 0.025 * weight_change  # λ_tc = 0.025 (완화)
+        transaction_penalty = 0.01 * weight_change  # λ_tc = 0.01 (완화)
         
-        # 5. 원시 보상 계산 (Sharpe proxy 포함)
-        raw_reward = log_return - risk_penalty - transaction_penalty + sharpe_reward
+        # 5. 집중도(HHI) 페널티 추가
+        hhi = np.sum(weights ** 2)  # Herfindahl-Hirschman Index
+        equal_weight_hhi = 1.0 / self.n_assets  # 균등분산 시 HHI
+        concentration_penalty = 0.005 * max(0, hhi - equal_weight_hhi)  # λ_hhi = 0.005
         
-        # 5. EMA 기반 정규화 (MAD 정규화 대체)
+        # 6. 원시 보상 계산 (HHI 페널티 포함)
+        raw_reward = log_return - risk_penalty - transaction_penalty - concentration_penalty + sharpe_reward
+        
+        # 7. 고정 스케일러 정규화
         normalized_reward = self.reward_normalizer.normalize(raw_reward)
         
-        # 6. 보상-성과 상관성 추적
+        # 8. 보상-성과 상관성 추적
         self.reward_performance_tracker['rewards'].append(normalized_reward)
         self.reward_performance_tracker['returns'].append(portfolio_return)
         
@@ -444,15 +545,19 @@ class PortfolioEnvironment:
             self.logger.debug(
                 f"보상 구성 (step {self.current_step}): "
                 f"log_ret={log_return:.4f}, risk_pen={risk_penalty:.4f}, "
-                f"tc_pen={transaction_penalty:.4f}, sharpe_rew={sharpe_reward:.4f}, "
-                f"Sharpe_EMA={current_sharpe_estimate:.3f}, raw_rew={raw_reward:.4f}"
+                f"tc_pen={transaction_penalty:.4f}, hhi_pen={concentration_penalty:.4f}, "
+                f"sharpe_rew={sharpe_reward:.4f}, HHI={hhi:.3f}, raw_rew={raw_reward:.4f}"
             )
         
         if not hasattr(self, '_reward_logged'):
-            self.logger.info("보상 함수 개선: log-return 기반, EMA 정규화, Sharpe proxy 통합")
+            self.logger.info("보상 함수 개선: log-return 기반, 고정 정규화, HHI 페널티, Sharpe proxy 통합")
             self._reward_logged = True
         
-        return float(normalized_reward)
+        # 안전한 타입 변환 (스칼라 값 보장)
+        if hasattr(normalized_reward, 'item'):
+            return float(normalized_reward.item())
+        else:
+            return float(normalized_reward)
     
     def _check_reward_performance_correlation(self):
         """보상-성과 상관성 검증"""
@@ -478,8 +583,30 @@ class PortfolioEnvironment:
         
         return
     
-    def get_portfolio_metrics(self) -> Dict[str, float]:
-        """포트폴리오 성과 메트릭 계산"""
+    def get_portfolio_metrics(self, num_trials: int = 1) -> Dict[str, float]:
+        """포트폴리오 성과 메트릭 계산 (DSR 포함)"""
+        if len(self.return_history) == 0:
+            return {}
+        
+        returns = np.array(self.return_history)
+        
+        # DSR을 포함한 종합적인 메트릭 계산
+        comprehensive_metrics = calculate_comprehensive_metrics(returns, num_trials)
+        
+        # 추가적인 포트폴리오 특화 메트릭
+        additional_metrics = {
+            'portfolio_value': self.portfolio_value,
+            'total_cost': sum(self.cost_history) if self.cost_history else 0.0,
+            'average_concentration': np.mean([calculate_concentration_index(w) for w in self.weight_history]) if self.weight_history else 0.0
+        }
+        
+        # 메트릭 결합
+        all_metrics = {**comprehensive_metrics, **additional_metrics}
+        
+        return all_metrics
+        
+    def get_legacy_portfolio_metrics(self) -> Dict[str, float]:
+        """기존 방식의 포트폴리오 성과 메트릭 (호환성 유지)"""
         if len(self.return_history) == 0:
             return {}
         

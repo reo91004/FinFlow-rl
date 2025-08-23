@@ -144,10 +144,12 @@ class FeatureExtractor:
             
             # 최대 낙폭
             try:
-                cumulative = (1 + portfolio_returns).cumprod()
-                rolling_max = cumulative.expanding().max()
+                # NumPy 기반 계산으로 수정 (pandas expanding 메소드 오류 방지)
+                portfolio_returns_np = portfolio_returns.values if hasattr(portfolio_returns, 'values') else np.asarray(portfolio_returns)
+                cumulative = np.cumprod(1 + portfolio_returns_np)
+                rolling_max = np.maximum.accumulate(cumulative)
                 drawdown = (cumulative - rolling_max) / rolling_max
-                max_drawdown = abs(drawdown.min())
+                max_drawdown = abs(np.min(drawdown))
                 features.append(np.clip(max_drawdown, 0, 1))
             except:
                 features.append(0.0)
