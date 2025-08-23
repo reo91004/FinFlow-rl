@@ -360,7 +360,7 @@ class BCell:
         if D_target is not None:
             c = dirichlet_c_from_diversity(action_dim, D_target)
         else:
-            c = 0.5  # 과탐색 방지를 위해 하향 조정
+            c = 1.0  # Uniform Dirichlet for balanced exploration
 
         self._alpha_prior_scalar = c
         alpha0 = action_dim * c

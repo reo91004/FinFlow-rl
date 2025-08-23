@@ -87,13 +87,11 @@ def test_sac_conversion():
         assert torch.allclose(weights.sum(dim=1), torch.ones(1)), "가중치 합이 1이 아닙니다"
         assert (weights > 0).all(), "음수 가중치가 있습니다"
         
-        # CriticNetwork 테스트
+        # CriticNetwork 테스트 (action 필수)
         test_action = torch.randn(1, action_dim)
-        q_value_with_action = bcell.critic1(test_state, test_action)
-        q_value_without_action = bcell.critic1(test_state)
+        q_value = bcell.critic1(test_state, test_action)
         
-        assert q_value_with_action.shape == (1, 1), f"Q-value (with action) 형태 오류: {q_value_with_action.shape}"
-        assert q_value_without_action.shape == (1, 1), f"Q-value (without action) 형태 오류: {q_value_without_action.shape}"
+        assert q_value.shape == (1, 1), f"Q-value 형태 오류: {q_value.shape}"
         
         test_results['sac_networks'] = True
         print("✅ SAC 네트워크 구조 검증 완료")
