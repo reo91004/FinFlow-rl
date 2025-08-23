@@ -10,7 +10,7 @@ from pathlib import Path
 # 프로젝트 루트 추가
 sys.path.append(str(Path(__file__).parent.parent))
 
-from core.environment import PortfolioEnvironment, EMARewardNormalizer
+from core.environment import PortfolioEnvironment
 from agents.tcell import TCell, AdaptiveThresholdDetector
 from agents.bcell import BCell
 from data.loader import DataLoader

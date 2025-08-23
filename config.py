@@ -39,15 +39,6 @@ def set_seed(seed=GLOBAL_SEED):
     #     pass
 
 
-def get_device_info():
-    """현재 사용 중인 device 정보 반환"""
-    if DEVICE.type == "cuda":
-        return f"CUDA GPU: {torch.cuda.get_device_name(0)} (Memory: {torch.cuda.get_device_properties(0).total_memory // 1024**3}GB)"
-    # elif DEVICE.type == "mps":
-    #     return "Apple MPS GPU (Metal Performance Shaders)"
-    else:
-        return "CPU"
-
 
 # 디렉토리 설정
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))

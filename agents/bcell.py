@@ -552,8 +552,8 @@ class BCell:
             current_q2, target_q_values, reduction="none", beta=HUBER_DELTA
         )
 
-        # CQL 정규화: 단순화된 고정 강도 (Kumar et al. 2020 원논문 권장)
-        current_cql_alpha = 1.0  # 고정값 사용 (적응형 제거)
+        # CQL 정규화: 금융 환경 적응 (온라인 상호작용 고려)
+        current_cql_alpha = 0.3  # 1.0 → 0.3 과보수 방지, 포트폴리오 환경 적합
 
         # 효율적인 제안 샘플 생성 (샘플 수 감소)
         batch_size = states.shape[0]
@@ -600,15 +600,15 @@ class BCell:
         cql_penalty1 = current_cql_alpha * compute_lse_penalty(self.critic1)
         cql_penalty2 = current_cql_alpha * compute_lse_penalty(self.critic2)
         
-        # Gradient Penalty (Spectral Normalization 개념 적용)
-        grad_penalty1 = self._compute_gradient_penalty(self.critic1, states, actions)
-        grad_penalty2 = self._compute_gradient_penalty(self.critic2, states, actions)
+        # Weight Decay (L2 정규화) - 고비용 Gradient Penalty 대체
+        l2_reg1 = 1e-4 * sum(p.pow(2).sum() for p in self.critic1.parameters())
+        l2_reg2 = 1e-4 * sum(p.pow(2).sum() for p in self.critic2.parameters())
 
-        # 최종 손실 (Huber + CQL + Gradient Penalty) - 항목별 분리 기록
+        # 최종 손실 (Huber + CQL + L2 정규화) - 항목별 분리 기록
         huber1_loss = (is_weights * critic1_huber).mean()
         huber2_loss = (is_weights * critic2_huber).mean()
-        critic1_loss = huber1_loss + cql_penalty1 + 0.1 * grad_penalty1
-        critic2_loss = huber2_loss + cql_penalty2 + 0.1 * grad_penalty2
+        critic1_loss = huber1_loss + cql_penalty1 + l2_reg1
+        critic2_loss = huber2_loss + cql_penalty2 + l2_reg2
         
         # CQL 디버그 로깅 (주요 통계)
         if self.update_count % 50 == 0:  # 50회마다 로깅
@@ -734,12 +734,8 @@ class BCell:
                         f"log_α={post_update_log_alpha:.4f}"
                     )
 
-        # 타겟 네트워크 소프트 업데이트 (Emergency Sync 포함)
-        # Q-극단 상황 감지: |Q|max > 50 또는 극단비율 > 30%
-        q_abs_max = max(current_q1.abs().max().item(), current_q2.abs().max().item())
-        extreme_ratio = float((current_q1.abs() > 50).float().mean() + (current_q2.abs() > 50).float().mean()) / 2
-        needs_emergency_sync = (q_abs_max > 50.0) or (extreme_ratio > 0.3)
-        
+        # 타겟 네트워크 소프트 업데이트 (보수적 Emergency Sync)
+        needs_emergency_sync = self._check_emergency_sync_trigger(current_q1, current_q2)
         self._soft_update_targets(force_sync=needs_emergency_sync)
 
         # Phase 3: 강화된 NaN/Inf 안전장치 + 추가 안정성 체크
@@ -859,70 +855,63 @@ class BCell:
         
         return True  # 항상 성공 반환 (단순화)
     
-    def _compute_gradient_penalty(self, critic, states, actions, lambda_gp=0.1):
-        """
-        Gradient Penalty 계산 - Spectral Normalization for GANs 아이디어 적용
-        네트워크 가중치의 기울기 norm을 제한하여 안정성 향상
-        """
-        # 입력에 대한 기울기 계산 (requires_grad=True 필요)
-        states_gp = states.clone().detach().requires_grad_(True)
-        actions_gp = actions.clone().detach().requires_grad_(True)
-        
-        # Critic 출력 계산
-        q_vals = critic(states_gp, actions_gp).squeeze()
-        
-        # 기울기 계산
-        gradients = torch.autograd.grad(
-            outputs=q_vals,
-            inputs=[states_gp, actions_gp],
-            grad_outputs=torch.ones_like(q_vals),
-            create_graph=True,
-            retain_graph=True,
-            only_inputs=True
-        )
-        
-        # 기울기 norm 계산
-        gradient_norm = torch.sqrt(
-            torch.sum(gradients[0].pow(2), dim=1) + 
-            torch.sum(gradients[1].pow(2), dim=1) + 1e-12
-        )
-        
-        # Penalty: (||∇||_2 - 1)^2 형태로 기울기 norm을 1 근처로 제한
-        penalty = ((gradient_norm - 1.0).pow(2)).mean()
-        
-        return penalty
+    # def _compute_gradient_penalty(self, critic, states, actions, lambda_gp=0.1):
+    #     """
+    #     [DEPRECATED] Gradient Penalty - Weight Decay로 대체됨
+    #     고비용 계산으로 인해 L2 정규화로 교체
+    #     """
+    #     # 더 이상 사용하지 않음 - Weight Decay로 대체
     
     def _adjust_learning_rates(self, q_range):
-        """Q-range 기반 적응형 학습률 조정 (Smith 2017, Cyclical Learning Rates)"""
-        # 기준: Q-range > 100이면 학습률 반감, < 20이면 복원
+        """Q-range 기반 적응형 학습률 조정 - Actor LR만 조정 (Critic 타겟 추적 보호)"""
+        # 기준: Q-range > 100이면 Actor LR 반감, < 20이면 복원
+        # Critic LR은 고정 유지 (안정적인 타겟 추적을 위해)
         if not hasattr(self, '_lr_reduction_count'):
             self._lr_reduction_count = 0
             self._original_actor_lr = ACTOR_LR
-            self._original_critic_lr = CRITIC_LR
         
-        # Q-range가 크면 학습률 감소
+        # Q-range가 크면 Actor 학습률만 감소 (Critic은 고정)
         if q_range > 100.0 and self._lr_reduction_count == 0:
             for param_group in self.actor_optimizer.param_groups:
                 param_group['lr'] = self._original_actor_lr * 0.5
-            for param_group in self.critic1_optimizer.param_groups:
-                param_group['lr'] = self._original_critic_lr * 0.5
-            for param_group in self.critic2_optimizer.param_groups:
-                param_group['lr'] = self._original_critic_lr * 0.5
             
             self._lr_reduction_count = 1
-            self.logger.info(f"[{self.risk_type}] Q-range={q_range:.1f} → 학습률 50% 감소")
+            self.logger.info(f"[{self.risk_type}] Q-range={q_range:.1f} → Actor LR 50% 감소 (Critic LR 유지)")
         
-        # Q-range가 안정되면 학습률 복원
+        # Q-range가 안정되면 Actor 학습률 복원 (Critic은 항상 원래값 유지)
         elif q_range < 20.0 and self._lr_reduction_count > 0:
             for param_group in self.actor_optimizer.param_groups:
                 param_group['lr'] = self._original_actor_lr
-            for param_group in self.critic1_optimizer.param_groups:
-                param_group['lr'] = self._original_critic_lr
-            for param_group in self.critic2_optimizer.param_groups:
-                param_group['lr'] = self._original_critic_lr
             
             self._lr_reduction_count = 0
-            self.logger.info(f"[{self.risk_type}] Q-range={q_range:.1f} → 학습률 복원")
+            self.logger.info(f"[{self.risk_type}] Q-range={q_range:.1f} → Actor LR 복원 (Critic LR 안정 유지)")
+    
+    def _check_emergency_sync_trigger(self, current_q1, current_q2):
+        """보수적 Emergency Sync 트리거 - 연속 3회 위반 시에만 1회 실행"""
+        # Q-극단 상황 감지 기준
+        q_abs_max = max(current_q1.abs().max().item(), current_q2.abs().max().item())
+        extreme_ratio = float((current_q1.abs() > 50).float().mean() + (current_q2.abs() > 50).float().mean()) / 2
+        
+        # 위반 조건: |Q|max > 50 또는 극단비율 > 30%
+        is_violation = (q_abs_max > 50.0) or (extreme_ratio > 0.3)
+        
+        # 연속 위반 카운터 관리
+        if not hasattr(self, '_violation_count'):
+            self._violation_count = 0
+            self._sync_executed = False
+        
+        if is_violation:
+            self._violation_count += 1
+            # 연속 3회 위반 & 아직 동기화 실행 안함
+            if self._violation_count >= 3 and not self._sync_executed:
+                self._sync_executed = True
+                return True
+        else:
+            # 위반 해제 시 카운터 리셋
+            self._violation_count = 0
+            self._sync_executed = False
+        
+        return False
     
     def _simple_health_check(self, current_q1, current_q2):
         """간소화된 핵심 지표 체크 (복잡한 슬라이딩 통계 대체)"""
@@ -1025,24 +1014,20 @@ class BCell:
         self.policy_update_frequency = 2
 
     def _log_unified_monitoring_summary(self):
-        """통합 슬라이딩 윈도우 모니터링 요약"""
-        # Q-value 요약
-        q_min_stats = self.q_min_stats.get_stats()
-        q_max_stats = self.q_max_stats.get_stats()
+        """극간소화 모니터링 - 핵심 7지표만 추적"""
+        # 7개 핵심 지표 수집
         q_range_stats = self.q_range_stats.get_stats()
-
-        # 손실 요약
+        q_max_stats = self.q_max_stats.get_stats()
+        alpha_stats = self.alpha_stats.get_stats()
         actor_loss_stats = self.actor_loss_stats.get_stats()
         critic_loss_stats = self.critic_loss_stats.get_stats()
-
-        # Alpha 요약
-        alpha_stats = self.alpha_stats.get_stats()
-        target_entropy_stats = self.target_entropy_stats.get_stats()
-
-        # 카운터 요약
-        nan_counter = self.nan_loss_counter.get_stats()
-        extreme_q_counter = self.extreme_q_counter.get_stats()
-        high_alpha_counter = self.high_alpha_counter.get_stats()
+        td_error_stats = self.td_error_stats.get_stats()
+        
+        # 현재 정책 엔트로피 (H(policy))
+        policy_entropy = getattr(self, '_policy_entropy_ema', 0.0)
+        
+        # TD_p90 계산 (90th percentile)
+        td_p90 = td_error_stats.get("sliding_p90", 0.0) if hasattr(td_error_stats, 'get') and "sliding_p90" in td_error_stats else 0.0
 
         # 안정성 체크
         is_stable = (
@@ -1050,74 +1035,53 @@ class BCell:
             and q_range_stats["sliding_mean"] < 200
             and alpha_stats["sliding_mean"] < 1.0
         )
-        stability_marker = "✓" if is_stable else "⚠"
+        status = "OK" if is_stable else "WARN"
 
         self.logger.debug(
-            f"[{self.risk_type}] {stability_marker} 업데이트 {self.update_count} (통합스텋): "
-            f"손실(A:{actor_loss_stats['sliding_mean']:.2f}/C:{critic_loss_stats['sliding_mean']:.2f}) "
-            f"Q범위[μ{q_min_stats['sliding_mean']:.1f},μ{q_max_stats['sliding_mean']:.1f}] "
-            f"Q렉μ{q_range_stats['sliding_mean']:.1f} "
-            f"αμ{alpha_stats['sliding_mean']:.3f}(H_t={target_entropy_stats['sliding_mean']:.3f}) "
-            f"EP={getattr(self, 'episode_progress', 0.0):.1%} | "
-            f"이상(NaN:{nan_counter['sliding_rate']:.1%}, Q>{extreme_q_counter['sliding_rate']:.1%}, α>{high_alpha_counter['sliding_rate']:.1%})"
+            f"[{self.risk_type}] {status} 업데이트 {self.update_count} (통합스텋): "
+            f"Q-range:{q_range_stats['sliding_mean']:.1f} "
+            f"|Q|max:{abs(q_max_stats['sliding_mean']):.1f} "
+            f"α:{alpha_stats['sliding_mean']:.3f} "
+            f"A-loss:{actor_loss_stats['sliding_mean']:.2f} "
+            f"C-loss:{critic_loss_stats['sliding_mean']:.2f} "
+            f"H(π):{policy_entropy:.3f} "
+            f"TD_p90:{td_p90:.2f}"
         )
 
-        # 경고 체크
+        # 경고는 최소화 (중요한 것만)
         if not is_stable:
-            issues = []
+            critical_issues = []
             if critic_loss_stats["sliding_mean"] > 1e6:
-                issues.append(f"C손실 {critic_loss_stats['sliding_mean']:.1e}")
+                critical_issues.append(f"C-loss:{critic_loss_stats['sliding_mean']:.1e}")
             if q_range_stats["sliding_mean"] > 200:
-                issues.append(f"Q범위 {q_range_stats['sliding_mean']:.1f}")
+                critical_issues.append(f"Q-range:{q_range_stats['sliding_mean']:.1f}")
             if alpha_stats["sliding_mean"] > 1.0:
-                issues.append(f"α {alpha_stats['sliding_mean']:.3f}")
-
-            self.logger.warning(f"[{self.risk_type}] 안정성 문제: {', '.join(issues)}")
+                critical_issues.append(f"α:{alpha_stats['sliding_mean']:.3f}")
+            
+            if critical_issues:
+                self.logger.warning(f"[{self.risk_type}] 핵심지표 이상: {' '.join(critical_issues)}")
 
     def _check_stability_warnings_unified(self):
-        """통합 슬라이딩 윈도우 기반 안정성 경고"""
+        """극간소화 안정성 경고 - 치명적 이슈만 감지"""
         if self.update_count < 50:
             return
 
-        # Alpha 발산 경고
+        # 치명적 Alpha 문제만 경고 (극단값)
         alpha_stats = self.alpha_stats.get_stats()
         if alpha_stats["sliding_size"] >= 25:
             alpha_mean = alpha_stats["sliding_mean"]
-            alpha_std = alpha_stats["sliding_std"]
+            if alpha_mean > 2.0:  # 극단적으로 높음
+                self.logger.warning(f"[치명] α 폭주: {alpha_mean:.3f}")
+            elif alpha_mean < 1e-5:  # 극단적으로 낮음 (학습 정지)
+                self.logger.warning(f"[치명] α 고착: {alpha_mean:.1e}")
 
-            if alpha_mean > 0.8:
-                self.logger.warning(
-                    f"[통합] 높은 온도 계수: 슬라이딩 평균 α={alpha_mean:.4f}±{alpha_std:.4f}"
-                )
-            elif alpha_mean < 0.001:
-                self.logger.warning(
-                    f"[통합] 낮은 온도 계수: 슬라이딩 평균 α={alpha_mean:.4f}±{alpha_std:.4f}"
-                )
-
-        # Q-value 범위 경고
+        # 치명적 Q-range 확산만 경고
         q_range_stats = self.q_range_stats.get_stats()
         if q_range_stats["sliding_size"] >= 25:
             q_range_mean = q_range_stats["sliding_mean"]
-            if q_range_mean > 100:
-                self.logger.warning(
-                    f"[통합] Q-value 범위 확대: 슬라이딩 평균 {q_range_mean:.2f}"
-                )
+            if q_range_mean > 500:  # 극단 확산
+                self.logger.warning(f"[치명] Q-range 폭주: {q_range_mean:.1f}")
 
-        # 이상치 비율 경고
-        nan_stats = self.nan_loss_counter.get_stats()
-        extreme_q_stats = self.extreme_q_counter.get_stats()
-
-        if nan_stats["sliding_rate"] > 0.05:  # 5% 초과
-            self.logger.warning(
-                f"[통합] 높은 NaN 비율: {nan_stats['sliding_rate']:.1%} "
-                f"({nan_stats['sliding_count']}/{nan_stats['sliding_size']})"
-            )
-
-        if extreme_q_stats["sliding_rate"] > 0.1:  # 10% 초과
-            self.logger.warning(
-                f"[통합] 높은 극단 Q-value 비율: {extreme_q_stats['sliding_rate']:.1%} "
-                f"({extreme_q_stats['sliding_count']}/{extreme_q_stats['sliding_size']})"
-            )
 
     def _soft_update_targets(self, force_sync: bool = False):
         """타겟 네트워크들 소프트 업데이트 (SAC - Critic만) + Emergency Sync"""

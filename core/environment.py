@@ -43,11 +43,12 @@ class RunningNormalizer:
 
 class FixedScaleRewardNormalizer:
     """
-    고정 스케일 보상 정규화 - 에피소드간 일관성 보장
+    고정 스케일 보상 정규화 - 금융 환경 특화
+    일별 로그수익률 [-5%, 5%] 범위를 고려한 [-1, 1] 클리핑으로 에피소드간 일관성 보장
     Machado et al. 2018 "Revisiting the Arcade Learning Environment" 기반
     """
     
-    def __init__(self, reward_scale: float = 10.0):
+    def __init__(self, reward_scale: float = 1.0):  # 금융 환경 적합 기본값
         self.reward_scale = reward_scale
         self.count = 0
     
@@ -99,8 +100,8 @@ class PortfolioEnvironment:
             'last_report_step': 0   # 마지막 리포트 시점
         }
         
-        # 보상 정규화기 (고정 스케일로 교체)
-        self.reward_normalizer = FixedScaleRewardNormalizer(reward_scale=10.0)
+        # 보상 정규화기 (금융 환경 특화: 일별 로그수익 [-5%, 5%] 고려)
+        self.reward_normalizer = FixedScaleRewardNormalizer(reward_scale=1.0)
         
         # Sharpe 비율 EMA 추적기 (개선사항)
         self.sharpe_tracker = {

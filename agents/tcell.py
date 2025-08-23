@@ -347,30 +347,6 @@ class TCell:
         except Exception as e:
             self.logger.error(f"Explanation generation failed: {e}")
             return {'error': f"Explanation generation failed: {e}"}
-    def get_crisis_statistics(self):
-        """위기 감지 통계 요약"""
-        return {
-            'volatility_crisis_rate': self.volatility_detector.get_crisis_rate(),
-            'correlation_crisis_rate': self.correlation_detector.get_crisis_rate(),
-            'volume_crisis_rate': self.volume_detector.get_crisis_rate(),
-            'overall_crisis_rate': self.overall_detector.get_crisis_rate()
-        }
-    
-    def reset_detectors(self):
-        """모든 감지기 재설정"""
-        self.volatility_detector = AdaptiveThresholdDetector(
-            window_size=512, target_quantile=0.95, target_crisis_rate=0.3
-        )
-        self.correlation_detector = AdaptiveThresholdDetector(
-            window_size=512, target_quantile=0.97, target_crisis_rate=0.25
-        )
-        self.volume_detector = AdaptiveThresholdDetector(
-            window_size=512, target_quantile=0.96, target_crisis_rate=0.35
-        )
-        self.overall_detector = AdaptiveThresholdDetector(
-            window_size=512, target_quantile=0.975, target_crisis_rate=0.4
-        )
-        self.logger.info("적응형 임계값 감지기들이 재설정되었습니다.")
     
     def save_model(self, filepath):
         """모델 저장"""

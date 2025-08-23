@@ -94,7 +94,7 @@ class ImmunePortfolioSystem:
             f"면역 포트폴리오 시스템이 초기화되었습니다. "
             f"자산수={n_assets}, 상태차원={state_dim}, "
             f"B-Cell={len(self.bcells)}개, "
-            f"Device={get_device_info()}"
+            f"Device={DEVICE}"
         )
 
     def fit_tcell(self, historical_features: np.ndarray) -> bool:
