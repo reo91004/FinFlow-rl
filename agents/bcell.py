@@ -375,9 +375,13 @@ class BCell:
 
         h_min = -math.log(action_dim)  # 최소(집중) 근사치
 
-        self.target_entropy_max = h_prior
-        self.target_entropy_min = h_min
-        self.target_entropy = h_prior
+        # TARGET_ENTROPY_SCALE 적용 (2024 research: high-dim action spaces)
+        scaled_h_prior = h_prior * TARGET_ENTROPY_SCALE
+        scaled_h_min = h_min * TARGET_ENTROPY_SCALE
+        
+        self.target_entropy_max = scaled_h_prior
+        self.target_entropy_min = scaled_h_min
+        self.target_entropy = scaled_h_prior
 
         # 정책 엔트로피 EMA 초기화 (정책-적응형 스케줄링용)
         self._policy_entropy_ema = None

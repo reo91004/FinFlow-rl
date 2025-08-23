@@ -108,7 +108,7 @@ BUFFER_SIZE = int(50000) # 10000 → 50000 (더 다양한 경험)
 UPDATE_FREQUENCY = int(4)
 
 # SAC 엔트로피 설정 (더 보수적 탐색)
-TARGET_ENTROPY_SCALE = float(0.1)   # 0.25 → 0.1 (보수적 탐색)
+TARGET_ENTROPY_SCALE = float(0.4)   # 2024 research: 30D action space optimal scale
 
 # SAC 안정화 파라미터 (Phase 1: 핵심 안정화)
 ALPHA_MIN = float(1e-4)  # 온도 최소값
