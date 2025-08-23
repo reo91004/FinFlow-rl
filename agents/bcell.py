@@ -415,21 +415,28 @@ class BCell:
         self._entropy_sanity_check()
     
     def _entropy_sanity_check(self):
-        """목표 엔트로피 범위 검증 및 교정"""
+        """목표 엔트로피 범위 검증 및 교정 (로그 스팸 방지)"""
         original_value = self.target_entropy
         
         # Dirichlet K=3에서 합리적 범위: [-5, 5]
         if not (-5.0 <= self.target_entropy <= 5.0):
-            self.logger.warning(
-                f"[{self.risk_type}] 엔트로피 범위 초과: {original_value:.3f} → [-5,5] 범위로 클리핑"
-            )
+            # 첫 번째 교정시에만 INFO 로그 (각 B-Cell당 1회만)
+            if not hasattr(self, '_entropy_corrected'):
+                self.logger.info(
+                    f"[{self.risk_type}] Target entropy initialized: {original_value:.3f} → [-5,5] 범위로 클리핑"
+                )
+                self._entropy_corrected = True
+            
+            # 교정 수행 (로그 없이)
             self.target_entropy = np.clip(self.target_entropy, -5.0, 5.0)
         
         # 비정상 값 검사
         if not np.isfinite(self.target_entropy):
-            self.logger.error(
-                f"[{self.risk_type}] 비정상 엔트로피: {original_value} → -1.0으로 복원"
-            )
+            if not hasattr(self, '_entropy_nan_corrected'):
+                self.logger.error(
+                    f"[{self.risk_type}] 비정상 엔트로피 복원: {original_value} → -1.0"
+                )
+                self._entropy_nan_corrected = True
             self.target_entropy = -1.0  # Dirichlet K=3의 합리적 기본값
 
     def set_episode_progress(self, current_episode, total_episodes):
