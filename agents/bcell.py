@@ -612,6 +612,10 @@ class BCell:
         
         # CQL 디버그 로깅 (주요 통계)
         if self.update_count % 50 == 0:  # 50회마다 로깅
+            # Q 통계 계산
+            q_abs_max = max(current_q1.abs().max().item(), current_q2.abs().max().item())
+            tail_ratio = float((current_q1.abs() > 50).float().mean() + (current_q2.abs() > 50).float().mean()) / 2
+            
             self.logger.debug(
                 f"[{self.risk_type}] CQL-Debug: "
                 f"Huber1={huber1_loss.item():.3f}, CQL1={cql_penalty1.item():.3f}, "
