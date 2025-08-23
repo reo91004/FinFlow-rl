@@ -3,6 +3,8 @@
 import logging
 import os
 import datetime
+import time
+from collections import defaultdict
 from config import LOGS_DIR
 
 # Phase 3: tqdm 호환성을 위한 import
@@ -60,6 +62,9 @@ class BIPDLogger:
         self.level = level
         self.console_level = console_level
         self.logger = None
+        # 레이트 리미팅을 위한 저장소
+        self._last_log_time = defaultdict(float)
+        self._rate_limit_seconds = 1.0  # 기본 1초
         self._setup_logger()
 
     def _setup_logger(self):
@@ -122,6 +127,34 @@ class BIPDLogger:
     def error(self, message):
         """오류 로그"""
         self.logger.error(message)
+    
+    def critical(self, message):
+        """치명적 오류 로그"""
+        if hasattr(self.logger, 'critical'):
+            self.logger.critical(message)
+        else:
+            self.logger.error(f"[CRITICAL] {message}")
+    
+    def _should_log(self, message_key):
+        """레이트 리미팅 확인"""
+        current_time = time.time()
+        last_time = self._last_log_time[message_key]
+        if current_time - last_time >= self._rate_limit_seconds:
+            self._last_log_time[message_key] = current_time
+            return True
+        return False
+    
+    def error_rate_limited(self, message, key=None):
+        """레이트 제한이 적용된 오류 로그"""
+        message_key = key if key else str(hash(message))
+        if self._should_log(message_key):
+            self.logger.error(message)
+    
+    def critical_rate_limited(self, message, key=None):
+        """레이트 제한이 적용된 치명적 오류 로그"""
+        message_key = key if key else str(hash(message))
+        if self._should_log(message_key):
+            self.critical(message)
 
     def log_episode(
         self, episode, reward, portfolio_return, crisis_level, selected_bcell

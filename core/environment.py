@@ -41,40 +41,24 @@ class RunningNormalizer:
         
         return np.clip(normalized, -5.0, 5.0)  # 극단값 클리핑
 
-class EMARewardNormalizer:
-    """EMA 기반 보상 정규화 (MAD 정규화 대체)"""
+class FixedScaleRewardNormalizer:
+    """
+    고정 스케일 보상 정규화 - 에피소드간 일관성 보장
+    Machado et al. 2018 "Revisiting the Arcade Learning Environment" 기반
+    """
     
-    def __init__(self, beta: float = 0.99, eps: float = 1e-8):
-        self.beta = beta
-        self.eps = eps
-        self.mean = 0.0
-        self.var = 1.0
+    def __init__(self, reward_scale: float = 10.0):
+        self.reward_scale = reward_scale
         self.count = 0
     
     def normalize(self, reward: float) -> float:
-        """보상 정규화"""
-        if self.count == 0:
-            self.mean = reward
-            self.var = 1.0
-        else:
-            # EMA 업데이트
-            self.mean = self.beta * self.mean + (1 - self.beta) * reward
-            delta = reward - self.mean
-            self.var = self.beta * self.var + (1 - self.beta) * (delta ** 2)
-        
+        """고정 범위 보상 정규화"""
         self.count += 1
-        
-        # 정규화
-        std = np.sqrt(self.var + self.eps)
-        normalized = (reward - self.mean) / std
-        
-        # 소프트 클리핑 (극단값만 완화)
-        return np.tanh(normalized)
+        # 고정 범위 [-reward_scale, reward_scale]로 하드 클리핑
+        return np.clip(reward, -self.reward_scale, self.reward_scale)
     
     def reset(self):
-        """정규화기 초기화"""
-        self.mean = 0.0
-        self.var = 1.0
+        """정규화기 초기화 (고정 스케일에서는 카운터만 리셋)"""
         self.count = 0
 
 class PortfolioEnvironment:
@@ -115,8 +99,8 @@ class PortfolioEnvironment:
             'last_report_step': 0   # 마지막 리포트 시점
         }
         
-        # 보상 정규화기
-        self.reward_normalizer = EMARewardNormalizer()
+        # 보상 정규화기 (고정 스케일로 교체)
+        self.reward_normalizer = FixedScaleRewardNormalizer(reward_scale=10.0)
         
         # Sharpe 비율 EMA 추적기 (개선사항)
         self.sharpe_tracker = {
@@ -132,6 +116,10 @@ class PortfolioEnvironment:
             'returns': [],
             'last_correlation_check': 0
         }
+        
+        # 에피소드별 보상/성과 추적 (분리 로깅용)
+        self.episode_train_rewards = []  # 정규화된 학습 보상
+        self.episode_raw_returns = []    # 원시 수익률 (로그수익 계산용)
         
         # 상태 정규화기 추가
         self.state_normalizer = RunningNormalizer(feature_dim=12)  # 시장 특성 12차원
@@ -157,6 +145,10 @@ class PortfolioEnvironment:
         self.weight_history = [self.weights.copy()]
         self.return_history = []
         self.cost_history = []
+        
+        # 에피소드별 보상/성과 추적 초기화
+        self.episode_train_rewards.clear()
+        self.episode_raw_returns.clear()
         
         # 검증 통계 초기화
         self.weight_validation_window.clear()
@@ -216,6 +208,10 @@ class PortfolioEnvironment:
         
         # 보상 계산
         reward = self._calculate_reward(actual_return, new_weights, asset_returns)
+        
+        # 에피소드별 추적 업데이트
+        self.episode_train_rewards.append(reward)  # 정규화된 학습 보상
+        self.episode_raw_returns.append(actual_return)  # 원시 수익률
         
         # Phase 2: 최종 실행 포트폴리오 준비 (거래비용 후 최종 정규화)
         # 거래비용과 슬리피지 적용 후 음수/합≠1 문제 해결
@@ -637,3 +633,25 @@ class PortfolioEnvironment:
         sharpe_reward = lambda_s * np.clip(sharpe_estimate, -2.0, 2.0)
         
         return sharpe_reward
+    
+    def get_episode_summary(self) -> Dict[str, float]:
+        """에피소드 완료 시 분리된 보상/성과 요약 제공"""
+        train_reward_sum = float(np.sum(self.episode_train_rewards)) if self.episode_train_rewards else 0.0
+        
+        # 로그수익 누적 계산 (복리 수익률)
+        if self.episode_raw_returns:
+            log_returns = np.log(1.0 + np.array(self.episode_raw_returns))
+            eval_log_return_sum = float(np.sum(log_returns))
+        else:
+            eval_log_return_sum = 0.0
+        
+        # 단순 수익률 (기존 호환성)
+        simple_return = ((self.portfolio_value / self.initial_capital) - 1.0) if self.initial_capital > 0 else 0.0
+        
+        return {
+            'train_reward_sum': train_reward_sum,      # 정규화된 학습 보상 합계
+            'eval_log_return_sum': eval_log_return_sum, # 로그수익 누적 (평가용)
+            'simple_return': simple_return,            # 단순 수익률 (기존 호환)
+            'portfolio_value': self.portfolio_value,   # 최종 포트폴리오 가치
+            'steps': len(self.episode_train_rewards)   # 스텝 수
+        }

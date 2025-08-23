@@ -106,18 +106,18 @@ STATE_DIM = FEATURE_DIM + 1 + len(SYMBOLS)  # features + crisis + prev_weights
 ACTION_DIM = len(SYMBOLS)  # 포트폴리오 가중치
 HIDDEN_DIM = 128
 
-# 강화학습 하이퍼파라미터
-ACTOR_LR = float(3e-4)
-CRITIC_LR = float(1e-4)  # Phase 4: 안정성을 위해 감소
+# 강화학습 하이퍼파라미터 (2024 최신 연구 기반 최적화)
+ACTOR_LR = float(1e-4)   # 3e-4 → 1e-4 (포트폴리오는 더 보수적)
+CRITIC_LR = float(3e-4)  # 1e-4 → 3e-4 (원래 값으로 복원)
 ALPHA_LR = float(3e-4)
 GAMMA = float(0.99)
-TAU = float(0.001)
-BATCH_SIZE = int(32)
-BUFFER_SIZE = int(10000)
+TAU = float(0.01)  # 0.001 → 0.01 (10배 빠른 타깃 동기화)
+BATCH_SIZE = int(64)     # 32 → 64 (안정성 향상)
+BUFFER_SIZE = int(50000) # 10000 → 50000 (더 다양한 경험)
 UPDATE_FREQUENCY = int(4)
 
-# SAC 엔트로피 설정 (개선된 안정화 파라미터)
-TARGET_ENTROPY_SCALE = float(0.25)  # 기존 호환성 유지
+# SAC 엔트로피 설정 (더 보수적 탐색)
+TARGET_ENTROPY_SCALE = float(0.1)   # 0.25 → 0.1 (보수적 탐색)
 
 # SAC 안정화 파라미터 (Phase 1: 핵심 안정화)
 ALPHA_MIN = float(1e-4)  # 온도 최소값

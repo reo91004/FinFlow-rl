@@ -243,8 +243,9 @@ class BIPDTrainer:
             if done:
                 break
         
-        # 에피소드 요약
+        # 에피소드 요약 (분리된 보상/성과 포함)
         portfolio_metrics = env.get_portfolio_metrics()
+        episode_reward_summary = env.get_episode_summary()  # 새로운 분리된 요약
         
         episode_summary = {
             'episode': episode,
@@ -253,6 +254,10 @@ class BIPDTrainer:
             'steps': steps,
             'final_value': env.portfolio_value,
             'portfolio_metrics': portfolio_metrics,
+            # 분리된 보상/성과 추가
+            'train_reward_sum': episode_reward_summary['train_reward_sum'],
+            'eval_log_return_sum': episode_reward_summary['eval_log_return_sum'],
+            'simple_return': episode_reward_summary['simple_return'],
             'crisis_stats': {
                 'avg_crisis': np.mean(episode_data['crisis_levels']),
                 'max_crisis': np.max(episode_data['crisis_levels']),
@@ -300,14 +305,14 @@ class BIPDTrainer:
             for name, count in bcell_usage.items()
         }
         
-        # 상세 에피소드 요약
+        # 상세 에피소드 요약 (분리된 보상/성과 포함)
         episode_summary = [
             f"에피소드 {episode + 1} 완료 요약:",
             f"  • 총 스텝: {results['steps']:,}단계",
-            f"  • 총 보상: {results['total_reward']:,.2f}",
-            f"  • 평균 보상: {results['avg_reward']:.4f}",
+            f"  • 학습 보상(정규화): {results.get('train_reward_sum', results['total_reward']):,.2f}",
+            f"  • 평가 로그수익: {results.get('eval_log_return_sum', 0):.4f}",
+            f"  • 단순 수익률: {results.get('simple_return', metrics.get('total_return', 0)):+.2%}",
             f"  • 최종 가치: ₩{results['final_value']:,.0f}",
-            f"  • 수익률: {metrics.get('total_return', 0):+.2%}",
             f"  • 샤프비율: {metrics.get('sharpe_ratio', 0):.3f}",
             f"  • 최대낙폭: {metrics.get('max_drawdown', 0):.2%}",
             f"  • 위기수준: 평균 {crisis_stats['avg_crisis']:.3f}, 최대 {crisis_stats['max_crisis']:.3f}",

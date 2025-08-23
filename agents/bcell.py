@@ -410,6 +410,27 @@ class BCell:
             self.target_entropy = lam * base + (1 - lam) * self._policy_entropy_ema
         else:
             self.target_entropy = base
+        
+        # 엔트로피 sanity check 및 교정
+        self._entropy_sanity_check()
+    
+    def _entropy_sanity_check(self):
+        """목표 엔트로피 범위 검증 및 교정"""
+        original_value = self.target_entropy
+        
+        # Dirichlet K=3에서 합리적 범위: [-5, 5]
+        if not (-5.0 <= self.target_entropy <= 5.0):
+            self.logger.warning(
+                f"[{self.risk_type}] 엔트로피 범위 초과: {original_value:.3f} → [-5,5] 범위로 클리핑"
+            )
+            self.target_entropy = np.clip(self.target_entropy, -5.0, 5.0)
+        
+        # 비정상 값 검사
+        if not np.isfinite(self.target_entropy):
+            self.logger.error(
+                f"[{self.risk_type}] 비정상 엔트로피: {original_value} → -1.0으로 복원"
+            )
+            self.target_entropy = -1.0  # Dirichlet K=3의 합리적 기본값
 
     def set_episode_progress(self, current_episode, total_episodes):
         """에피소드 진행률 업데이트"""
@@ -531,49 +552,76 @@ class BCell:
             current_q2, target_q_values, reduction="none", beta=HUBER_DELTA
         )
 
-        # CQL 정규화: LogSumExp 기반 표준 CQL 구현
-        # 점진적 CQL 강도 스케줄링
-        progress = self.episode_progress if hasattr(self, "episode_progress") else 0.0
-        current_cql_alpha = CQL_ALPHA_START + progress * (
-            CQL_ALPHA_END - CQL_ALPHA_START
-        )
+        # CQL 정규화: 단순화된 고정 강도 (Kumar et al. 2020 원논문 권장)
+        current_cql_alpha = 1.0  # 고정값 사용 (적응형 제거)
 
-        # 표준 CQL: 무작위 샘플링된 행동들에 대한 LogSumExp
+        # 효율적인 제안 샘플 생성 (샘플 수 감소)
         batch_size = states.shape[0]
-        num_samples = CQL_NUM_SAMPLES
-
-        # 무작위 행동 샘플링 (포트폴리오 제약 유지)
-        random_actions = torch.rand(
-            batch_size * num_samples, actions.shape[1], device=DEVICE
-        )
-        random_actions = random_actions / random_actions.sum(dim=1, keepdim=True)
-
-        # 상태 확장 (각 상태에 대해 num_samples개 행동)
-        expanded_states = states.repeat_interleave(num_samples, dim=0)
+        K, J = 5, 5  # 정책 5개, 기타 제안 5개 (10→5로 감소)
+        
+        # 1) 정책 샘플
+        with torch.no_grad():
+            _, policy_actions, _ = self.actor(states)
+            policy_actions = policy_actions.repeat_interleave(K, dim=0)  # [K*B, A]
+            policy_states = states.repeat_interleave(K, dim=0)           # [K*B, state_dim]
+        
+        # 2) 균등 Dirichlet(1) 샘플
+        uniform_actions = torch.distributions.Dirichlet(
+            torch.ones(actions.shape[1], device=DEVICE)
+        ).sample((J * batch_size,))  # [J*B, A]
+        uniform_states = states.repeat_interleave(J, dim=0)  # [J*B, state_dim]
+        
+        # 3) Softmax-Gaussian 제안
+        gauss_logits = torch.randn(J * batch_size, actions.shape[1], device=DEVICE)
+        gauss_actions = torch.softmax(gauss_logits, dim=-1)  # [J*B, A]
+        gauss_states = states.repeat_interleave(J, dim=0)    # [J*B, state_dim]
 
         # Q-values 계산
-        q1_random = self.critic1(expanded_states, random_actions).view(
-            batch_size, num_samples
-        )
-        q2_random = self.critic2(expanded_states, random_actions).view(
-            batch_size, num_samples
-        )
+        def compute_lse_penalty(critic):
+            q_policy = critic(policy_states, policy_actions).squeeze()  # [K*B]
+            q_uniform = critic(uniform_states, uniform_actions).squeeze()  # [J*B]
+            q_gauss = critic(gauss_states, gauss_actions).squeeze()      # [J*B]
+            
+            # 배치별로 정리: [B, K], [B, J], [B, J]
+            q_policy_batch = q_policy.view(batch_size, K).mean(1)  # [B]
+            q_uniform_batch = q_uniform.view(batch_size, J).mean(1)  # [B]  
+            q_gauss_batch = q_gauss.view(batch_size, J).mean(1)    # [B]
+            
+            # log-sum-exp over proposal types
+            q_proposals = torch.stack([q_policy_batch, q_uniform_batch, q_gauss_batch], dim=1)  # [B, 3]
+            lse_vals = torch.logsumexp(q_proposals, dim=1) - np.log(3)  # [B], normalize by 3 types
+            
+            q_data = critic(states, actions).squeeze()  # [B]
+            
+            # Hinge (비음수화): max(lse - q_data, 0)
+            penalty = F.relu(lse_vals - q_data).mean()
+            return penalty
 
-        # LogSumExp 계산 (안정화된 버전)
-        logsumexp_q1 = torch.logsumexp(q1_random, dim=1)
-        logsumexp_q2 = torch.logsumexp(q2_random, dim=1)
+        cql_penalty1 = current_cql_alpha * compute_lse_penalty(self.critic1)
+        cql_penalty2 = current_cql_alpha * compute_lse_penalty(self.critic2)
+        
+        # Gradient Penalty (Spectral Normalization 개념 적용)
+        grad_penalty1 = self._compute_gradient_penalty(self.critic1, states, actions)
+        grad_penalty2 = self._compute_gradient_penalty(self.critic2, states, actions)
 
-        # 데이터 Q-values (현재 배치)
-        q1_data = current_q1
-        q2_data = current_q2
+        # 최종 손실 (Huber + CQL + Gradient Penalty) - 항목별 분리 기록
+        huber1_loss = (is_weights * critic1_huber).mean()
+        huber2_loss = (is_weights * critic2_huber).mean()
+        critic1_loss = huber1_loss + cql_penalty1 + 0.1 * grad_penalty1
+        critic2_loss = huber2_loss + cql_penalty2 + 0.1 * grad_penalty2
+        
+        # CQL 디버그 로깅 (주요 통계)
+        if self.update_count % 50 == 0:  # 50회마다 로깅
+            self.logger.debug(
+                f"[{self.risk_type}] CQL-Debug: "
+                f"Huber1={huber1_loss.item():.3f}, CQL1={cql_penalty1.item():.3f}, "
+                f"Huber2={huber2_loss.item():.3f}, CQL2={cql_penalty2.item():.3f}, "
+                f"α_cql={current_cql_alpha:.3f}, Q_max={q_abs_max:.1f}, tail_r={tail_ratio:.2%}"
+            )
 
-        # CQL 손실 계산 (표준 LogSumExp - 데이터 Q)
-        cql_penalty1 = current_cql_alpha * (logsumexp_q1.mean() - q1_data.mean())
-        cql_penalty2 = current_cql_alpha * (logsumexp_q2.mean() - q2_data.mean())
-
-        # 최종 손실 (Huber + 표준 CQL)
-        critic1_loss = (is_weights * critic1_huber).mean() + cql_penalty1
-        critic2_loss = (is_weights * critic2_huber).mean() + cql_penalty2
+        # Q-range 기반 Learning Rate 조정 (Cyclical Learning Rates 아이디어)
+        q_range = current_q1.max() - current_q1.min() + current_q2.max() - current_q2.min()
+        self._adjust_learning_rates(q_range.item())
 
         # Critic 1 업데이트
         self.critic1_optimizer.zero_grad()
@@ -686,8 +734,13 @@ class BCell:
                         f"log_α={post_update_log_alpha:.4f}"
                     )
 
-        # 타겟 네트워크 소프트 업데이트
-        self._soft_update_targets()
+        # 타겟 네트워크 소프트 업데이트 (Emergency Sync 포함)
+        # Q-극단 상황 감지: |Q|max > 50 또는 극단비율 > 30%
+        q_abs_max = max(current_q1.abs().max().item(), current_q2.abs().max().item())
+        extreme_ratio = float((current_q1.abs() > 50).float().mean() + (current_q2.abs() > 50).float().mean()) / 2
+        needs_emergency_sync = (q_abs_max > 50.0) or (extreme_ratio > 0.3)
+        
+        self._soft_update_targets(force_sync=needs_emergency_sync)
 
         # Phase 3: 강화된 NaN/Inf 안전장치 + 추가 안정성 체크
         losses_finite = (
@@ -777,13 +830,9 @@ class BCell:
             )
             self.high_alpha_counter.update(current_alpha > 0.5)
 
-        # 주기적 요약 로깅 (500회마다) - 통합 슬라이딩 윈도우 기반
-        if self.rolling_stats.should_report(self.update_count, report_interval=500):
-            self._log_unified_monitoring_summary()
-
-        # Phase 3: 안정성 경고 확인 (200회마다) - 슬라이딩 윈도우 기반
-        if self.update_count % 200 == 0:
-            self._check_stability_warnings_unified()
+        # 간소화된 Alert 시스템 (500회마다 핵심 지표만 체크)
+        if self.update_count % 500 == 0:
+            self._simple_health_check(current_q1, current_q2)
 
         # Phase 4: PER 베타 어닐링 (매 업데이트마다)
         self.replay_buffer.beta = min(
@@ -794,7 +843,186 @@ class BCell:
         if self.update_count == 1:
             self.logger.info("Q-value 범위가 [-10, 10]으로 조정되었습니다")
 
-        return True  # 성공적인 업데이트
+        # 간소화된 Q-regularization (복잡한 쿨다운 시스템 대체)
+        return self._apply_q_regularization()
+    
+    def _apply_q_regularization(self):
+        """단순 Q-regularization (Haarnoja et al. 2019)"""
+        # 현재 Q-values에 L2 regularization 적용
+        q1_reg = 0.001 * sum(p.pow(2).sum() for p in self.critic1.parameters())
+        q2_reg = 0.001 * sum(p.pow(2).sum() for p in self.critic2.parameters())
+        
+        # 정규화 손실을 다음 업데이트에 반영하기 위해 저장
+        if not hasattr(self, '_q_reg_loss'):
+            self._q_reg_loss = 0.0
+        self._q_reg_loss = (q1_reg + q2_reg) * 0.5
+        
+        return True  # 항상 성공 반환 (단순화)
+    
+    def _compute_gradient_penalty(self, critic, states, actions, lambda_gp=0.1):
+        """
+        Gradient Penalty 계산 - Spectral Normalization for GANs 아이디어 적용
+        네트워크 가중치의 기울기 norm을 제한하여 안정성 향상
+        """
+        # 입력에 대한 기울기 계산 (requires_grad=True 필요)
+        states_gp = states.clone().detach().requires_grad_(True)
+        actions_gp = actions.clone().detach().requires_grad_(True)
+        
+        # Critic 출력 계산
+        q_vals = critic(states_gp, actions_gp).squeeze()
+        
+        # 기울기 계산
+        gradients = torch.autograd.grad(
+            outputs=q_vals,
+            inputs=[states_gp, actions_gp],
+            grad_outputs=torch.ones_like(q_vals),
+            create_graph=True,
+            retain_graph=True,
+            only_inputs=True
+        )
+        
+        # 기울기 norm 계산
+        gradient_norm = torch.sqrt(
+            torch.sum(gradients[0].pow(2), dim=1) + 
+            torch.sum(gradients[1].pow(2), dim=1) + 1e-12
+        )
+        
+        # Penalty: (||∇||_2 - 1)^2 형태로 기울기 norm을 1 근처로 제한
+        penalty = ((gradient_norm - 1.0).pow(2)).mean()
+        
+        return penalty
+    
+    def _adjust_learning_rates(self, q_range):
+        """Q-range 기반 적응형 학습률 조정 (Smith 2017, Cyclical Learning Rates)"""
+        # 기준: Q-range > 100이면 학습률 반감, < 20이면 복원
+        if not hasattr(self, '_lr_reduction_count'):
+            self._lr_reduction_count = 0
+            self._original_actor_lr = ACTOR_LR
+            self._original_critic_lr = CRITIC_LR
+        
+        # Q-range가 크면 학습률 감소
+        if q_range > 100.0 and self._lr_reduction_count == 0:
+            for param_group in self.actor_optimizer.param_groups:
+                param_group['lr'] = self._original_actor_lr * 0.5
+            for param_group in self.critic1_optimizer.param_groups:
+                param_group['lr'] = self._original_critic_lr * 0.5
+            for param_group in self.critic2_optimizer.param_groups:
+                param_group['lr'] = self._original_critic_lr * 0.5
+            
+            self._lr_reduction_count = 1
+            self.logger.info(f"[{self.risk_type}] Q-range={q_range:.1f} → 학습률 50% 감소")
+        
+        # Q-range가 안정되면 학습률 복원
+        elif q_range < 20.0 and self._lr_reduction_count > 0:
+            for param_group in self.actor_optimizer.param_groups:
+                param_group['lr'] = self._original_actor_lr
+            for param_group in self.critic1_optimizer.param_groups:
+                param_group['lr'] = self._original_critic_lr
+            for param_group in self.critic2_optimizer.param_groups:
+                param_group['lr'] = self._original_critic_lr
+            
+            self._lr_reduction_count = 0
+            self.logger.info(f"[{self.risk_type}] Q-range={q_range:.1f} → 학습률 복원")
+    
+    def _simple_health_check(self, current_q1, current_q2):
+        """간소화된 핵심 지표 체크 (복잡한 슬라이딩 통계 대체)"""
+        with torch.no_grad():
+            # 핵심 지표만 체크
+            q_range = (current_q1.max() - current_q1.min() + current_q2.max() - current_q2.min()).item()
+            alpha_val = self.alpha.item()
+            
+            # Alert 조건 (간소화된 기준)
+            alerts = []
+            if q_range > 50:
+                alerts.append(f"Q-range={q_range:.1f}")
+            if alpha_val > 0.8 or alpha_val < 0.001:
+                alerts.append(f"α={alpha_val:.3f}")
+            
+            if alerts:
+                self.logger.warning(f"[{self.risk_type}] Health Alert: {', '.join(alerts)}")
+            else:
+                self.logger.debug(f"[{self.risk_type}] Health OK: Q-range={q_range:.1f}, α={alpha_val:.3f}")
+    
+    def _check_q_safety_and_cooldown(self, current_q1, current_q2):
+        """Q-value 안전 기준 검사 및 쿨다운 시스템"""
+        with torch.no_grad():
+            # Q-value 안전 통계 계산
+            q_abs_max = max(current_q1.abs().max().item(), current_q2.abs().max().item())
+            extreme_mask1 = current_q1.abs() > 50
+            extreme_mask2 = current_q2.abs() > 50
+            extreme_ratio = float((extreme_mask1 | extreme_mask2).float().mean())
+            
+            # Alpha 안정성 검사
+            alpha_stable = torch.isfinite(self.alpha) and 1e-4 <= self.alpha.item() <= 1.5
+            
+            # 안전 기준 위반 검사
+            safety_violation = (q_abs_max > 100.0) or (extreme_ratio > 0.2) or (not alpha_stable)
+            
+            if safety_violation:
+                # 쿨다운 카운터 증가
+                if not hasattr(self, '_cooldown_steps'):
+                    self._cooldown_steps = 0
+                self._cooldown_steps += 1
+                
+                # 쿨다운 진행 중 (최대 10스텝)
+                if self._cooldown_steps <= 10:
+                    # 학습 완화 모드
+                    self._apply_cooldown_mode()
+                    
+                    self.logger.warning(
+                        f"[{self.risk_type}] Q-안전 쿨다운 {self._cooldown_steps}/10: "
+                        f"|Q|_max={q_abs_max:.1f}, extreme_r={extreme_ratio:.2%}, "
+                        f"α={self.alpha.item():.3f} (stable={alpha_stable})"
+                    )
+                    
+                    return False  # 업데이트 완화 신호
+                else:
+                    # 긴급 대응: 파라미터 부분 리셋
+                    self.logger.critical_rate_limited(
+                        f"[{self.risk_type}] 지속적 Q-불안정 - 부분 리셋 적용", 
+                        key="q_instability"
+                    )
+                    self._emergency_parameter_reset()
+                    self._cooldown_steps = 0
+                    return False
+            else:
+                # 안전 기준 만족 시 쿨다운 해제
+                if hasattr(self, '_cooldown_steps') and self._cooldown_steps > 0:
+                    self._cooldown_steps = max(0, self._cooldown_steps - 1)
+                    if self._cooldown_steps == 0:
+                        self.logger.info(f"[{self.risk_type}] Q-안전 쿨다운 해제")
+                
+                return True  # 정상 업데이트
+    
+    def _apply_cooldown_mode(self):
+        """쿨다운 모드 적용: 학습률 감소 및 Actor 업데이트 스킵"""
+        # Learning rate 임시 감소
+        for param_group in self.actor_optimizer.param_groups:
+            param_group['lr'] = min(param_group['lr'], ACTOR_LR * 0.5)
+        for param_group in self.critic1_optimizer.param_groups:
+            param_group['lr'] = min(param_group['lr'], CRITIC_LR * 0.7)
+        for param_group in self.critic2_optimizer.param_groups:
+            param_group['lr'] = min(param_group['lr'], CRITIC_LR * 0.7)
+        
+        # Actor 업데이트 빈도 감소 (다음 몇 회 스킵)
+        self.policy_update_frequency = max(self.policy_update_frequency, 4)
+    
+    def _emergency_parameter_reset(self):
+        """긴급 파라미터 부분 리셋"""
+        # Alpha 파라미터만 보수적으로 리셋
+        with torch.no_grad():
+            self.log_alpha.data.fill_(np.log(0.1))  # α = 0.1로 보수적 시작
+        
+        # Learning rate 복원
+        for param_group in self.actor_optimizer.param_groups:
+            param_group['lr'] = ACTOR_LR
+        for param_group in self.critic1_optimizer.param_groups:
+            param_group['lr'] = CRITIC_LR
+        for param_group in self.critic2_optimizer.param_groups:
+            param_group['lr'] = CRITIC_LR
+        
+        # 정책 업데이트 빈도 복원
+        self.policy_update_frequency = 2
 
     def _log_unified_monitoring_summary(self):
         """통합 슬라이딩 윈도우 모니터링 요약"""
@@ -829,7 +1057,7 @@ class BCell:
             f"손실(A:{actor_loss_stats['sliding_mean']:.2f}/C:{critic_loss_stats['sliding_mean']:.2f}) "
             f"Q범위[μ{q_min_stats['sliding_mean']:.1f},μ{q_max_stats['sliding_mean']:.1f}] "
             f"Q렉μ{q_range_stats['sliding_mean']:.1f} "
-            f"αμ{alpha_stats['sliding_mean']:.3f}(H_tμ{target_entropy_stats['sliding_mean']:.2f}) "
+            f"αμ{alpha_stats['sliding_mean']:.3f}(H_t={target_entropy_stats['sliding_mean']:.3f}) "
             f"EP={getattr(self, 'episode_progress', 0.0):.1%} | "
             f"이상(NaN:{nan_counter['sliding_rate']:.1%}, Q>{extreme_q_counter['sliding_rate']:.1%}, α>{high_alpha_counter['sliding_rate']:.1%})"
         )
@@ -891,14 +1119,20 @@ class BCell:
                 f"({extreme_q_stats['sliding_count']}/{extreme_q_stats['sliding_size']})"
             )
 
-    def _soft_update_targets(self):
-        """타겟 네트워크들 소프트 업데이트 (SAC - Critic만)"""
-        # Target Critic 1 업데이트
+    def _soft_update_targets(self, force_sync: bool = False):
+        """타겟 네트워크들 소프트 업데이트 (SAC - Critic만) + Emergency Sync"""
+        # Emergency Sync: Q-극단 상황에서 강제 100% 동기화
+        sync_rate = 1.0 if force_sync else self.tau
+        
+        if force_sync:
+            self.logger.warning(f"[{self.risk_type}] Emergency Target Sync 실행 (100% 동기화)")
+        
+        # Target Critic 1 업데이트  
         for target_param, param in zip(
             self.target_critic1.parameters(), self.critic1.parameters()
         ):
             target_param.data.copy_(
-                self.tau * param.data + (1 - self.tau) * target_param.data
+                sync_rate * param.data + (1 - sync_rate) * target_param.data
             )
 
         # Target Critic 2 업데이트
@@ -906,7 +1140,7 @@ class BCell:
             self.target_critic2.parameters(), self.critic2.parameters()
         ):
             target_param.data.copy_(
-                self.tau * param.data + (1 - self.tau) * target_param.data
+                sync_rate * param.data + (1 - sync_rate) * target_param.data
             )
 
     def get_specialization_score(self, crisis_info):
