@@ -43,7 +43,8 @@ class BIPDTrainer:
         
         self.immune_system = ImmunePortfolioSystem(
             n_assets=len(train_data.columns),
-            state_dim=STATE_DIM
+            state_dim=STATE_DIM,
+            symbols=list(train_data.columns)  # 실제 종목 심볼 전달
         )
         
         # 훈련 통계
@@ -215,7 +216,8 @@ class BIPDTrainer:
             'portfolio_values': [],
             'crisis_levels': [],
             'selected_bcells': [],
-            'weights_history': []
+            'weights_history': [],
+            'decision_info_history': []  # XAI 데이터 저장
         }
         
         while True:
@@ -235,6 +237,7 @@ class BIPDTrainer:
             episode_data['crisis_levels'].append(decision_info['crisis_level'])
             episode_data['selected_bcells'].append(decision_info['selected_bcell'])
             episode_data['weights_history'].append(weights.copy())
+            episode_data['decision_info_history'].append(decision_info)  # XAI 데이터 저장
             
             total_reward += reward
             steps += 1
@@ -262,7 +265,9 @@ class BIPDTrainer:
                 bcell: episode_data['selected_bcells'].count(bcell)
                 for bcell in ['volatility', 'correlation', 'momentum', 'defensive', 'growth']
             },
-            'episode_data': episode_data
+            'episode_data': episode_data,
+            # XAI 시각화를 위한 마지막 의사결정 데이터 (가장 중요한 의사결정 시점)
+            'decision_data': episode_data['decision_info_history'][-1]['xai_data'] if episode_data['decision_info_history'] else {}
         }
         
         return episode_summary
@@ -555,17 +560,7 @@ class BIPDTrainer:
     def _create_final_visualizations(self) -> None:
         """최종 학습 결과 시각화 생성"""
         try:
-            from utils.visualization import BIPDVisualizer
-            
-            visualizer = BIPDVisualizer()
-            
-            # 학습 진행 상황 시각화
-            if self.training_history and self.training_history.get('rewards'):
-                learning_path = os.path.join(self.visualization_dir, "final_learning_progress.png")
-                visualizer.plot_learning_progress(self.training_history, learning_path)
-                self.logger.info(f"최종 학습 진행 시각화 저장: {learning_path}")
-            
-            # 기존 matplotlib 기반 훈련 결과 차트도 생성
+            # matplotlib 기반 훈련 결과 차트 생성
             training_chart_path = os.path.join(self.visualization_dir, "training_results_detailed.png")
             self.plot_training_results(training_chart_path)
             self.logger.info(f"상세 훈련 결과 차트 저장: {training_chart_path}")

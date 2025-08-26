@@ -221,7 +221,10 @@ class MemoryCell:
                     'similarity': float(sim)
                 }
                 for mem, sim in zip(similar_memories, similarities)
-            ]
+            ],
+            # XAI 확장 정보
+            'similar_episodes': [f"Episode {mem.get('episode', i)}" for i, mem in enumerate(similar_memories)],
+            'similarity_scores': [float(sim) for sim in similarities]
         }
         
         return guidance

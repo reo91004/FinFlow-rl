@@ -10,7 +10,11 @@ from utils.logger import BIPDLogger
 from utils.metrics import calculate_concentration_index, calculate_comprehensive_metrics
 from config import (
     SHARPE_WINDOW, SHARPE_SCALE, REWARD_BUFFER_SIZE, 
-    REWARD_OUTLIER_SIGMA, REWARD_CLIP_MIN, REWARD_CLIP_MAX
+    REWARD_OUTLIER_SIGMA, REWARD_CLIP_MIN, REWARD_CLIP_MAX,
+    REWARD_EMPIRICAL_MEAN, REWARD_EMPIRICAL_STD, VOLATILITY_TARGET, VOLATILITY_WINDOW,
+    MIN_LEVERAGE, MAX_LEVERAGE, NO_TRADE_BAND, MAX_TURNOVER,
+    RISK_PENALTY_WEIGHT, TRANSACTION_PENALTY_WEIGHT, HHI_PENALTY_WEIGHT,
+    WEIGHT_VALIDATION_WINDOW, CORRELATION_CHECK_INTERVAL, DEBUG_LOG_INTERVAL
 )
 
 class RunningNormalizer:
@@ -47,9 +51,9 @@ class FixedRewardNormalizer:
     def __init__(self, target_mean: float = 0.0, target_std: float = 1.0):
         self.target_mean = target_mean
         self.target_std = target_std
-        # 훈련 데이터 기반 사전 추정값 (경험적으로 설정)
-        self.empirical_mean = 0.002  # 일일 평균 수익률 추정
-        self.empirical_std = 0.02   # 일일 변동성 추정
+        # 훈련 데이터 기반 사전 추정값 (config.py에서 관리)
+        self.empirical_mean = REWARD_EMPIRICAL_MEAN  # 일일 평균 수익률 추정
+        self.empirical_std = REWARD_EMPIRICAL_STD   # 일일 변동성 추정
         self.count = 0
     
     def normalize(self, reward: float) -> float:
@@ -97,8 +101,8 @@ class PortfolioEnvironment:
         self.return_history = []
         self.cost_history = []
         
-        # 슬라이딩 윈도우 기반 가중치 검증 통계
-        self.weight_validation_window = collections.deque(maxlen=100)  # 최근 100회 기록
+        # 슬라이딩 윈도우 기반 가중치 검증 통계 (config.py에서 관리)
+        self.weight_validation_window = collections.deque(maxlen=WEIGHT_VALIDATION_WINDOW)  # 최근 N회 기록
         self.weight_validation_stats = {
             'total_validations': 0,  # 누적 검증 횟수
             'last_report_step': 0   # 마지막 리포트 시점
@@ -125,16 +129,15 @@ class PortfolioEnvironment:
         # 상태 정규화기 추가
         self.state_normalizer = RunningNormalizer(feature_dim=12)  # 시장 특성 12차원
         
-        # 변동성 타깃팅 파라미터
-        self.target_volatility = 0.10  # 연간 목표 변동성 (10%)
-        self.volatility_window = 20    # 변동성 추정 윈도우 (20일)
-        self.min_leverage = 0.5        # 최소 레버리지
-        self.max_leverage = 2.0        # 최대 레버리지
+        # 변동성 타깃팅 파라미터 (config.py에서 관리)
+        self.target_volatility = VOLATILITY_TARGET      # 연간 목표 변동성
+        self.volatility_window = VOLATILITY_WINDOW      # 변동성 추정 윈도우
+        self.min_leverage = MIN_LEVERAGE                # 최소 레버리지
+        self.max_leverage = MAX_LEVERAGE                # 최대 레버리지
         
-        # 거래비용 최적화 파라미터
-        self.no_trade_band = 0.02      # 노-트레이드 밴드 (2% 이내 변화는 거래 안함)
-        self.max_turnover = 0.5        # 최대 턴오버 (50% 제한)
-        self.turnover_penalty_weight = 0.1  # 턴오버 페널티 가중치
+        # 거래비용 최적화 파라미터 (config.py에서 관리)
+        self.no_trade_band = NO_TRADE_BAND              # 노-트레이드 밴드
+        self.max_turnover = MAX_TURNOVER                # 최대 턴오버
         
         self.logger = BIPDLogger("Environment")
         
@@ -365,8 +368,8 @@ class PortfolioEnvironment:
         else:
             scaled_weights = weights  # 백업
         
-        # 변동성 타깃팅 로그 (100스텝마다)
-        if self.current_step % 100 == 0:
+        # 변동성 타깃팅 로그 (config.py 간격)
+        if self.current_step % CORRELATION_CHECK_INTERVAL == 0:
             self.logger.debug(
                 f"변동성 타깃팅 (step {self.current_step}): "
                 f"현재_vol={annualized_volatility:.3f}, 목표_vol={self.target_volatility:.3f}, "
@@ -406,8 +409,8 @@ class PortfolioEnvironment:
         else:
             constrained_weights = new_weights  # 백업
         
-        # 4. 로깅 (100스텝마다)
-        if self.current_step % 100 == 0:
+        # 4. 로깅 (config.py 간격)
+        if self.current_step % CORRELATION_CHECK_INTERVAL == 0:
             original_turnover = np.abs(new_weights - current_weights).sum()
             final_turnover = np.abs(constrained_weights - current_weights).sum()
             band_applied = np.sum(small_change_mask)
@@ -505,7 +508,7 @@ class PortfolioEnvironment:
         else:
             recent_volatility = abs(portfolio_return)  # 단일 관측치로 추정
         
-        risk_penalty = 0.05 * recent_volatility  # λ_risk = 0.05 (완화)
+        risk_penalty = RISK_PENALTY_WEIGHT * recent_volatility  # λ_risk (config.py)
         
         # 4. 거래비용 페널티 (가중치 변화)
         if len(self.weight_history) > 0:
@@ -514,12 +517,12 @@ class PortfolioEnvironment:
         else:
             weight_change = 0.0
         
-        transaction_penalty = 0.01 * weight_change  # λ_tc = 0.01 (완화)
+        transaction_penalty = TRANSACTION_PENALTY_WEIGHT * weight_change  # λ_tc (config.py)
         
         # 5. 집중도(HHI) 페널티 추가
         hhi = np.sum(weights ** 2)  # Herfindahl-Hirschman Index
         equal_weight_hhi = 1.0 / self.n_assets  # 균등분산 시 HHI
-        concentration_penalty = 0.005 * max(0, hhi - equal_weight_hhi)  # λ_hhi = 0.005
+        concentration_penalty = HHI_PENALTY_WEIGHT * max(0, hhi - equal_weight_hhi)  # λ_hhi (config.py)
         
         # 6. 원시 보상 계산 (HHI 페널티 포함)
         raw_reward = log_return - risk_penalty - transaction_penalty - concentration_penalty + sharpe_reward
@@ -531,16 +534,16 @@ class PortfolioEnvironment:
         self.reward_performance_tracker['rewards'].append(normalized_reward)
         self.reward_performance_tracker['returns'].append(portfolio_return)
         
-        # 주기적 상관성 체크 (100 스텝마다)
-        if len(self.reward_performance_tracker['rewards']) >= 100:
+        # 주기적 상관성 체크 (config.py 간격)
+        if len(self.reward_performance_tracker['rewards']) >= CORRELATION_CHECK_INTERVAL:
             if (len(self.reward_performance_tracker['rewards']) - 
-                self.reward_performance_tracker['last_correlation_check']) >= 100:
+                self.reward_performance_tracker['last_correlation_check']) >= CORRELATION_CHECK_INTERVAL:
                 self._check_reward_performance_correlation()
                 self.reward_performance_tracker['last_correlation_check'] = \
                     len(self.reward_performance_tracker['rewards'])
         
-        # 디버그 정보 (50스텝마다)
-        if self.current_step % 50 == 0:
+        # 디버그 정보 (config.py 간격)
+        if self.current_step % DEBUG_LOG_INTERVAL == 0:
             current_sharpe_estimate = self.sharpe_tracker['return_ema'] / max(np.sqrt(self.sharpe_tracker['volatility_ema']), 1e-6)
             self.logger.debug(
                 f"보상 구성 (step {self.current_step}): "
@@ -605,44 +608,6 @@ class PortfolioEnvironment:
         
         return all_metrics
         
-    def get_legacy_portfolio_metrics(self) -> Dict[str, float]:
-        """기존 방식의 포트폴리오 성과 메트릭 (호환성 유지)"""
-        if len(self.return_history) == 0:
-            return {}
-        
-        returns = np.array(self.return_history)
-        
-        # 기본 메트릭
-        total_return = (self.portfolio_value / self.initial_capital) - 1
-        annual_return = (1 + total_return) ** (252 / len(returns)) - 1
-        volatility = returns.std() * np.sqrt(252)
-        
-        # 샤프 비율
-        if returns.std() > 0:
-            sharpe_ratio = returns.mean() / returns.std() * np.sqrt(252)
-        else:
-            sharpe_ratio = 0.0
-        
-        # 최대 낙폭
-        cumulative = np.cumprod(1 + returns)
-        rolling_max = np.maximum.accumulate(cumulative)
-        drawdowns = (cumulative - rolling_max) / rolling_max
-        max_drawdown = drawdowns.min()
-        
-        # 거래 비용
-        total_cost = sum(self.cost_history)
-        cost_ratio = total_cost / self.initial_capital
-        
-        return {
-            'total_return': total_return,
-            'annual_return': annual_return,
-            'volatility': volatility,
-            'sharpe_ratio': sharpe_ratio,
-            'max_drawdown': max_drawdown,
-            'total_cost': total_cost,
-            'cost_ratio': cost_ratio,
-            'final_value': self.portfolio_value
-        }
     
     def get_weight_statistics(self) -> Dict[str, float]:
         """가중치 통계"""

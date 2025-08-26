@@ -2,7 +2,17 @@
 
 import numpy as np
 import pandas as pd
+from typing import Dict, Any, Optional
+# jarque_bera는 현재 사용되지 않으므로 제거
 from scipy import stats
+
+
+# 공통 유틸리티 함수
+def safe_float(value):
+    """안전한 타입 변환 함수 (NumPy 스칼라 처리)"""
+    if hasattr(value, 'item'):
+        return float(value.item())
+    return float(value)
 
 def calculate_sharpe_ratio(returns, risk_free_rate=0.02):
     """샤프 비율 계산"""
@@ -86,11 +96,7 @@ def calculate_portfolio_metrics(returns):
     total_return = np.prod(1 + returns) - 1
     annual_return = np.prod(1 + returns) ** (252 / len(returns)) - 1
     
-    # 안전한 타입 변환 함수
-    def safe_float(value):
-        if hasattr(value, 'item'):
-            return float(value.item())
-        return float(value)
+    # 공통 safe_float 함수 사용
     
     return {
         'total_return': safe_float(total_return),
@@ -206,11 +212,7 @@ def calculate_deflated_sharpe_ratio(returns, num_trials=1, skewness=None, kurtos
     
     is_significant = abs(sharpe_ratio) > threshold_sr and p_value < alpha
     
-    # 안전한 타입 변환 (NumPy 스칼라 처리)
-    def safe_float(value):
-        if hasattr(value, 'item'):
-            return float(value.item())
-        return float(value)
+    # 공통 safe_float 함수 사용
     
     return {
         'sharpe_ratio': safe_float(sharpe_ratio),

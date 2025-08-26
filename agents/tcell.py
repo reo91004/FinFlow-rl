@@ -8,11 +8,16 @@ import os
 from collections import deque
 from typing import Dict
 from utils.logger import BIPDLogger
+from config import (
+    THRESHOLD_WINDOW_SIZE, VOLATILITY_CRISIS_QUANTILE, CORRELATION_CRISIS_QUANTILE,
+    VOLUME_CRISIS_QUANTILE, OVERALL_CRISIS_QUANTILE,
+    VOLATILITY_CRISIS_RATE, CORRELATION_CRISIS_RATE, VOLUME_CRISIS_RATE, OVERALL_CRISIS_RATE
+)
 
 class AdaptiveThresholdDetector:
     """분위수 기반 적응형 임계값 감지기"""
     
-    def __init__(self, window_size=512, target_quantile=0.975, target_crisis_rate=0.15):
+    def __init__(self, window_size=THRESHOLD_WINDOW_SIZE, target_quantile=0.975, target_crisis_rate=0.15):
         self.window_size = window_size
         self.target_quantile = target_quantile
         self.target_crisis_rate = target_crisis_rate  # 목표 위기율 (15%)
@@ -83,18 +88,26 @@ class TCell:
         self.is_fitted = False
         self.training_features = []
         
-        # 적응형 임계값 감지기들 (위기율 10-15%로 재조정)
+        # 적응형 임계값 감지기들 (config.py에서 관리)
         self.volatility_detector = AdaptiveThresholdDetector(
-            window_size=512, target_quantile=0.90, target_crisis_rate=0.12
+            window_size=THRESHOLD_WINDOW_SIZE, 
+            target_quantile=VOLATILITY_CRISIS_QUANTILE, 
+            target_crisis_rate=VOLATILITY_CRISIS_RATE
         )
         self.correlation_detector = AdaptiveThresholdDetector(
-            window_size=512, target_quantile=0.92, target_crisis_rate=0.10
+            window_size=THRESHOLD_WINDOW_SIZE, 
+            target_quantile=CORRELATION_CRISIS_QUANTILE, 
+            target_crisis_rate=CORRELATION_CRISIS_RATE
         )
         self.volume_detector = AdaptiveThresholdDetector(
-            window_size=512, target_quantile=0.91, target_crisis_rate=0.13
+            window_size=THRESHOLD_WINDOW_SIZE, 
+            target_quantile=VOLUME_CRISIS_QUANTILE, 
+            target_crisis_rate=VOLUME_CRISIS_RATE
         )
         self.overall_detector = AdaptiveThresholdDetector(
-            window_size=512, target_quantile=0.925, target_crisis_rate=0.15
+            window_size=THRESHOLD_WINDOW_SIZE, 
+            target_quantile=OVERALL_CRISIS_QUANTILE, 
+            target_crisis_rate=OVERALL_CRISIS_RATE
         )
         
         # 로거

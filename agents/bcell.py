@@ -33,6 +33,7 @@ from config import (
     CQL_ALPHA_END,
     CQL_NUM_SAMPLES,
     N_EPISODES,
+    ROLLING_STATS_WINDOW,
 )
 
 
@@ -319,7 +320,7 @@ class BCell:
         self.policy_update_frequency = 2  # 2스텝에 1회 Actor 업데이트
 
         # 통합 슬라이딩 윈도우 통계 관리자
-        self.rolling_stats = MultiRollingStats(window_size=100)
+        self.rolling_stats = MultiRollingStats(window_size=ROLLING_STATS_WINDOW)
 
         # 주요 통계 지표 등록
         self.q_min_stats = self.rolling_stats.add_statistics("q_min")

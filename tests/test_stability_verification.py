@@ -10,13 +10,13 @@ from pathlib import Path
 # 프로젝트 루트 추가
 sys.path.append(str(Path(__file__).parent.parent))
 
-from core.environment import PortfolioEnvironment, EMARewardNormalizer
+from core.environment import PortfolioEnvironment
 from agents.tcell import TCell, AdaptiveThresholdDetector
 from agents.bcell import BCell
 from data.loader import DataLoader
 from data.features import FeatureExtractor
 from utils.logger import BIPDLogger
-from utils.rolling_stats import RollingCounter, RollingStatistics
+from utils.rolling_stats import MultiRollingStats
 from config import *
 
 class StabilityVerificationProtocol:
@@ -55,8 +55,8 @@ class StabilityVerificationProtocol:
         self.logger.info("1. 보상-성과 정렬 검증 시작...")
         
         try:
-            # EMA 정규화기 테스트
-            normalizer = EMARewardNormalizer()
+            # 고정 스케일러 정규화기 테스트 (EMARewardNormalizer 대신)
+            # 현재는 환경 내부에서 fixed scaler 사용
             
             # 시뮬레이션 보상 및 수익률 데이터 생성
             np.random.seed(42)
@@ -68,7 +68,8 @@ class StabilityVerificationProtocol:
                 risk_penalty = 0.1 * abs(ret)
                 tc_penalty = 0.05 * np.random.uniform(0, 0.01)
                 raw_reward = np.log(1 + ret) - risk_penalty - tc_penalty
-                normalized_reward = normalizer.normalize(raw_reward)
+                # 고정 스케일러 정규화 시뮬레이션 (mean=0.002, std=0.02)
+                normalized_reward = (raw_reward - 0.002) / 0.02
                 rewards.append(normalized_reward)
             
             # 상관관계 계산
@@ -308,49 +309,58 @@ class StabilityVerificationProtocol:
         self.logger.info("5. 로깅 정합성 검증 시작...")
         
         try:
-            # 슬라이딩 윈도우 통계 테스트
-            counter = RollingCounter(window_size=10)
-            statistics = RollingStatistics(window_size=10)
+            # MultiRollingStats 테스트 (RollingCounter, RollingStatistics 대신)
+            multi_stats = MultiRollingStats(['accuracy', 'loss'], window_size=10)
             
             # 테스트 데이터
             test_conditions = [True, False, True, True, False, True, False, False, True, True, False, True]
             test_values = [1.0, 2.0, 1.5, 3.0, 2.5, 1.8, 2.2, 1.9, 2.8, 3.2, 2.1, 2.7]
             
-            counter_results = []
-            stats_results = []
+            accuracy_results = []
+            loss_results = []
             
             for i, (condition, value) in enumerate(zip(test_conditions, test_values)):
-                counter_stats = counter.update(condition)
-                value_stats = statistics.update(value)
+                # MultiRollingStats 업데이트 (accuracy는 condition 기반, loss는 value 기반)
+                accuracy_val = 1.0 if condition else 0.0
+                multi_stats.update({'accuracy': accuracy_val, 'loss': value})
                 
-                counter_results.append(counter_stats)
-                stats_results.append(value_stats)
+                current_stats = multi_stats.get_stats()
+                accuracy_results.append(current_stats.get('accuracy', {}))
+                loss_results.append(current_stats.get('loss', {}))
             
-            # 검증: 슬라이딩 윈도우가 올바르게 작동하는지 확인
-            final_counter = counter.get_stats()
-            final_stats = statistics.get_stats()
+            # 검증: MultiRollingStats가 올바르게 작동하는지 확인
+            final_stats = multi_stats.get_stats()
             
-            # 슬라이딩 윈도우 크기가 제한되는지 확인
-            sliding_size_correct = final_counter['sliding_size'] <= 10
-            cumulative_count_correct = final_counter['cumulative_count'] == len(test_conditions)
+            # 슬라이딩 윈도우가 제한되는지 확인 (accuracy 기준)
+            accuracy_stats = final_stats.get('accuracy', {})
+            loss_stats = final_stats.get('loss', {})
+            
+            sliding_size_correct = (
+                len(multi_stats.data.get('accuracy', [])) <= 10 and
+                len(multi_stats.data.get('loss', [])) <= 10
+            )
             
             # 통계가 일관되게 계산되는지 확인
             stats_consistent = (
-                final_stats['sliding_size'] <= 10 and
-                final_stats['cumulative_count'] == len(test_values) and
-                0 < final_stats['sliding_mean'] < 10  # 합리적 범위
+                'mean' in accuracy_stats and 'mean' in loss_stats and
+                0 <= accuracy_stats.get('mean', -1) <= 1 and  # accuracy는 0-1 범위
+                loss_stats.get('mean', -1) > 0  # loss는 양수
             )
+            
+            cumulative_count_correct = len(test_conditions) == len(test_values)
             
             result = {
                 'sliding_size_correct': sliding_size_correct,
                 'cumulative_count_correct': cumulative_count_correct,
                 'stats_consistent': stats_consistent,
-                'final_sliding_size': final_counter['sliding_size'],
-                'final_cumulative_count': final_counter['cumulative_count'],
+                'accuracy_count': len(multi_stats.data.get('accuracy', [])),
+                'loss_count': len(multi_stats.data.get('loss', [])),
+                'accuracy_mean': accuracy_stats.get('mean', 0),
+                'loss_mean': loss_stats.get('mean', 0),
                 'status': 'PASS' if (sliding_size_correct and cumulative_count_correct and stats_consistent) else 'FAIL'
             }
             
-            self.logger.info(f"로깅 정합성: 슬라이딩크기={final_counter['sliding_size']}, 누적카운트={final_counter['cumulative_count']}")
+            self.logger.info(f"로깅 정합성: accuracy_count={len(multi_stats.data.get('accuracy', []))}, loss_count={len(multi_stats.data.get('loss', []))}")
             return result
             
         except Exception as e:

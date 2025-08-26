@@ -16,9 +16,10 @@ class ImmunePortfolioSystem:
     시장 상황에 적응적으로 반응하는 포트폴리오 전략 실행
     """
 
-    def __init__(self, n_assets: int, state_dim: int):
+    def __init__(self, n_assets: int, state_dim: int, symbols: Optional[List[str]] = None):
         self.n_assets = n_assets
         self.state_dim = state_dim
+        self.symbols = symbols or SYMBOLS  # config.py의 SYMBOLS 사용
 
         # T-Cell (위기 감지)
         self.tcell = TCell(
@@ -181,7 +182,7 @@ class ImmunePortfolioSystem:
                     f"평균 신뢰도={avg_confidence:.3f}"
                 )
 
-        # 의사결정 정보 수집
+        # 의사결정 정보 수집 (XAI 강화)
         decision_info = {
             "crisis_level": float(final_crisis_level),
             "selected_bcell": selected_bcell_name,
@@ -193,6 +194,36 @@ class ImmunePortfolioSystem:
             },
             "weights_concentration": float(np.sum(weights**2)),
             "decision_count": self.decision_count,
+            # XAI 확장 데이터
+            "xai_data": {
+                "tcell_data": crisis_info if isinstance(crisis_info, dict) else {
+                    "overall_crisis": crisis_info,
+                    "volatility_crisis": 0.0,
+                    "correlation_crisis": 0.0,
+                    "volume_crisis": 0.0
+                },
+                "bcell_data": {
+                    "strategy_scores": {
+                        name: bcell.get_specialization_score(crisis_info)
+                        for name, bcell in self.bcells.items()
+                    },
+                    "selected_strategy": selected_bcell_name,
+                    "selection_reason": self._get_selection_reason(selected_bcell_name, crisis_info)
+                },
+                "memory_data": {
+                    "has_guidance": memory_guidance["has_guidance"],
+                    "confidence": memory_guidance.get("confidence", 0.0),
+                    "similar_episodes": memory_guidance.get("similar_episodes", []),
+                    "similarity_scores": memory_guidance.get("similarity_scores", [])
+                },
+                "portfolio_data": {
+                    "weights": {self.symbols[i]: float(w) for i, w in enumerate(weights)} if hasattr(self, 'symbols') else {},
+                    "top_holdings": self._get_top_holdings(weights, 5),
+                    "concentration": float(np.sum(weights**2)),
+                    "diversification": float(1.0 / np.sum(weights**2))  # 역집중도 = 다양성
+                },
+                "step": self.decision_count
+            }
         }
 
         # 의사결정 히스토리 저장
@@ -596,3 +627,51 @@ class ImmunePortfolioSystem:
         except Exception as e:
             self.logger.error(f"시스템 로드 실패: {e}")
             return False
+    
+    def _get_selection_reason(self, selected_bcell: str, crisis_info) -> str:
+        """B-Cell 선택 이유 설명 생성"""
+        
+        if isinstance(crisis_info, dict):
+            crisis_level = crisis_info.get("overall_crisis", 0)
+            crisis_types = []
+            
+            if crisis_info.get("volatility_crisis", 0) > 0.5:
+                crisis_types.append("high volatility")
+            if crisis_info.get("correlation_crisis", 0) > 0.5:
+                crisis_types.append("correlation shift")
+            if crisis_info.get("volume_crisis", 0) > 0.5:
+                crisis_types.append("volume anomaly")
+        else:
+            crisis_level = crisis_info
+            crisis_types = []
+        
+        if crisis_level > 0.7:
+            crisis_desc = "High crisis detected"
+        elif crisis_level > 0.4:
+            crisis_desc = "Moderate crisis detected"
+        else:
+            crisis_desc = "Normal market conditions"
+        
+        type_desc = f" ({', '.join(crisis_types)})" if crisis_types else ""
+        
+        strategy_reasons = {
+            "volatility": f"High volatility strategy selected for unstable market{type_desc}",
+            "correlation": f"Correlation strategy selected for regime change{type_desc}",
+            "momentum": f"Momentum strategy selected for trending market{type_desc}",
+            "defensive": f"Defensive strategy selected for risk management{type_desc}",
+            "growth": f"Growth strategy selected for opportunity capture{type_desc}"
+        }
+        
+        return strategy_reasons.get(selected_bcell, f"{crisis_desc}{type_desc}")
+    
+    def _get_top_holdings(self, weights: np.ndarray, top_n: int = 5) -> List[str]:
+        """상위 보유 종목 리스트 반환"""
+        
+        if hasattr(self, 'symbols') and len(self.symbols) == len(weights):
+            # 가중치가 높은 순으로 정렬
+            sorted_indices = np.argsort(weights)[::-1]
+            return [self.symbols[i] for i in sorted_indices[:top_n]]
+        else:
+            # 심볼이 없으면 인덱스로 표시
+            sorted_indices = np.argsort(weights)[::-1]
+            return [f"Asset_{i}" for i in sorted_indices[:top_n]]
