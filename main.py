@@ -12,7 +12,12 @@ import numpy as np
 import pandas as pd
 from datetime import datetime
 
-from config import *
+from config import (
+    SYMBOLS, DATA_DIR, LOGS_DIR, 
+    TRAIN_START_DATE, TRAIN_END_DATE, TEST_START_DATE, TEST_END_DATE,
+    N_EPISODES, GLOBAL_SEED, 
+    set_seed
+)
 from data import DataLoader
 from core import BIPDTrainer
 from utils import BIPDLogger
@@ -26,7 +31,6 @@ def main():
     
     # 디렉토리 생성
     os.makedirs(DATA_DIR, exist_ok=True)
-    os.makedirs(MODELS_DIR, exist_ok=True)
     os.makedirs(LOGS_DIR, exist_ok=True)
     
     # 로거 초기화
@@ -86,8 +90,7 @@ def main():
         print("[2단계] BIPD 훈련자를 초기화합니다...")
         trainer = BIPDTrainer(
             train_data=train_data,
-            test_data=test_data,
-            save_dir=MODELS_DIR
+            test_data=test_data
         )
         logger.debug("BIPD 훈련자 초기화 완료")
         
@@ -182,7 +185,7 @@ def main():
             print("❌ 개선 필요: 시스템 성능이 기대에 못 미칩니다. 하이퍼파라미터 조정이 필요합니다.")
         
         print(f"\n저장된 파일:")
-        print(f"  - 모델: {MODELS_DIR}/")
+        print(f"  - 모델: {session_dir}/models/")
         print(f"  - 로그: {LOGS_DIR}/")
         print(f"  - 시각화: {plot_path}")
         
