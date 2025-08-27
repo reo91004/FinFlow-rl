@@ -492,7 +492,7 @@ class PortfolioEnvironment:
     def _calculate_reward(self, portfolio_return: float, weights: np.ndarray, 
                          asset_returns: np.ndarray) -> float:
         """
-        개선된 보상 함수 (Sharpe proxy 통합)
+        보상 함수 (Sharpe proxy 통합)
         
         r_t = log(V_{t+1}/V_t) - λ_risk*σ_t - λ_tc*||Δw_t||_1 + λ_S*Sharpe_EMA
         """
@@ -527,8 +527,12 @@ class PortfolioEnvironment:
         # 6. 원시 보상 계산 (HHI 페널티 포함)
         raw_reward = log_return - risk_penalty - transaction_penalty - concentration_penalty + sharpe_reward
         
-        # 7. 고정 스케일러 정규화
-        normalized_reward = self.reward_normalizer.normalize(raw_reward)
+        # 7. tanh 바운딩 적용 (Q-value 폭주 방지)
+        r_max, tau = 0.05, 0.05  # 보수적 스케일 설정
+        bounded_reward = r_max * np.tanh(raw_reward / tau)
+        
+        # 8. 고정 스케일러 정규화 (바운딩된 보상 사용)
+        normalized_reward = self.reward_normalizer.normalize(bounded_reward)
         
         # 8. 보상-성과 상관성 추적
         self.reward_performance_tracker['rewards'].append(normalized_reward)
@@ -549,11 +553,15 @@ class PortfolioEnvironment:
                 f"보상 구성 (step {self.current_step}): "
                 f"log_ret={log_return:.4f}, risk_pen={risk_penalty:.4f}, "
                 f"tc_pen={transaction_penalty:.4f}, hhi_pen={concentration_penalty:.4f}, "
-                f"sharpe_rew={sharpe_reward:.4f}, HHI={hhi:.3f}, raw_rew={raw_reward:.4f}"
+                f"sharpe_rew={sharpe_reward:.4f}, HHI={hhi:.3f}, "
+                f"raw_rew={raw_reward:.4f}, bounded_rew={bounded_reward:.4f}, norm_rew={normalized_reward:.4f}"
             )
         
         if not hasattr(self, '_reward_logged'):
-            self.logger.info("보상 함수 개선: log-return 기반, 고정 정규화, HHI 페널티, Sharpe proxy 통합")
+            self.logger.info(
+                "보상 함수 대폭 개선: log-return 기반, tanh 바운딩 (r_max=0.05), "
+                "고정 정규화, HHI 페널티, Sharpe proxy 통합"
+            )
             self._reward_logged = True
         
         # 안전한 타입 변환 (스칼라 값 보장)

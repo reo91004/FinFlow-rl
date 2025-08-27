@@ -14,8 +14,9 @@ from datetime import datetime
 
 from config import (
     SYMBOLS, DATA_DIR, LOGS_DIR, 
-    TRAIN_START_DATE, TRAIN_END_DATE, TEST_START_DATE, TEST_END_DATE,
-    N_EPISODES, GLOBAL_SEED, 
+    TRAIN_START, TRAIN_END, TEST_START, TEST_END,
+    N_EPISODES, GLOBAL_SEED, INITIAL_CAPITAL,
+    SAVE_INTERVAL,
     set_seed
 )
 from data import DataLoader

@@ -160,18 +160,29 @@ BUFFER_SIZE = int(10000)    # 경험 재생 버퍼 크기
 UPDATE_FREQUENCY = int(4)   # 네트워크 업데이트 주기
 
 # SAC 엔트로피 및 안정화 파라미터
-TARGET_ENTROPY_SCALE = float(0.25)  # 타겟 엔트로피 스케일링 (탐험-활용 균형)
-ALPHA_MIN = float(1e-4)             # 온도 파라미터 최솟값 (과도한 탐험 방지)
-ALPHA_MAX = float(0.5)              # 온도 파라미터 최댓값 (과도한 활용 방지)
+TARGET_ENTROPY_FROM_DIRICHLET = True        # Dirichlet 공식 기반 타겟 엔트로피 사용
+DIRICHLET_ALPHA_STAR = float(1.5)           # 대칭 Dirichlet 농도 파라미터 (균형잡힌 다양성)
+LOG_ALPHA_MIN = float(-10.0)                # log α 하한 (확장됨: α ≈ 4.5e-5)
+LOG_ALPHA_MAX = float(2.0)                  # log α 상한 (확장됨: α ≈ 7.39)
+TARGET_ENTROPY_SCALE = float(0.25)          # 기존 호환성 유지 (사용안함)
+ALPHA_MIN = float(1e-4)                     # 기존 호환성 유지
+ALPHA_MAX = float(0.5)                      # 기존 호환성 유지
 
 # Dirichlet 분포 농도 파라미터 (포트폴리오 가중치 제약)
-CONCENTRATION_MIN = float(0.2)      # 최소 농도 (분산 투자 유도)
-CONCENTRATION_MAX = float(100.0)    # 최대 농도 (집중 투자 허용)
-WEIGHT_EPSILON = float(1e-6)        # 가중치 보호 임계값 (0 방지)
+DIRICHLET_CONCENTRATION_MIN = float(1.0)     # 최소 농도 (균등분포 이상, 스파스 방지)
+DIRICHLET_CONCENTRATION_MAX = float(50.0)    # 최대 농도 (과도 집중 방지)
+PORTFOLIO_WEIGHT_MIN = float(1e-4)           # 포트폴리오 최소 가중치
+CONCENTRATION_MIN = float(0.2)               # 기존 호환성 유지
+CONCENTRATION_MAX = float(100.0)             # 기존 호환성 유지  
+WEIGHT_EPSILON = float(1e-6)                 # 기존 호환성 유지
 
 # 그래디언트 안정화 설정
-MAX_GRAD_NORM = float(1.0)      # 그래디언트 클리핑 최대 norm
-HUBER_DELTA = float(1.0)        # Huber loss delta 파라미터 (이상치 견고성)
+CRITIC_GRAD_NORM = float(0.5)          # Critic 그래디언트 클리핑 (보수적)
+ACTOR_GRAD_NORM = float(0.5)           # Actor 그래디언트 클리핑 (보수적)  
+ALPHA_GRAD_NORM = float(10.0)          # Alpha 그래디언트 클리핑 (관대)
+ENHANCED_HUBER_DELTA = float(2.0)      # 강화된 Huber loss delta
+MAX_GRAD_NORM = float(1.0)             # 기존 호환성 유지
+HUBER_DELTA = float(1.0)               # 기존 호환성 유지
 
 # CQL (Conservative Q-Learning) 정규화 설정
 CQL_ALPHA_START = float(0.05)   # CQL 정규화 시작 강도 (점진적 증가)
@@ -243,7 +254,17 @@ SHARPE_WINDOW = int(10)                 # Sharpe 비율 계산 윈도우
 SHARPE_SCALE = float(0.15)              # Sharpe 비율 보상 스케일링
 
 # 보상 정규화 및 이상치 처리
-REWARD_BUFFER_SIZE = int(1000)          # 보상 정규화를 위한 버퍼 크기
-REWARD_OUTLIER_SIGMA = float(3.0)       # 이상치 감지 시그마 배수 (3-sigma rule)
-REWARD_CLIP_MIN = float(-2.0)           # 보상 하한 클리핑
-REWARD_CLIP_MAX = float(2.0)            # 보상 상한 클리핑
+REWARD_TANH_BOUND = True                     # tanh 바운딩 활성화
+REWARD_TANH_R_MAX = float(0.05)              # tanh 바운딩 최대값
+REWARD_TANH_TAU = float(0.05)                # tanh 바운딩 스케일링 파라미터
+REWARD_BUFFER_SIZE = int(1000)               # 보상 정규화를 위한 버퍼 크기
+REWARD_OUTLIER_SIGMA = float(3.0)            # 이상치 감지 시그마 배수 (3-sigma rule)
+REWARD_CLIP_MIN = float(-2.0)                # 보상 하한 클리핑
+REWARD_CLIP_MAX = float(2.0)                 # 보상 상한 클리핑
+
+# Q-value 안정화 설정 (새로 추가)
+Q_TARGET_HARD_CLIP_MIN = float(-50.0)       # Q 타깃 하드 클리핑 하한
+Q_TARGET_HARD_CLIP_MAX = float(50.0)        # Q 타깃 하드 클리핑 상한
+Q_VALUE_STABILITY_CHECK = float(100.0)      # Q-value 안정성 체크 임계값
+Q_MONITOR_WINDOW_SIZE = int(1000)           # Q-value 모니터링 윈도우 크기
+Q_EXTREME_THRESHOLD = float(0.3)            # 극단치 비율 경고 임계값 (30%)
