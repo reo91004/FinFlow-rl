@@ -11,6 +11,7 @@ import random
 from utils.logger import BIPDLogger
 from utils.rolling_stats import MultiRollingStats
 from utils.extreme_q_monitor import DualQMonitor
+from utils.portfolio_utils import project_to_capped_simplex
 from agents.utils.dirichlet_entropy import target_entropy_from_symmetric_alpha
 from config import (
     DEVICE,
@@ -105,21 +106,27 @@ class SACActorNetwork(nn.Module):
             # 훈련 시: 확률적 샘플링
             dist = torch.distributions.Dirichlet(concentration)
             weights = dist.rsample()  # reparameterization trick 사용
-            # 포트폴리오 가중치 안정화
-            weights = torch.clamp(weights, PORTFOLIO_WEIGHT_MIN, 
-                                1.0 - PORTFOLIO_WEIGHT_MIN * self.action_dim)
-            # 재정규화 (안전장치)
-            weights = weights / weights.sum(dim=-1, keepdim=True)
             log_prob = dist.log_prob(weights)
         else:
             # 평가 시: 결정적 출력 (평균 사용)
             # Dirichlet의 평균은 concentration / concentration.sum()
             weights = concentration / concentration.sum(dim=-1, keepdim=True)
-            # 평가 시 가중치 보호
-            weights = torch.clamp(weights, PORTFOLIO_WEIGHT_MIN, 
-                                1.0 - PORTFOLIO_WEIGHT_MIN * self.action_dim)
-            weights = weights / weights.sum(dim=-1, keepdim=True)
             log_prob = torch.zeros(weights.shape[0], device=weights.device)
+
+        # 심플렉스 투영 적용 (제약 조건 엄밀 보장)
+        batch_size = weights.shape[0]
+        projected_weights = torch.zeros_like(weights)
+        for i in range(batch_size):
+            weight_np = weights[i].detach().cpu().numpy()
+            projected_np = project_to_capped_simplex(
+                weight_np, 
+                target_sum=1.0,
+                w_min=PORTFOLIO_WEIGHT_MIN,
+                w_max=1.0 - PORTFOLIO_WEIGHT_MIN * (self.action_dim - 1)
+            )
+            projected_weights[i] = torch.from_numpy(projected_np).to(weights.device)
+        
+        weights = projected_weights
 
         return concentration, weights, log_prob
 

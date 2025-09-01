@@ -74,13 +74,14 @@ class FeatureExtractor:
             else:
                 features.append(0.5)  # 중립값
             
-            # MACD (첫 번째 종목 기준)
+            # MACD (시장 인덱스 기준)
             try:
-                first_asset = data_slice.iloc[:, 0]
-                macd_line = ta.trend.MACD(first_asset).macd()
+                # 동일가중 시장 인덱스 계산
+                market_index = data_slice.mean(axis=1)
+                macd_line = ta.trend.MACD(market_index).macd()
                 if not macd_line.empty and not np.isnan(macd_line.iloc[-1]):
-                    # MACD를 가격 대비 비율로 정규화
-                    macd_normalized = macd_line.iloc[-1] / first_asset.iloc[-1]
+                    # MACD를 시장 인덱스 대비 비율로 정규화
+                    macd_normalized = macd_line.iloc[-1] / market_index.iloc[-1]
                     features.append(np.clip(macd_normalized * 100, -1, 1))
                 else:
                     features.append(0.0)
@@ -123,18 +124,26 @@ class FeatureExtractor:
             else:
                 features.append(0.0)
             
-            # 시장 베타 (첫 번째 종목 기준 시장 대비)
+            # 평균 시장 베타 (전체 종목의 시장 대비 베타 평균)
             if len(returns) > 5:
                 try:
                     market_return = returns.mean(axis=1)
-                    first_asset_return = returns.iloc[:, 0]
-                    
-                    covariance = np.cov(first_asset_return, market_return)[0, 1]
                     market_variance = np.var(market_return)
                     
                     if market_variance > 0:
-                        beta = covariance / market_variance
-                        features.append(np.clip(beta, 0, 3))
+                        betas = []
+                        for col in range(returns.shape[1]):
+                            asset_return = returns.iloc[:, col]
+                            covariance = np.cov(asset_return, market_return)[0, 1]
+                            beta = covariance / market_variance
+                            if not np.isnan(beta) and np.isfinite(beta):
+                                betas.append(beta)
+                        
+                        if betas:
+                            avg_beta = np.mean(betas)
+                            features.append(np.clip(avg_beta, 0, 3))
+                        else:
+                            features.append(1.0)
                     else:
                         features.append(1.0)
                 except:

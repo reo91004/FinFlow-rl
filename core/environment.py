@@ -136,8 +136,10 @@ class PortfolioEnvironment:
         self.max_leverage = MAX_LEVERAGE                # 최대 레버리지
         
         # 거래비용 최적화 파라미터 (config.py에서 관리)
-        self.no_trade_band = NO_TRADE_BAND              # 노-트레이드 밴드
+        self.base_no_trade_band = NO_TRADE_BAND         # 기본 노-트레이드 밴드
+        self.no_trade_band = NO_TRADE_BAND              # 현재 적응형 노-트레이드 밴드
         self.max_turnover = MAX_TURNOVER                # 최대 턴오버
+        self.volatility_history = deque(maxlen=20)      # 변동성 추정용 히스토리
         
         self.logger = BIPDLogger("Environment")
         
@@ -198,6 +200,9 @@ class PortfolioEnvironment:
         
         # 변동성 타깃팅 적용
         new_weights = self._apply_volatility_targeting(new_weights)
+        
+        # 적응형 노-트레이드 밴드 업데이트
+        self._update_adaptive_no_trade_band()
         
         # 거래비용 최적화 적용 (노-트레이드 밴드 & 턴오버 캡)
         new_weights = self._apply_trading_constraints(new_weights)
@@ -382,6 +387,35 @@ class PortfolioEnvironment:
         
         return scaled_weights
     
+    def _update_adaptive_no_trade_band(self):
+        """시장 변동성 기반 적응형 노-트레이드 밴드 업데이트"""
+        if len(self.return_history) < 5:
+            return  # 충분한 데이터가 없으면 기본값 유지
+        
+        # 최근 변동성 추정
+        recent_returns = np.array(self.return_history[-min(10, len(self.return_history)):])
+        current_volatility = np.std(recent_returns) if len(recent_returns) > 1 else 0.0
+        
+        # 변동성 히스토리 업데이트
+        self.volatility_history.append(current_volatility)
+        
+        if len(self.volatility_history) < 3:
+            return  # 충분한 변동성 히스토리가 없으면 기본값 유지
+        
+        # 적응형 밴드 계산
+        # 높은 변동성 -> 더 넓은 밴드 (거래 빈도 감소)
+        # 낮은 변동성 -> 더 좁은 밴드 (거래 빈도 증가)
+        avg_volatility = np.mean(list(self.volatility_history))
+        volatility_multiplier = np.clip(avg_volatility / 0.02, 0.3, 3.0)  # 0.02는 기준 일일 변동성
+        
+        # 적응형 밴드 = 기본 밴드 × 변동성 승수
+        self.no_trade_band = self.base_no_trade_band * volatility_multiplier
+        
+        # 최종 클리핑 (너무 극단적인 값 방지)
+        self.no_trade_band = np.clip(self.no_trade_band, 
+                                   self.base_no_trade_band * 0.3, 
+                                   self.base_no_trade_band * 3.0)
+    
     def _apply_trading_constraints(self, new_weights: np.ndarray) -> np.ndarray:
         """노-트레이드 밴드 및 턴오버 캡 적용"""
         current_weights = self.weights
@@ -418,7 +452,8 @@ class PortfolioEnvironment:
             self.logger.debug(
                 f"거래 제약 (step {self.current_step}): "
                 f"원래_턴오버={original_turnover:.3f}, 최종_턴오버={final_turnover:.3f}, "
-                f"밴드적용={band_applied}/{len(new_weights)}"
+                f"밴드적용={band_applied}/{len(new_weights)}, "
+                f"현재_밴드={self.no_trade_band:.3f}, 기본_밴드={self.base_no_trade_band:.3f}"
             )
         
         if not hasattr(self, '_trading_constraints_logged'):
