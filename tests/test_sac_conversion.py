@@ -81,7 +81,7 @@ def test_sac_conversion():
         
         # SACActorNetwork 테스트
         test_state = torch.randn(1, state_dim)
-        concentration, weights, log_prob = bcell.actor(test_state)
+        concentration, weights, log_prob, policy_entropy = bcell.actor(test_state)
         
         assert concentration.shape == (1, action_dim), f"Concentration 형태 오류: {concentration.shape}"
         assert weights.shape == (1, action_dim), f"Weights 형태 오류: {weights.shape}"

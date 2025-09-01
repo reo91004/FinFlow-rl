@@ -13,6 +13,7 @@ from utils.rolling_stats import MultiRollingStats
 from utils.extreme_q_monitor import DualQMonitor
 from utils.portfolio_utils import project_to_capped_simplex
 from agents.utils.dirichlet_entropy import target_entropy_from_symmetric_alpha
+from agents.utils.entropy_schedule import RegimeAdaptiveEntropyScheduler
 from config import (
     DEVICE,
     ACTOR_LR,
@@ -107,11 +108,15 @@ class SACActorNetwork(nn.Module):
             dist = torch.distributions.Dirichlet(concentration)
             weights = dist.rsample()  # reparameterization trick 사용
             log_prob = dist.log_prob(weights)
+            
+            # 정책 엔트로피 계산 (적응형 엔트로피 추적용)
+            policy_entropy = dist.entropy()
         else:
             # 평가 시: 결정적 출력 (평균 사용)
             # Dirichlet의 평균은 concentration / concentration.sum()
             weights = concentration / concentration.sum(dim=-1, keepdim=True)
             log_prob = torch.zeros(weights.shape[0], device=weights.device)
+            policy_entropy = torch.zeros(weights.shape[0], device=weights.device)
 
         # 심플렉스 투영 적용 (제약 조건 엄밀 보장)
         batch_size = weights.shape[0]
@@ -128,11 +133,11 @@ class SACActorNetwork(nn.Module):
         
         weights = projected_weights
 
-        return concentration, weights, log_prob
+        return concentration, weights, log_prob, policy_entropy
 
     def get_action_and_log_prob(self, state):
         """행동과 로그 확률을 함께 반환"""
-        concentration, weights, log_prob = self.forward(state)
+        concentration, weights, log_prob, policy_entropy = self.forward(state)
         return weights, log_prob
 
 
@@ -296,6 +301,14 @@ class BCell:
         # SAC 엔트로피 계수
         # Dirichlet 분포에 맞춘 초기 타겟 엔트로피 설정
         self._compute_dirichlet_entropy_prior(action_dim)
+        
+        # 적응형 엔트로피 스케줄러 초기화
+        self.use_adaptive_entropy = True  # Phase 3 기능 활성화
+        if self.use_adaptive_entropy:
+            from agents.utils.entropy_schedule import create_entropy_scheduler_for_symbols
+            self.entropy_scheduler = create_entropy_scheduler_for_symbols(action_dim)
+        else:
+            self.entropy_scheduler = None
 
         # log-α 범위 설정
         init_log_alpha = np.log(0.1)
@@ -431,11 +444,48 @@ class BCell:
             f"H_range=[{h_min:.2f}, {h_max:.2f}]"
         )
 
+    def update_adaptive_target_entropy(self, crisis_level: float, market_stability: float = None):
+        """
+        T-Cell 신호 기반 적응형 엔트로피 업데이트 (Phase 3)
+        
+        Args:
+            crisis_level: T-Cell에서 감지한 위기 레벨 (0-1)
+            market_stability: 시장 안정도 (선택적)
+        """
+        if self.use_adaptive_entropy and self.entropy_scheduler is not None:
+            # 스케줄러로부터 새로운 목표 엔트로피 받기
+            new_target_entropy, regime_info = self.entropy_scheduler.update_regime_and_get_target_entropy(
+                crisis_level, market_stability
+            )
+            
+            # 목표 엔트로피 업데이트
+            old_target = self.target_entropy
+            self.target_entropy = new_target_entropy
+            
+            # 실제 정책 엔트로피와의 갭 추적
+            if hasattr(self, '_last_policy_entropy') and self._last_policy_entropy is not None:
+                self.entropy_scheduler.track_entropy_gap(self._last_policy_entropy)
+            
+            # 상당한 변화가 있을 때만 로그
+            if abs(new_target_entropy - old_target) > 0.1:
+                self.logger.debug(
+                    f"엔트로피 적응: {old_target:.3f} -> {new_target_entropy:.3f} "
+                    f"(레짐: {regime_info['regime']}, 위기: {crisis_level:.2f})"
+                )
+            
+            return regime_info
+        else:
+            return None
+
     def _update_target_entropy(self):
         """
-        목표 엔트로피 스케줄링 (정책-적응형 혼합 포함)
+        목표 엔트로피 스케줄링 (기존 방식 - 적응형이 비활성화된 경우)
         에피소드 진행률에 따라 탐색에서 활용으로 점진적 전환
         """
+        # 적응형 엔트로피가 활성화된 경우 이 메소드는 건너뜀
+        if self.use_adaptive_entropy:
+            return
+            
         # 기존 진행률 스케줄
         if self.episode_progress <= self.entropy_schedule_warmup:
             base = self.target_entropy_max
@@ -480,13 +530,17 @@ class BCell:
             # SAC Actor에서 확률적 또는 결정적 행동 샘플링
             if deterministic:
                 self.actor.eval()
-                concentration, weights, _ = self.actor(state_tensor)
+                concentration, weights, _, policy_entropy = self.actor(state_tensor)
                 weights = weights.squeeze(0).cpu().numpy()
                 self.actor.train()
             else:
                 # 훈련 모드에서는 확률적 샘플링 (엔트로피 최대화)
-                concentration, weights, _ = self.actor(state_tensor)
+                concentration, weights, _, policy_entropy = self.actor(state_tensor)
                 weights = weights.squeeze(0).cpu().numpy()
+                
+                # 정책 엔트로피 추적 (적응형 엔트로피용)
+                if self.use_adaptive_entropy and policy_entropy is not None:
+                    self._last_policy_entropy = float(policy_entropy.squeeze(0).cpu().numpy())
 
         # 가중치 정규화
         max_weight = 1.0 - PORTFOLIO_WEIGHT_MIN * len(weights)
@@ -536,7 +590,7 @@ class BCell:
         # ===== SAC Twin Critics 업데이트 =====
         with torch.no_grad():
             # SAC에서는 다음 상태에서의 정책으로부터 행동과 로그 확률을 샘플링
-            _, next_actions, next_log_probs = self.actor(next_states)
+            _, next_actions, next_log_probs, _ = self.actor(next_states)
 
             # Twin Q-values 계산 (SAC는 엔트로피 항 포함)
             target_q1 = self.target_critic1(next_states, next_actions).squeeze()
@@ -674,7 +728,7 @@ class BCell:
 
         if self.update_count % self.policy_update_frequency == 0:
             # ===== SAC Actor 업데이트 =====
-            _, current_actions, current_log_probs = self.actor(states)
+            _, current_actions, current_log_probs, _ = self.actor(states)
 
             # Q-values for current actions
             q1_current = self.critic1(states, current_actions).squeeze()
@@ -694,7 +748,7 @@ class BCell:
         else:
             # Actor 업데이트 생략 (Critic만 업데이트)
             with torch.no_grad():
-                _, current_actions, current_log_probs = self.actor(states)
+                _, current_actions, current_log_probs, _ = self.actor(states)
 
         # Alpha (엔트로피 계수) 자동 튜닝
         # 정책 엔트로피 EMA 업데이트 (정책-적응형 스케줄링용)
@@ -1139,7 +1193,7 @@ class BCell:
             state_tensor = (
                 torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(DEVICE)
             )
-            concentration, weights, _ = self.actor(state_tensor)
+            concentration, weights, _, _ = self.actor(state_tensor)
             weights = weights.squeeze(0)
             value = self.critic1(state_tensor, weights.unsqueeze(0)).squeeze(0)
 

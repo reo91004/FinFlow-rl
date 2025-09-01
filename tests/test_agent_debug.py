@@ -175,7 +175,7 @@ def debug_sac_agent():
         state_tensor = (
             torch.tensor(test_state, dtype=torch.float32).unsqueeze(0).to(DEVICE)
         )
-        concentration, weights, log_prob = bcell.actor(state_tensor)
+        concentration, weights, log_prob, policy_entropy = bcell.actor(state_tensor)
 
         concentration_np = concentration.cpu().numpy().flatten()
         weights_np = weights.cpu().numpy().flatten()
