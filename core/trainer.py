@@ -513,15 +513,29 @@ class BIPDTrainer:
         
         plt.show()
     
+    def _require_keys(self, data: Dict, required_keys: List[str], context: str) -> None:
+        """계약 검증: 필수 키 존재 확인 (연구용 표준)"""
+        missing_keys = [key for key in required_keys if key not in data]
+        assert not missing_keys, (
+            f"[{context}] 필수 키 누락: {missing_keys}. "
+            f"제공된 키: {list(data.keys())}"
+        )
+        
     def benchmark_comparison(self, benchmark_strategy: str = 'equal_weight') -> Dict:
-        """벤치마크와 비교"""
+        """벤치마크와 비교 (계약 검증 강화)"""
         self.logger.info(f"벤치마크 비교를 수행합니다: {benchmark_strategy}")
         
         # BIPD 시스템 평가
         bipd_results = self.evaluate(n_episodes=5)
         
+        # BIPD 결과 계약 검증
+        required_bipd_keys = ['avg_final_value', 'avg_sharpe_ratio', 'avg_max_drawdown']
+        self._require_keys(bipd_results, required_bipd_keys, f"BIPD_results")
+        
         # 벤치마크 전략 (균등 가중)
-        benchmark_env = PortfolioEnvironment(self.test_data, self.feature_extractor)
+        benchmark_env = PortfolioEnvironment(self.test_data, self.feature_extractor,
+                                           initial_capital=self.test_env.initial_capital,
+                                           transaction_cost=self.test_env.transaction_cost)
         state = benchmark_env.reset()
         
         equal_weights = np.ones(self.train_data.shape[1]) / self.train_data.shape[1]
@@ -533,6 +547,17 @@ class BIPDTrainer:
             state = next_state
         
         benchmark_metrics = benchmark_env.get_portfolio_metrics()
+        
+        # 벤치마크 결과 계약 검증
+        required_benchmark_keys = ['portfolio_value', 'total_return', 'sharpe_ratio', 'max_drawdown']
+        self._require_keys(benchmark_metrics, required_benchmark_keys, f"benchmark_{benchmark_strategy}")
+        
+        # final_value 키 존재 확인 (중요: 기존 코드 호환성)
+        if 'final_value' not in benchmark_metrics and 'portfolio_value' in benchmark_metrics:
+            benchmark_metrics['final_value'] = benchmark_metrics['portfolio_value']
+        
+        # final_value 키 계약 검증 (KeyError 방지)
+        self._require_keys(benchmark_metrics, ['final_value'], f"benchmark_{benchmark_strategy}_final")
         
         # 비교 결과
         comparison = {
@@ -549,8 +574,12 @@ class BIPDTrainer:
             }
         }
         
+        # 결과 계약 검증
+        required_comparison_keys = ['bipd_performance', 'benchmark_performance', 'outperformance']
+        self._require_keys(comparison, required_comparison_keys, "benchmark_comparison_output")
+        
         self.logger.info(
-            f"벤치마크 비교 완료: "
+            f"벤치마크 비교 완료 (계약 검증 통과): "
             f"수익률 개선={comparison['outperformance']['value_improvement']:.2%}, "
             f"샤프비율 개선={comparison['outperformance']['sharpe_improvement']:.3f}"
         )

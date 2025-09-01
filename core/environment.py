@@ -85,6 +85,20 @@ class PortfolioEnvironment:
         self.initial_capital = initial_capital
         self.transaction_cost = transaction_cost
         
+        # 설정 스냅샷 저장 (드리프트 방지)
+        self._config_snapshot = {
+            'initial_capital': initial_capital,
+            'transaction_cost': transaction_cost,
+            'target_volatility': VOLATILITY_TARGET,
+            'volatility_window': VOLATILITY_WINDOW,
+            'min_leverage': MIN_LEVERAGE,
+            'max_leverage': MAX_LEVERAGE,
+            'no_trade_band': NO_TRADE_BAND,
+            'max_turnover': MAX_TURNOVER,
+            'data_shape': price_data.shape,
+            'feature_lookback': feature_extractor.lookback_window
+        }
+        
         self.n_assets = len(price_data.columns)
         self.max_steps = len(price_data) - feature_extractor.lookback_window - 1
         
@@ -135,6 +149,12 @@ class PortfolioEnvironment:
         self.min_leverage = MIN_LEVERAGE                # 최소 레버리지
         self.max_leverage = MAX_LEVERAGE                # 최대 레버리지
         
+        # EMA 기반 변동성 추적 (점진적 조정)
+        self.volatility_ema = None                      # 변동성 EMA
+        self.leverage_ema = 1.0                         # 레버리지 EMA
+        self.volatility_decay = 0.9                     # EMA 감쇠율 (10일 반감기)
+        self.leverage_decay = 0.95                      # 레버리지 EMA 감쇠율 (20일 반감기)
+        
         # 거래비용 최적화 파라미터 (config.py에서 관리)
         self.no_trade_band = NO_TRADE_BAND              # 노-트레이드 밴드
         self.max_turnover = MAX_TURNOVER                # 최대 턴오버
@@ -146,9 +166,43 @@ class PortfolioEnvironment:
             f"자산수={self.n_assets}, 최대스텝={self.max_steps}, "
             f"초기자본={initial_capital:,.0f}"
         )
+        
+        # 초기 설정 로깅 (재현성)
+        self.logger.debug(f"환경 설정 스냅샷: {self._config_snapshot}")
+    
+    def _verify_config_integrity(self) -> None:
+        """설정 무결성 검증 (드리프트 감지)"""
+        current_config = {
+            'initial_capital': self.initial_capital,
+            'transaction_cost': self.transaction_cost,
+            'target_volatility': self.target_volatility,
+            'volatility_window': self.volatility_window,
+            'min_leverage': self.min_leverage,
+            'max_leverage': self.max_leverage,
+            'no_trade_band': self.no_trade_band,
+            'max_turnover': self.max_turnover,
+            'data_shape': self.price_data.shape,
+            'feature_lookback': self.feature_extractor.lookback_window
+        }
+        
+        # 드리프트 감지
+        drifted_keys = []
+        for key, original_value in self._config_snapshot.items():
+            current_value = current_config[key]
+            if original_value != current_value:
+                drifted_keys.append(f"{key}: {original_value} → {current_value}")
+        
+        # 연구용 표준: 드리프트 발견 시 즉시 실패
+        assert not drifted_keys, (
+            f"환경 설정 드리프트 감지 (연구 무결성 위반): {drifted_keys}. "
+            f"동일한 실험 세션에서 환경 설정이 변경되면 안 됩니다."
+        )
     
     def reset(self) -> np.ndarray:
-        """환경 초기화"""
+        """환경 초기화 (설정 무결성 검증)"""
+        # 설정 드리프트 검증 (연구 표준)
+        self._verify_config_integrity()
+        
         self.current_step = 0
         self.portfolio_value = self.initial_capital
         self.cash = self.initial_capital
@@ -178,6 +232,22 @@ class PortfolioEnvironment:
             'last_correlation_check': 0
         }
         
+        # 변동성 EMA 초기화
+        self.volatility_ema = None
+        self.leverage_ema = 1.0
+        
+        return self._get_state()
+    
+    def get_current_state(self) -> np.ndarray:
+        """
+        5단계: 환경 이중 초기화 방지 - 현재 상태 반환 (reset 불필요)
+        
+        Returns:
+            current_state: 현재 환경 상태
+        """
+        if not hasattr(self, 'current_step') or self.current_step is None:
+            # 환경이 아직 초기화되지 않은 경우 None 반환 (fallback trigger)
+            return None
         return self._get_state()
     
     def step(self, new_weights: np.ndarray) -> Tuple[np.ndarray, float, bool, Dict[str, Any]]:
@@ -338,29 +408,42 @@ class PortfolioEnvironment:
         return final_weights
     
     def _apply_volatility_targeting(self, weights: np.ndarray) -> np.ndarray:
-        """변동성 타깃팅 오버레이 적용"""
-        if len(self.return_history) < self.volatility_window:
-            # 초기에는 변동성 타깃팅 미적용
+        """EMA 기반 변동성 타깃팅 오버레이 (점진적 조정)"""
+        if len(self.return_history) < 5:  # 최소 5일 이상
             return weights
         
-        # 최근 변동성 추정 (일일 기준)
-        recent_returns = np.array(self.return_history[-self.volatility_window:])
-        current_volatility = recent_returns.std()
+        # 현재 수익률로 변동성 추정 (일일 기준)
+        current_return = self.return_history[-1] if self.return_history else 0.0
+        current_volatility_daily = abs(current_return)  # 단순 추정
+        
+        # EMA 기반 변동성 추정 (점진적 업데이트)
+        if self.volatility_ema is None:
+            # 초기화: 최근 윈도우의 표준편차
+            recent_returns = np.array(self.return_history[-min(self.volatility_window, len(self.return_history)):])
+            self.volatility_ema = recent_returns.std() if len(recent_returns) > 1 else abs(current_return)
+        else:
+            # EMA 업데이트
+            self.volatility_ema = (self.volatility_decay * self.volatility_ema + 
+                                  (1 - self.volatility_decay) * current_volatility_daily)
         
         # 연간 변동성으로 환산
-        annualized_volatility = current_volatility * np.sqrt(252)
+        annualized_volatility = self.volatility_ema * np.sqrt(252)
         
-        # 레버리지 스케일 계산
+        # 목표 레버리지 계산
         if annualized_volatility > 1e-6:
-            leverage_scale = self.target_volatility / annualized_volatility
+            target_leverage = self.target_volatility / annualized_volatility
         else:
-            leverage_scale = 1.0
+            target_leverage = 1.0
         
         # 레버리지 클리핑
-        leverage_scale = np.clip(leverage_scale, self.min_leverage, self.max_leverage)
+        target_leverage = np.clip(target_leverage, self.min_leverage, self.max_leverage)
         
-        # 가중치 스케일링
-        scaled_weights = weights * leverage_scale
+        # EMA 기반 점진적 레버리지 조정 (급격한 변화 방지)
+        self.leverage_ema = (self.leverage_decay * self.leverage_ema + 
+                            (1 - self.leverage_decay) * target_leverage)
+        
+        # 가중치 스케일링 (EMA 레버리지 사용)
+        scaled_weights = weights * self.leverage_ema
         
         # 재정규화 (합이 1이 되도록)
         if scaled_weights.sum() > 0:
@@ -371,58 +454,71 @@ class PortfolioEnvironment:
         # 변동성 타깃팅 로그 (config.py 간격)
         if self.current_step % CORRELATION_CHECK_INTERVAL == 0:
             self.logger.debug(
-                f"변동성 타깃팅 (step {self.current_step}): "
-                f"현재_vol={annualized_volatility:.3f}, 목표_vol={self.target_volatility:.3f}, "
-                f"레버리지={leverage_scale:.2f}"
+                f"EMA 변동성 타깃팅 (step {self.current_step}): "
+                f"EMA_vol={annualized_volatility:.3f}, 목표_vol={self.target_volatility:.3f}, "
+                f"목표_lev={target_leverage:.2f}, EMA_lev={self.leverage_ema:.2f}"
             )
         
         if not hasattr(self, '_volatility_logged'):
-            self.logger.info(f"변동성 타깃팅 활성화: 목표={self.target_volatility:.1%}, 윈도우={self.volatility_window}일")
+            self.logger.info(f"EMA 변동성 타깃팅 활성화: 목표={self.target_volatility:.1%}, "
+                           f"vol_decay={self.volatility_decay:.2f}, lev_decay={self.leverage_decay:.2f}")
             self._volatility_logged = True
         
         return scaled_weights
     
-    def _apply_trading_constraints(self, new_weights: np.ndarray) -> np.ndarray:
-        """노-트레이드 밴드 및 턴오버 캡 적용"""
+    def _soft_trading_penalty(self, new_weights: np.ndarray) -> float:
+        """소프트 거래 제약 패널티 계산"""
         current_weights = self.weights
         
-        # 1. 노-트레이드 밴드 적용
-        weight_changes = new_weights - current_weights
+        # 노-트레이드 밴드 패널티
+        weight_changes = np.abs(new_weights - current_weights)
+        band_violations = np.maximum(0, weight_changes - self.no_trade_band)
+        band_penalty = 0.1 * band_violations.sum()  # 라그랑지안 승수 λ = 0.1
         
-        # 각 자산별로 노-트레이드 밴드 적용
-        small_change_mask = np.abs(weight_changes) <= self.no_trade_band
-        constrained_weights = np.where(small_change_mask, current_weights, new_weights)
+        # 턴오버 캡 패널티
+        total_turnover = weight_changes.sum()
+        turnover_violation = max(0, total_turnover - self.max_turnover)
+        turnover_penalty = 0.2 * turnover_violation  # 라그랑지안 승수 λ = 0.2
         
-        # 2. 턴오버 캡 적용
-        total_turnover = np.abs(constrained_weights - current_weights).sum()
+        return band_penalty + turnover_penalty
+    
+    def _apply_trading_constraints(self, new_weights: np.ndarray) -> np.ndarray:
+        """점진적 거래 제약 적용 (소프트 제약으로 전환)"""
+        current_weights = self.weights
         
-        if total_turnover > self.max_turnover:
-            # 턴오버가 제한을 초과하면 스케일링
-            scale_factor = self.max_turnover / total_turnover
-            # 변화량을 스케일링하고 현재 가중치에 더함
-            scaled_changes = (constrained_weights - current_weights) * scale_factor
+        # 기존 하드 제약을 완화된 형태로 유지 (점진적 전환)
+        # 1. 극단적인 턴오버만 제한 (기존의 2배 허용)
+        total_turnover = np.abs(new_weights - current_weights).sum()
+        soft_turnover_limit = self.max_turnover * 2.0  # 더 관대한 제한
+        
+        if total_turnover > soft_turnover_limit:
+            # 점진적 스케일링 (완전히 막지 않고 점진 조정)
+            scale_factor = soft_turnover_limit / total_turnover
+            scaled_changes = (new_weights - current_weights) * scale_factor
             constrained_weights = current_weights + scaled_changes
+        else:
+            constrained_weights = new_weights  # 자유로운 거래 허용
         
-        # 3. 재정규화 (합이 1이 되도록)
+        # 2. 재정규화 (합이 1이 되도록)
         if constrained_weights.sum() > 0:
             constrained_weights = constrained_weights / constrained_weights.sum()
         else:
             constrained_weights = new_weights  # 백업
         
-        # 4. 로깅 (config.py 간격)
+        # 3. 로깅 (config.py 간격)
         if self.current_step % CORRELATION_CHECK_INTERVAL == 0:
             original_turnover = np.abs(new_weights - current_weights).sum()
             final_turnover = np.abs(constrained_weights - current_weights).sum()
-            band_applied = np.sum(small_change_mask)
+            soft_penalty = self._soft_trading_penalty(new_weights)
             
             self.logger.debug(
-                f"거래 제약 (step {self.current_step}): "
+                f"소프트 거래 제약 (step {self.current_step}): "
                 f"원래_턴오버={original_turnover:.3f}, 최종_턴오버={final_turnover:.3f}, "
-                f"밴드적용={band_applied}/{len(new_weights)}"
+                f"소프트_패널티={soft_penalty:.4f}, 제한배수={soft_turnover_limit/self.max_turnover:.1f}x"
             )
         
         if not hasattr(self, '_trading_constraints_logged'):
-            self.logger.info(f"거래 제약 활성화: 노트레이드밴드={self.no_trade_band:.1%}, 최대턴오버={self.max_turnover:.1%}")
+            self.logger.info(f"소프트 거래 제약 활성화: 기존 제한의 {soft_turnover_limit/self.max_turnover:.1f}배 허용, 초과시 패널티")
             self._trading_constraints_logged = True
         
         return constrained_weights
@@ -524,8 +620,12 @@ class PortfolioEnvironment:
         equal_weight_hhi = 1.0 / self.n_assets  # 균등분산 시 HHI
         concentration_penalty = HHI_PENALTY_WEIGHT * max(0, hhi - equal_weight_hhi)  # λ_hhi (config.py)
         
-        # 6. 원시 보상 계산 (HHI 페널티 포함)
-        raw_reward = log_return - risk_penalty - transaction_penalty - concentration_penalty + sharpe_reward
+        # 6. 소프트 거래 제약 패널티 추가
+        soft_trading_penalty = self._soft_trading_penalty(weights)
+        
+        # 7. 원시 보상 계산 (모든 패널티 포함)
+        raw_reward = (log_return - risk_penalty - transaction_penalty - concentration_penalty 
+                     - soft_trading_penalty + sharpe_reward)
         
         # 7. tanh 바운딩 적용 (Q-value 폭주 방지)
         r_max, tau = 0.05, 0.05  # 보수적 스케일 설정
@@ -553,14 +653,14 @@ class PortfolioEnvironment:
                 f"보상 구성 (step {self.current_step}): "
                 f"log_ret={log_return:.4f}, risk_pen={risk_penalty:.4f}, "
                 f"tc_pen={transaction_penalty:.4f}, hhi_pen={concentration_penalty:.4f}, "
-                f"sharpe_rew={sharpe_reward:.4f}, HHI={hhi:.3f}, "
+                f"soft_tc_pen={soft_trading_penalty:.4f}, sharpe_rew={sharpe_reward:.4f}, HHI={hhi:.3f}, "
                 f"raw_rew={raw_reward:.4f}, bounded_rew={bounded_reward:.4f}, norm_rew={normalized_reward:.4f}"
             )
         
         if not hasattr(self, '_reward_logged'):
             self.logger.info(
-                "보상 함수 대폭 개선: log-return 기반, tanh 바운딩 (r_max=0.05), "
-                "고정 정규화, HHI 페널티, Sharpe proxy 통합"
+                "보상 함수 개선: log-return 기반, tanh 바운딩 (r_max=0.05), "
+                "고정 정규화, HHI 페널티, 소프트 거래 제약 패널티, Sharpe proxy 통합"
             )
             self._reward_logged = True
         

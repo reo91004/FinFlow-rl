@@ -149,10 +149,10 @@ STATE_DIM = FEATURE_DIM + 1 + len(SYMBOLS)  # 상태 차원: 시장특성(12) + 
 ACTION_DIM = len(SYMBOLS)                   # 행동 차원: 포트폴리오 가중치(30)
 HIDDEN_DIM = 128                           # 신경망 은닉층 차원
 
-# SAC 하이퍼파라미터 (agents/bcell.py에서 사용)
-ACTOR_LR = float(3e-4)      # Actor 네트워크 학습률
-CRITIC_LR = float(1e-4)     # Critic 네트워크 학습률 (안정성을 위해 낮게 설정)
-ALPHA_LR = float(3e-4)      # 온도 파라미터 학습률 (자동 엔트로피 튜닝)
+# SAC 하이퍼파라미터 (agents/bcell.py에서 사용) - 안정화를 위해 학습률 하향 조정
+ACTOR_LR = float(3e-5)      # Actor 네트워크 학습률 (3e-4 → 3e-5로 하향)
+CRITIC_LR = float(3e-5)     # Critic 네트워크 학습률 (1e-4 → 3e-5로 상향, 균형 맞춤)
+ALPHA_LR = float(3e-5)      # 온도 파라미터 학습률 (3e-4 → 3e-5로 하향)
 GAMMA = float(0.99)         # 할인율 (미래 보상 가중치)
 TAU = float(0.001)          # 타겟 네트워크 소프트 업데이트 비율
 BATCH_SIZE = int(32)        # 미니배치 크기
@@ -162,8 +162,8 @@ UPDATE_FREQUENCY = int(4)   # 네트워크 업데이트 주기
 # SAC 엔트로피 및 안정화 파라미터
 TARGET_ENTROPY_FROM_DIRICHLET = True        # Dirichlet 공식 기반 타겟 엔트로피 사용
 DIRICHLET_ALPHA_STAR = float(1.5)           # 대칭 Dirichlet 농도 파라미터 (균형잡힌 다양성)
-LOG_ALPHA_MIN = float(-10.0)                # log α 하한 (확장됨: α ≈ 4.5e-5)
-LOG_ALPHA_MAX = float(2.0)                  # log α 상한 (확장됨: α ≈ 7.39)
+LOG_ALPHA_MIN = float(-5.0)                 # log α 하한 (안정화: α ≈ 0.0067)
+LOG_ALPHA_MAX = float(0.0)                  # log α 상한 (안정화: α ≈ 1.0)
 TARGET_ENTROPY_SCALE = float(0.25)          # 기존 호환성 유지 (사용안함)
 ALPHA_MIN = float(1e-4)                     # 기존 호환성 유지
 ALPHA_MAX = float(0.5)                      # 기존 호환성 유지
@@ -262,9 +262,9 @@ REWARD_OUTLIER_SIGMA = float(3.0)            # 이상치 감지 시그마 배수
 REWARD_CLIP_MIN = float(-2.0)                # 보상 하한 클리핑
 REWARD_CLIP_MAX = float(2.0)                 # 보상 상한 클리핑
 
-# Q-value 안정화 설정 (새로 추가)
-Q_TARGET_HARD_CLIP_MIN = float(-50.0)       # Q 타깃 하드 클리핑 하한
-Q_TARGET_HARD_CLIP_MAX = float(50.0)        # Q 타깃 하드 클리핑 상한
-Q_VALUE_STABILITY_CHECK = float(100.0)      # Q-value 안정성 체크 임계값
+# Q-value 안정화 설정 (보수적으로 조정)
+Q_TARGET_HARD_CLIP_MIN = float(-10.0)       # Q 타깃 하드 클리핑 하한 (-50 → -10)
+Q_TARGET_HARD_CLIP_MAX = float(10.0)        # Q 타깃 하드 클리핑 상한 (50 → 10)
+Q_VALUE_STABILITY_CHECK = float(20.0)       # Q-value 안정성 체크 임계값 (100 → 20)
 Q_MONITOR_WINDOW_SIZE = int(1000)           # Q-value 모니터링 윈도우 크기
 Q_EXTREME_THRESHOLD = float(0.3)            # 극단치 비율 경고 임계값 (30%)

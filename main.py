@@ -16,7 +16,9 @@ from config import (
     SYMBOLS, DATA_DIR, LOGS_DIR, 
     TRAIN_START, TRAIN_END, TEST_START, TEST_END,
     N_EPISODES, GLOBAL_SEED, INITIAL_CAPITAL,
-    SAVE_INTERVAL,
+    SAVE_INTERVAL, ACTOR_LR, CRITIC_LR, ALPHA_LR,
+    GAMMA, TAU, BATCH_SIZE, ACTION_DIM, 
+    LOG_ALPHA_MIN, LOG_ALPHA_MAX, Q_TARGET_HARD_CLIP_MIN, Q_TARGET_HARD_CLIP_MAX,
     set_seed
 )
 from data import DataLoader
@@ -40,12 +42,24 @@ def main():
     print("=" * 80)
     print("BIPD (Behavioral Immune Portfolio Defense) 시스템 시작")
     print("=" * 80)
+    
+    # 런 설정 1줄 요약 (재현성)
+    print("RUNCFG | seed={} lr_a={:.0e} lr_c={:.0e} lr_α={:.0e} batch={} γ={:.3f} τ={:.4f} "
+          "log_α_range=[{:.1f},{:.1f}] Q_clip=[{:.1f},{:.1f}] episodes={} capital={:.0f}M".format(
+          GLOBAL_SEED, ACTOR_LR, CRITIC_LR, ALPHA_LR, BATCH_SIZE, GAMMA, TAU,
+          LOG_ALPHA_MIN, LOG_ALPHA_MAX, Q_TARGET_HARD_CLIP_MIN, Q_TARGET_HARD_CLIP_MAX,
+          N_EPISODES, INITIAL_CAPITAL/1000000))
+    print()
+    
     print(f"설정 요약:")
     print(f"  - 종목: {len(SYMBOLS)}개 (Dow Jones 30)")
     print(f"  - 훈련기간: {TRAIN_START} ~ {TRAIN_END}")
     print(f"  - 테스트기간: {TEST_START} ~ {TEST_END}")
     print(f"  - 에피소드: {N_EPISODES}개")
     print(f"  - 초기자본: {INITIAL_CAPITAL:,.0f}원")
+    print(f"  - SAC 안정화: AdamW lr={ACTOR_LR:.0e}, LayerNorm, Orthogonal init")
+    print(f"  - Q-안정화: TD3 스무딩, 클립범위 [{Q_TARGET_HARD_CLIP_MIN:.1f}, {Q_TARGET_HARD_CLIP_MAX:.1f}]")
+    print(f"  - 제약처리: 소프트 패널티, EMA 변동성 타깃팅")
     print()
     
     # 상세 로그는 파일에만
@@ -155,8 +169,16 @@ def main():
         # 7. XAI 설명 생성 (샘플)
         print("[7단계] 시스템 설명을 생성합니다...")
         
-        # 테스트 환경에서 샘플 상태 가져오기
-        test_state = trainer.test_env.reset()
+        # 5단계: 환경 이중 초기화 문제 해결 - 현재 환경 상태 재사용
+        # test_env는 이미 평가 완료되어 유효한 상태를 보유하고 있음
+        try:
+            # 현재 환경의 마지막 상태 사용 (이중 초기화 방지)
+            test_state = trainer.test_env.get_current_state()
+        except (AttributeError, Exception):
+            # get_current_state가 없거나 실패시에만 안전하게 reset
+            trainer.logger.info("환경 현재 상태 접근 실패, 안전한 초기화 수행")
+            test_state = trainer.test_env.reset()
+        
         explanation = trainer.immune_system.get_system_explanation(test_state)
         
         print("\nBIPD 시스템 의사결정 설명:")

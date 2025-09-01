@@ -64,22 +64,30 @@ class SACActorNetwork(nn.Module):
 
         self.action_dim = action_dim
 
-        # 공통 특성 추출 레이어
+        # 공통 특성 추출 레이어 (LayerNorm 추가)
         self.fc1 = nn.Linear(state_dim, hidden_dim)
+        self.ln1 = nn.LayerNorm(hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
+        self.ln2 = nn.LayerNorm(hidden_dim)
 
-        # Dirichlet 분포를 위한 concentration 파라미터 출력
+        # Dirichlet 분포를 위한 concentration 파라미터 출력 (LayerNorm 없음 - 출력층)
         # 포트폴리오 가중치는 simplex 위에 있어야 하므로 Dirichlet이 적합
         self.concentration_head = nn.Linear(hidden_dim, action_dim)
 
-        # 가중치 초기화
+        # 가중치 초기화 (Orthogonal 초기화)
         self._init_weights()
 
     def _init_weights(self):
-        """가중치 초기화"""
-        for layer in [self.fc1, self.fc2, self.concentration_head]:
-            nn.init.xavier_uniform_(layer.weight)
-            nn.init.zeros_(layer.bias)
+        """가중치 초기화 (Orthogonal 초기화)"""
+        # 은닉층은 ReLU gain으로 Orthogonal 초기화
+        nn.init.orthogonal_(self.fc1.weight, gain=nn.init.calculate_gain('relu'))
+        nn.init.zeros_(self.fc1.bias)
+        nn.init.orthogonal_(self.fc2.weight, gain=nn.init.calculate_gain('relu'))
+        nn.init.zeros_(self.fc2.bias)
+        
+        # 출력층은 작은 gain으로 초기화 (안정성)
+        nn.init.orthogonal_(self.concentration_head.weight, gain=0.01)
+        nn.init.zeros_(self.concentration_head.bias)
 
     def forward(self, state):
         """
@@ -89,11 +97,11 @@ class SACActorNetwork(nn.Module):
             weights: 샘플링된 포트폴리오 가중치
             log_prob: 로그 확률
         """
-        x = F.relu(self.fc1(state))
-        x = F.relu(self.fc2(x))
+        x = F.relu(self.ln1(self.fc1(state)))
+        x = F.relu(self.ln2(self.fc2(x)))
 
-        # Dirichlet 농도 파라미터 계산
-        x_clamped = torch.clamp(self.concentration_head(x), min=-10.0, max=10.0)
+        # Dirichlet 농도 파라미터 계산 (클리핑 범위 축소로 분산 제한)
+        x_clamped = torch.clamp(self.concentration_head(x), min=-5.0, max=5.0)  # [-10, 10] → [-5, 5]
         concentration = F.softplus(x_clamped) + DIRICHLET_CONCENTRATION_MIN
         # 농도 파라미터 범위 제한
         concentration = torch.clamp(concentration, 
@@ -135,29 +143,40 @@ class CriticNetwork(nn.Module):
     def __init__(self, state_dim, action_dim, hidden_dim=128):
         super(CriticNetwork, self).__init__()
 
-        # state 처리용
+        # state 처리용 (LayerNorm 추가)
         self.state_fc = nn.Linear(state_dim, hidden_dim)
-        # action 처리용
+        self.state_ln = nn.LayerNorm(hidden_dim)
+        # action 처리용 (LayerNorm 추가)
         self.action_fc = nn.Linear(action_dim, hidden_dim)
-        # 결합 처리용
+        self.action_ln = nn.LayerNorm(hidden_dim)
+        # 결합 처리용 (LayerNorm 추가, 출력층 제외)
         self.fc1 = nn.Linear(hidden_dim * 2, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, 1)
+        self.ln1 = nn.LayerNorm(hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, 1)  # 출력층 - LayerNorm 없음
 
-        # 가중치 초기화
+        # 가중치 초기화 (Orthogonal 초기화)
         self._init_weights()
 
     def _init_weights(self):
-        """가중치 초기화"""
-        for layer in [self.state_fc, self.action_fc, self.fc1, self.fc2]:
-            nn.init.xavier_uniform_(layer.weight)
-            nn.init.zeros_(layer.bias)
+        """가중치 초기화 (Orthogonal 초기화)"""
+        # 은닉층들은 ReLU gain으로 Orthogonal 초기화
+        nn.init.orthogonal_(self.state_fc.weight, gain=nn.init.calculate_gain('relu'))
+        nn.init.zeros_(self.state_fc.bias)
+        nn.init.orthogonal_(self.action_fc.weight, gain=nn.init.calculate_gain('relu'))
+        nn.init.zeros_(self.action_fc.bias)
+        nn.init.orthogonal_(self.fc1.weight, gain=nn.init.calculate_gain('relu'))
+        nn.init.zeros_(self.fc1.bias)
+        
+        # 출력층은 작은 gain으로 초기화 (안정성)
+        nn.init.orthogonal_(self.fc2.weight, gain=0.01)
+        nn.init.zeros_(self.fc2.bias)
 
     def forward(self, state, action):
-        # state와 action을 결합한 Q(s,a) 계산
-        state_value = F.relu(self.state_fc(state))
-        action_value = F.relu(self.action_fc(action))
-        x = F.relu(self.fc1(torch.cat([state_value, action_value], dim=1)))
-        q_value = self.fc2(x)
+        # state와 action을 결합한 Q(s,a) 계산 (LayerNorm 적용)
+        state_value = F.relu(self.state_ln(self.state_fc(state)))
+        action_value = F.relu(self.action_ln(self.action_fc(action)))
+        x = F.relu(self.ln1(self.fc1(torch.cat([state_value, action_value], dim=1))))
+        q_value = self.fc2(x)  # 출력층은 정규화 없음
         return q_value
 
 
@@ -310,15 +329,15 @@ class BCell:
         self.entropy_schedule_warmup = 0.2  # 20% 예열 기간
         self.entropy_schedule_cooldown = 0.8  # 80%부터 쿨다운
 
-        # 옵티마이저
-        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=self.actor_lr)
-        self.critic1_optimizer = optim.Adam(
-            self.critic1.parameters(), lr=self.critic_lr
+        # 옵티마이저 (Adam → AdamW로 변경, weight decay 추가)
+        self.actor_optimizer = optim.AdamW(self.actor.parameters(), lr=self.actor_lr, weight_decay=1e-5)
+        self.critic1_optimizer = optim.AdamW(
+            self.critic1.parameters(), lr=self.critic_lr, weight_decay=1e-5
         )
-        self.critic2_optimizer = optim.Adam(
-            self.critic2.parameters(), lr=self.critic_lr
+        self.critic2_optimizer = optim.AdamW(
+            self.critic2.parameters(), lr=self.critic_lr, weight_decay=1e-5
         )
-        self.alpha_optimizer = optim.Adam([self.log_alpha], lr=self.alpha_lr)
+        self.alpha_optimizer = optim.AdamW([self.log_alpha], lr=self.alpha_lr, weight_decay=1e-5)
 
         # Phase 4: 베타 어닐링을 위한 PER 설정
         self.replay_buffer = PrioritizedReplayBuffer(
@@ -392,36 +411,22 @@ class BCell:
 
     def _compute_dirichlet_entropy_prior(self, action_dim, D_target=None):
         """
-        Dirichlet 목표 엔트로피 초기화
-        D_target: 원하는 다양도 E[sum w_i^2] (optional). 없으면 균형잡힌 α*=1.5 사용
+        SAC 표준 목표 엔트로피 초기화 (안정화)
+        가이드라인에 따라 -ACTION_DIM으로 단순화
         """
-        import math
-
-        # 균형잡힌 농도 설정
-        if D_target is not None:
-            alpha_star = dirichlet_c_from_diversity(action_dim, D_target)
-        else:
-            alpha_star = DIRICHLET_ALPHA_STAR  # config에서 가져옴
-
-        self._alpha_prior_scalar = alpha_star
-
-        # 2) 새로운 유틸리티 함수로 정확한 Dirichlet 엔트로피 계산
-        h_prior = target_entropy_from_symmetric_alpha(action_dim, alpha_star)
-
-        # 3) 극단 엔트로피 범위 설정
-        h_max = target_entropy_from_symmetric_alpha(action_dim, 1.0)  # 균등 분포
-        h_min = -math.log(action_dim)  # 집중 분포 근사치
-
-        self.target_entropy_max = h_max
-        self.target_entropy_min = h_min
-        self.target_entropy = h_prior
-
+        # 표준 SAC 목표 엔트로피: -|A| (더 안정적)
+        self.target_entropy = -float(action_dim)
+        
+        # 스케줄링을 위한 범위 설정 (기존 호환성 유지)
+        self.target_entropy_min = -float(action_dim) * 1.5  # 더 집중
+        self.target_entropy_max = -float(action_dim) * 0.5  # 더 다양
+        
         # 정책 엔트로피 EMA 초기화 (정책-적응형 스케줄링용)
         self._policy_entropy_ema = None
 
         self.logger.debug(
-            f"Dirichlet 설정: α*={alpha_star:.3f}, H_target≈{h_prior:.2f}, "
-            f"H_range=[{h_min:.2f}, {h_max:.2f}]"
+            f"SAC 표준 엔트로피 설정: H_target={self.target_entropy:.2f}, "
+            f"H_range=[{self.target_entropy_min:.2f}, {self.target_entropy_max:.2f}]"
         )
 
     def _update_target_entropy(self):
@@ -530,29 +535,40 @@ class BCell:
         with torch.no_grad():
             # SAC에서는 다음 상태에서의 정책으로부터 행동과 로그 확률을 샘플링
             _, next_actions, next_log_probs = self.actor(next_states)
+            
+            # TD3식 타깃 정책 스무딩 노이즈 추가 (안정화)
+            noise = (torch.randn_like(next_actions) * 0.1).clamp_(-0.2, 0.2)
+            next_actions_smooth = (next_actions + noise).clamp_(0.0, 1.0)  # 포트폴리오 제약 유지
+            # 재정규화 (포트폴리오 가중치 합 = 1 보장)
+            next_actions_smooth = next_actions_smooth / next_actions_smooth.sum(dim=-1, keepdim=True)
 
-            # Twin Q-values 계산 (SAC는 엔트로피 항 포함)
-            target_q1 = self.target_critic1(next_states, next_actions).squeeze()
-            target_q2 = self.target_critic2(next_states, next_actions).squeeze()
+            # Twin Q-values 계산 (스무딩된 행동 사용, SAC는 엔트로피 항 포함)
+            target_q1 = self.target_critic1(next_states, next_actions_smooth).squeeze()
+            target_q2 = self.target_critic2(next_states, next_actions_smooth).squeeze()
             target_q = torch.min(target_q1, target_q2) - self.alpha * next_log_probs
 
             # 대폭 강화된 Q-타깃 클리핑 (극단값 완전 억제)
-            target_q_values = rewards + self.gamma * target_q * (~dones)
+            raw_target_q_values = rewards + self.gamma * target_q * (~dones)  # 원시 Q값 보존
+            target_q_values = raw_target_q_values.clone()  # 클리핑용 복사본
 
             # 하드 클리핑
             target_q_values = torch.clamp(target_q_values, 
                                          min=Q_TARGET_HARD_CLIP_MIN, 
                                          max=Q_TARGET_HARD_CLIP_MAX)
 
-            # 2단계: 배치별 IQR 기반 아웃라이어 제거
+            # 2단계: 배치별 IQR 기반 아웃라이어 제거 (보수적 조정)
             if target_q_values.numel() > 4:  # 최소 5개 이상일 때만 적용
                 q25 = torch.quantile(target_q_values, 0.25)
                 q75 = torch.quantile(target_q_values, 0.75)
                 iqr = q75 - q25
                 
-                # IQR 기반 아웃라이어 경계 (1.5 * IQR)
-                lower_bound = q25 - 1.5 * iqr
-                upper_bound = q75 + 1.5 * iqr
+                # IQR 기반 아웃라이어 경계 (1.0 * IQR로 더 보수적 조정)
+                lower_bound = q25 - 1.0 * iqr  # 1.5 → 1.0
+                upper_bound = q75 + 1.0 * iqr  # 1.5 → 1.0
+                
+                # 추가 안전장치: 절대값 제한
+                lower_bound = torch.max(lower_bound, torch.tensor(Q_TARGET_HARD_CLIP_MIN, device=target_q_values.device))
+                upper_bound = torch.min(upper_bound, torch.tensor(Q_TARGET_HARD_CLIP_MAX, device=target_q_values.device))
                 
                 # 아웃라이어를 경계값으로 클리핑
                 target_q_values = torch.clamp(target_q_values, lower_bound, upper_bound)
@@ -568,10 +584,13 @@ class BCell:
         current_q1 = self.critic1(states, actions).squeeze()
         current_q2 = self.critic2(states, actions).squeeze()
         
-        # Q-value 극단치 모니터링
+        # 2단계: 원시 Q값 모니터링 (클리핑 전값 사용으로 False Alarm 방지)
+        # current_q는 네트워크 직접 출력, raw_target_q_values는 클리핑 전 타겟값
+        combined_q1 = torch.cat([current_q1, raw_target_q_values])  # Current + Target 통합
+        combined_q2 = torch.cat([current_q2, raw_target_q_values])  # 동일한 타겟 사용
         q_monitor_result = self.q_monitor.update_and_check_both(
-            current_q1.detach().cpu().numpy(),
-            current_q2.detach().cpu().numpy()
+            combined_q1.detach().cpu().numpy(),
+            combined_q2.detach().cpu().numpy()
         )
 
         # Huber loss 적용
