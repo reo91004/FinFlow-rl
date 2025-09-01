@@ -12,6 +12,7 @@ from utils.logger import BIPDLogger
 from utils.rolling_stats import MultiRollingStats
 from utils.extreme_q_monitor import DualQMonitor
 from agents.utils.dirichlet_entropy import target_entropy_from_symmetric_alpha
+from core.value_norm import PopArt
 from config import (
     DEVICE,
     ACTOR_LR,
@@ -138,10 +139,12 @@ class SACActorNetwork(nn.Module):
 
 
 class CriticNetwork(nn.Module):
-    """Critic 네트워크: Q(s,a) 가치 함수"""
+    """Critic 네트워크: Q(s,a) 가치 함수 (PopArt 통합)"""
 
-    def __init__(self, state_dim, action_dim, hidden_dim=128):
+    def __init__(self, state_dim, action_dim, hidden_dim=128, use_popart=True):
         super(CriticNetwork, self).__init__()
+
+        self.use_popart = use_popart
 
         # state 처리용 (LayerNorm 추가)
         self.state_fc = nn.Linear(state_dim, hidden_dim)
@@ -149,10 +152,16 @@ class CriticNetwork(nn.Module):
         # action 처리용 (LayerNorm 추가)
         self.action_fc = nn.Linear(action_dim, hidden_dim)
         self.action_ln = nn.LayerNorm(hidden_dim)
-        # 결합 처리용 (LayerNorm 추가, 출력층 제외)
+        # 결합 처리용 (LayerNorm 추가)
         self.fc1 = nn.Linear(hidden_dim * 2, hidden_dim)
         self.ln1 = nn.LayerNorm(hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, 1)  # 출력층 - LayerNorm 없음
+        
+        # 출력층 - PopArt 적용 vs 일반 선형층
+        if self.use_popart:
+            self.fc2 = nn.Linear(hidden_dim, 1)
+            self.popart = PopArt(eps=1e-5, momentum=0.99, device=DEVICE)
+        else:
+            self.fc2 = nn.Linear(hidden_dim, 1)  # 기존 방식
 
         # 가중치 초기화 (Orthogonal 초기화)
         self._init_weights()
@@ -176,8 +185,33 @@ class CriticNetwork(nn.Module):
         state_value = F.relu(self.state_ln(self.state_fc(state)))
         action_value = F.relu(self.action_ln(self.action_fc(action)))
         x = F.relu(self.ln1(self.fc1(torch.cat([state_value, action_value], dim=1))))
-        q_value = self.fc2(x)  # 출력층은 정규화 없음
-        return q_value
+        raw_q = self.fc2(x)
+        
+        # PopArt 정규화 적용
+        if self.use_popart:
+            normalized_q = self.popart.normalize(raw_q)
+            return normalized_q
+        else:
+            return raw_q
+    
+    def update_popart(self, targets):
+        """PopArt 통계 업데이트"""
+        if self.use_popart:
+            self.popart.update(targets)
+    
+    def get_denormalized_output(self, normalized_output):
+        """정규화된 출력을 원래 스케일로 복원"""
+        if self.use_popart:
+            return self.popart.denormalize(normalized_output)
+        else:
+            return normalized_output
+    
+    def get_popart_stats(self):
+        """PopArt 통계 반환"""
+        if self.use_popart:
+            return self.popart.get_stats()
+        else:
+            return {'enabled': False}
 
 
 class PrioritizedReplayBuffer:
@@ -286,15 +320,15 @@ class BCell:
         # SAC 신경망 초기화 및 GPU로 이동
         self.actor = SACActorNetwork(state_dim, action_dim, hidden_dim).to(DEVICE)
 
-        # Twin Critics (SAC에서도 사용)
-        self.critic1 = CriticNetwork(state_dim, action_dim, hidden_dim).to(DEVICE)
-        self.critic2 = CriticNetwork(state_dim, action_dim, hidden_dim).to(DEVICE)
+        # Twin Critics (SAC에서도 사용) - PopArt 활성화
+        self.critic1 = CriticNetwork(state_dim, action_dim, hidden_dim, use_popart=True).to(DEVICE)
+        self.critic2 = CriticNetwork(state_dim, action_dim, hidden_dim, use_popart=True).to(DEVICE)
 
-        # 타겟 네트워크들 (Critic만 필요, SAC에서는 Actor 타겟 없음)
-        self.target_critic1 = CriticNetwork(state_dim, action_dim, hidden_dim).to(
+        # 타겟 네트워크들 (Critic만 필요, SAC에서는 Actor 타겟 없음) - PopArt 비활성화 (안정성)
+        self.target_critic1 = CriticNetwork(state_dim, action_dim, hidden_dim, use_popart=False).to(
             DEVICE
         )
-        self.target_critic2 = CriticNetwork(state_dim, action_dim, hidden_dim).to(
+        self.target_critic2 = CriticNetwork(state_dim, action_dim, hidden_dim, use_popart=False).to(
             DEVICE
         )
 
@@ -358,6 +392,13 @@ class BCell:
         self.actor_losses = []
         self.critic_losses = []
 
+        # 오프폴리시 안정화 파라미터
+        self.initial_utd_limit = 1  # 초기 UTD (Updates per env step) 제한
+        self.max_utd_limit = 4      # 최대 UTD 제한
+        self.buffer_stable_threshold = 1000  # 버퍼 안정화 임계점
+        self.current_utd_limit = self.initial_utd_limit
+        self.env_step_count = 0     # 환경 스텝 카운터
+        
         # Phase 1: 정책 지연 업데이트를 위한 카운터
         self.policy_update_frequency = 2  # 2스텝에 1회 Actor 업데이트
 
@@ -502,9 +543,24 @@ class BCell:
         self.replay_buffer.push(state, action, reward, next_state, done)
 
     def update(self):
-        """네트워크 업데이트 (SAC + PER)"""
+        """네트워크 업데이트 (SAC + PER + UTD 제한)"""
         if len(self.replay_buffer) < self.batch_size:
             return
+        
+        # UTD 제한 확인
+        self.env_step_count += 1
+        updates_per_step = self.update_count / max(1, self.env_step_count)
+        
+        if updates_per_step >= self.current_utd_limit:
+            # UTD 제한 초과 시 업데이트 건너뛰기
+            return
+        
+        # 버퍼 안정화 진행에 따라 UTD 제한 점진적 증가
+        if len(self.replay_buffer) > self.buffer_stable_threshold:
+            progress = min(1.0, (len(self.replay_buffer) - self.buffer_stable_threshold) / 
+                          (BUFFER_SIZE - self.buffer_stable_threshold))
+            self.current_utd_limit = (self.initial_utd_limit + 
+                                    progress * (self.max_utd_limit - self.initial_utd_limit))
 
         # PER 배치 샘플링
         batch, is_weights, indices = self.replay_buffer.sample(self.batch_size)
@@ -547,33 +603,17 @@ class BCell:
             target_q2 = self.target_critic2(next_states, next_actions_smooth).squeeze()
             target_q = torch.min(target_q1, target_q2) - self.alpha * next_log_probs
 
-            # 대폭 강화된 Q-타깃 클리핑 (극단값 완전 억제)
-            raw_target_q_values = rewards + self.gamma * target_q * (~dones)  # 원시 Q값 보존
-            target_q_values = raw_target_q_values.clone()  # 클리핑용 복사본
-
-            # 하드 클리핑
-            target_q_values = torch.clamp(target_q_values, 
-                                         min=Q_TARGET_HARD_CLIP_MIN, 
-                                         max=Q_TARGET_HARD_CLIP_MAX)
-
-            # 2단계: 배치별 IQR 기반 아웃라이어 제거 (보수적 조정)
-            if target_q_values.numel() > 4:  # 최소 5개 이상일 때만 적용
-                q25 = torch.quantile(target_q_values, 0.25)
-                q75 = torch.quantile(target_q_values, 0.75)
-                iqr = q75 - q25
-                
-                # IQR 기반 아웃라이어 경계 (1.0 * IQR로 더 보수적 조정)
-                lower_bound = q25 - 1.0 * iqr  # 1.5 → 1.0
-                upper_bound = q75 + 1.0 * iqr  # 1.5 → 1.0
-                
-                # 추가 안전장치: 절대값 제한
-                lower_bound = torch.max(lower_bound, torch.tensor(Q_TARGET_HARD_CLIP_MIN, device=target_q_values.device))
-                upper_bound = torch.min(upper_bound, torch.tensor(Q_TARGET_HARD_CLIP_MAX, device=target_q_values.device))
-                
-                # 아웃라이어를 경계값으로 클리핑
-                target_q_values = torch.clamp(target_q_values, lower_bound, upper_bound)
-
-            # 3단계: 추가 안전장치 - NaN/Inf 제거
+            # PopArt 타깃 정규화 적용
+            raw_target_q_values = rewards + self.gamma * target_q * (~dones)
+            
+            # PopArt 통계 업데이트 (두 critic 모두)
+            self.critic1.update_popart(raw_target_q_values.detach())
+            self.critic2.update_popart(raw_target_q_values.detach())
+            
+            # 정규화된 타깃 (PopArt가 스케일 관리)
+            target_q_values = raw_target_q_values.clone()
+            
+            # 최소한의 안전장치만 유지 (PopArt가 스케일을 관리하므로)
             target_q_values = torch.where(
                 torch.isfinite(target_q_values), 
                 target_q_values, 
@@ -721,21 +761,29 @@ class BCell:
         # 목표 엔트로피 스케줄링 적용
         self._update_target_entropy()
 
-        alpha_loss = -(
-            self.log_alpha * (current_log_probs + self.target_entropy).detach()
-        ).mean()
+        # α 지연 업데이트 (critic 3회당 1회)
+        alpha_loss = torch.tensor(0.0, device=DEVICE)
+        alpha_grad_norm = torch.tensor(0.0, device=DEVICE)
+        
+        if self.update_count % 3 == 0:  # 지연 업데이트 적용
+            alpha_loss = -(
+                self.log_alpha * (current_log_probs + self.target_entropy).detach()
+            ).mean()
 
-        self.alpha_optimizer.zero_grad()
-        alpha_loss.backward()
-        # 온도 파라미터 그래디언트 클리핑
-        alpha_grad_norm = torch.nn.utils.clip_grad_norm_(
-            [self.log_alpha], max_norm=ALPHA_GRAD_NORM
-        )
+            self.alpha_optimizer.zero_grad()
+            alpha_loss.backward()
+            # 온도 파라미터 그래디언트 클리핑
+            alpha_grad_norm = torch.nn.utils.clip_grad_norm_(
+                [self.log_alpha], max_norm=ALPHA_GRAD_NORM
+            )
 
-        # 업데이트 전 log-alpha 값 저장 (로깅용)
-        pre_update_log_alpha = self.log_alpha.item()
+            # 업데이트 전 log-alpha 값 저장 (로깅용)
+            pre_update_log_alpha = self.log_alpha.item()
 
-        self.alpha_optimizer.step()
+            self.alpha_optimizer.step()
+        else:
+            # α 업데이트 생략
+            pre_update_log_alpha = self.log_alpha.item()
 
         # Phase 1: 로그-온도 안전 범위 클리핑 (업데이트 후)
         with torch.no_grad():

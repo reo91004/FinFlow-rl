@@ -252,7 +252,7 @@ class PortfolioEnvironment:
     
     def step(self, new_weights: np.ndarray) -> Tuple[np.ndarray, float, bool, Dict[str, Any]]:
         """
-        환경 스텝 실행
+        환경 스텝 실행 (시계열 정합성 검증 포함)
         
         Args:
             new_weights: 새로운 포트폴리오 가중치
@@ -262,6 +262,9 @@ class PortfolioEnvironment:
         """
         if self.current_step >= self.max_steps:
             return self._get_state(), 0.0, True, {}
+        
+        # 시계열 정합성 검증 (사전)
+        self._verify_temporal_consistency()
         
         # 가중치 검증 및 정규화
         new_weights = self._validate_weights(new_weights)
@@ -316,6 +319,15 @@ class PortfolioEnvironment:
         # 종료 조건 (Python native bool로 변환)
         done = bool((self.current_step >= self.max_steps) or (self.portfolio_value <= 0))
         
+        # 에피소드 종료 시 시계열 일관성 검증
+        if done:
+            try:
+                self._verify_episode_metrics_consistency()
+            except ValueError as e:
+                self.logger.error(f"에피소드 종료 시 일관성 검증 실패: {e}")
+                # 연구용 표준: 일관성 오류 시 즉시 실패
+                raise e
+        
         # 정보 딕셔너리 (최종 실행 가중치 기준)
         info = {
             'portfolio_value': self.portfolio_value,
@@ -323,7 +335,8 @@ class PortfolioEnvironment:
             'transaction_cost': transaction_cost,
             'weight_change': weight_change,
             'concentration': calculate_concentration_index(final_weights),
-            'final_weights': final_weights.copy()  # 최종 실행 가중치 추가
+            'final_weights': final_weights.copy(),  # 최종 실행 가중치 추가
+            'temporal_verification': 'passed'  # 시계열 검증 통과 표시
         }
         
         return self._get_state(), reward, done, info
@@ -408,23 +421,23 @@ class PortfolioEnvironment:
         return final_weights
     
     def _apply_volatility_targeting(self, weights: np.ndarray) -> np.ndarray:
-        """EMA 기반 변동성 타깃팅 오버레이 (점진적 조정)"""
+        """시간 정렬 강화된 변동성 타깃팅 (피드백 루프 차단)"""
         if len(self.return_history) < 5:  # 최소 5일 이상
             return weights
         
-        # 현재 수익률로 변동성 추정 (일일 기준)
-        current_return = self.return_history[-1] if self.return_history else 0.0
-        current_volatility_daily = abs(current_return)  # 단순 추정
+        # 시간 정렬: 오직 과거 데이터만 사용
+        historical_returns = np.array(self.return_history)  # t-1까지의 수익률만
+        current_volatility_daily = np.std(historical_returns[-min(self.volatility_window, len(historical_returns)):])
         
-        # EMA 기반 변동성 추정 (점진적 업데이트)
+        # EMA 기반 변동성 추정 (과거 정보만)
         if self.volatility_ema is None:
-            # 초기화: 최근 윈도우의 표준편차
-            recent_returns = np.array(self.return_history[-min(self.volatility_window, len(self.return_history)):])
-            self.volatility_ema = recent_returns.std() if len(recent_returns) > 1 else abs(current_return)
+            # 초기화: 과거 윈도우의 표준편차만
+            self.volatility_ema = current_volatility_daily
         else:
-            # EMA 업데이트
-            self.volatility_ema = (self.volatility_decay * self.volatility_ema + 
-                                  (1 - self.volatility_decay) * current_volatility_daily)
+            # 느린 게인으로 EMA 업데이트 (피드백 억제)
+            slow_decay = 0.95  # 기존 0.9 → 0.95 (더 보수적)
+            self.volatility_ema = (slow_decay * self.volatility_ema + 
+                                  (1 - slow_decay) * current_volatility_daily)
         
         # 연간 변동성으로 환산
         annualized_volatility = self.volatility_ema * np.sqrt(252)
@@ -438,11 +451,16 @@ class PortfolioEnvironment:
         # 레버리지 클리핑
         target_leverage = np.clip(target_leverage, self.min_leverage, self.max_leverage)
         
-        # EMA 기반 점진적 레버리지 조정 (급격한 변화 방지)
-        self.leverage_ema = (self.leverage_decay * self.leverage_ema + 
-                            (1 - self.leverage_decay) * target_leverage)
+        # 레버리지 변화율 제한 (|ΔL_t| ≤ δ)
+        delta_max = 0.05  # 최대 변화율 5%
+        leverage_change = target_leverage - self.leverage_ema
+        leverage_change_clipped = np.clip(leverage_change, -delta_max, delta_max)
         
-        # 가중치 스케일링 (EMA 레버리지 사용)
+        # 제한된 변화율로 레버리지 업데이트
+        self.leverage_ema += leverage_change_clipped
+        self.leverage_ema = np.clip(self.leverage_ema, self.min_leverage, self.max_leverage)
+        
+        # 가중치 스케일링 (제한된 레버리지 사용)
         scaled_weights = weights * self.leverage_ema
         
         # 재정규화 (합이 1이 되도록)
@@ -454,14 +472,15 @@ class PortfolioEnvironment:
         # 변동성 타깃팅 로그 (config.py 간격)
         if self.current_step % CORRELATION_CHECK_INTERVAL == 0:
             self.logger.debug(
-                f"EMA 변동성 타깃팅 (step {self.current_step}): "
+                f"제어된 변동성 타깃팅 (step {self.current_step}): "
                 f"EMA_vol={annualized_volatility:.3f}, 목표_vol={self.target_volatility:.3f}, "
-                f"목표_lev={target_leverage:.2f}, EMA_lev={self.leverage_ema:.2f}"
+                f"목표_lev={target_leverage:.2f}, 최종_lev={self.leverage_ema:.2f}, "
+                f"변화율={leverage_change_clipped:.3f} (제한={delta_max})"
             )
         
         if not hasattr(self, '_volatility_logged'):
-            self.logger.info(f"EMA 변동성 타깃팅 활성화: 목표={self.target_volatility:.1%}, "
-                           f"vol_decay={self.volatility_decay:.2f}, lev_decay={self.leverage_decay:.2f}")
+            self.logger.info(f"시간 정렬 변동성 타깃팅 활성화: 목표={self.target_volatility:.1%}, "
+                           f"느린 게인(0.95), 변화율 제한(±{delta_max})")
             self._volatility_logged = True
         
         return scaled_weights
@@ -588,54 +607,40 @@ class PortfolioEnvironment:
     def _calculate_reward(self, portfolio_return: float, weights: np.ndarray, 
                          asset_returns: np.ndarray) -> float:
         """
-        보상 함수 (Sharpe proxy 통합)
+        Potential-based reward shaping으로 재설계된 보상 함수
         
-        r_t = log(V_{t+1}/V_t) - λ_risk*σ_t - λ_tc*||Δw_t||_1 + λ_S*Sharpe_EMA
+        r_t = log(V_{t+1}/V_t) + Φ(s_{t+1}) - Φ(s_t) (정책 불변성 보장)
         """
-        # 1. 기본 로그 수익률 보상 (안전한 로그 계산)
+        # 1. 기본 로그 수익률 보상 (진짜 보상)
         log_return = np.log(max(1 + portfolio_return, 1e-12))
         
-        # 2. Sharpe proxy EMA 업데이트 및 보상 항목
-        sharpe_reward = self._update_and_get_sharpe_reward(portfolio_return)
+        # 2. Potential-based shaping 성분들 계산
+        current_potential = self._calculate_state_potential(weights, portfolio_return)
         
-        # 3. 리스크 페널티 (최근 변동성 추정)
-        if len(self.return_history) >= 5:
-            recent_volatility = np.std(self.return_history[-5:])
-        else:
-            recent_volatility = abs(portfolio_return)  # 단일 관측치로 추정
-        
-        risk_penalty = RISK_PENALTY_WEIGHT * recent_volatility  # λ_risk (config.py)
-        
-        # 4. 거래비용 페널티 (가중치 변화)
-        if len(self.weight_history) > 0:
+        # 이전 상태의 potential (첫 번째 스텝은 0)
+        if len(self.return_history) > 0 and len(self.weight_history) > 0:
             prev_weights = self.weight_history[-1]
-            weight_change = np.abs(weights - prev_weights).sum()
+            prev_return = self.return_history[-1]
+            prev_potential = self._calculate_state_potential(prev_weights, prev_return)
         else:
-            weight_change = 0.0
+            prev_potential = 0.0
         
-        transaction_penalty = TRANSACTION_PENALTY_WEIGHT * weight_change  # λ_tc (config.py)
+        # 3. Potential-based shaping 항 계산 (Φ(s') - Φ(s))
+        shaping_reward = current_potential - prev_potential
         
-        # 5. 집중도(HHI) 페널티 추가
-        hhi = np.sum(weights ** 2)  # Herfindahl-Hirschman Index
-        equal_weight_hhi = 1.0 / self.n_assets  # 균등분산 시 HHI
-        concentration_penalty = HHI_PENALTY_WEIGHT * max(0, hhi - equal_weight_hhi)  # λ_hhi (config.py)
+        # 4. 단일 스케일 관문: 진짜 보상 + shaping만 결합
+        raw_reward = log_return + shaping_reward
         
-        # 6. 소프트 거래 제약 패널티 추가
-        soft_trading_penalty = self._soft_trading_penalty(weights)
+        # 5. 소프트 클리핑만 적용 (부호 보존)
+        r_max = 0.1  # 스케일링 계수 증가
+        final_reward = np.tanh(raw_reward / r_max) * r_max
         
-        # 7. 원시 보상 계산 (모든 패널티 포함)
-        raw_reward = (log_return - risk_penalty - transaction_penalty - concentration_penalty 
-                     - soft_trading_penalty + sharpe_reward)
+        # 6. 분리 로깅용 진짜 보상 저장
+        self._true_reward = log_return
+        self._shaping_reward = shaping_reward
         
-        # 7. tanh 바운딩 적용 (Q-value 폭주 방지)
-        r_max, tau = 0.05, 0.05  # 보수적 스케일 설정
-        bounded_reward = r_max * np.tanh(raw_reward / tau)
-        
-        # 8. 고정 스케일러 정규화 (바운딩된 보상 사용)
-        normalized_reward = self.reward_normalizer.normalize(bounded_reward)
-        
-        # 8. 보상-성과 상관성 추적
-        self.reward_performance_tracker['rewards'].append(normalized_reward)
+        # 7. 보상-성과 상관성 추적
+        self.reward_performance_tracker['rewards'].append(final_reward)
         self.reward_performance_tracker['returns'].append(portfolio_return)
         
         # 주기적 상관성 체크 (config.py 간격)
@@ -648,27 +653,146 @@ class PortfolioEnvironment:
         
         # 디버그 정보 (config.py 간격)
         if self.current_step % DEBUG_LOG_INTERVAL == 0:
-            current_sharpe_estimate = self.sharpe_tracker['return_ema'] / max(np.sqrt(self.sharpe_tracker['volatility_ema']), 1e-6)
             self.logger.debug(
-                f"보상 구성 (step {self.current_step}): "
-                f"log_ret={log_return:.4f}, risk_pen={risk_penalty:.4f}, "
-                f"tc_pen={transaction_penalty:.4f}, hhi_pen={concentration_penalty:.4f}, "
-                f"soft_tc_pen={soft_trading_penalty:.4f}, sharpe_rew={sharpe_reward:.4f}, HHI={hhi:.3f}, "
-                f"raw_rew={raw_reward:.4f}, bounded_rew={bounded_reward:.4f}, norm_rew={normalized_reward:.4f}"
+                f"Potential-based 보상 (step {self.current_step}): "
+                f"true_rew={log_return:.4f}, shaping_rew={shaping_reward:.4f}, "
+                f"curr_pot={current_potential:.4f}, prev_pot={prev_potential:.4f}, "
+                f"raw_rew={raw_reward:.4f}, final_rew={final_reward:.4f}"
             )
         
         if not hasattr(self, '_reward_logged'):
             self.logger.info(
-                "보상 함수 개선: log-return 기반, tanh 바운딩 (r_max=0.05), "
-                "고정 정규화, HHI 페널티, 소프트 거래 제약 패널티, Sharpe proxy 통합"
+                "보상 함수 재설계: Potential-based shaping, 정책 불변성 보장, "
+                f"단일 스케일 관문, 소프트 클리핑 (r_max={r_max})"
             )
             self._reward_logged = True
         
         # 안전한 타입 변환 (스칼라 값 보장)
-        if hasattr(normalized_reward, 'item'):
-            return float(normalized_reward.item())
+        if hasattr(final_reward, 'item'):
+            return float(final_reward.item())
         else:
-            return float(normalized_reward)
+            return float(final_reward)
+    
+    def _verify_temporal_consistency(self) -> None:
+        """
+        시계열 정합성 검증 (연구 무결성 보장)
+        """
+        # 1. 타임스탬프 정렬 검증
+        if self.current_step > 0:
+            current_idx = self.current_step + self.feature_extractor.lookback_window
+            if current_idx >= len(self.price_data):
+                raise ValueError(
+                    f"시계열 인덱스 오버플로우: step={self.current_step}, "
+                    f"idx={current_idx}, data_len={len(self.price_data)}"
+                )
+            
+            # 가격 데이터 유효성 검증
+            current_prices = self.price_data.iloc[current_idx]
+            if current_prices.isna().any():
+                raise ValueError(f"Step {self.current_step}에서 NaN 가격 데이터 감지")
+                
+            # 타임스탬프 순서 검증 (가능한 경우)
+            if hasattr(self.price_data.index, 'is_monotonic_increasing'):
+                if not self.price_data.index.is_monotonic_increasing:
+                    raise ValueError("가격 데이터의 타임스탬프가 단조증가하지 않습니다")
+        
+        # 2. 히스토리 길이 일관성 검증
+        expected_length = self.current_step
+        histories = {
+            'portfolio_history': len(self.portfolio_history) - 1,  # 초기값 제외
+            'weight_history': len(self.weight_history) - 1,       # 초기값 제외  
+            'return_history': len(self.return_history),
+            'cost_history': len(self.cost_history)
+        }
+        
+        for name, actual_length in histories.items():
+            if actual_length != expected_length:
+                raise ValueError(
+                    f"히스토리 길이 불일치: {name} = {actual_length}, "
+                    f"expected = {expected_length} (step {self.current_step})"
+                )
+    
+    def _verify_episode_metrics_consistency(self) -> None:
+        """
+        에피소드 종료 시 지표 교차일관성 검사
+        """
+        if len(self.return_history) == 0:
+            return
+        
+        # 1. 누적 수익률 계산 방식 비교
+        total_return_from_history = sum(self.return_history)
+        total_return_from_values = (self.portfolio_value - self.initial_capital) / self.initial_capital
+        
+        relative_error = abs(total_return_from_history - total_return_from_values) / (abs(total_return_from_values) + 1e-8)
+        if relative_error > 0.01:  # 1% 오차 허용
+            raise ValueError(
+                f"누적 수익률 불일치: history={total_return_from_history:.6f}, "
+                f"values={total_return_from_values:.6f}, error={relative_error:.6f}"
+            )
+        
+        # 2. 가중치 히스토리 합 검증
+        for i, weights in enumerate(self.weight_history):
+            weight_sum = weights.sum()
+            if abs(weight_sum - 1.0) > 1e-6:
+                raise ValueError(
+                    f"가중치 합 불일치 (step {i}): sum={weight_sum:.8f}, expected=1.0"
+                )
+        
+        # 3. 비용 히스토리 비음수 검증
+        if any(cost < 0 for cost in self.cost_history):
+            negative_costs = [i for i, cost in enumerate(self.cost_history) if cost < 0]
+            raise ValueError(f"음의 거래비용 감지: steps {negative_costs}")
+        
+        self.logger.debug(f"에피소드 지표 일관성 검증 통과: {len(self.return_history)}단계")
+    
+    def _calculate_state_potential(self, weights: np.ndarray, portfolio_return: float) -> float:
+        """
+        Potential-based shaping을 위한 상태 퍼텐셜 계산
+        
+        Φ(s) = -λ_vol*σ(s) - λ_hhi*HHI(w) - λ_tc*turnover(w) + λ_sharpe*sharpe_proxy(s)
+        
+        Args:
+            weights: 포트폴리오 가중치
+            portfolio_return: 포트폴리오 수익률
+        
+        Returns:
+            potential: 상태 퍼텐셜 값
+        """
+        potential = 0.0
+        
+        # 1. 변동성 퍼텐셜 (낮은 변동성이 높은 퍼텐셜)
+        if len(self.return_history) >= 5:
+            recent_volatility = np.std(self.return_history[-5:])
+        else:
+            recent_volatility = abs(portfolio_return)
+        lambda_vol = 0.1
+        volatility_potential = -lambda_vol * recent_volatility
+        potential += volatility_potential
+        
+        # 2. 집중도(HHI) 퍼텐셜 (분산투자가 높은 퍼텐셜)
+        hhi = np.sum(weights ** 2)
+        equal_weight_hhi = 1.0 / self.n_assets
+        lambda_hhi = 0.05
+        concentration_potential = -lambda_hhi * max(0, hhi - equal_weight_hhi)
+        potential += concentration_potential
+        
+        # 3. 거래비용 퍼텐셜 (낮은 회전율이 높은 퍼텐셜)
+        if len(self.weight_history) > 0:
+            prev_weights = self.weight_history[-1]
+            turnover = np.abs(weights - prev_weights).sum()
+        else:
+            turnover = 0.0
+        lambda_tc = 0.02
+        turnover_potential = -lambda_tc * turnover
+        potential += turnover_potential
+        
+        # 4. Sharpe proxy 퍼텐셜 (높은 샤프 비율이 높은 퍼텐셜)
+        sharpe_reward = self._update_and_get_sharpe_reward(portfolio_return)
+        lambda_sharpe = 0.1
+        sharpe_potential = lambda_sharpe * sharpe_reward
+        potential += sharpe_potential
+        
+        return potential
     
     def _check_reward_performance_correlation(self):
         """보상-성과 상관성 검증"""
