@@ -1,6 +1,7 @@
-# core/__init__.py
+# bipd/core/__init__.py
 
+from .environment import PortfolioEnvironment
 from .system import ImmunePortfolioSystem
-from .backtester import ImmunePortfolioBacktester
+from .trainer import BIPDTrainer
 
-__all__ = ["ImmunePortfolioSystem", "ImmunePortfolioBacktester"]
+__all__ = ['PortfolioEnvironment', 'ImmunePortfolioSystem', 'BIPDTrainer']
