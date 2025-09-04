@@ -524,7 +524,7 @@ class BIPDTrainer:
         benchmark_env = PortfolioEnvironment(self.test_data, self.feature_extractor)
         state = benchmark_env.reset()
         
-        equal_weights = np.ones(self.train_data.shape[1]) / self.train_data.shape[1]
+        equal_weights = np.ones(benchmark_env.n_assets) / benchmark_env.n_assets
         
         while True:
             next_state, reward, done, info = benchmark_env.step(equal_weights)

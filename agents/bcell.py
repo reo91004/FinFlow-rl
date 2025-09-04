@@ -6,6 +6,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 import numpy as np
 import os
+import time
 from collections import deque
 import random
 from utils.logger import BIPDLogger
@@ -14,6 +15,7 @@ from utils.extreme_q_monitor import DualQMonitor
 from utils.portfolio_utils import project_to_capped_simplex
 from agents.utils.dirichlet_entropy import target_entropy_from_symmetric_alpha
 from agents.utils.entropy_schedule import RegimeAdaptiveEntropyScheduler
+from agents.utils.entropy_target import DirichletEntropyTracker
 from config import (
     DEVICE,
     ACTOR_LR,
@@ -36,6 +38,9 @@ from config import (
     CQL_ALPHA_START,
     CQL_ALPHA_END,
     CQL_NUM_SAMPLES,
+    ENABLE_CQL,
+    ENABLE_KL_REGULARIZATION,
+    KL_PENALTY_WEIGHT,
     N_EPISODES,
     ROLLING_STATS_WINDOW,
     # 새로운 안정화 파라미터들
@@ -56,6 +61,24 @@ from config import (
     Q_MONITOR_WINDOW_SIZE,
     Q_EXTREME_THRESHOLD,
 )
+
+# Dirichlet 수치 안정화 파라미터
+MIN_CONC = 0.20   # 극소 농도 방지
+MAX_CONC = 50.0   # 과도 균등화 방지
+
+def stable_dirichlet(raw_conc: torch.Tensor) -> torch.distributions.Dirichlet:
+    """
+    수치적으로 안정한 Dirichlet 분포 생성
+    
+    Args:
+        raw_conc: 네트워크 원출력 (softplus 적용 전)
+        
+    Returns:
+        torch.distributions.Dirichlet: 안정화된 Dirichlet 분포
+    """
+    conc = F.softplus(raw_conc) + 1e-4
+    conc = conc.clamp_(MIN_CONC, MAX_CONC)
+    return torch.distributions.Dirichlet(conc)
 
 
 class SACActorNetwork(nn.Module):
@@ -102,19 +125,20 @@ class SACActorNetwork(nn.Module):
                                   min=DIRICHLET_CONCENTRATION_MIN, 
                                   max=DIRICHLET_CONCENTRATION_MAX)
 
-        # Dirichlet 분포에서 샘플링
+        # 안정화된 Dirichlet 분포에서 샘플링
         if self.training:
-            # 훈련 시: 확률적 샘플링
-            dist = torch.distributions.Dirichlet(concentration)
+            # 훈련 시: 안정화된 확률적 샘플링
+            dist = stable_dirichlet(self.concentration_head(x))  # raw 출력 직접 사용
             weights = dist.rsample()  # reparameterization trick 사용
             log_prob = dist.log_prob(weights)
             
             # 정책 엔트로피 계산 (적응형 엔트로피 추적용)
             policy_entropy = dist.entropy()
         else:
-            # 평가 시: 결정적 출력 (평균 사용)
-            # Dirichlet의 평균은 concentration / concentration.sum()
-            weights = concentration / concentration.sum(dim=-1, keepdim=True)
+            # 평가 시: 결정적 출력 (안정화된 평균 사용)
+            conc = F.softplus(self.concentration_head(x)) + 1e-4
+            conc = conc.clamp_(MIN_CONC, MAX_CONC)
+            weights = conc / conc.sum(dim=-1, keepdim=True)
             log_prob = torch.zeros(weights.shape[0], device=weights.device)
             policy_entropy = torch.zeros(weights.shape[0], device=weights.device)
 
@@ -301,6 +325,20 @@ class BCell:
         # SAC 엔트로피 계수
         # Dirichlet 분포에 맞춘 초기 타겟 엔트로피 설정
         self._compute_dirichlet_entropy_prior(action_dim)
+        
+        # DirichletEntropyTracker 초기화 (α 고착 해결용)
+        self.use_enhanced_entropy_tracking = True  # 플래그로 토글 가능
+        if self.use_enhanced_entropy_tracking:
+            self.entropy_tracker = DirichletEntropyTracker(
+                k=action_dim, 
+                init_alpha=1.5, 
+                ema=0.98, 
+                margin=0.5,
+                floor=-12.0, 
+                ceil=-0.1
+            )
+        else:
+            self.entropy_tracker = None
         
         # 적응형 엔트로피 스케줄러 초기화
         self.use_adaptive_entropy = True  # Phase 3 기능 활성화
@@ -643,47 +681,52 @@ class BCell:
             current_q2, target_q_values, reduction="none", beta=ENHANCED_HUBER_DELTA
         )
 
-        # CQL 정규화: LogSumExp 기반 표준 CQL 구현
-        # 점진적 CQL 강도 스케줄링
-        progress = self.episode_progress if hasattr(self, "episode_progress") else 0.0
-        current_cql_alpha = CQL_ALPHA_START + progress * (
-            CQL_ALPHA_END - CQL_ALPHA_START
-        )
+        # CQL 정규화 (조건부 활성화)
+        cql_penalty1 = torch.tensor(0.0, device=DEVICE)
+        cql_penalty2 = torch.tensor(0.0, device=DEVICE)
+        
+        if ENABLE_CQL:
+            # CQL 정규화: LogSumExp 기반 표준 CQL 구현
+            # 점진적 CQL 강도 스케줄링
+            progress = self.episode_progress if hasattr(self, "episode_progress") else 0.0
+            current_cql_alpha = CQL_ALPHA_START + progress * (
+                CQL_ALPHA_END - CQL_ALPHA_START
+            )
 
-        # 표준 CQL: 무작위 샘플링된 행동들에 대한 LogSumExp
-        batch_size = states.shape[0]
-        num_samples = CQL_NUM_SAMPLES
+            # 표준 CQL: 무작위 샘플링된 행동들에 대한 LogSumExp
+            batch_size = states.shape[0]
+            num_samples = CQL_NUM_SAMPLES
 
-        # 무작위 행동 샘플링 (포트폴리오 제약 유지)
-        random_actions = torch.rand(
-            batch_size * num_samples, actions.shape[1], device=DEVICE
-        )
-        random_actions = random_actions / random_actions.sum(dim=1, keepdim=True)
+            # 무작위 행동 샘플링 (포트폴리오 제약 유지)
+            random_actions = torch.rand(
+                batch_size * num_samples, actions.shape[1], device=DEVICE
+            )
+            random_actions = random_actions / random_actions.sum(dim=1, keepdim=True)
 
-        # 상태 확장 (각 상태에 대해 num_samples개 행동)
-        expanded_states = states.repeat_interleave(num_samples, dim=0)
+            # 상태 확장 (각 상태에 대해 num_samples개 행동)
+            expanded_states = states.repeat_interleave(num_samples, dim=0)
 
-        # Q-values 계산
-        q1_random = self.critic1(expanded_states, random_actions).view(
-            batch_size, num_samples
-        )
-        q2_random = self.critic2(expanded_states, random_actions).view(
-            batch_size, num_samples
-        )
+            # Q-values 계산
+            q1_random = self.critic1(expanded_states, random_actions).view(
+                batch_size, num_samples
+            )
+            q2_random = self.critic2(expanded_states, random_actions).view(
+                batch_size, num_samples
+            )
 
-        # LogSumExp 계산 (안정화된 버전)
-        logsumexp_q1 = torch.logsumexp(q1_random, dim=1)
-        logsumexp_q2 = torch.logsumexp(q2_random, dim=1)
+            # LogSumExp 계산 (안정화된 버전)
+            logsumexp_q1 = torch.logsumexp(q1_random, dim=1)
+            logsumexp_q2 = torch.logsumexp(q2_random, dim=1)
 
-        # 데이터 Q-values (현재 배치)
-        q1_data = current_q1
-        q2_data = current_q2
+            # 데이터 Q-values (현재 배치)
+            q1_data = current_q1
+            q2_data = current_q2
 
-        # CQL 손실 계산 (표준 LogSumExp - 데이터 Q)
-        cql_penalty1 = current_cql_alpha * (logsumexp_q1.mean() - q1_data.mean())
-        cql_penalty2 = current_cql_alpha * (logsumexp_q2.mean() - q2_data.mean())
+            # CQL 손실 계산 (표준 LogSumExp - 데이터 Q)
+            cql_penalty1 = current_cql_alpha * (logsumexp_q1.mean() - q1_data.mean())
+            cql_penalty2 = current_cql_alpha * (logsumexp_q2.mean() - q2_data.mean())
 
-        # 최종 손실 (Huber + 표준 CQL)
+        # 최종 손실 (Huber + 조건부 CQL)
         critic1_loss = (is_weights * critic1_huber).mean() + cql_penalty1
         critic2_loss = (is_weights * critic2_huber).mean() + cql_penalty2
 
@@ -737,6 +780,13 @@ class BCell:
 
             # SAC Actor 손실 (엔트로피 정규화 포함)
             actor_loss = (self.alpha * current_log_probs - q_current).mean()
+            
+            # KL 정규화 (조건부 활성화)
+            if ENABLE_KL_REGULARIZATION:
+                # 균등 분포와의 KL divergence 계산
+                uniform_log_probs = torch.log(torch.ones_like(current_actions) / current_actions.shape[-1])
+                kl_penalty = F.kl_div(uniform_log_probs, current_actions, reduction='batchmean')
+                actor_loss += KL_PENALTY_WEIGHT * kl_penalty
 
             self.actor_optimizer.zero_grad()
             actor_loss.backward()
@@ -760,11 +810,32 @@ class BCell:
                 0.95 * self._policy_entropy_ema + 0.05 * current_policy_entropy
             )
 
-        # 목표 엔트로피 스케줄링 적용
-        self._update_target_entropy()
+        # 강화된 엔트로피 트래킹 사용 여부에 따른 타깃 결정
+        if self.use_enhanced_entropy_tracking and self.entropy_tracker is not None:
+            # DirichletEntropyTracker로 타깃 엔트로피 계산 (α 고착 방지)
+            enhanced_target = self.entropy_tracker.update_and_get_target(current_policy_entropy)
+            
+            # 기존 적응형 시스템과 혼합 (점진적 전환)
+            self._update_target_entropy()  # 기존 시스템 업데이트
+            
+            # 혼합 비율: 강화된 시스템을 점진적으로 증가
+            mix_ratio = 0.7  # 70% 강화 시스템, 30% 기존 시스템
+            final_target = mix_ratio * enhanced_target + (1 - mix_ratio) * self.target_entropy
+            
+            # 로깅 (500회마다)
+            if self.update_count % 500 == 0:
+                self.logger.debug(
+                    f"[{self.risk_type}] 엔트로피 트래킹: 관측={current_policy_entropy:.3f}, "
+                    f"기존타깃={self.target_entropy:.3f}, 강화타깃={enhanced_target:.3f}, "
+                    f"최종타깃={final_target:.3f}"
+                )
+        else:
+            # 기존 목표 엔트로피 스케줄링만 사용
+            self._update_target_entropy()
+            final_target = self.target_entropy
 
         alpha_loss = -(
-            self.log_alpha * (current_log_probs + self.target_entropy).detach()
+            self.log_alpha * (current_log_probs + final_target).detach()
         ).mean()
 
         self.alpha_optimizer.zero_grad()
@@ -846,10 +917,16 @@ class BCell:
             self._stability_failure_count += 1
 
             if self._stability_failure_count >= 10:
-                self.logger.critical(
-                    f"[중대] {self.risk_type} B-Cell 안정성 실패 지속: {self._stability_failure_count}회 "
-                    f"- 모델 재초기화 필요"
-                )
+                # 재초기화 경고 스팸 방지: 30초 쿨다운 적용
+                if not hasattr(self, "_last_reinit_log_t"):
+                    self._last_reinit_log_t = 0
+                now = time.time()
+                if now - self._last_reinit_log_t > 30:
+                    self.logger.critical(
+                        f"[중대] {self.risk_type} B-Cell 안정성 실패 지속: {self._stability_failure_count}회 "
+                        f"- 모델 재초기화 필요"
+                    )
+                    self._last_reinit_log_t = now
 
             return False  # 업데이트 실패 신호
 

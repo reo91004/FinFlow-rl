@@ -17,6 +17,87 @@ from config import (
     WEIGHT_VALIDATION_WINDOW, CORRELATION_CHECK_INTERVAL, DEBUG_LOG_INTERVAL
 )
 
+
+class SharpeWeightScheduler:
+    """
+    보상-성과 상관관계 기반 샤프 가중치 자동 조정
+    
+    핵심 원리:
+    - 보상과 포트폴리오 성과의 상관관계를 추적
+    - 상관관계가 낮으면 λ_S 하향 (보상 역전 방지)  
+    - 상관관계가 높으면 λ_S 상향 (성과 정렬 강화)
+    - 과조정 방지를 위한 범위 제한 및 점진적 조정
+    """
+    
+    def __init__(self, lam_init=0.03, lam_min=0.01, lam_max=0.06, 
+                 ema=0.95, target_min=0.2, target_max=0.4):
+        """
+        Args:
+            lam_init: 초기 샤프 가중치
+            lam_min/lam_max: 가중치 조정 범위
+            ema: 상관관계 EMA 계수
+            target_min/target_max: 목표 상관관계 범위
+        """
+        self.lam = lam_init
+        self.lam_min = lam_min
+        self.lam_max = lam_max
+        self.ema = ema
+        self.target_min = target_min
+        self.target_max = target_max
+        
+        # 상관관계 추적
+        self._corr = 0.0
+        self._initialized = False
+        
+        # 조정 통계
+        self.adjustment_count = 0
+        self.last_adjustment = 0.0
+
+    def update(self, corr: float):
+        """
+        상관관계 업데이트 및 가중치 조정
+        
+        Args:
+            corr: 최근 윈도우의 보상-성과 상관관계
+        """
+        # 상관관계 EMA 업데이트
+        if not self._initialized:
+            self._corr = corr
+            self._initialized = True
+        else:
+            self._corr = self.ema * self._corr + (1 - self.ema) * corr
+        
+        # 가중치 조정 결정
+        old_lam = self.lam
+        
+        if self._corr < self.target_min:
+            # 상관관계 부족: λ_S 하향 (보상 역전 방지)
+            self.lam = max(self.lam_min, self.lam * 0.95)
+            
+        elif self._corr > self.target_max:
+            # 상관관계 양호: λ_S 상향 (성과 정렬 강화)
+            self.lam = min(self.lam_max, self.lam * 1.02)
+        
+        # 조정 통계 업데이트
+        if abs(self.lam - old_lam) > 1e-6:
+            self.adjustment_count += 1
+            self.last_adjustment = self.lam - old_lam
+
+    def get(self) -> float:
+        """현재 샤프 가중치 반환"""
+        return float(self.lam)
+    
+    def get_stats(self) -> dict:
+        """현재 스케줄러 상태 반환"""
+        return {
+            'lambda_s': self.lam,
+            'correlation_ema': self._corr,
+            'adjustment_count': self.adjustment_count,
+            'last_adjustment': self.last_adjustment,
+            'in_target_range': self.target_min <= self._corr <= self.target_max
+        }
+
+
 class RunningNormalizer:
     """실시간 평균/표준편차 정규화"""
     
@@ -100,6 +181,20 @@ class PortfolioEnvironment:
         self.weight_history = []
         self.return_history = []
         self.cost_history = []
+        
+        # 샤프 가중치 자동 조정 시스템 (보상-성과 정렬 개선)
+        self.use_adaptive_sharpe = True  # 플래그로 토글 가능
+        if self.use_adaptive_sharpe:
+            self.sharpe_scheduler = SharpeWeightScheduler(
+                lam_init=0.03,
+                lam_min=0.01,
+                lam_max=0.06,
+                ema=0.95,
+                target_min=0.2,
+                target_max=0.4
+            )
+        else:
+            self.sharpe_scheduler = None
         
         # 슬라이딩 윈도우 기반 가중치 검증 통계 (config.py에서 관리)
         self.weight_validation_window = collections.deque(maxlen=WEIGHT_VALIDATION_WINDOW)  # 최근 N회 기록
@@ -619,6 +714,19 @@ class PortfolioEnvironment:
             correlation = np.corrcoef(recent_rewards, recent_returns)[0, 1]
             
             if not np.isnan(correlation):
+                # SharpeWeightScheduler와 연동 (적응형 가중치 조정)
+                if self.use_adaptive_sharpe and self.sharpe_scheduler is not None:
+                    self.sharpe_scheduler.update(correlation)
+                    
+                    # 스케줄러 상태 로깅 (500회마다)
+                    step_count = len(self.reward_performance_tracker['rewards'])
+                    if step_count % 500 == 0:
+                        stats = self.sharpe_scheduler.get_stats()
+                        self.logger.info(
+                            f"샤프 가중치 적응: corr={correlation:.3f}→{stats['correlation_ema']:.3f}, "
+                            f"λ_S={stats['lambda_s']:.4f}, 조정={stats['adjustment_count']}회"
+                        )
+                
                 self.logger.debug(f"보상-성과 상관성: {correlation:.3f} (목표: >0)")
                 
                 # 경고 발생 (음의 상관관계)
@@ -648,6 +756,9 @@ class PortfolioEnvironment:
         
         # 메트릭 결합
         all_metrics = {**comprehensive_metrics, **additional_metrics}
+        
+        # 하위호환성을 위한 final_value 키 추가 (portfolio_value와 동일)
+        all_metrics["final_value"] = self.portfolio_value
         
         return all_metrics
         
@@ -767,8 +878,12 @@ class PortfolioEnvironment:
         sigma_t = max(np.sqrt(tracker['volatility_ema']), 1e-6)  # 0 방지
         sharpe_estimate = mu_t / sigma_t
         
-        # Sharpe 보상 (가중치 상향으로 성과 정렬 강화)
-        lambda_s = 0.05  # 가중치 상향 (0.02 → 0.05)
+        # Sharpe 보상 (적응형 가중치 사용 or 고정값)
+        if self.use_adaptive_sharpe and self.sharpe_scheduler is not None:
+            lambda_s = self.sharpe_scheduler.get()
+        else:
+            lambda_s = 0.03  # 기본 가중치
+        
         sharpe_reward = lambda_s * np.clip(sharpe_estimate, -2.0, 2.0)
         
         return sharpe_reward

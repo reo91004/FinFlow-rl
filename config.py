@@ -162,7 +162,7 @@ UPDATE_FREQUENCY = int(4)   # 네트워크 업데이트 주기
 # SAC 엔트로피 및 안정화 파라미터
 TARGET_ENTROPY_FROM_DIRICHLET = True        # Dirichlet 공식 기반 타겟 엔트로피 사용
 DIRICHLET_ALPHA_STAR = float(1.5)           # 대칭 Dirichlet 농도 파라미터 (균형잡힌 다양성)
-LOG_ALPHA_MIN = float(-10.0)                # log α 하한 (확장됨: α ≈ 4.5e-5)
+LOG_ALPHA_MIN = float(-3.0)                 # log α 하한 (안정성 정합: α ≈ 0.05)
 LOG_ALPHA_MAX = float(2.0)                  # log α 상한 (확장됨: α ≈ 7.39)
 TARGET_ENTROPY_SCALE = float(0.25)          # 기존 호환성 유지 (사용안함)
 ALPHA_MIN = float(1e-4)                     # 기존 호환성 유지
@@ -185,9 +185,14 @@ MAX_GRAD_NORM = float(1.0)             # 기존 호환성 유지
 HUBER_DELTA = float(1.0)               # 기존 호환성 유지
 
 # CQL (Conservative Q-Learning) 정규화 설정
-CQL_ALPHA_START = float(0.05)   # CQL 정규화 시작 강도 (점진적 증가)
-CQL_ALPHA_END = float(0.1)      # CQL 정규화 최종 강도 (과추정 방지)
-CQL_NUM_SAMPLES = int(10)       # CQL LogSumExp 샘플 수
+ENABLE_CQL = True                       # CQL 정규화 활성화 플래그
+CQL_ALPHA_START = float(0.05)           # CQL 정규화 시작 강도 (점진적 증가)
+CQL_ALPHA_END = float(0.1)              # CQL 정규화 최종 강도 (과추정 방지)
+CQL_NUM_SAMPLES = int(10)               # CQL LogSumExp 샘플 수
+
+# KL 정규화 설정 (Q-value 발산 방지)
+ENABLE_KL_REGULARIZATION = True         # KL 정규화 활성화 플래그
+KL_PENALTY_WEIGHT = float(0.01)         # KL 페널티 가중치
 
 # 통계 추적 설정 (agents/bcell.py에서 사용)
 ROLLING_STATS_WINDOW = int(100)     # 성능 통계 슬라이딩 윈도우 크기
