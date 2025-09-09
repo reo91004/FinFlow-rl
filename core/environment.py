@@ -8,12 +8,13 @@ import collections
 from data.features import FeatureExtractor
 from utils.logger import BIPDLogger
 from utils.metrics import calculate_concentration_index, calculate_comprehensive_metrics
+from utils.rewards import compose_reward, downside_vol, compute_max_drawdown
 from config import (
     SHARPE_WINDOW, SHARPE_SCALE, REWARD_BUFFER_SIZE, 
     REWARD_OUTLIER_SIGMA, REWARD_CLIP_MIN, REWARD_CLIP_MAX,
     REWARD_EMPIRICAL_MEAN, REWARD_EMPIRICAL_STD, VOLATILITY_TARGET, VOLATILITY_WINDOW,
     MIN_LEVERAGE, MAX_LEVERAGE, NO_TRADE_BAND, MAX_TURNOVER,
-    RISK_PENALTY_WEIGHT, TRANSACTION_PENALTY_WEIGHT, HHI_PENALTY_WEIGHT,
+    LAMBDA_DD, LAMBDA_VOL, LAMBDA_TURN, LAMBDA_HHI, CVAR_ALPHA,
     WEIGHT_VALIDATION_WINDOW, CORRELATION_CHECK_INTERVAL, DEBUG_LOG_INTERVAL
 )
 
@@ -622,40 +623,53 @@ class PortfolioEnvironment:
     def _calculate_reward(self, portfolio_return: float, weights: np.ndarray, 
                          asset_returns: np.ndarray) -> float:
         """
-        보상 함수 (Sharpe proxy 통합)
+        보상 함수 (CVaR/다운사이드 변동성 통합)
         
-        r_t = log(V_{t+1}/V_t) - λ_risk*σ_t - λ_tc*||Δw_t||_1 + λ_S*Sharpe_EMA
+        utils/rewards.py compose_reward() 사용
         """
-        # 1. 기본 로그 수익률 보상 (안전한 로그 계산)
+        # 1. 기본 로그 수익률 (안전한 계산)
         log_return = np.log(max(1 + portfolio_return, 1e-12))
         
-        # 2. Sharpe proxy EMA 업데이트 및 보상 항목
-        sharpe_reward = self._update_and_get_sharpe_reward(portfolio_return)
-        
-        # 3. 리스크 페널티 (최근 변동성 추정)
-        if len(self.return_history) >= 5:
-            recent_volatility = np.std(self.return_history[-5:])
-        else:
-            recent_volatility = abs(portfolio_return)  # 단일 관측치로 추정
-        
-        risk_penalty = RISK_PENALTY_WEIGHT * recent_volatility  # λ_risk (config.py)
-        
-        # 4. 거래비용 페널티 (가중치 변화)
+        # 2. 이전 가중치 확보
         if len(self.weight_history) > 0:
             prev_weights = self.weight_history[-1]
-            weight_change = np.abs(weights - prev_weights).sum()
         else:
-            weight_change = 0.0
+            prev_weights = np.ones(self.n_assets) / self.n_assets  # 균등 초기화
         
-        transaction_penalty = TRANSACTION_PENALTY_WEIGHT * weight_change  # λ_tc (config.py)
+        # 3. 다운사이드 변동성 계산
+        if len(self.return_history) >= 10:
+            returns_array = np.array(self.return_history[-20:])  # 최근 20일
+            vol_down = downside_vol(returns_array)
+        else:
+            # 초기 단계에서는 전체 변동성 사용
+            vol_down = np.std(self.return_history) if len(self.return_history) > 1 else abs(portfolio_return)
         
-        # 5. 집중도(HHI) 페널티 추가
-        hhi = np.sum(weights ** 2)  # Herfindahl-Hirschman Index
-        equal_weight_hhi = 1.0 / self.n_assets  # 균등분산 시 HHI
-        concentration_penalty = HHI_PENALTY_WEIGHT * max(0, hhi - equal_weight_hhi)  # λ_hhi (config.py)
+        # 4. 최대 낙폭 계산
+        if len(self.return_history) >= 5:
+            returns_array = np.array(self.return_history)
+            mdd = compute_max_drawdown(returns_array)
+        else:
+            mdd = 0.0  # 초기에는 MDD 없음
         
-        # 6. 원시 보상 계산 (HHI 페널티 포함)
-        raw_reward = log_return - risk_penalty - transaction_penalty - concentration_penalty + sharpe_reward
+        # 5. CVaR 샘플 준비 (현재는 None, 향후 분포적 critic에서 확장 가능)
+        cvar_samples = None
+        
+        # 6. compose_reward로 통합 보상 계산
+        raw_reward, components = compose_reward(
+            log_ret=log_return,
+            w=weights,
+            w_prev=prev_weights,
+            vol_down=vol_down,
+            mdd=mdd,
+            cvar_alpha=CVAR_ALPHA,
+            lambdas=(LAMBDA_DD, LAMBDA_VOL, LAMBDA_TURN, LAMBDA_HHI),
+            cvar_samples=cvar_samples,
+            return_components=True
+        )
+        
+        # 7. Sharpe proxy 보너스 추가 (기존 로직 유지)
+        sharpe_reward = self._update_and_get_sharpe_reward(portfolio_return)
+        raw_reward += sharpe_reward
         
         # 7. tanh 바운딩 적용 (Q-value 폭주 방지)
         r_max, tau = 0.05, 0.05  # 보수적 스케일 설정
@@ -676,21 +690,26 @@ class PortfolioEnvironment:
                 self.reward_performance_tracker['last_correlation_check'] = \
                     len(self.reward_performance_tracker['rewards'])
         
-        # 디버그 정보 (config.py 간격)
+        # 디버그 정보 (새로운 CVaR/다운사이드 컴포넌트 포함)
         if self.current_step % DEBUG_LOG_INTERVAL == 0:
             current_sharpe_estimate = self.sharpe_tracker['return_ema'] / max(np.sqrt(self.sharpe_tracker['volatility_ema']), 1e-6)
             self.logger.debug(
                 f"보상 구성 (step {self.current_step}): "
-                f"log_ret={log_return:.4f}, risk_pen={risk_penalty:.4f}, "
-                f"tc_pen={transaction_penalty:.4f}, hhi_pen={concentration_penalty:.4f}, "
-                f"sharpe_rew={sharpe_reward:.4f}, HHI={hhi:.3f}, "
+                f"log_ret={components['log_return']:.4f}, "
+                f"vol_down_pen={components['vol_penalty']:.4f}, "
+                f"mdd_pen={components['dd_penalty']:.4f}, "
+                f"turn_pen={components['turnover_penalty']:.4f}, "
+                f"hhi_pen={components['hhi_penalty']:.4f}, "
+                f"cvar_pen={components['cvar_penalty']:.4f}, "
+                f"sharpe_rew={sharpe_reward:.4f}, "
+                f"vol_down={components['vol_down']:.4f}, mdd={components['mdd']:.4f}, "
                 f"raw_rew={raw_reward:.4f}, bounded_rew={bounded_reward:.4f}, norm_rew={normalized_reward:.4f}"
             )
         
         if not hasattr(self, '_reward_logged'):
             self.logger.info(
-                "보상 함수 대폭 개선: log-return 기반, tanh 바운딩 (r_max=0.05), "
-                "고정 정규화, HHI 페널티, Sharpe proxy 통합"
+                "보상 함수 CVaR/다운사이드 변동성 통합: compose_reward() 사용, "
+                "MDD 페널티, 다운사이드 변동성, HHI 집중도, CVaR 제약 활성화"
             )
             self._reward_logged = True
         

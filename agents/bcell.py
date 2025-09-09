@@ -108,54 +108,38 @@ class SACActorNetwork(nn.Module):
 
     def forward(self, state):
         """
-        확률적 정책 출력
+        Dirichlet-SAC 정책 출력 (Handover v2)
         Returns:
             concentration: Dirichlet 분포의 concentration 파라미터
-            weights: 샘플링된 포트폴리오 가중치
+            weights: 샘플링된 포트폴리오 가중치 (심플렉스)
             log_prob: 로그 확률
+            policy_entropy: 정책 엔트로피 (양수!)
         """
         x = F.relu(self.fc1(state))
         x = F.relu(self.fc2(x))
 
-        # Dirichlet 농도 파라미터 계산
-        x_clamped = torch.clamp(self.concentration_head(x), min=-10.0, max=10.0)
-        concentration = F.softplus(x_clamped) + DIRICHLET_CONCENTRATION_MIN
-        # 농도 파라미터 범위 제한
-        concentration = torch.clamp(concentration, 
-                                  min=DIRICHLET_CONCENTRATION_MIN, 
-                                  max=DIRICHLET_CONCENTRATION_MAX)
+        # raw concentration 출력 (clamp 적용)
+        raw_conc = torch.clamp(self.concentration_head(x), min=-10.0, max=10.0)
+        
+        # 안정화된 Dirichlet 분포 생성
+        dist = create_stable_dirichlet(raw_conc)
+        concentration = dist.concentration  # 실제 사용된 concentration
 
-        # 안정화된 Dirichlet 분포에서 샘플링
         if self.training:
-            # 훈련 시: 안정화된 확률적 샘플링
-            dist = stable_dirichlet(self.concentration_head(x))  # raw 출력 직접 사용
-            weights = dist.rsample()  # reparameterization trick 사용
+            # 훈련 시: reparameterization trick으로 확률적 샘플링
+            weights = dist.rsample()
             log_prob = dist.log_prob(weights)
-            
-            # 정책 엔트로피 계산 (적응형 엔트로피 추적용)
+            # 엔트로피 계산 (양수 보장!)
             policy_entropy = dist.entropy()
         else:
-            # 평가 시: 결정적 출력 (안정화된 평균 사용)
-            conc = F.softplus(self.concentration_head(x)) + 1e-4
-            conc = conc.clamp_(MIN_CONC, MAX_CONC)
-            weights = conc / conc.sum(dim=-1, keepdim=True)
+            # 평가 시: 결정적 출력 (concentration 비율로 계산)
+            weights = concentration / concentration.sum(dim=-1, keepdim=True)
             log_prob = torch.zeros(weights.shape[0], device=weights.device)
             policy_entropy = torch.zeros(weights.shape[0], device=weights.device)
 
-        # 심플렉스 투영 적용 (제약 조건 엄밀 보장)
-        batch_size = weights.shape[0]
-        projected_weights = torch.zeros_like(weights)
-        for i in range(batch_size):
-            weight_np = weights[i].detach().cpu().numpy()
-            projected_np = project_to_capped_simplex(
-                weight_np, 
-                target_sum=1.0,
-                w_min=PORTFOLIO_WEIGHT_MIN,
-                w_max=1.0 - PORTFOLIO_WEIGHT_MIN * (self.action_dim - 1)
-            )
-            projected_weights[i] = torch.from_numpy(projected_np).to(weights.device)
-        
-        weights = projected_weights
+        # 간단한 심플렉스 정규화 (Dirichlet은 이미 심플렉스 보장)
+        weights = torch.clamp(weights, min=PORTFOLIO_WEIGHT_MIN)
+        weights = weights / weights.sum(dim=-1, keepdim=True)
 
         return concentration, weights, log_prob, policy_entropy
 
@@ -322,43 +306,23 @@ class BCell:
         # 로거 먼저 초기화
         self.logger = BIPDLogger(f"BCell-{risk_type}")
 
-        # SAC 엔트로피 계수
-        # Dirichlet 분포에 맞춘 초기 타겟 엔트로피 설정
-        self._compute_dirichlet_entropy_prior(action_dim)
-        
-        # DirichletEntropyTracker 초기화 (α 고착 해결용)
-        self.use_enhanced_entropy_tracking = True  # 플래그로 토글 가능
-        if self.use_enhanced_entropy_tracking:
-            self.entropy_tracker = DirichletEntropyTracker(
-                k=action_dim, 
-                init_alpha=1.5, 
-                ema=0.98, 
-                margin=0.5,
-                floor=-12.0, 
-                ceil=-0.1
-            )
-        else:
-            self.entropy_tracker = None
-        
-        # 적응형 엔트로피 스케줄러 초기화
-        self.use_adaptive_entropy = True  # Phase 3 기능 활성화
-        if self.use_adaptive_entropy:
-            from agents.utils.entropy_schedule import create_entropy_scheduler_for_symbols
-            self.entropy_scheduler = create_entropy_scheduler_for_symbols(action_dim)
-        else:
-            self.entropy_scheduler = None
-
-        # log-α 범위 설정
-        init_log_alpha = np.log(0.1)
-        self.log_alpha_min = LOG_ALPHA_MIN  # config에서 가져옴
-        self.log_alpha_max = LOG_ALPHA_MAX  # config에서 가져옴
-
-        self.log_alpha = torch.tensor(
-            np.clip(init_log_alpha, self.log_alpha_min, self.log_alpha_max),
-            requires_grad=True,
+        # SAC temperature 스칼라 초기화 (Handover v2)
+        init_log_alpha_temp = np.log(INIT_ALPHA_TEMP)
+        self.log_alpha_temp = torch.tensor(
+            init_log_alpha_temp,
+            requires_grad=ALPHA_TEMP_LEARN,
             device=DEVICE,
         )
-        self.alpha = self.log_alpha.exp()
+        self.alpha_temp = self.log_alpha_temp.exp()
+        
+        # SAC target entropy (차원당, 음수!)
+        self.target_entropy = TARGET_ENTROPY_PER_DIM * action_dim
+        
+        # 기존 엔트로피 추적 시스템 비활성화 (향후 삭제 예정)
+        self.use_enhanced_entropy_tracking = False
+        self.entropy_tracker = None
+        self.use_adaptive_entropy = False
+        self.entropy_scheduler = None
 
         # Phase 1: 에피소드 진행률 추적 및 엔트로피 스케줄링
         self.episode_progress = 0.0
@@ -376,7 +340,11 @@ class BCell:
         self.critic2_optimizer = optim.Adam(
             self.critic2.parameters(), lr=self.critic_lr
         )
-        self.alpha_optimizer = optim.Adam([self.log_alpha], lr=self.alpha_lr)
+        # SAC temperature optimizer
+        if ALPHA_TEMP_LEARN:
+            self.alpha_temp_optimizer = optim.Adam([self.log_alpha_temp], lr=self.alpha_lr)
+        else:
+            self.alpha_temp_optimizer = None
 
         # Phase 4: 베타 어닐링을 위한 PER 설정
         self.replay_buffer = PrioritizedReplayBuffer(
@@ -622,8 +590,8 @@ class BCell:
             np.array(is_weights, dtype=np.float32), dtype=torch.float32
         ).to(DEVICE)
 
-        # 현재 alpha 값 업데이트
-        self.alpha = self.log_alpha.exp()
+        # 현재 SAC temperature 업데이트
+        self.alpha_temp = self.log_alpha_temp.exp()
 
         # ===== SAC Twin Critics 업데이트 =====
         with torch.no_grad():
@@ -633,7 +601,7 @@ class BCell:
             # Twin Q-values 계산 (SAC는 엔트로피 항 포함)
             target_q1 = self.target_critic1(next_states, next_actions).squeeze()
             target_q2 = self.target_critic2(next_states, next_actions).squeeze()
-            target_q = torch.min(target_q1, target_q2) - self.alpha * next_log_probs
+            target_q = torch.min(target_q1, target_q2) - self.alpha_temp * next_log_probs
 
             # 대폭 강화된 Q-타깃 클리핑 (극단값 완전 억제)
             target_q_values = rewards + self.gamma * target_q * (~dones)
@@ -778,8 +746,8 @@ class BCell:
             q2_current = self.critic2(states, current_actions).squeeze()
             q_current = torch.min(q1_current, q2_current)
 
-            # SAC Actor 손실 (엔트로피 정규화 포함)
-            actor_loss = (self.alpha * current_log_probs - q_current).mean()
+            # SAC Actor 손실 (SAC temperature 사용)
+            actor_loss = (self.alpha_temp * current_log_probs - q_current).mean()
             
             # KL 정규화 (조건부 활성화)
             if ENABLE_KL_REGULARIZATION:
@@ -800,80 +768,29 @@ class BCell:
             with torch.no_grad():
                 _, current_actions, current_log_probs, _ = self.actor(states)
 
-        # Alpha (엔트로피 계수) 자동 튜닝
-        # 정책 엔트로피 EMA 업데이트 (정책-적응형 스케줄링용)
-        current_policy_entropy = -current_log_probs.mean().item()
-        if self._policy_entropy_ema is None:
-            self._policy_entropy_ema = current_policy_entropy
-        else:
-            self._policy_entropy_ema = (
-                0.95 * self._policy_entropy_ema + 0.05 * current_policy_entropy
-            )
+        # SAC Temperature 자동 튜닝 (Handover v2)
+        if ALPHA_TEMP_LEARN and self.alpha_temp_optimizer is not None:
+            # SAC temperature 손실 (음의 로그 가능도)
+            alpha_temp_loss = -(
+                self.log_alpha_temp * (current_log_probs + self.target_entropy).detach()
+            ).mean()
 
-        # 강화된 엔트로피 트래킹 사용 여부에 따른 타깃 결정
-        if self.use_enhanced_entropy_tracking and self.entropy_tracker is not None:
-            # DirichletEntropyTracker로 타깃 엔트로피 계산 (α 고착 방지)
-            enhanced_target = self.entropy_tracker.update_and_get_target(current_policy_entropy)
+            self.alpha_temp_optimizer.zero_grad()
+            alpha_temp_loss.backward()
             
-            # 기존 적응형 시스템과 혼합 (점진적 전환)
-            self._update_target_entropy()  # 기존 시스템 업데이트
-            
-            # 혼합 비율: 강화된 시스템을 점진적으로 증가
-            mix_ratio = 0.7  # 70% 강화 시스템, 30% 기존 시스템
-            final_target = mix_ratio * enhanced_target + (1 - mix_ratio) * self.target_entropy
-            
-            # 로깅 (500회마다)
-            if self.update_count % 500 == 0:
-                self.logger.debug(
-                    f"[{self.risk_type}] 엔트로피 트래킹: 관측={current_policy_entropy:.3f}, "
-                    f"기존타깃={self.target_entropy:.3f}, 강화타깃={enhanced_target:.3f}, "
-                    f"최종타깃={final_target:.3f}"
-                )
-        else:
-            # 기존 목표 엔트로피 스케줄링만 사용
-            self._update_target_entropy()
-            final_target = self.target_entropy
-
-        alpha_loss = -(
-            self.log_alpha * (current_log_probs + final_target).detach()
-        ).mean()
-
-        self.alpha_optimizer.zero_grad()
-        alpha_loss.backward()
-        # 온도 파라미터 그래디언트 클리핑
-        alpha_grad_norm = torch.nn.utils.clip_grad_norm_(
-            [self.log_alpha], max_norm=ALPHA_GRAD_NORM
-        )
-
-        # 업데이트 전 log-alpha 값 저장 (로깅용)
-        pre_update_log_alpha = self.log_alpha.item()
-
-        self.alpha_optimizer.step()
-
-        # Phase 1: 로그-온도 안전 범위 클리핑 (업데이트 후)
-        with torch.no_grad():
-            self.log_alpha.data.clamp_(self.log_alpha_min, self.log_alpha_max)
-            self.alpha = self.log_alpha.exp()
-
-            # 클리핑 발생 횟수 추적
-            post_update_log_alpha = self.log_alpha.item()
-            clipping_occurred = (
-                abs(post_update_log_alpha - self.log_alpha_min) < 1e-6 or 
-                abs(post_update_log_alpha - self.log_alpha_max) < 1e-6
+            # Temperature 그래디언트 클리핑
+            alpha_grad_norm = torch.nn.utils.clip_grad_norm_(
+                [self.log_alpha_temp], max_norm=ALPHA_GRAD_NORM
             )
             
-            if clipping_occurred:
-                if not hasattr(self, "_alpha_clipping_count"):
-                    self._alpha_clipping_count = 0
-                self._alpha_clipping_count += 1
-
-                # 클리핑 경고 (500회마다 1회로 완화)
-                if self._alpha_clipping_count % 500 == 1:
-                    boundary = "하한" if post_update_log_alpha <= self.log_alpha_min + 1e-6 else "상한"
-                    self.logger.warning(
-                        f"[{self.risk_type}] α {boundary} 클리핑 {self._alpha_clipping_count}회 - "
-                        f"log_α={post_update_log_alpha:.4f} (범위: [{self.log_alpha_min:.1f}, {self.log_alpha_max:.1f}])"
-                    )
+            self.alpha_temp_optimizer.step()
+            
+            # Temperature 업데이트
+            with torch.no_grad():
+                self.alpha_temp = self.log_alpha_temp.exp()
+        else:
+            alpha_temp_loss = torch.tensor(0.0, device=DEVICE)
+            alpha_grad_norm = torch.tensor(0.0, device=DEVICE)
 
         # 타겟 네트워크 소프트 업데이트
         self._soft_update_targets()
@@ -895,7 +812,7 @@ class BCell:
         )
 
         # 엔트로피 계수 안정성 체크
-        alpha_stable = torch.isfinite(self.alpha) and 0.0001 <= self.alpha.item() <= 2.0
+        alpha_stable = torch.isfinite(self.alpha_temp) and 0.0001 <= self.alpha_temp.item() <= 2.0
 
         if not (losses_finite and q_values_in_range and alpha_stable):
             # Rate limiting: 매 500스텝마다만 자세한 로그 출력
@@ -908,7 +825,7 @@ class BCell:
                     f"[안정성 문제 요약] 최근 500스텝 중 {self._stability_log_count % 500}번째 발생 - "
                     f"손실: A={actor_loss.item():.3f}, C_avg={(critic1_loss.item()+critic2_loss.item())/2:.3f} | "
                     f"Q범위: [{current_q1.min().item():.1f}, {current_q1.max().item():.1f}] | "
-                    f"α={self.alpha.item():.3f}"
+                    f"α_temp={self.alpha_temp.item():.3f}"
                 )
 
             # 비상 대응: 모델 리셋 신호
@@ -962,11 +879,11 @@ class BCell:
                 (critic1_loss.item() + critic2_loss.item()) / 2
             )
 
-            # Alpha 및 목표 엔트로피 확장 업데이트
-            current_alpha = self.alpha.item()
-            current_log_alpha = self.log_alpha.item()
-            self.alpha_stats.update(current_alpha)
-            self.log_alpha_stats.update(current_log_alpha)
+            # Alpha temp 및 목표 엔트로피 업데이트
+            current_alpha_temp = self.alpha_temp.item()
+            current_log_alpha_temp = self.log_alpha_temp.item()
+            self.alpha_stats.update(current_alpha_temp)
+            self.log_alpha_stats.update(current_log_alpha_temp)
             self.target_entropy_stats.update(self.target_entropy)
 
             # 정책 엔트로피 추가 (현재 배치 평균)
@@ -991,12 +908,11 @@ class BCell:
             )
             self.high_alpha_counter.update(current_alpha > 0.5)
             
-            # 새로운 카운터 업데이트
-            alpha_clipped = (
-                abs(current_log_alpha - LOG_ALPHA_MIN) < 1e-6 or 
-                abs(current_log_alpha - LOG_ALPHA_MAX) < 1e-6
+            # Temperature clipping 카운터 업데이트 (넓은 범위라 거의 발생하지 않을 예상)
+            temp_clipped = (
+                self.alpha_temp.item() < 0.001 or self.alpha_temp.item() > 10.0
             )
-            self.alpha_clipping_counter.update(alpha_clipped)
+            self.alpha_clipping_counter.update(temp_clipped)
             
             q_target_clipped = (
                 abs(target_q_min - Q_TARGET_HARD_CLIP_MIN) < 1e-6 or 

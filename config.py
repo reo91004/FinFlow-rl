@@ -123,18 +123,18 @@ LOOKBACK_WINDOW = 20     # 특성 계산을 위한 과거 데이터 윈도우 �
 TCELL_CONTAMINATION = 0.1    # Isolation Forest 이상치 비율 (전체 데이터 중 10%)
 TCELL_SENSITIVITY = 1.0      # 위기 감지 민감도 (1.0 = 기본값)
 
-# 적응적 임계값 관리 설정 (agents/tcell.py에서 사용)
-THRESHOLD_WINDOW_SIZE = int(512)            # 임계값 적응을 위한 윈도우 크기
-VOLATILITY_CRISIS_QUANTILE = float(0.90)    # 변동성 위기 감지 분위수 (상위 10%)
-CORRELATION_CRISIS_QUANTILE = float(0.92)   # 상관성 위기 감지 분위수 (상위 8%)
-VOLUME_CRISIS_QUANTILE = float(0.91)        # 거래량 위기 감지 분위수 (상위 9%)
-OVERALL_CRISIS_QUANTILE = float(0.925)      # 전체 위기 감지 분위수 (상위 7.5%)
+# 적응적 임계값 관리 설정 (agents/tcell.py에서 사용) - 안정화 최적화
+THRESHOLD_WINDOW_SIZE = int(1000)           # 임계값 적응을 위한 윈도우 크기 (안정성 향상)
+VOLATILITY_CRISIS_QUANTILE = float(0.85)    # 변동성 위기 감지 분위수 (민감도 완화)
+CORRELATION_CRISIS_QUANTILE = float(0.87)   # 상관성 위기 감지 분위수 (민감도 완화)
+VOLUME_CRISIS_QUANTILE = float(0.86)        # 거래량 위기 감지 분위수 (민감도 완화)
+OVERALL_CRISIS_QUANTILE = float(0.88)       # 전체 위기 감지 분위수 (민감도 완화)
 
-# 목표 위기 감지율 (과도한 위기 감지 방지)
-VOLATILITY_CRISIS_RATE = float(0.12)    # 변동성 위기 목표 감지율 (12%)
-CORRELATION_CRISIS_RATE = float(0.10)   # 상관성 위기 목표 감지율 (10%)
-VOLUME_CRISIS_RATE = float(0.13)        # 거래량 위기 목표 감지율 (13%)
-OVERALL_CRISIS_RATE = float(0.15)       # 전체 위기 목표 감지율 (15%)
+# 목표 위기 감지율 (과도한 위기 감지 방지) - 균형 조정
+VOLATILITY_CRISIS_RATE = float(0.18)    # 변동성 위기 목표 감지율 (18%)
+CORRELATION_CRISIS_RATE = float(0.15)   # 상관성 위기 목표 감지율 (15%)
+VOLUME_CRISIS_RATE = float(0.17)        # 거래량 위기 목표 감지율 (17%)
+OVERALL_CRISIS_RATE = float(0.20)       # 전체 위기 목표 감지율 (20%)
 
 # 위기 레벨 분류 임계값 (core/environment.py, core/system.py에서 사용)
 CRISIS_HIGH = float(0.7)      # 고위기 임계값 (0.7 이상)
@@ -149,50 +149,44 @@ STATE_DIM = FEATURE_DIM + 1 + len(SYMBOLS)  # 상태 차원: 시장특성(12) + 
 ACTION_DIM = len(SYMBOLS)                   # 행동 차원: 포트폴리오 가중치(30)
 HIDDEN_DIM = 128                           # 신경망 은닉층 차원
 
-# SAC 하이퍼파라미터 (agents/bcell.py에서 사용)
-ACTOR_LR = float(3e-4)      # Actor 네트워크 학습률
-CRITIC_LR = float(1e-4)     # Critic 네트워크 학습률 (안정성을 위해 낮게 설정)
-ALPHA_LR = float(3e-4)      # 온도 파라미터 학습률 (자동 엔트로피 튜닝)
-GAMMA = float(0.99)         # 할인율 (미래 보상 가중치)
-TAU = float(0.001)          # 타겟 네트워크 소프트 업데이트 비율
-BATCH_SIZE = int(32)        # 미니배치 크기
-BUFFER_SIZE = int(10000)    # 경험 재생 버퍼 크기
-UPDATE_FREQUENCY = int(4)   # 네트워크 업데이트 주기
+# SAC 하이퍼파라미터 (agents/bcell.py에서 사용) - 안정성 우선 v5.2
+LR_ACTOR = float(3e-5)      # Actor 네트워크 학습률 (안정성 우선, 보수적 설정)
+LR_CRITIC = float(3e-5)     # Critic 네트워크 학습률 (Actor와 동일하게 설정)
+WEIGHT_DECAY = float(1e-6)  # 가중치 감쇠 (L2 정규화, 약한 정규화 추가)
+GAMMA = float(0.99)         # 할인율 (표준값으로 안정화)
+TAU = float(0.005)          # 타겟 네트워크 EMA 업데이트 비율 (보수적 설정)
+BATCH_SIZE = int(256)       # 미니배치 크기 (효율성과 안정성 균형)
+BUFFER_SIZE = int(20000)    # 경험 재생 버퍼 크기 (다양성 증대)
+REWARD_SCALE = float(0.5)   # Q 폭주 방지용 보상 스케일링 (강화)
+UPDATE_FREQUENCY = int(4)   # 네트워크 업데이트 주기 (안정성 우선)
 
-# SAC 엔트로피 및 안정화 파라미터
-TARGET_ENTROPY_FROM_DIRICHLET = True        # Dirichlet 공식 기반 타겟 엔트로피 사용
-DIRICHLET_ALPHA_STAR = float(1.5)           # 대칭 Dirichlet 농도 파라미터 (균형잡힌 다양성)
-LOG_ALPHA_MIN = float(-3.0)                 # log α 하한 (안정성 정합: α ≈ 0.05)
-LOG_ALPHA_MAX = float(2.0)                  # log α 상한 (확장됨: α ≈ 7.39)
-TARGET_ENTROPY_SCALE = float(0.25)          # 기존 호환성 유지 (사용안함)
-ALPHA_MIN = float(1e-4)                     # 기존 호환성 유지
-ALPHA_MAX = float(0.5)                      # 기존 호환성 유지
+# SAC 온도 파라미터 (temperature α - 스칼라) - 안정성 우선
+INIT_ALPHA_TEMP = float(0.05)               # SAC temperature 초기값 (보수적 탐험)
+TARGET_ENTROPY_PER_DIM = float(-0.8)        # SAC 목표 엔트로피 (안정적 범위)
+ALPHA_TEMP_LEARN = True                     # temperature 자동 학습 활성화
+ALPHA_LR = float(3e-4)                      # temperature 학습률 (안정적 적응)
 
-# Dirichlet 분포 농도 파라미터 (포트폴리오 가중치 제약)
-DIRICHLET_CONCENTRATION_MIN = float(1.0)     # 최소 농도 (균등분포 이상, 스파스 방지)
-DIRICHLET_CONCENTRATION_MAX = float(50.0)    # 최대 농도 (과도 집중 방지)
-PORTFOLIO_WEIGHT_MIN = float(1e-4)           # 포트폴리오 최소 가중치
-CONCENTRATION_MIN = float(0.2)               # 기존 호환성 유지
-CONCENTRATION_MAX = float(100.0)             # 기존 호환성 유지  
-WEIGHT_EPSILON = float(1e-6)                 # 기존 호환성 유지
+# Dirichlet 정책 분포 파라미터 (심플렉스 가중치용 - concentration α 벡터)
+DIRICHLET_MIN_CONC = float(0.02)            # concentration 하한 (one-hot 붕괴 방지)
+DIRICHLET_MAX_CONC = float(5.0)             # concentration 상한 (과도 집중 방지)
+ENTROPY_REG_COEF = float(0.0)               # 별도 엔트로피 보너스 (SAC temperature가 있으므로 0)
+PORTFOLIO_WEIGHT_MIN = float(1e-4)          # 포트폴리오 최소 가중치
 
 # 그래디언트 안정화 설정
-CRITIC_GRAD_NORM = float(0.5)          # Critic 그래디언트 클리핑 (보수적)
-ACTOR_GRAD_NORM = float(0.5)           # Actor 그래디언트 클리핑 (보수적)  
+CRITIC_GRAD_NORM = float(1.0)          # Critic 그래디언트 클리핑 (완화)
+ACTOR_GRAD_NORM = float(1.0)           # Actor 그래디언트 클리핑 (완화)  
 ALPHA_GRAD_NORM = float(10.0)          # Alpha 그래디언트 클리핑 (관대)
 ENHANCED_HUBER_DELTA = float(2.0)      # 강화된 Huber loss delta
-MAX_GRAD_NORM = float(1.0)             # 기존 호환성 유지
-HUBER_DELTA = float(1.0)               # 기존 호환성 유지
 
-# CQL (Conservative Q-Learning) 정규화 설정
+# CQL (Conservative Q-Learning) 정규화 설정 - 성능 최적화
 ENABLE_CQL = True                       # CQL 정규화 활성화 플래그
-CQL_ALPHA_START = float(0.05)           # CQL 정규화 시작 강도 (점진적 증가)
-CQL_ALPHA_END = float(0.1)              # CQL 정규화 최종 강도 (과추정 방지)
-CQL_NUM_SAMPLES = int(10)               # CQL LogSumExp 샘플 수
+CQL_ALPHA_START = float(0.01)           # CQL 정규화 시작 강도 (부드러운 시작)
+CQL_ALPHA_END = float(0.05)             # CQL 정규화 최종 강도 (과추정 방지, 완화)
+CQL_NUM_SAMPLES = int(8)                # CQL LogSumExp 샘플 수 (효율성)
 
-# KL 정규화 설정 (Q-value 발산 방지)
+# KL 정규화 설정 (Q-value 발산 방지) - 성능 최적화
 ENABLE_KL_REGULARIZATION = True         # KL 정규화 활성화 플래그
-KL_PENALTY_WEIGHT = float(0.01)         # KL 페널티 가중치
+KL_PENALTY_WEIGHT = float(0.005)        # KL 페널티 가중치 (완화)
 
 # 통계 추적 설정 (agents/bcell.py에서 사용)
 ROLLING_STATS_WINDOW = int(100)     # 성능 통계 슬라이딩 윈도우 크기
@@ -218,19 +212,21 @@ MAX_STEPS = int(252)                # 최대 거래일 수 (1년)
 # 포트폴리오 최적화 설정
 REWARD_EMPIRICAL_MEAN = float(0.002)    # 일일 평균 수익률 추정 (0.2%)
 REWARD_EMPIRICAL_STD = float(0.02)      # 일일 변동성 추정 (2%)
-VOLATILITY_TARGET = float(0.10)         # 연간 목표 변동성 (10%)
+VOLATILITY_TARGET = float(0.15)         # 연간 목표 변동성 (15% - 완화)
 VOLATILITY_WINDOW = int(20)             # 변동성 추정 윈도우 (20거래일)
 
-# 레버리지 및 거래 제약 설정
-MIN_LEVERAGE = float(0.5)               # 최소 레버리지 (50% 투자)
-MAX_LEVERAGE = float(2.0)               # 최대 레버리지 (200% 투자)
+# 레버리지 및 거래 제약 설정 (외생화)
+MIN_LEVERAGE = float(0.75)              # 최소 레버리지 (75% 투자 - 완화)
+MAX_LEVERAGE = float(1.5)               # 최대 레버리지 (150% 투자 - 완화)
 NO_TRADE_BAND = float(0.02)             # 노-트레이드 밴드 (2% 이하 변화시 거래 안함)
 MAX_TURNOVER = float(0.5)               # 최대 일일 턴오버 (50%)
 
-# 보상 함수 가중치 설정
-RISK_PENALTY_WEIGHT = float(0.05)       # 위험 페널티 가중치
-TRANSACTION_PENALTY_WEIGHT = float(0.01)# 거래비용 페널티 가중치
-HHI_PENALTY_WEIGHT = float(0.005)       # HHI 집중도 페널티 가중치
+# 리스크 제약 및 페널티 가중치 (CVaR 추가) - MDD ≤25% 목표
+CVAR_ALPHA = float(0.05)                # CVaR 분위수 (5%)
+LAMBDA_DD = float(0.5)                  # 최대낙폭 페널티 (MDD 제한 강화)
+LAMBDA_VOL = float(0.2)                 # 다운사이드 변동성 페널티 (리스크 관리 강화)
+LAMBDA_TURN = float(0.005)              # 턴오버 페널티 (과도한 거래 방지)
+LAMBDA_HHI = float(0.01)                # HHI 집중도 페널티 (분산투자 유도)
 
 # 환경 모니터링 설정
 WEIGHT_VALIDATION_WINDOW = int(100)     # 가중치 검증 윈도우
@@ -246,6 +242,9 @@ N_EPISODES = int(500)                   # 총 학습 에피소드 수
 LOG_INTERVAL = int(10)                  # 로그 출력 간격
 SAVE_INTERVAL = int(100)                # 모델 저장 간격
 
+# MoE 게이팅 시스템 설정
+SWITCH_DWELL_STEPS = int(5)             # 최소 전문가 체류 시간
+
 # 초기 탐험 설정
 INITIAL_EXPLORATION_STEPS = int(1000)   # 초기 랜덤 탐험 스텝 수
 MIN_BUFFER_SIZE = int(500)              # 학습 시작을 위한 최소 버퍼 크기
@@ -254,9 +253,9 @@ MIN_BUFFER_SIZE = int(500)              # 학습 시작을 위한 최소 버퍼 
 # 10. 보상 함수 설정 (Reward Function Settings)
 # =============================================================================
 
-# Sharpe 비율 계산 설정 (utils/metrics.py, core/environment.py에서 사용)
-SHARPE_WINDOW = int(10)                 # Sharpe 비율 계산 윈도우
-SHARPE_SCALE = float(0.15)              # Sharpe 비율 보상 스케일링
+# Sharpe 비율 계산 설정 (utils/metrics.py, core/environment.py에서 사용) - Sharpe >1.0 목표
+SHARPE_WINDOW = int(20)                 # Sharpe 비율 계산 윈도우 (길게 조정)
+SHARPE_SCALE = float(0.5)               # Sharpe 비율 보상 스케일링 (강화)
 
 # 보상 정규화 및 이상치 처리
 REWARD_TANH_BOUND = True                     # tanh 바운딩 활성화
@@ -267,9 +266,18 @@ REWARD_OUTLIER_SIGMA = float(3.0)            # 이상치 감지 시그마 배수
 REWARD_CLIP_MIN = float(-2.0)                # 보상 하한 클리핑
 REWARD_CLIP_MAX = float(2.0)                 # 보상 상한 클리핑
 
-# Q-value 안정화 설정 (새로 추가)
+# Q-value 안정화 설정 
 Q_TARGET_HARD_CLIP_MIN = float(-50.0)       # Q 타깃 하드 클리핑 하한
 Q_TARGET_HARD_CLIP_MAX = float(50.0)        # Q 타깃 하드 클리핑 상한
 Q_VALUE_STABILITY_CHECK = float(100.0)      # Q-value 안정성 체크 임계값
 Q_MONITOR_WINDOW_SIZE = int(1000)           # Q-value 모니터링 윈도우 크기
 Q_EXTREME_THRESHOLD = float(0.3)            # 극단치 비율 경고 임계값 (30%)
+
+# EMA/히스테리시스 설정 (T-Cell 안정화용)
+CRISIS_EMA_BETA = float(0.95)               # 위기 점수 EMA 계수
+CRISIS_ENTER_THRESHOLD = float(0.7)         # 위기 진입 임계값
+CRISIS_EXIT_THRESHOLD = float(0.3)          # 위기 해제 임계값
+
+# 메모리 다양성 설정
+MEMORY_SIMILARITY_THRESHOLD = float(0.7)    # 유사도 임계값 (0.95에서 완화)
+MEMORY_EXTREME_RATIO = float(0.3)           # 극단 상황 리플레이 비율

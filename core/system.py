@@ -1,11 +1,65 @@
 # core/system.py
 
 import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
 import os
 from typing import Dict, Tuple, List, Optional
 from agents import TCell, BCell, MemoryCell
 from utils.logger import BIPDLogger
 from config import *
+
+
+class GateNetwork(nn.Module):
+    """
+    MoE 게이팅 네트워크 - 전문가 선택을 위한 신경망
+    
+    시장 임베딩과 위기 정보를 입력받아 전문가 선택 확률을 출력
+    """
+    
+    def __init__(self, input_dim: int, n_experts: int, hidden_dim: int = 64):
+        super().__init__()
+        self.n_experts = n_experts
+        
+        # 게이팅 네트워크: 입력 → 은닉층 → 전문가 로짓
+        self.gate_network = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Linear(hidden_dim // 2, n_experts)
+        )
+        
+        # 네트워크 초기화
+        self._initialize_weights()
+    
+    def _initialize_weights(self):
+        """가중치 초기화"""
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight)
+                nn.init.constant_(module.bias, 0.0)
+    
+    def forward(self, market_embedding: torch.Tensor, crisis_info: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Args:
+            market_embedding: 시장 상태 임베딩 [batch_size, embed_dim]
+            crisis_info: 위기 정보 벡터 [batch_size, crisis_dim]
+            
+        Returns:
+            logits: 전문가 선택 로짓 [batch_size, n_experts]
+            probs: 전문가 선택 확률 [batch_size, n_experts]
+        """
+        # 입력 결합 및 게이팅 로짓 계산
+        combined_input = torch.cat([market_embedding, crisis_info], dim=-1)
+        logits = self.gate_network(combined_input)
+        
+        # Softmax 확률 계산 (온도 조정)
+        probs = torch.softmax(logits, dim=-1)
+        
+        return logits, probs
 
 
 class ImmunePortfolioSystem:
@@ -33,19 +87,19 @@ class ImmunePortfolioSystem:
         # B-Cell 전문가 그룹 (위험 유형별 특화)
         self.bcells = {
             "volatility": BCell(
-                "volatility", state_dim, n_assets, ACTOR_LR, CRITIC_LR, ALPHA_LR
+                "volatility", state_dim, n_assets, LR_ACTOR, LR_CRITIC, ALPHA_LR
             ),  # 고변동성 시장
             "correlation": BCell(
-                "correlation", state_dim, n_assets, ACTOR_LR, CRITIC_LR, ALPHA_LR
+                "correlation", state_dim, n_assets, LR_ACTOR, LR_CRITIC, ALPHA_LR
             ),  # 상관관계 변화
             "momentum": BCell(
-                "momentum", state_dim, n_assets, ACTOR_LR, CRITIC_LR, ALPHA_LR
+                "momentum", state_dim, n_assets, LR_ACTOR, LR_CRITIC, ALPHA_LR
             ),  # 모멘텀 추세
             "defensive": BCell(
-                "defensive", state_dim, n_assets, ACTOR_LR, CRITIC_LR, ALPHA_LR
+                "defensive", state_dim, n_assets, LR_ACTOR, LR_CRITIC, ALPHA_LR
             ),  # 방어적 전략
             "growth": BCell(
-                "growth", state_dim, n_assets, ACTOR_LR, CRITIC_LR, ALPHA_LR
+                "growth", state_dim, n_assets, LR_ACTOR, LR_CRITIC, ALPHA_LR
             ),  # 성장 중심
         }
 
@@ -55,6 +109,30 @@ class ImmunePortfolioSystem:
             embedding_dim=EMBEDDING_DIM,
             similarity_threshold=0.7,
         )
+
+        # MoE 게이팅 네트워크 초기화
+        self.bcell_names = list(self.bcells.keys())
+        self.n_experts = len(self.bcells)
+        
+        # 게이팅 네트워크 입력 차원: 시장 특성(12D) + 위기 정보(4D)
+        gate_input_dim = 12 + 4  # market features + crisis info
+        self.gate_network = GateNetwork(
+            input_dim=gate_input_dim,
+            n_experts=self.n_experts,
+            hidden_dim=64
+        ).to(DEVICE)
+        
+        # 게이팅 네트워크 옵티마이저
+        self.gate_optimizer = optim.Adam(
+            self.gate_network.parameters(),
+            lr=3e-4,
+            weight_decay=1e-5
+        )
+        
+        # MoE 상태 추적
+        self.current_expert_idx = 0
+        self.expert_dwell_count = 0
+        self.min_dwell_steps = SWITCH_DWELL_STEPS if 'SWITCH_DWELL_STEPS' in globals() else 5
 
         # 시스템 상태
         self.is_trained = False
@@ -139,8 +217,8 @@ class ImmunePortfolioSystem:
             final_crisis_level = max(crisis_level, crisis_detection)
             crisis_info = final_crisis_level
 
-        # B-Cell 선택 (다차원 위기 정보 기반)
-        selected_bcell_name = self._select_bcell(crisis_info)
+        # B-Cell 선택 (MoE 게이팅 네트워크 기반)
+        selected_bcell_name = self._select_bcell(market_features, crisis_info)
         selected_bcell = self.bcells[selected_bcell_name]
 
         # Phase 3: 적응형 엔트로피 업데이트 (선택된 B-Cell에 T-Cell 신호 전달)
@@ -272,55 +350,68 @@ class ImmunePortfolioSystem:
 
         return weights, decision_info
 
-    def _select_bcell(self, crisis_info) -> str:
+    def _select_bcell(self, state_features: np.ndarray, crisis_info) -> str:
         """
-        다차원 위기 정보에 따른 B-Cell 선택 (다양성 확보)
-
-        성능 기반 동적 페널티 + 확률적 선택을 통한 편향성 해결
+        MoE 게이팅 네트워크를 통한 B-Cell 선택
+        
+        Args:
+            state_features: 시장 상태 특성 (12차원)
+            crisis_info: T-Cell 위기 정보
+            
+        Returns:
+            str: 선택된 B-Cell 이름
         """
-        # 각 B-Cell의 기본 전문성 점수 계산 (다차원 위기 정보 사용)
-        scores = {}
-        for name, bcell in self.bcells.items():
-            base_score = bcell.get_specialization_score(crisis_info)
-
-            # 최근 성과 기반 페널티 계산
-            performance_data = self.bcell_performance[name]
-            recent_rewards = performance_data["recent_rewards"]
-
-            if len(recent_rewards) > 5:
-                avg_reward = np.mean(recent_rewards)
-                # 성과가 나쁠수록 페널티 적용
-                performance_penalty = max(0, -avg_reward * 0.5)
-                base_score -= performance_penalty
-
-            # 연속 선택 페널티 (강제 순환)
-            consecutive_count = performance_data["consecutive_selections"]
-            if consecutive_count >= 5:  # 5회 연속 선택시
-                base_score *= 0.3  # 점수 대폭 감소
-                self.logging_stats["penalty_applications"] += 1
-
-            scores[name] = base_score
-
-        # 확률적 선택 (완전 greedy 방지)
-        if np.random.random() < 0.2:  # 20% 확률로 랜덤 선택
-            selected = np.random.choice(list(self.bcells.keys()))
-            self.logging_stats["random_selections"] += 1
+        # 시장 특성과 위기 정보 텐서 변환
+        market_features = torch.FloatTensor(state_features[:12]).unsqueeze(0).to(DEVICE)
+        
+        # 위기 정보를 4차원 벡터로 변환
+        crisis_vector = torch.FloatTensor([
+            crisis_info.get('volatility_score', 0.0),
+            crisis_info.get('correlation_score', 0.0), 
+            crisis_info.get('volume_score', 0.0),
+            crisis_info.get('overall_crisis_level', 0.0)
+        ]).unsqueeze(0).to(DEVICE)
+        
+        # 게이팅 네트워크로 전문가 확률 계산
+        with torch.no_grad():
+            gate_logits, gate_probs = self.gate_network(market_features, crisis_vector)
+        
+        gate_probs_np = gate_probs.cpu().numpy().flatten()
+        
+        # Top-1 게이팅: 최고 확률 전문가 선택 (minimum dwell time 고려)
+        if self.expert_dwell_count >= self.min_dwell_steps:
+            # 최소 거주 시간 만족시 새로운 전문가 선택 가능
+            best_expert_idx = np.argmax(gate_probs_np)
+            
+            if best_expert_idx != self.current_expert_idx:
+                # 전문가 변경
+                self.current_expert_idx = best_expert_idx
+                self.expert_dwell_count = 1
+                self.logging_stats["expert_switches"] = self.logging_stats.get("expert_switches", 0) + 1
+            else:
+                # 같은 전문가 유지
+                self.expert_dwell_count += 1
         else:
-            # 최고 점수 전략 선택
-            selected = max(scores, key=scores.get)
-
+            # 최소 거주 시간 미만시 현재 전문가 유지
+            self.expert_dwell_count += 1
+        
+        selected_name = self.bcell_names[self.current_expert_idx]
+        
         # 선택 통계 업데이트
-        self._update_selection_stats(selected)
-
-        # 주기적 로깅 통계 보고
+        self._update_selection_stats(selected_name)
+        
+        # 게이팅 네트워크 성능 기록 (나중에 학습용)
+        self._record_gating_decision(gate_logits.cpu().numpy(), selected_name)
+        
+        # 주기적 로깅
         decisions_since_last_report = (
             self.decision_count - self.logging_stats["last_log_report"]
         )
         if decisions_since_last_report >= self.logging_stats["log_interval"]:
-            self._log_selection_statistics()
+            self._log_moe_statistics(gate_probs_np)
             self.logging_stats["last_log_report"] = self.decision_count
-
-        return selected
+        
+        return selected_name
 
     def _update_selection_stats(self, selected_bcell: str) -> None:
         """B-Cell 선택 통계 업데이트"""
@@ -412,13 +503,23 @@ class ImmunePortfolioSystem:
             },
         )
 
-        # B-Cell 업데이트 (모든 전문가 학습)
-        for bcell in self.bcells.values():
-            bcell.store_experience(state, action, reward, next_state, done)
-
-            # 주기적 학습
-            if self.training_steps % UPDATE_FREQUENCY == 0:
-                bcell.update()
+        # MoE B-Cell 업데이트 (선택된 전문가만 학습)
+        selected_expert_name = self.bcell_names[self.current_expert_idx]
+        selected_bcell = self.bcells[selected_expert_name]
+        
+        # 선택된 전문가만 경험 저장 및 업데이트
+        selected_bcell.store_experience(state, action, reward, next_state, done)
+        
+        # 주기적 학습 (선택된 전문가만)
+        if self.training_steps % UPDATE_FREQUENCY == 0:
+            selected_bcell.update()
+            
+            # 선택되지 않은 전문가들은 주기적 EMA만 수행 (선택사항)
+            if self.training_steps % (UPDATE_FREQUENCY * 5) == 0:
+                for name, bcell in self.bcells.items():
+                    if name != selected_expert_name:
+                        # 타겟 네트워크만 부드럽게 동기화 (과도한 divergence 방지)
+                        bcell._soft_update_targets(tau=0.001)
 
         # 성과 히스토리 업데이트
         self.performance_history.append(
@@ -429,16 +530,14 @@ class ImmunePortfolioSystem:
             }
         )
 
-        # 마지막 선택된 B-Cell의 성과 추적 업데이트
-        if self.decision_history:
-            last_decision = self.decision_history[-1]
-            selected_bcell = last_decision["selected_bcell"]
-
-            # 최근 성과 리스트에 추가 (최대 10개 유지)
-            recent_rewards = self.bcell_performance[selected_bcell]["recent_rewards"]
-            recent_rewards.append(reward)
-            if len(recent_rewards) > 10:
-                recent_rewards.pop(0)  # 가장 오래된 것 제거
+        # 현재 선택된 B-Cell의 성과 추적 업데이트 (MoE 정합성)
+        selected_expert_name = self.bcell_names[self.current_expert_idx]
+        
+        # 최근 성과 리스트에 추가 (최대 10개 유지)
+        recent_rewards = self.bcell_performance[selected_expert_name]["recent_rewards"]
+        recent_rewards.append(reward)
+        if len(recent_rewards) > 10:
+            recent_rewards.pop(0)  # 가장 오래된 것 제거
 
         self.training_steps += 1
 
@@ -697,3 +796,97 @@ class ImmunePortfolioSystem:
             # 심볼이 없으면 인덱스로 표시
             sorted_indices = np.argsort(weights)[::-1]
             return [f"Asset_{i}" for i in sorted_indices[:top_n]]
+
+    # ===== MoE 게이팅 시스템 헬퍼 메소드 =====
+    
+    def _record_gating_decision(self, gate_logits: np.ndarray, selected_expert: str) -> None:
+        """게이팅 네트워크 결정 기록 (훈련용)"""
+        if not hasattr(self, 'gating_history'):
+            self.gating_history = []
+        
+        self.gating_history.append({
+            'logits': gate_logits.flatten(),
+            'selected_expert': selected_expert,
+            'expert_idx': self.bcell_names.index(selected_expert),
+            'step': self.decision_count
+        })
+        
+        # 히스토리 크기 제한
+        if len(self.gating_history) > 1000:
+            self.gating_history.pop(0)
+
+    def _log_moe_statistics(self, gate_probs: np.ndarray) -> None:
+        """MoE 게이팅 통계 로깅"""
+        interval = self.logging_stats["log_interval"]
+        expert_switches = self.logging_stats.get("expert_switches", 0)
+        
+        # 현재 전문가 확률 분포
+        prob_str = ", ".join([f"{name}:{prob:.2f}" for name, prob in zip(self.bcell_names, gate_probs)])
+        
+        # 현재 전문가와 거주 시간
+        current_expert = self.bcell_names[self.current_expert_idx]
+        
+        self.logger.debug(
+            f"MoE 통계 (최근 {interval}회): "
+            f"현재 전문가={current_expert} (거주:{self.expert_dwell_count}회), "
+            f"전환횟수={expert_switches}회, "
+            f"확률분포=[{prob_str}]"
+        )
+        
+        # 통계 리셋
+        self.logging_stats["expert_switches"] = 0
+
+    def update_gating_network(self, expert_rewards: Dict[str, float]) -> float:
+        """
+        게이팅 네트워크 업데이트 (성능 기반)
+        
+        Args:
+            expert_rewards: 각 전문가의 최근 성과
+            
+        Returns:
+            float: 게이팅 네트워크 손실
+        """
+        if not hasattr(self, 'gating_history') or len(self.gating_history) < 10:
+            return 0.0
+        
+        # 최근 게이팅 결정들에 대한 피드백 학습
+        losses = []
+        
+        for i in range(-10, 0):  # 최근 10개 결정
+            history_item = self.gating_history[i]
+            expert_name = history_item['selected_expert']
+            expert_idx = history_item['expert_idx']
+            
+            if expert_name in expert_rewards:
+                # 실제 보상을 기반으로 손실 계산
+                reward = expert_rewards[expert_name]
+                
+                # 선택된 전문가의 로짓을 높이는 방향으로 학습
+                target_logits = torch.zeros(self.n_experts)
+                target_logits[expert_idx] = reward  # 보상이 높을수록 강화
+                
+                # 현재 로짓과 목표 로짓 간의 MSE 손실
+                current_logits = torch.FloatTensor(history_item['logits'])
+                loss = nn.functional.mse_loss(current_logits, target_logits)
+                losses.append(loss)
+        
+        if losses:
+            total_loss = torch.stack(losses).mean()
+            
+            # 역전파 및 최적화
+            self.gate_optimizer.zero_grad()
+            total_loss.backward()
+            self.gate_optimizer.step()
+            
+            return total_loss.item()
+        
+        return 0.0
+
+    def update_bcell_performance(self, bcell_name: str, reward: float) -> None:
+        """B-Cell 성과 업데이트 (기존 호환성 유지)"""
+        performance_data = self.bcell_performance[bcell_name]
+        performance_data["recent_rewards"].append(reward)
+
+        # 윈도우 크기 제한 (최근 10회 성과만 보관)
+        if len(performance_data["recent_rewards"]) > 10:
+            performance_data["recent_rewards"].pop(0)

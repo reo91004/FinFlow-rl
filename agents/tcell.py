@@ -110,6 +110,22 @@ class TCell:
             target_crisis_rate=OVERALL_CRISIS_RATE
         )
         
+        # EMA(지수이동평균) 안정화 시스템
+        self.ema_alpha = 0.2  # EMA 계수 (0.2 = 최근 20% 반영)
+        self.ema_volatility = None
+        self.ema_correlation = None
+        self.ema_volume = None
+        self.ema_overall = None
+        
+        # 히스테리시스 시스템 (급격한 변동 방지)
+        self.hysteresis_margin = 0.1  # 10% 마진
+        self.previous_crisis_state = {
+            'volatility': False,
+            'correlation': False,
+            'volume': False,
+            'overall': False
+        }
+        
         # 로거
         self.logger = BIPDLogger("TCell")
         
@@ -189,19 +205,35 @@ class TCell:
             else:
                 overall_crisis = np.clip(raw_crisis * 0.5, 0.0, 0.5)  # 위기 아니면 최대 0.5로 제한
             
-            # 다차원 위기 분석
-            volatility_crisis = self._detect_volatility_crisis(features)
-            correlation_crisis = self._detect_correlation_crisis(features)
-            volume_crisis = self._detect_volume_crisis(features)
+            # 다차원 위기 분석 (원시 점수)
+            raw_volatility_crisis = self._detect_volatility_crisis(features)
+            raw_correlation_crisis = self._detect_correlation_crisis(features)
+            raw_volume_crisis = self._detect_volume_crisis(features)
+            
+            # EMA 안정화 적용
+            volatility_crisis = self._apply_ema_stabilization('volatility', raw_volatility_crisis)
+            correlation_crisis = self._apply_ema_stabilization('correlation', raw_correlation_crisis)
+            volume_crisis = self._apply_ema_stabilization('volume', raw_volume_crisis)
+            overall_crisis_ema = self._apply_ema_stabilization('overall', overall_crisis)
+            
+            # 히스테리시스 적용 (급격한 상태 변화 방지)
+            volatility_crisis = self._apply_hysteresis('volatility', volatility_crisis)
+            correlation_crisis = self._apply_hysteresis('correlation', correlation_crisis)
+            volume_crisis = self._apply_hysteresis('volume', volume_crisis)
+            overall_crisis_final = self._apply_hysteresis('overall', overall_crisis_ema)
             
             # 위기 벡터 생성
             crisis_vector = np.array([volatility_crisis, correlation_crisis, volume_crisis])
             
             return {
-                'overall_crisis': float(overall_crisis),
+                'overall_crisis': float(overall_crisis_final),
                 'volatility_crisis': float(volatility_crisis),
                 'correlation_crisis': float(correlation_crisis),
                 'volume_crisis': float(volume_crisis),
+                'volatility_score': raw_volatility_crisis,  # 원시 점수 추가 (디버깅용)
+                'correlation_score': raw_correlation_crisis,
+                'volume_score': raw_volume_crisis,
+                'overall_score': raw_crisis,
                 'crisis_vector': crisis_vector
             }
             
@@ -433,3 +465,95 @@ class TCell:
         except Exception as e:
             self.logger.error(f"모델 로드 실패: {e}")
             return False
+
+    # ===== EMA 안정화 및 히스테리시스 시스템 =====
+    
+    def _apply_ema_stabilization(self, crisis_type: str, raw_score: float) -> float:
+        """
+        지수이동평균(EMA)을 통한 위기 점수 안정화
+        
+        Args:
+            crisis_type: 'volatility', 'correlation', 'volume', 'overall'
+            raw_score: 원시 위기 점수
+            
+        Returns:
+            float: EMA 적용된 안정화된 점수
+        """
+        ema_attr = f'ema_{crisis_type}'
+        
+        # 첫 번째 관측치인 경우 초기화
+        if getattr(self, ema_attr) is None:
+            setattr(self, ema_attr, raw_score)
+            return raw_score
+        
+        # EMA 계산: EMA_t = α * X_t + (1-α) * EMA_{t-1}
+        current_ema = getattr(self, ema_attr)
+        new_ema = self.ema_alpha * raw_score + (1 - self.ema_alpha) * current_ema
+        
+        # EMA 값 업데이트
+        setattr(self, ema_attr, new_ema)
+        
+        return new_ema
+    
+    def _apply_hysteresis(self, crisis_type: str, ema_score: float, threshold: float = 0.5) -> float:
+        """
+        히스테리시스를 통한 위기 상태 안정화 (급격한 상태 변화 방지)
+        
+        Args:
+            crisis_type: 위기 유형
+            ema_score: EMA 적용된 점수
+            threshold: 위기 판정 기준선
+            
+        Returns:
+            float: 히스테리시스 적용된 최종 점수
+        """
+        previous_state = self.previous_crisis_state[crisis_type]
+        
+        if previous_state:  # 이전에 위기 상태였다면
+            # 위기 해제를 위해서는 임계값보다 마진만큼 낮아야 함
+            if ema_score < (threshold - self.hysteresis_margin):
+                self.previous_crisis_state[crisis_type] = False
+                return ema_score
+            else:
+                # 위기 상태 유지
+                return max(ema_score, threshold + self.hysteresis_margin * 0.5)
+        
+        else:  # 이전에 정상 상태였다면
+            # 위기 진입을 위해서는 임계값보다 마진만큼 높아야 함
+            if ema_score > (threshold + self.hysteresis_margin):
+                self.previous_crisis_state[crisis_type] = True
+                return ema_score
+            else:
+                # 정상 상태 유지
+                return min(ema_score, threshold - self.hysteresis_margin * 0.5)
+    
+    def get_stabilization_stats(self) -> Dict[str, float]:
+        """
+        안정화 시스템 통계 정보 반환
+        
+        Returns:
+            dict: EMA 값들과 히스테리시스 상태
+        """
+        return {
+            'ema_volatility': self.ema_volatility,
+            'ema_correlation': self.ema_correlation,
+            'ema_volume': self.ema_volume,
+            'ema_overall': self.ema_overall,
+            'hysteresis_states': self.previous_crisis_state.copy(),
+            'ema_alpha': self.ema_alpha,
+            'hysteresis_margin': self.hysteresis_margin
+        }
+    
+    def reset_stabilization(self) -> None:
+        """안정화 시스템 리셋"""
+        self.ema_volatility = None
+        self.ema_correlation = None
+        self.ema_volume = None
+        self.ema_overall = None
+        self.previous_crisis_state = {
+            'volatility': False,
+            'correlation': False,
+            'volume': False,
+            'overall': False
+        }
+        self.logger.info("T-Cell 안정화 시스템이 리셋되었습니다.")

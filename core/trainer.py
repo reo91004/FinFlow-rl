@@ -270,6 +270,23 @@ class BIPDTrainer:
             'decision_data': episode_data['decision_info_history'][-1]['xai_data'] if episode_data['decision_info_history'] else {}
         }
         
+        # MoE 게이팅 네트워크 업데이트 (훈련 모드에서만)
+        if training and hasattr(self.immune_system, 'update_gating_network'):
+            # 각 B-Cell의 에피소드별 평균 성과 계산
+            expert_rewards = {}
+            for bcell_name in self.immune_system.bcells.keys():
+                # 해당 B-Cell이 선택되었을 때의 평균 보상 계산
+                bcell_steps = [i for i, selected in enumerate(episode_data['selected_bcells']) if selected == bcell_name]
+                if bcell_steps:
+                    bcell_rewards = [episode_data['rewards'][i] for i in bcell_steps]
+                    expert_rewards[bcell_name] = np.mean(bcell_rewards)
+            
+            # 게이팅 네트워크 업데이트
+            if expert_rewards:
+                gate_loss = self.immune_system.update_gating_network(expert_rewards)
+                if gate_loss > 0:
+                    self.logger.debug(f"에피소드 {episode + 1}: MoE 게이팅 네트워크 업데이트 완료 (손실: {gate_loss:.4f})")
+        
         return episode_summary
     
     def _record_episode(self, episode: int, results: Dict) -> None:
