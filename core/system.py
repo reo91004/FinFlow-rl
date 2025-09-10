@@ -15,51 +15,19 @@ class GateNetwork(nn.Module):
     """
     MoE 게이팅 네트워크 - 전문가 선택을 위한 신경망
     
-    시장 임베딩과 위기 정보를 입력받아 전문가 선택 확률을 출력
+    시장 특성을 입력받아 전문가 선택 로짓을 출력 (미분 가능한 구조)
     """
     
-    def __init__(self, input_dim: int, n_experts: int, hidden_dim: int = 64):
+    def __init__(self, in_dim: int, num_experts: int):
         super().__init__()
-        self.n_experts = n_experts
-        
-        # 게이팅 네트워크: 입력 → 은닉층 → 전문가 로짓
-        self.gate_network = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, 128), 
             nn.ReLU(),
-            nn.Dropout(0.1),
-            nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.ReLU(),
-            nn.Linear(hidden_dim // 2, n_experts)
+            nn.Linear(128, num_experts)   # logits만 출력
         )
-        
-        # 네트워크 초기화
-        self._initialize_weights()
     
-    def _initialize_weights(self):
-        """가중치 초기화"""
-        for module in self.modules():
-            if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight)
-                nn.init.constant_(module.bias, 0.0)
-    
-    def forward(self, market_embedding: torch.Tensor, crisis_info: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Args:
-            market_embedding: 시장 상태 임베딩 [batch_size, embed_dim]
-            crisis_info: 위기 정보 벡터 [batch_size, crisis_dim]
-            
-        Returns:
-            logits: 전문가 선택 로짓 [batch_size, n_experts]
-            probs: 전문가 선택 확률 [batch_size, n_experts]
-        """
-        # 입력 결합 및 게이팅 로짓 계산
-        combined_input = torch.cat([market_embedding, crisis_info], dim=-1)
-        logits = self.gate_network(combined_input)
-        
-        # Softmax 확률 계산 (온도 조정)
-        probs = torch.softmax(logits, dim=-1)
-        
-        return logits, probs
+    def forward(self, x):
+        return self.net(x)                # [B, K] logits
 
 
 class ImmunePortfolioSystem:
@@ -114,20 +82,21 @@ class ImmunePortfolioSystem:
         self.bcell_names = list(self.bcells.keys())
         self.n_experts = len(self.bcells)
         
-        # 게이팅 네트워크 입력 차원: 시장 특성(12D) + 위기 정보(4D)
-        gate_input_dim = 12 + 4  # market features + crisis info
+        # 게이팅 네트워크 입력 차원: 시장 특성(12D) 만 사용 (단순화)
+        gate_input_dim = 12  # market features only
         self.gate_network = GateNetwork(
-            input_dim=gate_input_dim,
-            n_experts=self.n_experts,
-            hidden_dim=64
+            in_dim=gate_input_dim,
+            num_experts=self.n_experts
         ).to(DEVICE)
         
-        # 게이팅 네트워크 옵티마이저
-        self.gate_optimizer = optim.Adam(
-            self.gate_network.parameters(),
-            lr=3e-4,
-            weight_decay=1e-5
-        )
+        # 게이팅 네트워크 상태 초기화
+        self.gate_temp = float(GATE_TEMP_INIT)
+        self.gate_baseline = torch.zeros(self.n_experts, device=DEVICE)  # EMA baseline per expert
+        self.gate_optimizer = torch.optim.Adam(self.gate_network.parameters(), lr=GATE_LR)
+        self.gate_network.train()
+        
+        # 상태 저장을 위한 변수 (게이팅 네트워크 입력용)
+        self.last_state_tensor = None
         
         # MoE 상태 추적
         self.current_expert_idx = 0
@@ -203,6 +172,9 @@ class ImmunePortfolioSystem:
         market_features = state[:FEATURE_DIM]
         crisis_level = state[FEATURE_DIM]
         prev_weights = state[FEATURE_DIM + 1 :]
+        
+        # 게이팅 네트워크용 상태 저장 (시장 특성만)
+        self.last_state_tensor = torch.tensor(market_features[:12], dtype=torch.float32)
 
         # T-Cell 다차원 위기 감지
         crisis_detection = self.tcell.detect_crisis(market_features)
@@ -361,20 +333,13 @@ class ImmunePortfolioSystem:
         Returns:
             str: 선택된 B-Cell 이름
         """
-        # 시장 특성과 위기 정보 텐서 변환
+        # 시장 특성 텐서 변환 (12차원만 사용)
         market_features = torch.FloatTensor(state_features[:12]).unsqueeze(0).to(DEVICE)
         
-        # 위기 정보를 4차원 벡터로 변환
-        crisis_vector = torch.FloatTensor([
-            crisis_info.get('volatility_score', 0.0),
-            crisis_info.get('correlation_score', 0.0), 
-            crisis_info.get('volume_score', 0.0),
-            crisis_info.get('overall_crisis_level', 0.0)
-        ]).unsqueeze(0).to(DEVICE)
-        
-        # 게이팅 네트워크로 전문가 확률 계산
+        # 게이팅 네트워크로 전문가 확률 계산 (추론 시에는 no_grad 사용)
         with torch.no_grad():
-            gate_logits, gate_probs = self.gate_network(market_features, crisis_vector)
+            gate_logits = self.gate_network(market_features)  # 로짓만 반환
+            gate_probs = torch.softmax(gate_logits, dim=-1)   # 확률 계산
         
         gate_probs_np = gate_probs.cpu().numpy().flatten()
         
@@ -836,51 +801,62 @@ class ImmunePortfolioSystem:
         # 통계 리셋
         self.logging_stats["expert_switches"] = 0
 
-    def update_gating_network(self, expert_rewards: Dict[str, float]) -> float:
+    def update_gating_network(self, expert_rewards: list) -> torch.Tensor:
         """
-        게이팅 네트워크 업데이트 (성능 기반)
+        게이팅 네트워크 업데이트 (미분 가능한 Softmax 기반)
         
         Args:
-            expert_rewards: 각 전문가의 최근 성과
+            expert_rewards: length-K per-step rewards of each expert (floats).
             
         Returns:
-            float: 게이팅 네트워크 손실
+            gate loss (tensor with grad).
         """
-        if not hasattr(self, 'gating_history') or len(self.gating_history) < 10:
-            return 0.0
-        
-        # 최근 게이팅 결정들에 대한 피드백 학습
-        losses = []
-        
-        for i in range(-10, 0):  # 최근 10개 결정
-            history_item = self.gating_history[i]
-            expert_name = history_item['selected_expert']
-            expert_idx = history_item['expert_idx']
-            
-            if expert_name in expert_rewards:
-                # 실제 보상을 기반으로 손실 계산
-                reward = expert_rewards[expert_name]
-                
-                # 선택된 전문가의 로짓을 높이는 방향으로 학습
-                target_logits = torch.zeros(self.n_experts)
-                target_logits[expert_idx] = reward  # 보상이 높을수록 강화
-                
-                # 현재 로짓과 목표 로짓 간의 MSE 손실
-                current_logits = torch.FloatTensor(history_item['logits'])
-                loss = nn.functional.mse_loss(current_logits, target_logits)
-                losses.append(loss)
-        
-        if losses:
-            total_loss = torch.stack(losses).mean()
-            
-            # 역전파 및 최적화
-            self.gate_optimizer.zero_grad()
-            total_loss.backward()
-            self.gate_optimizer.step()
-            
-            return total_loss.item()
-        
-        return 0.0
+        self.gate_network.train()
+
+        # 1) 모델 입력 구성 (last_state_tensor 사용)
+        x = self.last_state_tensor.to(DEVICE)            # [feat_dim]; 텐서 확인
+        x = x.unsqueeze(0)                               # [1, feat_dim]
+
+        # 2) 순전파로 로짓과 미분 가능한 확률 계산
+        logits = self.gate_network(x)                    # [1, K]
+        tau = torch.clamp(torch.tensor(self.gate_temp, device=DEVICE), GATE_TEMP_MIN, GATE_TEMP_MAX)
+        p = torch.nn.functional.softmax(logits / tau, dim=-1)  # [1, K]
+        p = p.squeeze(0)                                 # [K]
+
+        # 3) 보상/advantage 준비 (보상은 detach; p는 grad 유지)
+        if not torch.is_tensor(expert_rewards):
+            rewards = torch.tensor(expert_rewards, device=DEVICE, dtype=torch.float32)
+        else:
+            rewards = expert_rewards.to(DEVICE, dtype=torch.float32)
+
+        # EMA baseline per expert (detach from graph)
+        with torch.no_grad():
+            self.gate_baseline.mul_(GATE_BASELINE_MOMENTUM).add_(
+                (1.0 - GATE_BASELINE_MOMENTUM) * rewards
+            )
+        adv = (rewards - self.gate_baseline).detach()    # [K], no grad on reward path
+
+        # 4) 손실: negative expected advantage
+        expected_adv = (p * adv).sum()                   # scalar, has grad via p->logits->gate params
+        loss = -expected_adv
+
+        # 선택적: 엔트로피 정규화 on p to avoid collapse
+        if GATE_ENTROPY_BETA > 0.0:
+            ent = -(p * (p.clamp_min(1e-8)).log()).sum()
+            loss = loss - GATE_ENTROPY_BETA * ent
+
+        # 5) 역전파
+        self.gate_optimizer.zero_grad(set_to_none=True)
+        # 안전장치: must require grad
+        assert loss.requires_grad, "gate loss has no grad path; check detach/.item()/argmax in the loss graph"
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.gate_network.parameters(), max_norm=5.0)
+        self.gate_optimizer.step()
+
+        # 6) (선택적) 온도 어닐링
+        self.gate_temp = float(torch.clamp(tau * 0.9995, GATE_TEMP_MIN, GATE_TEMP_MAX))  # gentle decay
+
+        return loss.detach()
 
     def update_bcell_performance(self, bcell_name: str, reward: float) -> None:
         """B-Cell 성과 업데이트 (기존 호환성 유지)"""

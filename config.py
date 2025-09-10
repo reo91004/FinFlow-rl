@@ -287,3 +287,15 @@ CRISIS_EXIT_THRESHOLD = float(0.3)  # 위기 해제 임계값
 # 메모리 다양성 설정
 MEMORY_SIMILARITY_THRESHOLD = float(0.7)  # 유사도 임계값 (0.95에서 완화)
 MEMORY_EXTREME_RATIO = float(0.3)  # 극단 상황 리플레이 비율
+
+# =============================================================================
+# 11. 게이팅 네트워크 설정 (Gating Network Settings)
+# =============================================================================
+
+# 게이팅 네트워크 학습 파라미터
+GATE_LR = float(1e-4)  # 게이팅 네트워크 학습률
+GATE_TEMP_INIT = float(1.0)  # 초기 softmax 온도 (훈련용)
+GATE_TEMP_MIN = float(0.5)  # 최소 온도
+GATE_TEMP_MAX = float(2.0)  # 최대 온도
+GATE_ENTROPY_BETA = float(0.0)  # 선택적 엔트로피 정규화 계수
+GATE_BASELINE_MOMENTUM = float(0.99)  # EMA 베이스라인 모멘텀
