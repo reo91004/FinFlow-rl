@@ -783,12 +783,12 @@ class BCell:
         # SAC Temperature 자동 튜닝 (Handover v2)
         if ALPHA_TEMP_LEARN and self.alpha_temp_optimizer is not None:
             # SAC temperature 손실 (음의 로그 가능도)
-            alpha_temp_loss = -(
+            alpha_loss = -(
                 self.log_alpha_temp * (current_log_probs + self.target_entropy).detach()
             ).mean()
 
             self.alpha_temp_optimizer.zero_grad()
-            alpha_temp_loss.backward()
+            alpha_loss.backward()
             
             # Temperature 그래디언트 클리핑
             alpha_grad_norm = torch.nn.utils.clip_grad_norm_(
@@ -801,7 +801,7 @@ class BCell:
             with torch.no_grad():
                 self.alpha_temp = self.log_alpha_temp.exp()
         else:
-            alpha_temp_loss = torch.tensor(0.0, device=DEVICE)
+            alpha_loss = torch.tensor(0.0, device=DEVICE)
             alpha_grad_norm = torch.tensor(0.0, device=DEVICE)
 
         # 타겟 네트워크 소프트 업데이트
@@ -918,7 +918,7 @@ class BCell:
             self.extreme_q_counter.update(
                 abs(current_q_min) > Q_VALUE_STABILITY_CHECK or abs(current_q_max) > Q_VALUE_STABILITY_CHECK
             )
-            self.high_alpha_counter.update(current_alpha > 0.5)
+            self.high_alpha_counter.update(current_alpha_temp > 0.5)
             
             # Temperature clipping 카운터 업데이트 (넓은 범위라 거의 발생하지 않을 예상)
             temp_clipped = (
@@ -1243,8 +1243,11 @@ class BCell:
                 "actor_optimizer_state_dict": self.actor_optimizer.state_dict(),
                 "critic1_optimizer_state_dict": self.critic1_optimizer.state_dict(),
                 "critic2_optimizer_state_dict": self.critic2_optimizer.state_dict(),
-                "alpha_optimizer_state_dict": self.alpha_optimizer.state_dict(),
-                "log_alpha": self.log_alpha,
+                "alpha_temp_optimizer_state_dict": (
+                    self.alpha_temp_optimizer.state_dict() if self.alpha_temp_optimizer else None
+                ),
+                "log_alpha_temp": self.log_alpha_temp.detach().to("cpu"),
+                "alpha_temp": self.alpha_temp.detach().to("cpu"),
                 "target_entropy": self.target_entropy,
                 "risk_type": self.risk_type,
                 "update_count": self.update_count,
@@ -1275,13 +1278,14 @@ class BCell:
         self.critic2_optimizer.load_state_dict(
             checkpoint["critic2_optimizer_state_dict"]
         )
-        self.alpha_optimizer.load_state_dict(
-            checkpoint["alpha_optimizer_state_dict"]
-        )
+        if "alpha_temp_optimizer_state_dict" in checkpoint and self.alpha_temp_optimizer is not None:
+            self.alpha_temp_optimizer.load_state_dict(checkpoint["alpha_temp_optimizer_state_dict"])
 
-        self.log_alpha = checkpoint["log_alpha"].to(DEVICE)
+        if "log_alpha_temp" in checkpoint:
+            self.log_alpha_temp = checkpoint["log_alpha_temp"].to(DEVICE).requires_grad_(ALPHA_TEMP_LEARN)
+            self.alpha_temp = self.log_alpha_temp.exp().to(DEVICE)
+        
         self.target_entropy = checkpoint["target_entropy"]
-        self.alpha = self.log_alpha.exp()
         self.update_count = checkpoint["update_count"]
 
         self.logger.info(
