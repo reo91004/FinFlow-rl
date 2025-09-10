@@ -142,7 +142,7 @@ class FinFlowTrainer:
         """컴포넌트 초기화"""
         # 실제 데이터 로드
         from src.data.loader import DataLoader
-        from src.data.loader import FeatureExtractor
+        from src.data.features import FeatureExtractor
         import pandas as pd
         
         self.logger.info("실제 시장 데이터를 로드합니다...")
@@ -486,9 +486,15 @@ class FinFlowTrainer:
         dataset = OfflineDataset(self.config.data_path)
         
         self.logger.info(f"오프라인 데이터셋 로드: {len(dataset)} samples")
+        self.logger.info("=" * 50)
+        self.logger.info("IQL 오프라인 사전학습 시작")
+        self.logger.info("=" * 50)
         
-        # Training loop
-        for epoch in range(self.config.iql_epochs):
+        # Training loop with progress bar
+        from tqdm import tqdm
+        pbar = tqdm(range(self.config.iql_epochs), desc="IQL Pretraining", unit="epoch")
+        
+        for epoch in pbar:
             epoch_losses = []
             
             # Mini-batch training
@@ -510,21 +516,30 @@ class FinFlowTrainer:
                 epoch_losses.append(losses)
                 self.global_step += 1
             
-            # Log epoch metrics
-            if (epoch + 1) % self.config.log_interval == 0:
+            # Calculate average losses for this epoch
+            if epoch_losses:
                 avg_losses = {
                     k: np.mean([l[k] for l in epoch_losses])
                     for k in epoch_losses[0].keys()
                 }
                 
-                self.logger.info(
-                    f"IQL Epoch {epoch+1}/{self.config.iql_epochs} | "
-                    f"V Loss: {avg_losses['value_loss']:.4f} | "
-                    f"Q Loss: {avg_losses['q_loss']:.4f} | "
-                    f"Actor Loss: {avg_losses['actor_loss']:.4f}"
-                )
+                # Update progress bar with metrics
+                pbar.set_postfix({
+                    'V_Loss': f"{avg_losses.get('value_loss', 0):.4f}",
+                    'Q_Loss': f"{avg_losses.get('q_loss', 0):.4f}",
+                    'Actor_Loss': f"{avg_losses.get('actor_loss', 0):.4f}"
+                })
                 
-                self.logger.log_metrics(avg_losses, self.global_step)
+                # Log epoch metrics
+                if (epoch + 1) % self.config.log_interval == 0:
+                    self.logger.info(
+                        f"IQL Epoch {epoch+1}/{self.config.iql_epochs} | "
+                        f"V Loss: {avg_losses['value_loss']:.4f} | "
+                        f"Q Loss: {avg_losses['q_loss']:.4f} | "
+                        f"Actor Loss: {avg_losses['actor_loss']:.4f}"
+                    )
+                    
+                    self.logger.log_metrics(avg_losses, self.global_step)
         
         # Transfer knowledge to B-Cell
         self._transfer_iql_to_bcell()
@@ -543,9 +558,18 @@ class FinFlowTrainer:
     
     def _train_sac(self):
         """SAC 온라인 미세조정"""
-        episode_rewards = []
+        self.logger.info("=" * 50)
+        self.logger.info("SAC 온라인 미세조정 시작")
+        self.logger.info("=" * 50)
         
-        for episode in range(self.config.sac_episodes):
+        episode_rewards = []
+        episode_sharpes = []
+        episode_cvars = []
+        
+        from tqdm import tqdm
+        pbar = tqdm(range(self.config.sac_episodes), desc="SAC Training", unit="episode")
+        
+        for episode in pbar:
             self.episode = episode
             episode_reward = 0
             episode_steps = 0
@@ -708,13 +732,37 @@ class FinFlowTrainer:
             
             episode_rewards.append(episode_reward)
             
+            # Calculate episode metrics
+            if len(self.episode_returns) > 0:
+                episode_sharpe = self._calculate_sharpe(self.episode_returns)
+                episode_cvar = self._calculate_cvar(self.episode_returns)
+                episode_sharpes.append(episode_sharpe)
+                episode_cvars.append(episode_cvar)
+                
+                # Calculate portfolio value
+                portfolio_value = self.config.env_config['initial_balance'] * np.prod(1 + np.array(self.episode_returns))
+                
+                # Update progress bar
+                pbar.set_postfix({
+                    'Reward': f"{episode_reward:.4f}",
+                    'Sharpe': f"{episode_sharpe:.2f}",
+                    'CVaR': f"{episode_cvar:.3f}",
+                    'Value': f"{portfolio_value/1e6:.2f}M",
+                    'Steps': episode_steps
+                })
+            
             # Logging
             if (episode + 1) % self.config.log_interval == 0:
                 avg_reward = np.mean(episode_rewards[-10:])
+                avg_sharpe = np.mean(episode_sharpes[-10:]) if len(episode_sharpes) >= 10 else 0
+                avg_cvar = np.mean(episode_cvars[-10:]) if len(episode_cvars) >= 10 else 0
+                
                 self.logger.info(
                     f"Episode {episode+1}/{self.config.sac_episodes} | "
-                    f"Reward: {episode_reward:.2f} | "
-                    f"Avg(10): {avg_reward:.2f} | "
+                    f"Reward: {episode_reward:.4f} | "
+                    f"Avg(10): {avg_reward:.4f} | "
+                    f"Sharpe: {avg_sharpe:.2f} | "
+                    f"CVaR: {avg_cvar:.3f} | "
                     f"Steps: {episode_steps}"
                 )
             
@@ -815,6 +863,24 @@ class FinFlowTrainer:
         self.metrics_history.append(metrics)
         
         return metrics
+    
+    def _calculate_sharpe(self, returns: List[float]) -> float:
+        """샤프 비율 계산"""
+        if len(returns) == 0:
+            return 0.0
+        returns_array = np.array(returns)
+        if np.std(returns_array) == 0:
+            return 0.0
+        return np.mean(returns_array) / np.std(returns_array) * np.sqrt(252)
+    
+    def _calculate_cvar(self, returns: List[float], alpha: float = 0.05) -> float:
+        """CVaR 계산"""
+        if len(returns) == 0:
+            return 0.0
+        returns_array = np.array(returns)
+        sorted_returns = np.sort(returns_array)
+        n_tail = max(1, int(len(sorted_returns) * alpha))
+        return np.mean(sorted_returns[:n_tail])
     
     def _check_early_stopping(self, metrics: Dict[str, float]):
         """조기 종료 확인"""
