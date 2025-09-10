@@ -109,13 +109,13 @@ def debug_sac_agent():
 
     # 학습률 체크
     print(f"  학습률:")
-    print(f"    Actor LR: {ACTOR_LR:.0e} (권장: 1e-4~3e-4)")
-    print(f"    Critic LR: {CRITIC_LR:.0e} (권장: 1e-4~3e-4)")
+    print(f"    Actor LR: {LR_ACTOR:.0e} (권장: 1e-4~3e-4)")
+    print(f"    Critic LR: {LR_CRITIC:.0e} (권장: 1e-4~3e-4)")
     print(f"    Alpha LR: {ALPHA_LR:.0e} (권장: 1e-4~3e-4)")
 
-    if ACTOR_LR < 1e-5:
+    if LR_ACTOR < 1e-5:
         print("    ⚠️  Actor 학습률이 너무 낮을 수 있습니다!")
-    elif ACTOR_LR > 1e-3:
+    elif LR_ACTOR > 1e-3:
         print("    ⚠️  Actor 학습률이 너무 높을 수 있습니다!")
     else:
         print("    ✅ Actor 학습률이 적절합니다.")
@@ -238,9 +238,9 @@ def analyze_learning_issues(debug_results):
         issues.append("Dirichlet concentration 너무 높음: 경직된 정책")
 
     # 4. 하이퍼파라미터 문제
-    if ACTOR_LR < 1e-5:
+    if LR_ACTOR < 1e-5:
         issues.append("Actor 학습률 너무 낮음: 학습 속도 저하")
-    elif ACTOR_LR > 1e-3:
+    elif LR_ACTOR > 1e-3:
         issues.append("Actor 학습률 너무 높음: 불안정한 학습")
 
     print(f"발견된 문제점: {len(issues)}개")
@@ -259,7 +259,7 @@ def analyze_learning_issues(debug_results):
     if debug_results["concentration_mean"] < 1.0:
         print("  - Concentration 최소값 증가: 1.0 → 2.0")
 
-    if ACTOR_LR < 3e-4:
+    if LR_ACTOR < 3e-4:
         print("  - Actor 학습률 증가: 1e-4 → 3e-4")
 
 

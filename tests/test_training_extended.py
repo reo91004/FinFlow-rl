@@ -329,8 +329,8 @@ def recommend_improvements(debug_results):
     # 구체적 설정값 제안
     print(f"\n권장 설정값 변경:")
     print(f"  config.py 수정:")
-    print(f"    ACTOR_LR = 3e-4  # 현재: {ACTOR_LR}")
-    print(f"    CRITIC_LR = 3e-4  # 현재: {CRITIC_LR}")
+    print(f"    LR_ACTOR = 3e-4  # 현재: {LR_ACTOR}")
+    print(f"    LR_CRITIC = 3e-4  # 현재: {LR_CRITIC}")
     print(f"    ALPHA_LR = 3e-4  # 현재: {ALPHA_LR}")
     print(f"    TAU = 0.001  # 현재: {TAU}")
     print(f"    BATCH_SIZE = 32  # 현재: {BATCH_SIZE} (더 빠른 업데이트)")

@@ -18,23 +18,24 @@ from agents.utils.entropy_schedule import RegimeAdaptiveEntropyScheduler
 from agents.utils.entropy_target import DirichletEntropyTracker
 from config import (
     DEVICE,
-    ACTOR_LR,
-    CRITIC_LR,
+    LR_ACTOR,
+    LR_CRITIC,
     ALPHA_LR,
     GAMMA,
     TAU,
     BATCH_SIZE,
     BUFFER_SIZE,
-    TARGET_ENTROPY_SCALE,
+    TARGET_ENTROPY_PER_DIM,
+    TARGET_ENTROPY_MIN_PER_DIM,
+    TARGET_ENTROPY_MAX_PER_DIM,
+    TARGET_ENTROPY_SCHEDULE,
     REWARD_CLIP_MIN,
     REWARD_CLIP_MAX,
-    ALPHA_MIN,
-    ALPHA_MAX,
-    CONCENTRATION_MIN,
-    CONCENTRATION_MAX,
-    WEIGHT_EPSILON,
-    MAX_GRAD_NORM,
-    HUBER_DELTA,
+    DIRICHLET_MIN_CONC,
+    DIRICHLET_MAX_CONC,
+    PORTFOLIO_WEIGHT_MIN,
+    INIT_ALPHA_TEMP,
+    ALPHA_TEMP_LEARN,
     CQL_ALPHA_START,
     CQL_ALPHA_END,
     CQL_NUM_SAMPLES,
@@ -43,14 +44,6 @@ from config import (
     KL_PENALTY_WEIGHT,
     N_EPISODES,
     ROLLING_STATS_WINDOW,
-    # 새로운 안정화 파라미터들
-    TARGET_ENTROPY_FROM_DIRICHLET,
-    DIRICHLET_ALPHA_STAR,
-    LOG_ALPHA_MIN,
-    LOG_ALPHA_MAX,
-    DIRICHLET_CONCENTRATION_MIN,
-    DIRICHLET_CONCENTRATION_MAX,
-    PORTFOLIO_WEIGHT_MIN,
     CRITIC_GRAD_NORM,
     ACTOR_GRAD_NORM,
     ALPHA_GRAD_NORM,
@@ -65,6 +58,7 @@ from config import (
 # Dirichlet 수치 안정화 파라미터
 MIN_CONC = 0.20   # 극소 농도 방지
 MAX_CONC = 50.0   # 과도 균등화 방지
+
 
 def stable_dirichlet(raw_conc: torch.Tensor) -> torch.distributions.Dirichlet:
     """
@@ -122,7 +116,7 @@ class SACActorNetwork(nn.Module):
         raw_conc = torch.clamp(self.concentration_head(x), min=-10.0, max=10.0)
         
         # 안정화된 Dirichlet 분포 생성
-        dist = create_stable_dirichlet(raw_conc)
+        dist = stable_dirichlet(raw_conc)
         concentration = dist.concentration  # 실제 사용된 concentration
 
         if self.training:
@@ -277,8 +271,8 @@ class BCell:
         alpha_lr=None,
         hidden_dim=128,
     ):
-        self.actor_lr = actor_lr or ACTOR_LR
-        self.critic_lr = critic_lr or CRITIC_LR
+        self.actor_lr = actor_lr or LR_ACTOR
+        self.critic_lr = critic_lr or LR_CRITIC
         self.alpha_lr = alpha_lr or ALPHA_LR
         self.risk_type = risk_type
         self.state_dim = state_dim
@@ -316,7 +310,25 @@ class BCell:
         self.alpha_temp = self.log_alpha_temp.exp()
         
         # SAC target entropy (차원당, 음수!)
-        self.target_entropy = TARGET_ENTROPY_PER_DIM * action_dim
+        base = TARGET_ENTROPY_PER_DIM * float(action_dim)
+        tmin = TARGET_ENTROPY_MIN_PER_DIM * float(action_dim)
+        tmax = TARGET_ENTROPY_MAX_PER_DIM * float(action_dim)
+        
+        # 수치 안전장치: min/max가 뒤집히지 않도록 보정
+        if tmin > tmax:
+            tmin, tmax = tmax, tmin
+            
+        self.target_entropy = base
+        self.target_entropy_min = tmin
+        self.target_entropy_max = tmax
+        self.target_entropy_schedule = (TARGET_ENTROPY_SCHEDULE or "none").lower()
+        self.episode_progress = 0.0  # [0,1]에서 진행률 추적
+        
+        # 적응형 엔트로피 비활성화 (스케줄 미사용 시)
+        self.use_adaptive_entropy = False
+        self.entropy_schedule_warmup = 0.1  # 기본값
+        self.entropy_schedule_cooldown = 0.9  # 기본값
+        self._policy_entropy_ema = None
         
         # 기존 엔트로피 추적 시스템 비활성화 (향후 삭제 예정)
         self.use_enhanced_entropy_tracking = False
@@ -1093,14 +1105,16 @@ class BCell:
                 f"({extreme_q_stats['sliding_count']}/{extreme_q_stats['sliding_size']})"
             )
 
-    def _soft_update_targets(self):
+    def _soft_update_targets(self, tau=None):
         """타겟 네트워크들 소프트 업데이트 (SAC - Critic만)"""
+        # tau 파라미터가 전달되지 않으면 기본값 사용
+        update_tau = tau if tau is not None else self.tau
         # Target Critic 1 업데이트
         for target_param, param in zip(
             self.target_critic1.parameters(), self.critic1.parameters()
         ):
             target_param.data.copy_(
-                self.tau * param.data + (1 - self.tau) * target_param.data
+                update_tau * param.data + (1 - update_tau) * target_param.data
             )
 
         # Target Critic 2 업데이트
@@ -1108,7 +1122,7 @@ class BCell:
             self.target_critic2.parameters(), self.critic2.parameters()
         ):
             target_param.data.copy_(
-                self.tau * param.data + (1 - self.tau) * target_param.data
+                update_tau * param.data + (1 - update_tau) * target_param.data
             )
 
     def get_specialization_score(self, crisis_info):

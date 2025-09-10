@@ -132,11 +132,11 @@ def analyze_sac_portfolio_fit():
     print(f"\n[4] 대안 알고리즘 비교 분석...")
 
     alternatives = {
-        "PPO": {
-            "pros": ["안정적", "구현 단순", "정책 제약 가능"],
-            "cons": ["샘플 효율성 낮음", "simplex 제약 어려움"],
-            "fit_score": 7,
-        },
+        # "PPO": {  # Removed - pure SAC architecture only
+        #     "pros": ["안정적", "구현 단순", "정책 제약 가능"],
+        #     "cons": ["샘플 효율성 낮음", "simplex 제약 어려움"],
+        #     "fit_score": 7,
+        # },
         "DDPG": {
             "pros": ["연속 행동", "샘플 효율성"],
             "cons": ["결정적 정책", "탐험 어려움", "과추정"],
@@ -228,8 +228,8 @@ def generate_optimization_config(analysis):
     print(f"# config.py 수정 권장사항")
     print(f"")
     print(f"# 학습률 최적화 (현재보다 3배 증가)")
-    print(f"ACTOR_LR = float(3e-4)  # 현재: 1e-4")
-    print(f"CRITIC_LR = float(3e-4)  # 현재: 1e-4")
+    print(f"LR_ACTOR = float(3e-4)  # 현재: 1e-4")
+    print(f"LR_CRITIC = float(3e-4)  # 현재: 1e-4")
     print(f"ALPHA_LR = float(3e-4)   # 현재: 1e-4")
     print(f"")
     print(f"# 타겟 네트워크 업데이트 보수적 조정")
