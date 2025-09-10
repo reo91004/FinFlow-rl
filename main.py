@@ -157,7 +157,8 @@ def main():
             target_sharpe=args.target_sharpe or config_dict.get('targets', {}).get('sharpe_ratio', 1.5),
             target_cvar=args.target_cvar or config_dict.get('targets', {}).get('cvar_5', -0.02),
             device=args.device or config_dict.get('system', {}).get('device', 'auto'),
-            seed=seed
+            seed=seed,
+            monitoring_config=config_dict.get('monitoring', {})
         )
         
         # Create trainer

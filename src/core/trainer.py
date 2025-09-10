@@ -87,6 +87,9 @@ class TrainingConfig:
     # Early stopping
     patience: int = 50
     min_improvement: float = 0.01
+    
+    # Monitoring configuration
+    monitoring_config: Optional[Dict] = None
 
 
 class FinFlowTrainer:
@@ -273,10 +276,12 @@ class FinFlowTrainer:
         )
         
         # Performance Monitor
-        self.stability_monitor = PerformanceMonitor(
+        monitoring_config = self.config.monitoring_config or {}
+        self.performance_monitor = PerformanceMonitor(
             log_dir=self.log_dir,
-            use_wandb=False,
-            use_tensorboard=False
+            use_wandb=monitoring_config.get('use_wandb', False),
+            use_tensorboard=monitoring_config.get('use_tensorboard', True),
+            wandb_config=monitoring_config
         )
         
         self.logger.info("모든 컴포넌트 초기화 완료")

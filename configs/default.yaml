@@ -2,15 +2,42 @@
 # BIPD 2.0 기본 설정 파일
 
 seed: 42
-device: auto  # cpu|cuda|mps|auto
+device: auto # cpu|cuda|mps|auto
 
 # 데이터 설정
 data:
   symbols: [
-    "AAPL", "MSFT", "AMZN", "NVDA", "GOOGL", "META", "TSLA", "BRK-B", "UNH", "JNJ",
-    "V", "JPM", "WMT", "PG", "MA", "HD", "CVX", "MRK", "ABBV", "PFE",
-    "KO", "PEP", "BAC", "TMO", "COST", "MCD", "DIS", "CSCO", "ACN", "ABT"
-  ]  # 다우 30 대체 (시가총액 상위 30)
+      "AAPL",
+      "MSFT",
+      "AMZN",
+      "NVDA",
+      "GOOGL",
+      "META",
+      "TSLA",
+      "BRK-B",
+      "UNH",
+      "JNJ",
+      "V",
+      "JPM",
+      "WMT",
+      "PG",
+      "MA",
+      "HD",
+      "CVX",
+      "MRK",
+      "ABBV",
+      "PFE",
+      "KO",
+      "PEP",
+      "BAC",
+      "TMO",
+      "COST",
+      "MCD",
+      "DIS",
+      "CSCO",
+      "ACN",
+      "ABT",
+    ] # 다우 30 대체 (시가총액 상위 30)
   start: "2008-01-01"
   end: "2020-12-31"
   test_start: "2021-01-01"
@@ -27,15 +54,15 @@ features:
 # 환경 설정
 env:
   initial_capital: 1000000
-  turnover_cost: 0.001  # 10 bps
-  slip_coeff: 0.0005    # 슬리피지
-  no_trade_band: 0.002  # 0.2% 이하 변화 무시
-  max_leverage: 1.0     # 레버리지 제한
-  max_turnover: 0.5     # 일일 최대 턴오버
+  turnover_cost: 0.001 # 10 bps
+  slip_coeff: 0.0005 # 슬리피지
+  no_trade_band: 0.002 # 0.2% 이하 변화 무시
+  max_leverage: 1.0 # 레버리지 제한
+  max_turnover: 0.5 # 일일 최대 턴오버
 
 # T-Cell 설정 (위기 감지)
 tcell:
-  method: "iforest"  # iforest|bocpd|hmm
+  method: "iforest" # iforest|bocpd|hmm
   contamination: 0.1
   n_estimators: 100
   ema_beta: 0.9
@@ -50,20 +77,20 @@ bcell:
   offline_algo: "iql"
   iql_expectile: 0.7
   iql_temperature: 3.0
-  
+
   # 온라인 학습
   online_algo: "dist_sac_cql"
-  
+
   # 네트워크 구조
   actor_hidden: [256, 256]
   critic_hidden: [256, 256]
   n_quantiles: 32
-  
+
   # 학습률
   actor_lr: 3.0e-4
   critic_lr: 3.0e-4
   alpha_lr: 3.0e-4
-  
+
   # SAC 파라미터
   gamma: 0.99
   tau: 0.005
@@ -71,12 +98,12 @@ bcell:
   alpha_min: 5.0e-4
   alpha_max: 0.2
   target_entropy_ratio: 0.98
-  
+
   # CQL 설정
   cql_alpha_start: 0.01
   cql_alpha_end: 0.05
   cql_num_samples: 8
-  
+
   # Gradient clipping
   grad_clip: 1.0
 
@@ -99,16 +126,16 @@ objectives:
   sharpe_beta: 1.0
   sharpe_ema_alpha: 0.99
   sharpe_epsilon: 1.0e-8
-  
+
   # CVaR 제약
-  cvar_alpha: 0.05  # 5% CVaR
-  cvar_target: -0.02  # -2% 이상
+  cvar_alpha: 0.05 # 5% CVaR
+  cvar_target: -0.02 # -2% 이상
   lambda_cvar: 1.0
-  
+
   # 추가 페널티
-  lambda_turn: 0.1  # 턴오버 페널티
-  lambda_dd: 0.0    # 낙폭 페널티
-  
+  lambda_turn: 0.1 # 턴오버 페널티
+  lambda_dd: 0.0 # 낙폭 페널티
+
   # 보상 정규화
   r_clip: 5.0
   reward_ema_alpha: 0.99
@@ -119,23 +146,23 @@ train:
   offline_steps: 200000
   offline_batch_size: 512
   offline_eval_interval: 10000
-  
+
   # 온라인 학습
   online_steps: 300000
   online_batch_size: 512
-  
+
   # Experience replay
   buffer_size: 100000
   min_buffer_size: 1000
   prioritized_replay: true
   per_alpha: 0.6
   per_beta: 0.4
-  
+
   # 평가 및 저장
   eval_interval: 5000
   save_interval: 20000
   log_interval: 100
-  
+
   # 조기 종료
   early_stop_patience: 50000
   early_stop_min_delta: 0.001
@@ -143,32 +170,33 @@ train:
 # 평가 설정
 eval:
   episodes: 10
-  benchmark: "equal_weight"  # equal_weight|buy_hold|60_40
+  benchmark: "equal_weight" # equal_weight|buy_hold|60_40
   metrics: ["sharpe", "cvar", "mdd", "turnover", "returns"]
 
 # 모니터링 설정
 monitoring:
-  use_wandb: false
+  use_wandb: false # 로컬 실험용
+  use_tensorboard: true # 기본 활성화
   wandb_project: "finflow-rl"
   wandb_entity: null
-  
+
   # 안정성 체크
   q_value_check: true
   q_value_threshold: 100.0
   entropy_check: true
   entropy_min: 0.1
-  
+
   # StabilityMonitor 설정
   stability:
     enabled: true
-    max_weight_change: 0.2  # 포트폴리오 가중치 최대 변화 (20%)
-    min_effective_assets: 3  # 최소 유효 자산 수
-    log_interval: 100  # 로그 요약 출력 간격
-    verbose: false  # 상세 디버그 로그
-  
+    max_weight_change: 0.2 # 포트폴리오 가중치 최대 변화 (20%)
+    min_effective_assets: 3 # 최소 유효 자산 수
+    log_interval: 100 # 로그 요약 출력 간격
+    verbose: false # 상세 디버그 로그
+
   # 자동 개입
   auto_intervention: true
-  intervention_threshold: 3.0  # 3-sigma
+  intervention_threshold: 3.0 # 3-sigma
   rollback_on_divergence: true
 
 # XAI 설정
@@ -176,4 +204,4 @@ xai:
   enable_shap: true
   enable_counterfactual: true
   enable_regime_analysis: true
-  report_frequency: 10  # 매 10 에피소드마다 리포트
+  report_frequency: 10 # 매 10 에피소드마다 리포트

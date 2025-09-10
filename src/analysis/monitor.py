@@ -5,8 +5,8 @@ import pandas as pd
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
 import json
-import wandb
-from tensorboardX import SummaryWriter
+import datetime
+
 from src.utils.logger import FinFlowLogger
 from src.analysis.metrics import MetricsCalculator
 
@@ -27,32 +27,39 @@ class PerformanceMonitor:
     
     def __init__(self, 
                  log_dir: str = "logs",
-                 use_wandb: bool = True,
+                 use_wandb: bool = False,
                  use_tensorboard: bool = True,
+                 wandb_config: Optional[Dict] = None,
                  alert_thresholds: Optional[Dict] = None):
         """
         Args:
             log_dir: 로그 디렉토리
             use_wandb: Wandb 사용 여부
             use_tensorboard: TensorBoard 사용 여부
+            wandb_config: Wandb 설정 (project, entity 등)
             alert_thresholds: 알림 임계값
         """
         self.logger = FinFlowLogger("PerformanceMonitor")
         self.metrics_calc = MetricsCalculator()
         
-        # 모니터링 백엔드
+        # 모니터링 백엔드 조건부 활성화
         self.use_wandb = use_wandb
         self.use_tensorboard = use_tensorboard
         
-        if use_wandb:
-            try:
-                wandb.init(project="finflow-rl", dir=log_dir)
-                self.logger.info("Wandb 초기화 완료")
-            except Exception as e:
-                self.logger.warning(f"Wandb 초기화 실패: {e}")
-                self.use_wandb = False
+        if self.use_wandb:
+            import wandb
+            self.wandb = wandb
+            wandb_config = wandb_config or {}
+            wandb.init(
+                project=wandb_config.get('wandb_project', 'finflow-rl'),
+                entity=wandb_config.get('wandb_entity'),
+                tags=wandb_config.get('wandb_tags', []),
+                dir=log_dir
+            )
+            self.logger.info("Wandb 초기화 완료")
         
-        if use_tensorboard:
+        if self.use_tensorboard:
+            from tensorboardX import SummaryWriter
             self.writer = SummaryWriter(log_dir)
             self.logger.info(f"TensorBoard 초기화 완료: {log_dir}")
         
@@ -75,7 +82,7 @@ class PerformanceMonitor:
         
         # Wandb 로깅
         if self.use_wandb:
-            wandb.log(metrics, step=step)
+            self.wandb.log(metrics, step=step)
         
         # TensorBoard 로깅
         if self.use_tensorboard:
@@ -91,7 +98,7 @@ class PerformanceMonitor:
         portfolio_dict = {f"portfolio/{name}": w for name, w in zip(asset_names, weights)}
         
         if self.use_wandb:
-            wandb.log(portfolio_dict, step=step)
+            self.wandb.log(portfolio_dict, step=step)
         
         if self.use_tensorboard:
             for name, weight in portfolio_dict.items():
@@ -102,7 +109,7 @@ class PerformanceMonitor:
         grad_stats = self._compute_gradient_stats(model)
         
         if self.use_wandb:
-            wandb.log({f"gradients/{k}": v for k, v in grad_stats.items()}, step=step)
+            self.wandb.log({f"gradients/{k}": v for k, v in grad_stats.items()}, step=step)
         
         if self.use_tensorboard:
             for key, value in grad_stats.items():
@@ -130,7 +137,6 @@ class PerformanceMonitor:
     
     def _check_alerts(self, metrics: Dict[str, float], step: int):
         """알림 체크"""
-        import datetime
         
         for metric_name, thresholds in self.alert_thresholds.items():
             if metric_name in metrics:
@@ -250,4 +256,4 @@ class PerformanceMonitor:
         if self.use_tensorboard:
             self.writer.close()
         if self.use_wandb:
-            wandb.finish()
+            self.wandb.finish()

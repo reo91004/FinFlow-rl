@@ -1,5 +1,8 @@
 # src/analysis/tuning.py
 
+# 연구용 코드 - 필요한 라이브러리는 직접 설치
+# pip install optuna
+
 import optuna
 import numpy as np
 import torch
@@ -288,6 +291,8 @@ class HyperparameterTuner:
         Returns:
             최적 파라미터
         """
+        # 연구용 코드 - 필요한 라이브러리는 직접 설치
+        # pip install scikit-optimize
         from skopt import gp_minimize
         from skopt.space import Real, Integer, Categorical
         
