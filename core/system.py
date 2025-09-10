@@ -5,10 +5,159 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import os
-from typing import Dict, Tuple, List, Optional
+import json
+import traceback
+from typing import Dict, Tuple, List, Optional, Any, Union
 from agents import TCell, BCell, MemoryCell
 from utils.logger import BIPDLogger
 from config import *
+
+
+class SerializationUtils:
+    """직렬화 및 로깅 강화 유틸리티"""
+    
+    @staticmethod
+    def safe_tensor_to_python(obj: Any) -> Any:
+        """텐서와 numpy 배열을 Python 네이티브 타입으로 안전하게 변환"""
+        if isinstance(obj, torch.Tensor):
+            return obj.detach().cpu().numpy().tolist()
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, (np.floating, np.integer)):
+            return obj.item()
+        elif isinstance(obj, dict):
+            return {k: SerializationUtils.safe_tensor_to_python(v) for k, v in obj.items()}
+        elif isinstance(obj, (list, tuple)):
+            return [SerializationUtils.safe_tensor_to_python(item) for item in obj]
+        else:
+            return obj
+    
+    @staticmethod
+    def safe_json_serialize(obj: Any, max_length: int = 1000) -> str:
+        """복잡한 객체를 안전하게 JSON으로 직렬화"""
+        try:
+            safe_obj = SerializationUtils.safe_tensor_to_python(obj)
+            json_str = json.dumps(safe_obj, ensure_ascii=False, separators=(',', ':'))
+            if len(json_str) > max_length:
+                return json_str[:max_length-3] + "..."
+            return json_str
+        except Exception as e:
+            return f"<직렬화 실패: {type(obj).__name__}({str(e)[:50]})>"
+    
+    @staticmethod
+    def safe_log_rewards(rewards: Any, logger: BIPDLogger, context: str = "") -> str:
+        """보상 구조를 안전하게 로깅"""
+        prefix = f"[{context}] " if context else ""
+        
+        if isinstance(rewards, torch.Tensor):
+            shape_info = f"Tensor{list(rewards.shape)}"
+            if rewards.numel() <= 10:
+                values = rewards.detach().cpu().numpy().tolist()
+                return f"{prefix}보상: {shape_info} = {values}"
+            else:
+                stats = {
+                    'mean': float(rewards.mean().item()),
+                    'std': float(rewards.std().item()),
+                    'min': float(rewards.min().item()),
+                    'max': float(rewards.max().item())
+                }
+                return f"{prefix}보상: {shape_info} stats={stats}"
+                
+        elif isinstance(rewards, dict):
+            try:
+                summary = {}
+                for k, v in rewards.items():
+                    if isinstance(v, (int, float)):
+                        summary[k] = round(v, 4)
+                    elif isinstance(v, dict) and 'reward' in v:
+                        summary[k] = round(v['reward'], 4)
+                    else:
+                        summary[k] = type(v).__name__
+                return f"{prefix}보상: {SerializationUtils.safe_json_serialize(summary, 200)}"
+            except:
+                return f"{prefix}보상: Dict[{len(rewards)} keys]"
+                
+        elif isinstance(rewards, (list, tuple)):
+            if len(rewards) <= 10:
+                safe_list = SerializationUtils.safe_tensor_to_python(rewards)
+                return f"{prefix}보상: {safe_list}"
+            else:
+                return f"{prefix}보상: List[{len(rewards)} items]"
+        else:
+            return f"{prefix}보상: {type(rewards).__name__}"
+    
+    @staticmethod
+    def safe_exception_log(e: Exception, logger: BIPDLogger, context: str = "") -> None:
+        """예외를 안전하게 로깅"""
+        prefix = f"[{context}] " if context else ""
+        error_msg = f"{prefix}예외 발생: {type(e).__name__}: {str(e)}"
+        logger.error(error_msg)
+        
+        # 스택 트레이스 간략화 (중요한 부분만)
+        tb_lines = traceback.format_exc().split('\n')
+        relevant_lines = [line for line in tb_lines if any(keyword in line for keyword in 
+                         ['core/', 'agents/', 'trainer.py', 'system.py', 'bcell.py'])][:5]
+        if relevant_lines:
+            logger.debug(f"{prefix}관련 스택 트레이스: {' | '.join(relevant_lines)}")
+
+
+class LoggingEnhancer:
+    """로깅 강화 유틸리티"""
+    
+    def __init__(self, logger: BIPDLogger, context: str = "System"):
+        self.logger = logger
+        self.context = context
+        self.call_count = 0
+    
+    def debug_with_context(self, message: str, data: Any = None) -> None:
+        """컨텍스트와 데이터를 포함한 디버그 로깅"""
+        self.call_count += 1
+        prefix = f"[{self.context}#{self.call_count:04d}]"
+        
+        if data is not None:
+            data_str = SerializationUtils.safe_json_serialize(data, 150)
+            self.logger.debug(f"{prefix} {message} | 데이터: {data_str}")
+        else:
+            self.logger.debug(f"{prefix} {message}")
+    
+    def log_method_call(self, method_name: str, args: Dict[str, Any] = None, result: Any = None) -> None:
+        """메서드 호출과 결과를 안전하게 로깅"""
+        prefix = f"[{self.context}#{self.call_count:04d}]"
+        
+        if args:
+            args_str = SerializationUtils.safe_json_serialize(args, 100)
+            self.logger.debug(f"{prefix} {method_name}() 호출 | 인자: {args_str}")
+        
+        if result is not None:
+            result_str = SerializationUtils.safe_json_serialize(result, 100)
+            self.logger.debug(f"{prefix} {method_name}() 결과: {result_str}")
+    
+    def log_tensor_stats(self, tensor: torch.Tensor, name: str) -> None:
+        """텐서 통계를 안전하게 로깅"""
+        if tensor is None:
+            self.logger.debug(f"[{self.context}] {name}: None")
+            return
+            
+        try:
+            stats = {
+                'shape': list(tensor.shape),
+                'dtype': str(tensor.dtype),
+                'device': str(tensor.device),
+                'requires_grad': tensor.requires_grad
+            }
+            
+            if tensor.numel() > 0:
+                stats.update({
+                    'mean': float(tensor.mean().item()),
+                    'std': float(tensor.std().item()),
+                    'min': float(tensor.min().item()),
+                    'max': float(tensor.max().item())
+                })
+            
+            self.logger.debug(f"[{self.context}] {name}: {SerializationUtils.safe_json_serialize(stats, 150)}")
+            
+        except Exception as e:
+            self.logger.debug(f"[{self.context}] {name}: <텐서 통계 실패: {e}>")
 
 
 class GateNetwork(nn.Module):
@@ -139,6 +288,10 @@ class ImmunePortfolioSystem:
         }
 
         self.logger = BIPDLogger("ImmuneSystem")
+        
+        # 로깅 강화 유틸리티 초기화
+        self.logging_enhancer = LoggingEnhancer(self.logger, "ImmuneSystem")
+        self.serialization_utils = SerializationUtils()
 
         self.logger.info(
             f"면역 포트폴리오 시스템이 초기화되었습니다. "
@@ -801,62 +954,187 @@ class ImmunePortfolioSystem:
         # 통계 리셋
         self.logging_stats["expert_switches"] = 0
 
-    def update_gating_network(self, expert_rewards: list) -> torch.Tensor:
+    def _normalize_expert_rewards(self, expert_rewards):
         """
-        게이팅 네트워크 업데이트 (미분 가능한 Softmax 기반)
+        다양한 보상 스키마를 안전하게 정규화
+        
+        지원하는 입력 형태:
+        - List[float]
+        - List[Dict]: {'reward': float, 'parts': Dict}
+        - Dict[str, float]
+        - Dict[str, Dict]: {'reward': float, 'parts': Dict}
+        
+        Returns:
+            rewards_tensor: torch.FloatTensor [K] on device (no grad)
+            parts_list: Optional[List[Dict]] aligned to bcell_names (or None)
+        """
+        K = len(self.bcell_names)
+        parts_list = None
+
+        # Case 1: List[...] (floats or dicts)
+        if isinstance(expert_rewards, (list, tuple)):
+            if len(expert_rewards) != K:
+                # 길이 불일치 → 최선의 정렬 시도 또는 건너뛰기
+                self.logger.warning(f"[Gate] Reward length {len(expert_rewards)} != num_experts {K}. Best-effort alignment.")
+            
+            # dict 경로 시도
+            if len(expert_rewards) > 0 and isinstance(expert_rewards[0], dict):
+                rewards = []
+                parts_list = []
+                for i, item in enumerate(expert_rewards[:K]):
+                    r = float(item.get("reward", 0.0))
+                    rewards.append(r)
+                    parts_list.append(item.get("parts", {}))
+                # 필요시 패딩
+                while len(rewards) < K:
+                    rewards.append(0.0); parts_list.append({})
+            else:
+                # float로 가정
+                rewards = [float(x) for x in expert_rewards[:K]]
+                while len(rewards) < K:
+                    rewards.append(0.0)
+            rewards_tensor = torch.tensor(rewards, device=DEVICE, dtype=torch.float32)
+            return rewards_tensor, parts_list
+
+        # Case 2: Dict[...] 전문가 이름으로 키 구성
+        if isinstance(expert_rewards, dict):
+            mapping = expert_rewards
+            rewards = []
+            parts_list = []
+            for name in self.bcell_names:
+                val = mapping.get(name, 0.0)
+                if isinstance(val, dict):
+                    r = float(val.get("reward", 0.0))
+                    rewards.append(r)
+                    parts_list.append(val.get("parts", {}))
+                else:
+                    rewards.append(float(val))
+                    parts_list.append({})
+            rewards_tensor = torch.tensor(rewards, device=DEVICE, dtype=torch.float32)
+            return rewards_tensor, parts_list
+
+        # Fallback: 잘못된 스키마 → 제로 텐서
+        self.logger.error(f"[Gate] Invalid expert_rewards type: {type(expert_rewards)}; skipping gate update.")
+        return torch.zeros(K, device=DEVICE, dtype=torch.float32), None
+
+    def update_gating_network(self, expert_rewards) -> torch.Tensor:
+        """
+        게이팅 네트워크 업데이트 (미분 가능한 Softmax 기반, 강건한 스키마 정규화)
         
         Args:
-            expert_rewards: length-K per-step rewards of each expert (floats).
+            expert_rewards: 다양한 형태의 전문가 보상 (List, Dict 등)
             
         Returns:
             gate loss (tensor with grad).
         """
-        self.gate_network.train()
+        try:
+            # 입력 보상 안전 로깅
+            rewards_log = self.serialization_utils.safe_log_rewards(expert_rewards, self.logger, "GatingUpdate")
+            self.logging_enhancer.debug_with_context("게이팅 네트워크 업데이트 시작", {"input_rewards": rewards_log})
+            
+            self.gate_network.train()
 
-        # 1) 모델 입력 구성 (last_state_tensor 사용)
-        x = self.last_state_tensor.to(DEVICE)            # [feat_dim]; 텐서 확인
-        x = x.unsqueeze(0)                               # [1, feat_dim]
+            # 1) 보상 정규화
+            rewards, parts_list = self._normalize_expert_rewards(expert_rewards)  # rewards: [K] float tensor (no grad)
+            
+            # 정규화된 보상 로깅
+            self.logging_enhancer.log_tensor_stats(rewards, "정규화된_보상")
 
-        # 2) 순전파로 로짓과 미분 가능한 확률 계산
-        logits = self.gate_network(x)                    # [1, K]
-        tau = torch.clamp(torch.tensor(self.gate_temp, device=DEVICE), GATE_TEMP_MIN, GATE_TEMP_MAX)
-        p = torch.nn.functional.softmax(logits / tau, dim=-1)  # [1, K]
-        p = p.squeeze(0)                                 # [K]
+            # 조기 종료 조건 (빈 보상, 모든 제로 등)
+            if rewards.numel() == 0:
+                self.logging_enhancer.debug_with_context("빈 보상으로 인한 조기 종료")
+                return torch.tensor(0.0, device=DEVICE)  # detached zero
 
-        # 3) 보상/advantage 준비 (보상은 detach; p는 grad 유지)
-        if not torch.is_tensor(expert_rewards):
-            rewards = torch.tensor(expert_rewards, device=DEVICE, dtype=torch.float32)
-        else:
-            rewards = expert_rewards.to(DEVICE, dtype=torch.float32)
+            # 2) 모델 입력 구성 (last_state_tensor 사용)
+            if self.last_state_tensor is None:
+                self.logger.warning("[Gate] last_state_tensor is None; skipping gate update.")
+                return torch.tensor(0.0, device=DEVICE)
+                
+            x = self.last_state_tensor.to(DEVICE)            # [feat_dim]; 텐서 확인
+            x = x.unsqueeze(0)                               # [1, feat_dim]
 
-        # EMA baseline per expert (detach from graph)
-        with torch.no_grad():
-            self.gate_baseline.mul_(GATE_BASELINE_MOMENTUM).add_(
-                (1.0 - GATE_BASELINE_MOMENTUM) * rewards
-            )
-        adv = (rewards - self.gate_baseline).detach()    # [K], no grad on reward path
+            # 3) 순전파로 로짓과 미분 가능한 확률 계산
+            logits = self.gate_network(x)                    # [1, K]
+            tau = torch.clamp(torch.tensor(self.gate_temp, device=DEVICE), GATE_TEMP_MIN, GATE_TEMP_MAX)
+            p = torch.nn.functional.softmax(logits / tau, dim=-1)  # [1, K]
+            p = p.squeeze(0)                                 # [K]
 
-        # 4) 손실: negative expected advantage
-        expected_adv = (p * adv).sum()                   # scalar, has grad via p->logits->gate params
-        loss = -expected_adv
+            # EMA baseline per expert (detach from graph) - NaN/Inf 안전 처리
+            with torch.no_grad():
+                # 유한한 보상만 사용하여 베이스라인 업데이트
+                finite_mask = torch.isfinite(rewards)
+                if finite_mask.any():
+                    # 유한한 값만 사용하여 베이스라인 업데이트
+                    finite_rewards = torch.where(finite_mask, rewards, self.gate_baseline)
+                    self.gate_baseline.mul_(GATE_BASELINE_MOMENTUM).add_(
+                        (1.0 - GATE_BASELINE_MOMENTUM) * finite_rewards
+                    )
+                    
+                # 베이스라인에서도 NaN/Inf 제거
+                baseline_finite_mask = torch.isfinite(self.gate_baseline)
+                if not baseline_finite_mask.all():
+                    self.gate_baseline = torch.where(baseline_finite_mask, self.gate_baseline, torch.zeros_like(self.gate_baseline))
+                    
+            # 어드밴티지 계산 - NaN/Inf 안전 처리
+            adv = (rewards - self.gate_baseline).detach()    # [K], no grad on reward path
+            
+            # 어드밴티지에서 NaN/Inf 제거
+            finite_adv_mask = torch.isfinite(adv)
+            if not finite_adv_mask.all():
+                adv = torch.where(finite_adv_mask, adv, torch.zeros_like(adv))
 
-        # 선택적: 엔트로피 정규화 on p to avoid collapse
-        if GATE_ENTROPY_BETA > 0.0:
-            ent = -(p * (p.clamp_min(1e-8)).log()).sum()
-            loss = loss - GATE_ENTROPY_BETA * ent
+            # 4) 손실: negative expected advantage - 안전 검증 포함
+            expected_adv = (p * adv).sum()                   # scalar, has grad via p->logits->gate params
+            
+            # 최종 손실 검증
+            if not torch.isfinite(expected_adv):
+                self.logging_enhancer.debug_with_context("비유한 expected_adv 감지, 제로 손실로 대체")
+                expected_adv = torch.tensor(0.0, device=DEVICE)
+                
+            loss = -expected_adv
 
-        # 5) 역전파
-        self.gate_optimizer.zero_grad(set_to_none=True)
-        # 안전장치: must require grad
-        assert loss.requires_grad, "gate loss has no grad path; check detach/.item()/argmax in the loss graph"
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.gate_network.parameters(), max_norm=5.0)
-        self.gate_optimizer.step()
+            # 선택적: 엔트로피 정규화 on p to avoid collapse - NaN/Inf 안전 처리
+            if GATE_ENTROPY_BETA > 0.0:
+                ent = -(p * (p.clamp_min(1e-8)).log()).sum()
+                if torch.isfinite(ent):
+                    loss = loss - GATE_ENTROPY_BETA * ent
+                else:
+                    self.logging_enhancer.debug_with_context("비유한 엔트로피 감지, 엔트로피 정규화 건너뜀")
 
-        # 6) (선택적) 온도 어닐링
-        self.gate_temp = float(torch.clamp(tau * 0.9995, GATE_TEMP_MIN, GATE_TEMP_MAX))  # gentle decay
+            # 5) 역전파 - 최종 안전성 검증
+            self.gate_optimizer.zero_grad(set_to_none=True)
+            
+            # 최종 손실 검증
+            if not torch.isfinite(loss):
+                self.logging_enhancer.debug_with_context("최종 손실이 비유한, 제로 손실로 대체")
+                loss = torch.tensor(0.0, device=DEVICE, requires_grad=True)
+            
+            # 안전장치: must require grad
+            if loss.requires_grad:
+                loss.backward()
+            else:
+                self.logging_enhancer.debug_with_context("손실이 gradient를 요구하지 않음, 역전파 건너뜀")
+            torch.nn.utils.clip_grad_norm_(self.gate_network.parameters(), max_norm=5.0)
+            self.gate_optimizer.step()
 
-        return loss.detach()
+            # 6) (선택적) 온도 어닐링
+            self.gate_temp = float(torch.clamp(tau * 0.9995, GATE_TEMP_MIN, GATE_TEMP_MAX))  # gentle decay
+            
+            # 성공적인 업데이트 로깅
+            loss_value = float(loss.detach().item())
+            self.logging_enhancer.debug_with_context("게이팅 네트워크 업데이트 완료", {
+                "loss": loss_value, 
+                "temperature": self.gate_temp,
+                "rewards_stats": self.serialization_utils.safe_tensor_to_python(rewards)
+            })
+
+            return loss.detach()
+            
+        except Exception as e:
+            # 예외 안전 로깅
+            self.serialization_utils.safe_exception_log(e, self.logger, "GatingUpdate")
+            # 안전한 기본값 반환
+            return torch.tensor(0.0, device=DEVICE)
 
     def update_bcell_performance(self, bcell_name: str, reward: float) -> None:
         """B-Cell 성과 업데이트 (기존 호환성 유지)"""

@@ -189,11 +189,20 @@ class BIPDTrainer:
             self.logger.error("T-Cell 훈련용 특성 추출 실패")
             return False
         
-        # T-Cell 학습
-        success = self.immune_system.fit_tcell(train_features)
-        
-        if success:
-            self.logger.info(f"T-Cell 사전 훈련 완료: {len(train_features)}개 샘플 학습")
+        # T-Cell 학습 - 안전 가드 포함
+        try:
+            success = self.immune_system.fit_tcell(train_features)
+            
+            if success:
+                self.logger.info(f"T-Cell 사전 훈련 완료: {len(train_features)}개 샘플 학습")
+            else:
+                self.logger.warning("T-Cell 사전 훈련 실패 - 기본 설정으로 계속 진행")
+                success = True  # 훈련을 계속 진행할 수 있도록
+            
+        except Exception as e:
+            self.logger.error(f"T-Cell 사전 훈련 중 예외 발생: {e}")
+            self.logger.warning("T-Cell 사전 훈련 실패 - 기본 설정으로 계속 진행")
+            success = True  # 훈련을 계속 진행할 수 있도록
         
         return success
     
@@ -221,15 +230,29 @@ class BIPDTrainer:
         }
         
         while True:
-            # 의사결정
-            weights, decision_info = self.immune_system.decide(state, training)
-            
-            # 환경 스텝
-            next_state, reward, done, env_info = env.step(weights)
-            
-            # 시스템 업데이트 (훈련 모드에서만)
-            if training:
-                self.immune_system.update(state, weights, reward, next_state, done)
+            try:
+                # 의사결정 - 안전 가드 포함
+                weights, decision_info = self.immune_system.decide(state, training)
+                
+                # 포트폴리오 가중치 검증
+                if weights is None or len(weights) == 0:
+                    self.logger.error(f"에피소드 {episode + 1}: 유효하지 않은 포트폴리오 가중치 반환됨")
+                    break
+                    
+                # 환경 스텝
+                next_state, reward, done, env_info = env.step(weights)
+                
+                # 시스템 업데이트 (훈련 모드에서만)
+                if training:
+                    try:
+                        self.immune_system.update(state, weights, reward, next_state, done)
+                    except Exception as update_e:
+                        self.logger.warning(f"에피소드 {episode + 1}: 면역 시스템 업데이트 실패: {update_e}")
+                        # 업데이트 실패해도 계속 진행
+                        
+            except Exception as e:
+                self.logger.error(f"에피소드 {episode + 1}: 훈련 스텝 중 치명적 오류: {e}")
+                break
             
             # 데이터 기록
             episode_data['rewards'].append(reward)
@@ -272,20 +295,42 @@ class BIPDTrainer:
         
         # MoE 게이팅 네트워크 업데이트 (훈련 모드에서만)
         if training and hasattr(self.immune_system, 'update_gating_network'):
-            # 각 B-Cell의 에피소드별 평균 성과 계산
-            expert_rewards = {}
-            for bcell_name in self.immune_system.bcells.keys():
-                # 해당 B-Cell이 선택되었을 때의 평균 보상 계산
-                bcell_steps = [i for i, selected in enumerate(episode_data['selected_bcells']) if selected == bcell_name]
-                if bcell_steps:
-                    bcell_rewards = [episode_data['rewards'][i] for i in bcell_steps]
-                    expert_rewards[bcell_name] = np.mean(bcell_rewards)
-            
-            # 게이팅 네트워크 업데이트
-            if expert_rewards:
-                gate_loss = self.immune_system.update_gating_network(expert_rewards)
-                if gate_loss > 0:
-                    self.logger.debug(f"에피소드 {episode + 1}: MoE 게이팅 네트워크 업데이트 완료 (손실: {gate_loss:.4f})")
+            try:
+                # 에피소드 종료 시 엣지 케이스 가드
+                if not episode_data.get('rewards') or not episode_data.get('selected_bcells'):
+                    self.logger.debug(f"에피소드 {episode + 1}: 비어있는 에피소드 데이터로 인해 게이팅 네트워크 업데이트 건너뜀")
+                    return episode_summary
+                
+                if len(episode_data['rewards']) != len(episode_data['selected_bcells']):
+                    self.logger.warning(f"에피소드 {episode + 1}: 보상과 선택된 B-Cell 길이 불일치 "
+                                      f"({len(episode_data['rewards'])} vs {len(episode_data['selected_bcells'])})")
+                    return episode_summary
+                
+                # 각 B-Cell의 에피소드별 평균 성과 계산
+                expert_rewards = {}
+                for bcell_name in self.immune_system.bcells.keys():
+                    # 해당 B-Cell이 선택되었을 때의 평균 보상 계산
+                    bcell_steps = [i for i, selected in enumerate(episode_data['selected_bcells']) if selected == bcell_name]
+                    if bcell_steps and all(i < len(episode_data['rewards']) for i in bcell_steps):
+                        bcell_rewards = [episode_data['rewards'][i] for i in bcell_steps]
+                        # NaN/inf 값 필터링
+                        valid_rewards = [r for r in bcell_rewards if not (np.isnan(r) or np.isinf(r))]
+                        if valid_rewards:
+                            expert_rewards[bcell_name] = float(np.mean(valid_rewards))
+                        else:
+                            self.logger.debug(f"에피소드 {episode + 1}: {bcell_name}에 대한 유효한 보상 없음")
+                
+                # 게이팅 네트워크 업데이트 - 최소 2개 전문가 필요
+                if len(expert_rewards) >= 2:
+                    gate_loss = self.immune_system.update_gating_network(expert_rewards)
+                    if gate_loss > 0:
+                        self.logger.debug(f"에피소드 {episode + 1}: MoE 게이팅 네트워크 업데이트 완료 (손실: {gate_loss:.4f})")
+                else:
+                    self.logger.debug(f"에피소드 {episode + 1}: 전문가 보상 수 부족으로 게이팅 네트워크 업데이트 건너뜀 ({len(expert_rewards)}/5)")
+                    
+            except Exception as e:
+                self.logger.error(f"에피소드 {episode + 1}: 게이팅 네트워크 업데이트 중 오류 발생: {e}")
+                # 계속 진행하여 훈련이 중단되지 않도록 함
         
         return episode_summary
     
