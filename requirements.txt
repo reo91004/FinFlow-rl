@@ -1,0 +1,40 @@
+# FinFlow Requirements
+
+# Core ML/RL
+torch>=2.0.0
+numpy>=1.24.0
+scikit-learn>=1.3.0
+scipy>=1.7.0
+
+# Environment
+gymnasium>=0.29.0
+
+# Data processing
+pandas>=2.0.0
+yfinance>=0.1.70
+ta>=0.10.0
+
+# Visualization
+matplotlib>=3.7.0
+seaborn>=0.12.0
+tqdm>=4.65.0
+
+# XAI
+shap>=0.42.0
+
+# Configuration
+pyyaml>=6.0
+
+# Monitoring
+wandb>=0.12.0
+tensorboardX>=2.6.0
+
+# Hyperparameter Tuning
+optuna>=3.0.0
+scikit-optimize>=0.9.0
+
+# Development
+pytest>=7.4.0
+black>=23.0.0
+pylint>=2.17.0
+jupyter>=1.0.0
