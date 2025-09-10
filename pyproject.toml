@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "finflow-bipd"
+version = "0.2.0"
+description = "Behavioral Immune Portfolio Defense: Explainable, Risk-sensitive Distributional RL for Portfolios"
+authors = [{name="FinFlow Research"}]
+readme = "README.md"
+requires-python = ">=3.10"
+
+[tool.setuptools.packages.find]
+where = ["src"]
