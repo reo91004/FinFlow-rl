@@ -32,7 +32,7 @@ def test_imports():
 
         # Data
         from src.data.loader import DataLoader
-        from src.data.loader import FeatureExtractor
+        from src.data.features import FeatureExtractor
 
         # Utils
         from src.utils.logger import FinFlowLogger

@@ -23,8 +23,7 @@ from tqdm import tqdm
 
 from src.utils.seed import set_seed, DeviceManager
 from src.utils.logger import FinFlowLogger, get_session_directory
-from src.data.loader import DataLoader
-from src.data.loader import FeatureExtractor
+from src.data import DataLoader, FeatureExtractor
 from src.core.env import PortfolioEnv
 from src.core.objectives import PortfolioObjective, RewardNormalizer
 from src.core.trainer import FinFlowTrainer, TrainingConfig

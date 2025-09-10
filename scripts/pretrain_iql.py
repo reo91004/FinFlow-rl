@@ -20,11 +20,10 @@ import numpy as np
 
 from src.utils.seed import set_seed, DeviceManager
 from src.utils.logger import FinFlowLogger, get_session_directory
-from src.data.loader import DataLoader
-from src.data.loader import FeatureExtractor
+from src.data import DataLoader, FeatureExtractor
 from src.core.env import PortfolioEnv
 from src.core.replay import OfflineDataset
-from src.core.iql import IQL
+from src.core.iql import IQLAgent
 from src.agents.t_cell import TCell
 
 def load_config(config_path: str) -> dict:

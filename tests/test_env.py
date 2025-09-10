@@ -10,7 +10,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
 from src.core.env import PortfolioEnv
-from src.data.loader import FeatureExtractor
+from src.data.features import FeatureExtractor
 
 def create_dummy_price_data(n_assets=5, n_days=100):
     """테스트용 더미 가격 데이터 생성"""

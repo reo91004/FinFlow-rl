@@ -617,8 +617,11 @@ class FinFlowTrainer:
                 done = terminated or truncated
                 
                 # 에피소드 데이터 추적
-                portfolio_return = info.get('portfolio_return', reward)
+                portfolio_return = info.get('portfolio_return', 0)
+                if portfolio_return == 0:  # fallback
+                    portfolio_return = reward / self.config.env_config['initial_balance']
                 self.episode_returns.append(portfolio_return)
+                self.logger.debug(f"Step {episode_steps}: portfolio_return={portfolio_return:.6f}, cumulative_return={np.prod(1 + np.array(self.episode_returns)) - 1:.4f}")
                 self.episode_actions.append(action.copy())
                 
                 # Store experience
@@ -741,35 +744,66 @@ class FinFlowTrainer:
             if len(self.episode_returns) > 0:
                 episode_sharpe = self._calculate_sharpe(self.episode_returns)
                 episode_cvar = self._calculate_cvar(self.episode_returns)
+                episode_calmar = self._calculate_calmar(self.episode_returns)
+                episode_sortino = self._calculate_sortino(self.episode_returns)
                 episode_sharpes.append(episode_sharpe)
                 episode_cvars.append(episode_cvar)
                 
-                # Calculate portfolio value
-                portfolio_value = self.config.env_config['initial_balance'] * np.prod(1 + np.array(self.episode_returns))
+                # Calculate portfolio metrics
+                returns_array = np.array(self.episode_returns)
+                portfolio_value = self.config.env_config['initial_balance'] * np.prod(1 + returns_array)
+                total_return = np.prod(1 + returns_array) - 1
+                volatility = np.std(returns_array) * np.sqrt(252)
+                
+                # 최대 낙폭 계산
+                equity_curve = np.cumprod(1 + returns_array)
+                running_max = np.maximum.accumulate(equity_curve)
+                drawdown = (equity_curve - running_max) / running_max
+                max_drawdown = np.min(drawdown)
+                
+                # 회전율 계산 (액션 변화량)
+                if hasattr(self, 'episode_actions') and len(self.episode_actions) > 1:
+                    turnovers = [np.sum(np.abs(self.episode_actions[i] - self.episode_actions[i-1])) 
+                                for i in range(1, len(self.episode_actions))]
+                    avg_turnover = np.mean(turnovers) if turnovers else 0
+                else:
+                    avg_turnover = 0
                 
                 # Update progress bar
                 pbar.set_postfix({
-                    'Reward': f"{episode_reward:.4f}",
+                    'Return': f"{total_return:.2%}",
                     'Sharpe': f"{episode_sharpe:.2f}",
-                    'CVaR': f"{episode_cvar:.3f}",
+                    'Calmar': f"{episode_calmar:.2f}",
                     'Value': f"{portfolio_value/1e6:.2f}M",
                     'Steps': episode_steps
                 })
-            
-            # Logging
-            if (episode + 1) % self.config.log_interval == 0:
-                avg_reward = np.mean(episode_rewards[-10:])
-                avg_sharpe = np.mean(episode_sharpes[-10:]) if len(episode_sharpes) >= 10 else 0
-                avg_cvar = np.mean(episode_cvars[-10:]) if len(episode_cvars) >= 10 else 0
                 
-                self.logger.info(
-                    f"Episode {episode+1}/{self.config.sac_episodes} | "
-                    f"Reward: {episode_reward:.4f} | "
-                    f"Avg(10): {avg_reward:.4f} | "
-                    f"Sharpe: {avg_sharpe:.2f} | "
-                    f"CVaR: {avg_cvar:.3f} | "
-                    f"Steps: {episode_steps}"
-                )
+                # 매 에피소드 종료 시 상세 성과 출력
+                self.logger.info("=" * 60)
+                self.logger.info(f"Episode {episode+1}/{self.config.sac_episodes} 완료")
+                self.logger.info("-" * 60)
+                self.logger.info(f"📊 수익률: {total_return:.2%} | 포트폴리오: ${portfolio_value:,.0f}")
+                self.logger.info(f"📈 Sharpe: {episode_sharpe:.3f} | Calmar: {episode_calmar:.3f} | Sortino: {episode_sortino:.3f}")
+                self.logger.info(f"📉 CVaR(5%): {episode_cvar:.3f} | MaxDD: {max_drawdown:.2%} | Vol: {volatility:.2%}")
+                self.logger.info(f"🔄 Turnover: {avg_turnover:.2%} | Steps: {episode_steps} | Reward: {episode_reward:.4f}")
+                self.logger.info("=" * 60)
+            
+            # 10 에피소드마다 통계 요약
+            if (episode + 1) % 10 == 0 and len(episode_rewards) >= 10:
+                # 최근 10 에피소드 통계
+                recent_returns = []
+                for i in range(max(0, episode - 9), episode + 1):
+                    if i < len(episode_sharpes):
+                        recent_returns.append(episode_sharpes[i])
+                
+                self.logger.info("\n" + "="*60)
+                self.logger.info("📊 최근 10 에피소드 통계:")
+                self.logger.info(f"  평균 Sharpe: {np.mean(episode_sharpes[-10:]):.3f}")
+                self.logger.info(f"  평균 보상: {np.mean(episode_rewards[-10:]):.4f}")
+                self.logger.info(f"  최고 보상: {np.max(episode_rewards[-10:]):.4f}")
+                self.logger.info(f"  최저 보상: {np.min(episode_rewards[-10:]):.4f}")
+                self.logger.info(f"  평균 CVaR: {np.mean(episode_cvars[-10:]) if episode_cvars else 0:.3f}")
+                self.logger.info("=" * 60 + "\n")
             
             # Evaluation
             if (episode + 1) % self.config.eval_interval == 0:
@@ -871,21 +905,63 @@ class FinFlowTrainer:
     
     def _calculate_sharpe(self, returns: List[float]) -> float:
         """샤프 비율 계산"""
-        if len(returns) == 0:
+        if len(returns) < 20:  # 최소 샘플 수
             return 0.0
         returns_array = np.array(returns)
-        if np.std(returns_array) == 0:
+        if np.std(returns_array) < 1e-8:
             return 0.0
-        return np.mean(returns_array) / np.std(returns_array) * np.sqrt(252)
+        sharpe = np.mean(returns_array) / np.std(returns_array) * np.sqrt(252)
+        # 디버그 로그
+        self.logger.debug(f"Sharpe calculation: mean={np.mean(returns_array):.6f}, std={np.std(returns_array):.6f}, sharpe={sharpe:.3f}")
+        return sharpe
     
     def _calculate_cvar(self, returns: List[float], alpha: float = 0.05) -> float:
         """CVaR 계산"""
-        if len(returns) == 0:
+        if len(returns) < 20:  # 최소 샘플 수
             return 0.0
         returns_array = np.array(returns)
         sorted_returns = np.sort(returns_array)
         n_tail = max(1, int(len(sorted_returns) * alpha))
-        return np.mean(sorted_returns[:n_tail])
+        cvar = np.mean(sorted_returns[:n_tail])
+        self.logger.debug(f"CVaR calculation: n_tail={n_tail}, cvar={cvar:.6f}")
+        return cvar
+    
+    def _calculate_calmar(self, returns: List[float]) -> float:
+        """칼마 비율 계산 (연간 수익률 / 최대 낙폭)"""
+        if len(returns) < 20:
+            return 0.0
+        equity_curve = np.cumprod(1 + np.array(returns))
+        
+        # 연환산 수익률
+        total_return = equity_curve[-1] - 1
+        annual_return = (1 + total_return) ** (252 / len(returns)) - 1
+        
+        # 최대 낙폭 계산
+        running_max = np.maximum.accumulate(equity_curve)
+        drawdown = (equity_curve - running_max) / running_max
+        max_dd = abs(np.min(drawdown))
+        
+        if max_dd < 1e-8:
+            return 0.0
+        return annual_return / max_dd
+    
+    def _calculate_sortino(self, returns: List[float], target_return: float = 0.0) -> float:
+        """소르티노 비율 계산 (하방 변동성만 고려)"""
+        if len(returns) < 20:
+            return 0.0
+        returns_array = np.array(returns)
+        excess_returns = returns_array - target_return
+        
+        # 하방 변동성
+        downside_returns = excess_returns[excess_returns < 0]
+        if len(downside_returns) == 0:
+            return 0.0
+        
+        downside_std = np.sqrt(np.mean(downside_returns ** 2))
+        if downside_std < 1e-8:
+            return 0.0
+        
+        return np.mean(excess_returns) / downside_std * np.sqrt(252)
     
     def _check_early_stopping(self, metrics: Dict[str, float]):
         """조기 종료 확인"""
