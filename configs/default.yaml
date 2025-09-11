@@ -50,11 +50,11 @@ features:
   window: 20
   # 동적 feature 설정
   dimensions:
-    returns: 3  # 최근 수익률, 평균 수익률, 변동성
-    technical: 4  # RSI, MACD, Bollinger, Volume
-    structure: 3  # 상관관계, 베타, 최대 낙폭
-    momentum: 2  # 단기, 장기 모멘텀
-  total_dim: 12  # 총 feature 차원 (sum of above)
+    returns: 3 # 최근 수익률, 평균 수익률, 변동성
+    technical: 4 # RSI, MACD, Bollinger, Volume
+    structure: 3 # 상관관계, 베타, 최대 낙폭
+    momentum: 2 # 단기, 장기 모멘텀
+  total_dim: 12 # 총 feature 차원 (sum of above)
   indicators: ["returns", "vol_ema", "momentum", "rsi", "macd", "bollinger", "correlation"]
   normalize: true
 
@@ -82,8 +82,8 @@ tcell:
 bcell:
   # 오프라인 사전학습
   offline_algo: "iql"
-  iql_expectile: 0.7  # IQL 원논문 기본값 (Kostrikov et al., 2022)
-  iql_temperature: 3.0  # IQL 원논문 기본값
+  iql_expectile: 0.7 # IQL 원논문 기본값 (Kostrikov et al., 2022)
+  iql_temperature: 3.0 # IQL 원논문 기본값
 
   # 온라인 학습
   online_algo: "dist_sac_cql"
@@ -94,7 +94,7 @@ bcell:
   n_quantiles: 32
 
   # 학습률
-  actor_lr: 3.0e-4  # 원논문 기본값 유지
+  actor_lr: 3.0e-4 # 원논문 기본값 유지
   critic_lr: 3.0e-4
   alpha_lr: 3.0e-4
 
@@ -150,7 +150,7 @@ objectives:
 # 학습 설정
 train:
   # 오프라인 사전학습
-  offline_episodes: 100  # 오프라인 데이터 수집 에피소드 수
+  offline_episodes: 500 # 오프라인 데이터 수집 에피소드 수
   offline_steps: 200000
   offline_batch_size: 512
   offline_eval_interval: 10000
@@ -216,58 +216,58 @@ xai:
 
 # 데이터 검증 설정
 data_validation:
-  min_samples: 252  # 최소 1년 데이터
-  max_nan_ratio: 0.2  # 최대 20% 결측치
-  outlier_iqr_factor: 5  # IQR 5배 이상 이상치
-  extreme_return_threshold: 0.5  # 일일 ±50% 이상
-  min_variance_threshold: 1.0e-8  # 최소 분산
-  max_correlation_threshold: 0.99  # 최대 상관관계
-  max_time_gap_days: 5  # 최대 날짜 간격
-  forward_fill_limit: 5  # forward fill 최대 제한
-  backward_fill_limit: 5  # backward fill 최대 제한
-  interpolate_limit: 10  # 보간 최대 제한
+  min_samples: 252 # 최소 1년 데이터
+  max_nan_ratio: 0.2 # 최대 20% 결측치
+  outlier_iqr_factor: 5 # IQR 5배 이상 이상치
+  extreme_return_threshold: 0.5 # 일일 ±50% 이상
+  min_variance_threshold: 1.0e-8 # 최소 분산
+  max_correlation_threshold: 0.99 # 최대 상관관계
+  max_time_gap_days: 5 # 최대 날짜 간격
+  forward_fill_limit: 5 # forward fill 최대 제한
+  backward_fill_limit: 5 # backward fill 최대 제한
+  interpolate_limit: 10 # 보간 최대 제한
 
 # 백테스트 설정
 backtest:
   # 거래 비용 모델
   cost_model:
-    fixed_cost: 5.0  # 고정 수수료 (달러)
-    proportional_cost: 0.001  # 비례 수수료 (0.1%)
-    min_cost: 1.0  # 최소 수수료
-  
+    fixed_cost: 5.0 # 고정 수수료 (달러)
+    proportional_cost: 0.001 # 비례 수수료 (0.1%)
+    min_cost: 1.0 # 최소 수수료
+
   # 슬리피지 모델
   slippage_model:
-    base_slippage: 0.0005  # 기본 슬리피지 (0.05%)
-    volume_factor: 0.1  # 거래량 영향 계수
-    volatility_factor: 0.2  # 변동성 영향 계수
-    model_type: 'square_root'  # linear, square_root, exponential
-  
+    base_slippage: 0.0005 # 기본 슬리피지 (0.05%)
+    volume_factor: 0.1 # 거래량 영향 계수
+    volatility_factor: 0.2 # 변동성 영향 계수
+    model_type: "square_root" # linear, square_root, exponential
+
   # 시장 충격 모델
   market_impact_model:
-    temporary_impact: 0.1  # 일시적 충격
-    permanent_impact: 0.05  # 영구적 충격
-    decay_rate: 0.5  # 충격 감소율
-  
+    temporary_impact: 0.1 # 일시적 충격
+    permanent_impact: 0.05 # 영구적 충격
+    decay_rate: 0.5 # 충격 감소율
+
   # 차입 비용
   borrowing_cost:
-    rate: 0.03  # 연 3% 차입 비용
-    margin_requirement: 0.5  # 50% 증거금 요구
-  
+    rate: 0.03 # 연 3% 차입 비용
+    margin_requirement: 0.5 # 50% 증거금 요구
+
   # 제약 조건
   constraints:
-    max_position_size: 0.2  # 최대 포지션 크기
-    min_trade_size: 100  # 최소 거래 금액
-    max_leverage: 2.0  # 최대 레버리지
-    min_liquidity: 1000000  # 최소 유동성 요구
+    max_position_size: 0.2 # 최대 포지션 크기
+    min_trade_size: 100 # 최소 거래 금액
+    max_leverage: 2.0 # 최대 레버리지
+    min_liquidity: 1000000 # 최소 유동성 요구
 
 # 실거래 시스템 설정
 live_trading:
-  broker: 'alpaca'  # alpaca, interactive_brokers, binance
-  mode: 'paper'  # paper or live
-  symbols: ['AAPL', 'GOOGL', 'MSFT', 'AMZN', 'META']
-  rebalance_frequency: 'daily'  # minute, hourly, daily
+  broker: "alpaca" # alpaca, interactive_brokers, binance
+  mode: "paper" # paper or live
+  symbols: ["AAPL", "GOOGL", "MSFT", "AMZN", "META"]
+  rebalance_frequency: "daily" # minute, hourly, daily
   initial_capital: 100000
-  
+
   # 위험 관리
   risk:
     max_drawdown: 0.25
@@ -276,16 +276,16 @@ live_trading:
     var_limit: 0.02
     stop_loss: 0.1
     take_profit: 0.5
-  
+
   # 주문 실행
   execution:
-    order_type: 'market'  # market, limit
+    order_type: "market" # market, limit
     slippage_buffer: 0.001
     timeout: 30
     retry_count: 3
-  
+
   # 데이터 설정
   data:
     lookback_period: 30
-    update_frequency: 1  # seconds
-    data_source: 'yfinance'  # yfinance, alpaca, polygon
+    update_frequency: 1 # seconds
+    data_source: "yfinance" # yfinance, alpaca, polygon
