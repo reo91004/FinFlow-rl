@@ -41,7 +41,11 @@ class TrainingConfig:
     # Data configuration
     data_config: Dict = field(default_factory=lambda: {
         'tickers': None,  # Must be provided
-        'period': '2y',  # 2 years of data
+        'start': '2008-01-01',  # training start date
+        'end': '2020-12-31',  # training end date
+        'test_start': '2021-01-01',  # test start date
+        'test_end': '2024-12-31',  # test end date
+        'cache_dir': 'data/cache',  # cache directory
         'interval': '1d',  # daily data
         'auto_download': True,  # auto download if missing
         'use_cache': True  # use cached data if available
@@ -157,13 +161,14 @@ class FinFlowTrainer:
         tickers = self.config.data_config.get('tickers', 
             ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NVDA', 'TSLA', 'JPM', 'V', 'JNJ'])
         
-        # 시장 데이터 로드
+        # config에서 날짜 읽기
+        config_data = self.config.data_config
         market_data = data_loader.get_market_data(
             symbols=tickers[:10],  # 최대 10개 자산
-            train_start='2019-01-01',
-            train_end='2022-12-31',
-            test_start='2023-01-01',
-            test_end='2024-01-01'
+            train_start=config_data.get('start', '2008-01-01'),
+            train_end=config_data.get('end', '2020-12-31'),
+            test_start=config_data.get('test_start', '2021-01-01'),
+            test_end=config_data.get('test_end', '2024-12-31')
         )
         
         # 학습 데이터 선택
@@ -327,64 +332,55 @@ class FinFlowTrainer:
         return data_path.exists() and len(list(data_path.glob("*.npz"))) > 0
     
     def _prepare_offline_data(self):
-        """오프라인 데이터 준비 (자동 다운로드)"""
+        """오프라인 데이터 준비 - 환경의 데이터 재사용"""
         data_path = Path(self.config.data_path)
         data_path.mkdir(parents=True, exist_ok=True)
         
-        # Get tickers from config
-        tickers = self.config.data_config.get('tickers')
-        if not tickers:
-            raise ValueError("티커가 config에 설정되지 않았습니다. --tickers 옵션을 사용하세요.")
+        # 이미 환경에 로드된 데이터 사용
+        if hasattr(self, 'env') and self.env is not None:
+            self.logger.info("환경에서 오프라인 데이터를 생성합니다...")
+            
+            # 환경의 price_data에서 returns 계산
+            price_data = self.env.price_data
+            returns = price_data.pct_change().fillna(0).values
+            prices = price_data.values
+            
+            self.logger.info(f"데이터 shape: returns={returns.shape}, prices={prices.shape}")
+            
+            # 오프라인 데이터셋 생성
+            self._create_offline_dataset(returns, prices, data_path)
+            return
         
-        if self.config.data_config.get('auto_download', True):
-            try:
-                import yfinance as yf
-                
-                period = self.config.data_config.get('period', '2y')
-                interval = self.config.data_config.get('interval', '1d')
-                
-                self.logger.info(f"Yahoo Finance에서 데이터 다운로드 중...")
-                self.logger.info(f"  티커: {tickers[:5]}...")
-                self.logger.info(f"  기간: {period}, 간격: {interval}")
-                
-                # Download data
-                data = yf.download(
-                    tickers=tickers,
-                    period=period,
-                    interval=interval,
-                    progress=False,
-                    group_by='ticker'
-                )
-                
-                if not data.empty:
-                    # Extract adjusted close prices
-                    if len(tickers) == 1:
-                        prices = data['Adj Close'].values.reshape(-1, 1)
-                    else:
-                        prices = data['Adj Close'].values
-                    
-                    # Handle NaN values
-                    prices = np.nan_to_num(prices, nan=0)
-                    mask = prices > 0
-                    prices = prices[mask.all(axis=1)]
-                    
-                    # Calculate returns
-                    returns = np.diff(prices, axis=0) / prices[:-1]
-                    
-                    self.logger.info(f"실제 데이터 다운로드 성공: shape={returns.shape}")
-                    
-                    # Create offline dataset
-                    self._create_offline_dataset(returns, prices[1:], data_path)
-                    return
-                    
-            except Exception as e:
-                self.logger.warning(f"데이터 다운로드 실패: {e}")
+        # 환경이 없으면 DataLoader로 로드
+        self.logger.info("DataLoader를 통해 데이터를 로드합니다...")
+        from src.data.loader import DataLoader
         
-        # 실제 데이터가 없으면 오류 발생
-        raise ValueError(
-            "오프라인 데이터를 찾을 수 없습니다. "
-            "--tickers 옵션으로 티커를 설정하고 인터넷 연결을 확인하세요."
+        data_loader = DataLoader(cache_dir=self.config.data_config.get('cache_dir', 'data/cache'))
+        tickers = self.config.data_config.get('tickers', ['AAPL', 'MSFT', 'GOOGL'])[:10]
+        
+        # config의 날짜 사용
+        config_data = self.config.data_config
+        market_data = data_loader.get_market_data(
+            symbols=tickers,
+            train_start=config_data.get('start', '2008-01-01'),
+            train_end=config_data.get('end', '2020-12-31'),
+            test_start=config_data.get('test_start', '2021-01-01'),
+            test_end=config_data.get('test_end', '2024-12-31')
         )
+        
+        if market_data['train_data'].empty:
+            raise ValueError(
+                "오프라인 데이터를 찾을 수 없습니다. "
+                "인터넷 연결을 확인하거나 캐시 디렉토리를 확인하세요."
+            )
+        
+        price_data = market_data['train_data']
+        returns = price_data.pct_change().fillna(0).values
+        prices = price_data.values
+        
+        self.logger.info(f"DataLoader로 데이터 로드 성공: shape={returns.shape}")
+        
+        self._create_offline_dataset(returns, prices, data_path)
     
     def _create_offline_dataset(self, returns, prices, data_path):
         """오프라인 데이터셋 생성"""

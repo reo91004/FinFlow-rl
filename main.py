@@ -140,7 +140,11 @@ def main():
             },
             data_config={
                 'tickers': tickers,
-                'period': data_period,
+                'start': config_dict.get('data', {}).get('start', '2008-01-01'),
+                'end': config_dict.get('data', {}).get('end', '2020-12-31'),
+                'test_start': config_dict.get('data', {}).get('test_start', '2021-01-01'),
+                'test_end': config_dict.get('data', {}).get('test_end', '2024-12-31'),
+                'cache_dir': config_dict.get('data', {}).get('cache_dir', 'data/cache'),
                 'interval': config_dict.get('data', {}).get('interval', '1d'),
                 'auto_download': config_dict.get('data', {}).get('auto_download', True),
                 'use_cache': not args.no_cache
