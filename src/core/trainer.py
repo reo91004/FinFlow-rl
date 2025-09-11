@@ -383,98 +383,64 @@ class FinFlowTrainer:
         self._create_offline_dataset(returns, prices, data_path)
     
     def _create_offline_dataset(self, returns, prices, data_path):
-        """오프라인 데이터셋 생성"""
-        window_size = self.config.env_config.get('window_size', 30)
+        """오프라인 데이터셋 생성 - 환경 시뮬레이션"""
         experiences = []
         
-        n_steps, n_assets = returns.shape
-        n_assets = min(n_assets, self.action_dim)  # Limit to action_dim
+        # 환경을 여러 번 리셋하면서 데이터 수집
+        num_episodes = 10  # 여러 에피소드로 데이터 수집
         
-        for i in range(window_size, n_steps - 1):
-            # Calculate features for window
-            state_returns = returns[i-window_size:i, :n_assets]
+        for episode in range(num_episodes):
+            # 환경 리셋
+            state, _ = self.env.reset()
+            episode_length = 0
+            max_steps = len(self.env.price_data) - self.env.window - 1
             
-            # Technical features
-            avg_return = np.mean(state_returns, axis=0)
-            volatility = np.std(state_returns, axis=0) 
-            volume_proxy = np.ones(n_assets)
-            
-            # Portfolio weights (uniform for offline)
-            current_weights = np.ones(self.action_dim) / self.action_dim
-            
-            # Crisis indicator
-            market_vol = np.std(np.mean(state_returns, axis=1))
-            crisis_level = min(1.0, market_vol / 0.02)
-            
-            # Construct state (ensure 43 dimensions)
-            state = np.zeros(self.state_dim)
-            idx = 0
-            
-            # Fill available features
-            for feat in [avg_return, volatility, volume_proxy]:
-                feat_padded = np.pad(feat, (0, max(0, 10 - len(feat))), 'constant')[:10]
-                state[idx:idx+10] = feat_padded
-                idx += 10
-            
-            state[30:30+self.action_dim] = current_weights
-            state[42] = crisis_level  # Last dimension for crisis
-            
-            # Generate action (momentum-based for demonstration)
-            momentum_score = avg_return + 0.5
-            momentum_score = np.maximum(momentum_score, 0.01)
-            action = np.zeros(self.action_dim)
-            action[:n_assets] = momentum_score / momentum_score.sum()
-            action = action / action.sum()  # Normalize
-            
-            # Calculate reward
-            next_returns = returns[i, :n_assets]
-            reward = np.dot(action[:n_assets], next_returns)
-            
-            # Next state
-            next_state_returns = returns[i-window_size+1:i+1, :n_assets]
-            next_avg_return = np.mean(next_state_returns, axis=0)
-            next_volatility = np.std(next_state_returns, axis=0)
-            next_crisis = min(1.0, np.std(np.mean(next_state_returns, axis=1)) / 0.02)
-            
-            next_state = np.zeros(self.state_dim)
-            idx = 0
-            for feat in [next_avg_return, next_volatility, volume_proxy]:
-                feat_padded = np.pad(feat, (0, max(0, 10 - len(feat))), 'constant')[:10]
-                next_state[idx:idx+10] = feat_padded
-                idx += 10
-            
-            next_state[30:30+self.action_dim] = action
-            next_state[42] = next_crisis
-            
-            experiences.append({
-                'state': state,
-                'action': action,
-                'reward': reward,
-                'next_state': next_state,
-                'done': 0
-            })
+            # 에피소드 실행
+            while episode_length < max_steps // num_episodes:
+                # 랜덤 액션 생성 (Dirichlet 분포로 유효한 포트폴리오 가중치)
+                action = np.random.dirichlet(np.ones(self.action_dim))
+                
+                # 환경 스텝
+                next_state, reward, done, truncated, info = self.env.step(action)
+                
+                experiences.append({
+                    'state': state,
+                    'action': action,
+                    'reward': reward,
+                    'next_state': next_state,
+                    'done': 1 if (done or truncated) else 0
+                })
+                
+                state = next_state
+                episode_length += 1
+                
+                if done or truncated:
+                    break
         
-        # Save dataset
-        states = np.array([e['state'] for e in experiences])
-        actions = np.array([e['action'] for e in experiences])
-        rewards = np.array([e['reward'] for e in experiences])
-        next_states = np.array([e['next_state'] for e in experiences])
-        dones = np.array([e['done'] for e in experiences])
-        
-        save_path = data_path / 'offline_data.npz'
-        np.savez(
-            save_path,
-            states=states,
-            actions=actions,
-            rewards=rewards,
-            next_states=next_states,
-            dones=dones
-        )
-        
-        self.logger.info(f"오프라인 데이터셋 저장: {save_path}")
-        self.logger.info(f"  샘플 수: {len(experiences)}")
-        self.logger.info(f"  State 차원: {states.shape}")
-        self.logger.info(f"  Action 차원: {actions.shape}")
+        if len(experiences) > 0:
+            # Save dataset
+            states = np.array([e['state'] for e in experiences])
+            actions = np.array([e['action'] for e in experiences])
+            rewards = np.array([e['reward'] for e in experiences])
+            next_states = np.array([e['next_state'] for e in experiences])
+            dones = np.array([e['done'] for e in experiences])
+            
+            save_path = data_path / 'offline_data.npz'
+            np.savez(
+                save_path,
+                states=states,
+                actions=actions,
+                rewards=rewards,
+                next_states=next_states,
+                dones=dones
+            )
+            
+            self.logger.info(f"오프라인 데이터셋 저장: {save_path}")
+            self.logger.info(f"  샘플 수: {len(experiences)}")
+            self.logger.info(f"  State 차원: {states.shape}")
+            self.logger.info(f"  Action 차원: {actions.shape}")
+        else:
+            self.logger.warning("생성된 경험이 없습니다. 환경을 확인하세요.")
     
     def _pretrain_iql(self):
         """IQL 오프라인 사전학습"""
