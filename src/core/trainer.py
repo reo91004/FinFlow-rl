@@ -10,11 +10,13 @@ import time
 from pathlib import Path
 from tqdm import tqdm
 import pandas as pd
+import yaml
 
 from src.core.env import PortfolioEnv
-from src.core.replay import PrioritizedReplayBuffer, OfflineDataset
+from src.core.replay import PrioritizedReplayBuffer
+from src.core.offline_dataset import OfflineDataset
 from src.core.iql import IQLAgent
-from src.core.sac import DistributionalSAC
+# from src.core.sac import DistributionalSAC  # 사용 시 import
 from src.agents.b_cell import BCell
 from src.agents.t_cell import TCell
 from src.agents.memory import MemoryCell
@@ -27,46 +29,29 @@ from src.utils.seed import set_seed, get_device_info
 
 @dataclass
 class TrainingConfig:
-    """학습 설정"""
-    # Environment
-    env_config: Dict = field(default_factory=lambda: {
-        'initial_balance': 1000000,
-        'transaction_cost': 0.001,
-        'max_weight': 0.2,
-        'min_weight': 0.0,
-        'window_size': 30,
-        'max_weight_change': 0.2  # PerformanceMonitor용
-    })
+    """학습 설정 - YAML 파일 기반"""
     
-    # Data configuration
-    data_config: Dict = field(default_factory=lambda: {
-        'tickers': None,  # Must be provided
-        'start': '2008-01-01',  # training start date
-        'end': '2020-12-31',  # training end date
-        'test_start': '2021-01-01',  # test start date
-        'test_end': '2024-12-31',  # test end date
-        'cache_dir': 'data/cache',  # cache directory
-        'interval': '1d',  # daily data
-        'auto_download': True,  # auto download if missing
-        'use_cache': True  # use cached data if available
-    })
+    # 필수 파라미터
+    config_path: str = "configs/default.yaml"
+    override_params: Optional[Dict] = None
     
-    # Training configuration
-    train_config: Dict = field(default_factory=lambda: {
-        'offline_episodes': 100,  # 오프라인 데이터 수집 에피소드
-        'offline_steps': 200000,
-        'offline_batch_size': 512,
-        'offline_eval_interval': 10000
-    })
+    # YAML에서 로드될 속성들 (초기값은 None)
+    env_config: Dict = field(default_factory=dict)
+    data_config: Dict = field(default_factory=dict)
+    train_config: Dict = field(default_factory=dict)
     
-    # IQL Pretraining
+    # 개별 속성들 (YAML에서 로드됨)
+    offline_episodes: int = 500
+    offline_steps: int = 200000
+    offline_batch_size: int = 512
+    offline_eval_interval: int = 10000
+    
     iql_epochs: int = 100
     iql_batch_size: int = 256
     iql_lr: float = 3e-4
     iql_expectile: float = 0.7
     iql_temperature: float = 3.0
     
-    # SAC Fine-tuning
     sac_episodes: int = 1000
     sac_batch_size: int = 256
     sac_lr: float = 3e-4
@@ -75,33 +60,155 @@ class TrainingConfig:
     sac_alpha: float = 0.2
     sac_cql_weight: float = 1.0
     
-    # Memory
     memory_capacity: int = 50000
     memory_k_neighbors: int = 5
     
-    # Monitoring
     eval_interval: int = 10
     checkpoint_interval: int = 50
     log_interval: int = 1
     
-    # Device & Seed
     device: str = "auto"
     seed: int = 42
     
-    # Paths
     data_path: str = "data/processed"
     checkpoint_dir: str = "checkpoints"
     
-    # Target metrics
     target_sharpe: float = 1.5
     target_cvar: float = -0.02
     
-    # Early stopping
     patience: int = 50
     min_improvement: float = 0.01
     
-    # Monitoring configuration
     monitoring_config: Optional[Dict] = None
+    
+    def __post_init__(self):
+        """YAML 파일에서 설정 자동 로드"""
+        # YAML 파일 로드
+        if Path(self.config_path).exists():
+            with open(self.config_path, 'r') as f:
+                yaml_config = yaml.safe_load(f)
+            
+            # 설정 매핑
+            self._load_from_yaml(yaml_config)
+        
+        # CLI 오버라이드 적용
+        if self.override_params:
+            self._apply_overrides(self.override_params)
+            
+        # 로거 생성 (설정 로드 후)
+        self.logger = FinFlowLogger("TrainingConfig")
+        self.logger.info(f"설정 로드 완료: {self.config_path}")
+        self.logger.info(f"  오프라인 에피소드: {self.offline_episodes}")
+        self.logger.info(f"  IQL 에폭: {self.iql_epochs}")
+        self.logger.info(f"  SAC 에피소드: {self.sac_episodes}")
+    
+    def _load_from_yaml(self, config: Dict):
+        """YAML 설정을 속성으로 변환"""
+        # 환경 설정
+        env = config.get('env', {})
+        self.env_config = {
+            'initial_balance': env.get('initial_capital', 1000000),
+            'transaction_cost': env.get('turnover_cost', 0.001),
+            'max_weight': env.get('max_weight', 0.2),
+            'min_weight': env.get('min_weight', 0.0),
+            'window_size': config.get('features', {}).get('window', 30),
+            'max_weight_change': env.get('max_turnover', 0.5)
+        }
+        
+        # 데이터 설정
+        data = config.get('data', {})
+        self.data_config = {
+            'tickers': data.get('symbols'),
+            'start': data.get('start', '2008-01-01'),
+            'end': data.get('end', '2020-12-31'),
+            'test_start': data.get('test_start', '2021-01-01'),
+            'test_end': data.get('test_end', '2024-12-31'),
+            'cache_dir': data.get('cache_dir', 'data/cache'),
+            'interval': data.get('interval', '1d'),
+            'auto_download': True,
+            'use_cache': True
+        }
+        
+        # 학습 설정
+        train = config.get('train', {})
+        self.offline_episodes = train.get('offline_episodes', 500)
+        self.offline_steps = train.get('offline_steps', 200000)
+        self.offline_batch_size = train.get('offline_batch_size', 512)
+        self.offline_eval_interval = train.get('offline_eval_interval', 10000)
+        
+        self.train_config = {
+            'offline_episodes': self.offline_episodes,
+            'offline_steps': self.offline_steps,
+            'offline_batch_size': self.offline_batch_size,
+            'offline_eval_interval': self.offline_eval_interval
+        }
+        
+        # IQL 설정
+        bcell = config.get('bcell', {})
+        self.iql_expectile = bcell.get('iql_expectile', 0.7)
+        self.iql_temperature = bcell.get('iql_temperature', 3.0)
+        self.iql_lr = bcell.get('critic_lr', 3e-4)
+        self.iql_batch_size = train.get('offline_batch_size', 256)
+        self.iql_epochs = train.get('offline_steps', 200000) // 1000  # steps를 epochs로 변환
+        
+        # SAC 설정
+        self.sac_lr = bcell.get('actor_lr', 3e-4)
+        self.sac_gamma = bcell.get('gamma', 0.99)
+        self.sac_tau = bcell.get('tau', 0.005)
+        self.sac_alpha = bcell.get('alpha_init', 0.2)
+        self.sac_cql_weight = bcell.get('cql_alpha_start', 0.01)
+        self.sac_batch_size = train.get('online_batch_size', 256)
+        self.sac_episodes = train.get('online_steps', 300000) // 300  # steps를 episodes로 변환
+        
+        # Memory 설정
+        memory = config.get('memory', {})
+        self.memory_capacity = train.get('buffer_size', 100000)
+        self.memory_k_neighbors = memory.get('k_neighbors', 5)
+        
+        # 평가 설정
+        self.eval_interval = train.get('eval_interval', 5000) // 500  # steps를 episodes로 변환
+        self.checkpoint_interval = train.get('save_interval', 20000) // 400
+        self.log_interval = train.get('log_interval', 100) // 100
+        
+        # 시스템 설정
+        system = config.get('system', {})
+        self.device = system.get('device', config.get('device', 'auto'))
+        self.seed = system.get('seed', config.get('seed', 42))
+        self.data_path = system.get('data_path', 'data/processed')
+        self.checkpoint_dir = system.get('checkpoint_dir', 'checkpoints')
+        
+        # 목표 지표
+        objectives = config.get('objectives', {})
+        self.target_sharpe = objectives.get('sharpe_target', 1.5)
+        self.target_cvar = objectives.get('cvar_target', -0.02)
+        
+        # 조기 종료
+        self.patience = train.get('early_stop_patience', 50000) // 1000
+        self.min_improvement = train.get('early_stop_min_delta', 0.001)
+        
+        # 모니터링 설정
+        self.monitoring_config = config.get('monitoring', {})
+        
+        # 전체 config 저장
+        self._raw_config = config
+    
+    def _apply_overrides(self, overrides: Dict):
+        """CLI 인자로 설정 오버라이드"""
+        for key, value in overrides.items():
+            if value is not None:
+                if hasattr(self, key):
+                    setattr(self, key, value)
+                    if hasattr(self, 'logger'):
+                        self.logger.info(f"설정 오버라이드: {key} = {value}")
+    
+    def get(self, key: str, default: Any = None) -> Any:
+        """설정 값 가져오기 (dict-like 인터페이스)"""
+        return getattr(self, key, default)
+    
+    def to_dict(self) -> Dict:
+        """설정을 딕셔너리로 변환"""
+        return {k: v for k, v in self.__dict__.items() 
+                if not k.startswith('_') and k != 'logger'}
 
 
 class FinFlowTrainer:
@@ -158,7 +265,7 @@ class FinFlowTrainer:
         # 실제 데이터 로드
         from src.data.loader import DataLoader
         from src.data.features import FeatureExtractor
-        import pandas as pd
+        # import pandas as pd  # 사용 시 import
         
         self.logger.info("실제 시장 데이터를 로드합니다...")
         
@@ -354,10 +461,8 @@ class FinFlowTrainer:
             self.logger.info("환경에서 오프라인 데이터를 수집합니다...")
             
             # OfflineDataset 생성 및 데이터 수집
-            from src.core.offline_dataset import OfflineDataset
-            
-            # config에서 에피소드 수 가져오기 (기본값: 100)
-            n_episodes = self.config.train_config.get('offline_episodes', 100)
+            # config에서 에피소드 수 가져오기 (YAML 설정 사용)
+            n_episodes = self.config.offline_episodes
             self.logger.info(f"{n_episodes}개 에피소드로 오프라인 데이터 수집")
             
             dataset = OfflineDataset()
@@ -389,7 +494,6 @@ class FinFlowTrainer:
             self._prepare_offline_data()
         
         # Load offline dataset
-        from src.core.offline_dataset import OfflineDataset
         dataset = OfflineDataset(self.config.data_path)
         
         self.logger.info(f"오프라인 데이터셋 로드: {len(dataset)} samples")
@@ -399,6 +503,7 @@ class FinFlowTrainer:
         
         # Training loop with progress bar
         from tqdm import tqdm
+        # YAML 설정 사용
         pbar = tqdm(range(self.config.iql_epochs), desc="IQL Pretraining", unit="epoch")
         
         for epoch in pbar:
@@ -406,6 +511,7 @@ class FinFlowTrainer:
             
             # Mini-batch training
             for _ in range(len(dataset) // self.config.iql_batch_size):
+                # YAML 설정 사용
                 batch = dataset.sample_batch(self.config.iql_batch_size)
                 
                 # Convert to tensors

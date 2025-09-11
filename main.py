@@ -130,39 +130,54 @@ def main():
     print("=" * 60)
     
     if args.mode == 'train':
-        # Create training config from loaded config
+        # CLI 오버라이드 수집
+        overrides = {}
+        
+        # CLI 인자들을 오버라이드로 변환
+        if args.iql_epochs is not None:
+            overrides['iql_epochs'] = args.iql_epochs
+        if args.sac_episodes is not None:
+            overrides['sac_episodes'] = args.sac_episodes
+        if args.batch_size is not None:
+            overrides['iql_batch_size'] = args.batch_size
+            overrides['sac_batch_size'] = args.batch_size
+        if args.lr is not None:
+            overrides['iql_lr'] = args.lr
+            overrides['sac_lr'] = args.lr
+        if args.memory_capacity is not None:
+            overrides['memory_capacity'] = args.memory_capacity
+        if args.data_path is not None:
+            overrides['data_path'] = args.data_path
+        if args.checkpoint_dir is not None:
+            overrides['checkpoint_dir'] = args.checkpoint_dir
+        if args.target_sharpe is not None:
+            overrides['target_sharpe'] = args.target_sharpe
+        if args.target_cvar is not None:
+            overrides['target_cvar'] = args.target_cvar
+        if args.device is not None:
+            overrides['device'] = args.device
+        if args.initial_balance is not None:
+            if 'env_config' not in overrides:
+                overrides['env_config'] = {}
+            overrides['env_config']['initial_balance'] = args.initial_balance
+        if args.transaction_cost is not None:
+            if 'env_config' not in overrides:
+                overrides['env_config'] = {}
+            overrides['env_config']['transaction_cost'] = args.transaction_cost
+        if seed != 42:  # 기본값이 아니면 오버라이드
+            overrides['seed'] = seed
+        
+        # 티커 오버라이드 처리
+        if tickers:
+            if 'data_config' not in overrides:
+                overrides['data_config'] = {}
+            overrides['data_config']['tickers'] = tickers
+            overrides['data_config']['symbols'] = tickers  # 호환성
+        
+        # Create training config with YAML and overrides
         config = TrainingConfig(
-            env_config={
-                'initial_balance': args.initial_balance or config_dict.get('env', {}).get('initial_capital', 1000000),
-                'transaction_cost': args.transaction_cost or config_dict.get('env', {}).get('turnover_cost', 0.001),
-                'max_leverage': config_dict.get('env', {}).get('max_leverage', 1.0),
-                'window_size': config_dict.get('features', {}).get('window', 30)
-            },
-            data_config={
-                'symbols': tickers,  # trainer.py가 'symbols'를 찾음
-                'start': config_dict.get('data', {}).get('start', '2008-01-01'),
-                'end': config_dict.get('data', {}).get('end', '2020-12-31'),
-                'test_start': config_dict.get('data', {}).get('test_start', '2021-01-01'),
-                'test_end': config_dict.get('data', {}).get('test_end', '2024-12-31'),
-                'cache_dir': config_dict.get('data', {}).get('cache_dir', 'data/cache'),
-                'interval': config_dict.get('data', {}).get('interval', '1d'),
-                'auto_download': config_dict.get('data', {}).get('auto_download', True),
-                'use_cache': not args.no_cache
-            },
-            iql_epochs=args.iql_epochs or config_dict.get('train', {}).get('offline_steps', 200000) // 1000,
-            sac_episodes=args.sac_episodes or config_dict.get('train', {}).get('online_steps', 300000) // 300,
-            iql_batch_size=args.batch_size or config_dict.get('train', {}).get('offline_batch_size', 512),
-            sac_batch_size=args.batch_size or config_dict.get('train', {}).get('online_batch_size', 512),
-            iql_lr=args.lr or config_dict.get('bcell', {}).get('critic_lr', 3e-4),
-            sac_lr=args.lr or config_dict.get('bcell', {}).get('actor_lr', 3e-4),
-            memory_capacity=args.memory_capacity or config_dict.get('train', {}).get('buffer_size', 100000),
-            data_path=args.data_path or config_dict.get('system', {}).get('data_path', 'data/processed'),
-            checkpoint_dir=args.checkpoint_dir or config_dict.get('system', {}).get('checkpoint_dir', 'checkpoints'),
-            target_sharpe=args.target_sharpe or config_dict.get('targets', {}).get('sharpe_ratio', 1.5),
-            target_cvar=args.target_cvar or config_dict.get('targets', {}).get('cvar_5', -0.02),
-            device=args.device or config_dict.get('system', {}).get('device', 'auto'),
-            seed=seed,
-            monitoring_config=config_dict.get('monitoring', {})
+            config_path=args.config,
+            override_params=overrides
         )
         
         # Create trainer
