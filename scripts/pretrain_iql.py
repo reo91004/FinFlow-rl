@@ -106,16 +106,19 @@ def main():
     logger.info("T-Cell 학습 완료")
     
     # 오프라인 데이터 수집 또는 로드
-    dataset_path = os.path.join(session_dir, "offline_dataset.pt")
+    # data/processed 디렉토리 사용 (세션 간 공유)
+    data_dir = Path('data/processed')
+    data_dir.mkdir(parents=True, exist_ok=True)
+    dataset_path = data_dir / 'offline_data.npz'
     
-    if os.path.exists(dataset_path):
+    if dataset_path.exists():
         logger.info(f"기존 데이터셋 로드: {dataset_path}")
-        dataset = OfflineDataset(data_path=dataset_path)
+        dataset = OfflineDataset(data_path=str(data_dir))  # 디렉토리 전달
     else:
         logger.info(f"오프라인 데이터 수집 중... ({args.collect_episodes} 에피소드)")
-        dataset = OfflineDataset(capacity=100000)
+        dataset = OfflineDataset()
         dataset.collect_from_env(env, n_episodes=args.collect_episodes, policy='random')
-        dataset.save(dataset_path)
+        dataset.save(str(dataset_path))
         logger.info(f"데이터셋 저장: {dataset_path}")
     
     # IQL 초기화

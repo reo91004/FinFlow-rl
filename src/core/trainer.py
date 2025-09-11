@@ -355,7 +355,7 @@ class FinFlowTrainer:
             n_episodes = self.config.train_config.get('offline_episodes', 100)
             self.logger.info(f"{n_episodes}개 에피소드로 오프라인 데이터 수집")
             
-            dataset = OfflineDataset(capacity=1000000)  # 더 큰 capacity
+            dataset = OfflineDataset()
             dataset.collect_from_env(
                 env=self.env,
                 n_episodes=n_episodes,

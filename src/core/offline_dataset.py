@@ -7,53 +7,45 @@ from typing import Dict, Any, Optional
 
 class OfflineDataset:
     """
-    오프라인 강화학습을 위한 통합 데이터셋 클래스
+    오프라인 강화학습을 위한 데이터셋 클래스
     
-    .npz와 .pt 형식 모두 지원하여 IQL 사전학습에 사용
+    NPZ 형식만 지원 (IQL 사전학습용)
     """
     
-    def __init__(self, data_path: str = None, capacity: int = 100000):
+    def __init__(self, data_path: str = None):
         """
         Args:
-            data_path: 데이터 디렉토리 경로 (None이면 메모리만 사용)
-            capacity: 메모리 버퍼 크기
+            data_path: NPZ 파일 경로 또는 디렉토리
         """
-        self.capacity = capacity
-        self.transitions = []
+        # 데이터 초기화
+        self.states = np.array([])
+        self.actions = np.array([])
+        self.rewards = np.array([])
+        self.next_states = np.array([])
+        self.dones = np.array([])
+        self.size = 0
+        self.state_dim = 0
+        self.action_dim = 0
         
-        # 데이터 파일이 지정된 경우 로드
+        # 데이터 로드
         if data_path:
             data_path = Path(data_path)
             
-            # .npz 파일 우선 확인
-            npz_file = data_path / 'offline_data.npz'
-            pt_file = data_path / 'offline_dataset.pt'
-            
-            if npz_file.exists():
-                self._load_npz(npz_file)
-            elif pt_file.exists():
-                self._load_pt(pt_file)
-            elif data_path.suffix == '.npz':
-                self._load_npz(data_path)
-            elif data_path.suffix == '.pt':
-                self._load_pt(data_path)
+            if data_path.is_dir():
+                # 디렉토리면 offline_data.npz 찾기
+                npz_file = data_path / 'offline_data.npz'
+                if npz_file.exists():
+                    self._load_npz(npz_file)
+                else:
+                    print(f"데이터 파일이 없음: {npz_file}")
+            elif str(data_path).endswith('.npz'):
+                # NPZ 파일 직접 지정
+                if data_path.exists():
+                    self._load_npz(data_path)
+                else:
+                    print(f"데이터 파일이 없음: {data_path}")
             else:
-                # 데이터 파일이 없으면 빈 데이터셋으로 시작
-                self.states = np.array([])
-                self.actions = np.array([])
-                self.rewards = np.array([])
-                self.next_states = np.array([])
-                self.dones = np.array([])
-                self.size = 0
-                print(f"빈 데이터셋 생성 (capacity={capacity})")
-        else:
-            # 메모리 버퍼로만 사용
-            self.states = np.array([])
-            self.actions = np.array([])
-            self.rewards = np.array([])
-            self.next_states = np.array([])
-            self.dones = np.array([])
-            self.size = 0
+                print(f"지원하지 않는 형식: {data_path}")
     
     def _load_npz(self, file_path: Path):
         """NPZ 파일 로드"""
@@ -73,36 +65,6 @@ class OfflineDataset:
         print(f"  - State 차원: {self.state_dim}")
         print(f"  - Action 차원: {self.action_dim}")
     
-    def _load_pt(self, file_path: Path):
-        """PT 파일 로드 및 변환"""
-        data = torch.load(file_path, map_location='cpu')
-        
-        # transitions 리스트 형식인 경우
-        if 'transitions' in data:
-            transitions = data['transitions']
-            if transitions:
-                # numpy 배열로 변환
-                self.states = np.array([t['state'] for t in transitions])
-                self.actions = np.array([t['action'] for t in transitions])
-                self.rewards = np.array([t['reward'] for t in transitions])
-                self.next_states = np.array([t['next_state'] for t in transitions])
-                self.dones = np.array([t['done'] for t in transitions])
-        # 직접 배열 형식인 경우
-        elif 'states' in data:
-            self.states = data['states'].numpy() if torch.is_tensor(data['states']) else data['states']
-            self.actions = data['actions'].numpy() if torch.is_tensor(data['actions']) else data['actions']
-            self.rewards = data['rewards'].numpy() if torch.is_tensor(data['rewards']) else data['rewards']
-            self.next_states = data['next_states'].numpy() if torch.is_tensor(data['next_states']) else data['next_states']
-            self.dones = data['dones'].numpy() if torch.is_tensor(data['dones']) else data['dones']
-        
-        self.size = len(self.states) if len(self.states) > 0 else 0
-        self.state_dim = self.states.shape[1] if self.size > 0 else 0
-        self.action_dim = self.actions.shape[1] if self.size > 0 else 0
-        
-        print(f"PT 데이터셋 로드 완료: {file_path}")
-        print(f"  - 샘플 수: {self.size}")
-        print(f"  - State 차원: {self.state_dim}")
-        print(f"  - Action 차원: {self.action_dim}")
     
     def __len__(self) -> int:
         """데이터셋 크기 반환"""
@@ -132,12 +94,6 @@ class OfflineDataset:
             'dones': self.dones[indices]
         }
     
-    def add_trajectory(self, trajectory: list):
-        """전체 에피소드 추가 (replay.py 호환)"""
-        for transition in trajectory:
-            if len(self.transitions) >= self.capacity:
-                self.transitions.pop(0)
-            self.transitions.append(transition)
     
     def get_batch(self, batch_size: int, device: Optional[torch.device] = None) -> Dict[str, torch.Tensor]:
         """
@@ -169,35 +125,23 @@ class OfflineDataset:
         return batch
     
     def save(self, path: str):
-        """데이터셋 저장 (npz 또는 pt 형식)"""
+        """데이터셋 저장 (NPZ 형식만)"""
         path = Path(path)
         
-        if str(path).endswith('.npz'):
-            # NPZ 형식으로 저장
-            np.savez(
-                path,
-                states=self.states,
-                actions=self.actions,
-                rewards=self.rewards,
-                next_states=self.next_states,
-                dones=self.dones
-            )
-            print(f"데이터셋 저장 (NPZ): {path}")
-        else:
-            # PT 형식으로 저장
-            torch.save({
-                'states': self.states,
-                'actions': self.actions,
-                'rewards': self.rewards,
-                'next_states': self.next_states,
-                'dones': self.dones,
-                'transitions': self.transitions if self.transitions else []
-            }, path)
-            print(f"데이터셋 저장 (PT): {path}")
-    
-    def load(self, path: str):
-        """데이터셋 로드 (pt 형식)"""
-        self._load_pt(Path(path))
+        # NPZ 확장자 강제
+        if not str(path).endswith('.npz'):
+            path = Path(str(path) + '.npz')
+        
+        # NPZ 형식으로 저장
+        np.savez(
+            path,
+            states=self.states,
+            actions=self.actions,
+            rewards=self.rewards,
+            next_states=self.next_states,
+            dones=self.dones
+        )
+        print(f"데이터셋 저장: {path}")
     
     def collect_from_env(self, env, n_episodes: int = 100, policy: str = 'random', 
                         verbose: bool = True) -> None:
