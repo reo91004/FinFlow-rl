@@ -469,6 +469,10 @@ class FinFlowTrainer:
         self.logger.info("SAC 온라인 미세조정 시작")
         self.logger.info("=" * 50)
         
+        # 누락된 속성 초기화
+        self.all_costs = []
+        self.last_action = np.zeros(self.env.n_assets)
+        
         episode_rewards = []
         episode_sharpes = []
         episode_cvars = []
@@ -526,6 +530,10 @@ class FinFlowTrainer:
                 self.logger.debug(f"Step {episode_steps}: portfolio_return={portfolio_return:.6f}, cumulative_return={np.prod(1 + np.array(self.episode_returns)) - 1:.4f}")
                 self.episode_actions.append(action.copy())
                 
+                # 거래 비용 추적
+                transaction_cost = info.get('transaction_cost', 0)
+                self.all_costs.append(transaction_cost)
+                
                 # Store experience
                 from src.core.replay import Transition
                 transition = Transition(
@@ -578,8 +586,11 @@ class FinFlowTrainer:
                         'learning_rate': self.config.sac_lr,
                         'cql_alpha': losses.get('cql_alpha', 0.0),
                         'portfolio_concentration': np.max(action),
-                        'turnover': np.linalg.norm(action - getattr(self, 'last_action', action))
+                        'turnover': np.linalg.norm(action - self.last_action)
                     }
+                    
+                    # 액션 업데이트
+                    self.last_action = action.copy()
                     
                     # Push metrics to stability monitor
                     self.stability_monitor.push(stability_metrics)
@@ -691,9 +702,9 @@ class FinFlowTrainer:
                 self.logger.info(f"🔄 Turnover: {avg_turnover:.4%} | Steps: {episode_steps} | Reward: {episode_reward:.6f}")
                 
                 # 디버그 정보 추가
-                self.logger.debug(f"Raw portfolio value: {self.portfolio_value}")
-                self.logger.debug(f"Transaction costs: {np.mean(self.all_costs[-episode_steps:]) if hasattr(self, 'all_costs') else 0:.6f}")
-                self.logger.debug(f"Action std: {np.std(action):.6f}")
+                self.logger.debug(f"Raw portfolio value: {portfolio_value}")
+                self.logger.debug(f"Transaction costs: {np.mean(self.all_costs[-episode_steps:]) if hasattr(self, 'all_costs') and len(self.all_costs) > 0 else 0:.6f}")
+                self.logger.debug(f"Action std: {np.std(action) if 'action' in locals() else 0:.6f}")
                 self.logger.info("=" * 60)
             
             # 10 에피소드마다 통계 요약
