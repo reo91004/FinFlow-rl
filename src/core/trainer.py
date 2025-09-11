@@ -293,11 +293,11 @@ class FinFlowTrainer:
         self.logger.info("=" * 50)
         
         # Phase 1: IQL Pretraining
-        if self._check_offline_data():
-            self.logger.info("\n[Phase 1] IQL 오프라인 사전학습")
-            self._pretrain_iql()
-        else:
-            self.logger.warning("오프라인 데이터 없음 - IQL 사전학습 건너뜀")
+        self.logger.info("\n[Phase 1] IQL 오프라인 사전학습")
+        if not self._check_offline_data():
+            self.logger.info("오프라인 데이터가 없습니다. 데이터를 생성합니다...")
+            self._prepare_offline_data()
+        self._pretrain_iql()
         
         # Phase 2: Online SAC Fine-tuning
         self.logger.info("\n[Phase 2] SAC 온라인 미세조정")
