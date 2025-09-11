@@ -556,44 +556,36 @@ class BCell:
         Args:
             checkpoint: IQL checkpoint dictionary containing 'actor', 'value', 'q1', 'q2' etc.
         """
-        try:
-            # Load actor network
-            if 'actor' in checkpoint:
-                self.actor.load_state_dict(checkpoint['actor'])
-                self.logger.info("IQL actor weights loaded into B-Cell actor")
+        # Load actor network
+        if 'actor' in checkpoint:
+            self.actor.load_state_dict(checkpoint['actor'])
+            self.logger.info("IQL actor weights loaded into B-Cell actor")
+        
+        # Load Q-networks if compatible
+        if 'q1' in checkpoint and 'q2' in checkpoint:
+            # Note: IQL Q-networks might have different structure than distributional critics
+            # So we only load the shared layers if possible
+            self.logger.info("IQL Q-network weights detected")
             
-            # Load Q-networks if compatible
-            if 'q1' in checkpoint and 'q2' in checkpoint:
-                try:
-                    # Try to load Q-network weights
-                    # Note: IQL Q-networks might have different structure than distributional critics
-                    # So we only load the shared layers if possible
-                    self.logger.info("IQL Q-network weights detected")
-                    
-                    # Store IQL value function for reference if needed
-                    if hasattr(self, 'iql_agent'):
-                        self.iql_agent.value.load_state_dict(checkpoint['value'])
-                        self.iql_agent.q1.load_state_dict(checkpoint['q1'])
-                        self.iql_agent.q2.load_state_dict(checkpoint['q2'])
-                        if 'q1_target' in checkpoint:
-                            self.iql_agent.q1_target.load_state_dict(checkpoint['q1_target'])
-                        if 'q2_target' in checkpoint:
-                            self.iql_agent.q2_target.load_state_dict(checkpoint['q2_target'])
-                        self.logger.info("IQL agent networks fully loaded")
-                except Exception as e:
-                    self.logger.warning(f"Could not load Q-networks: {e}")
-                    self.logger.info("Will initialize Q-networks randomly for SAC training")
-            
-            # Set training step if available
-            if 'training_steps' in checkpoint:
-                self.training_step = checkpoint['training_steps']
-                self.logger.info(f"Training step set to {self.training_step}")
-            
-            self.logger.info("IQL checkpoint loaded successfully into B-Cell")
-            
-        except Exception as e:
-            self.logger.error(f"Error loading IQL checkpoint: {e}")
-            raise
+            # Store IQL value function for reference if needed
+            if hasattr(self, 'iql_agent'):
+                self.iql_agent.value.load_state_dict(checkpoint['value'])
+                self.iql_agent.q1.load_state_dict(checkpoint['q1'])
+                self.iql_agent.q2.load_state_dict(checkpoint['q2'])
+                if 'q1_target' in checkpoint:
+                    self.iql_agent.q1_target.load_state_dict(checkpoint['q1_target'])
+                if 'q2_target' in checkpoint:
+                    self.iql_agent.q2_target.load_state_dict(checkpoint['q2_target'])
+                self.logger.info("IQL agent networks fully loaded")
+            else:
+                self.logger.info("Will initialize Q-networks randomly for SAC training")
+        
+        # Set training step if available
+        if 'training_steps' in checkpoint:
+            self.training_step = checkpoint['training_steps']
+            self.logger.info(f"Training step set to {self.training_step}")
+        
+        self.logger.info("IQL checkpoint loaded successfully into B-Cell")
     
     def save(self, path: str):
         """Save B-Cell model"""

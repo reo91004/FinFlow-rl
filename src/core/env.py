@@ -13,7 +13,7 @@ from src.data.features import FeatureExtractor
 @dataclass
 class PortfolioState:
     """포트폴리오 상태 정보"""
-    features: np.ndarray  # 시장 특성 (12D)
+    features: np.ndarray  # 시장 특성 (동적 차원)
     weights: np.ndarray   # 현재 포트폴리오 가중치
     crisis_level: float   # T-Cell 위기 수준
     portfolio_value: float
@@ -21,7 +21,7 @@ class PortfolioState:
     step: int
     
     def to_array(self) -> np.ndarray:
-        """상태를 단일 배열로 변환 (43D = 12 + 30 + 1)"""
+        """상태를 단일 배열로 변환 (동적 차원)"""
         return np.concatenate([
             self.features,
             self.weights,
@@ -82,10 +82,11 @@ class PortfolioEnv(gym.Env):
         # 수익률 계산 (T+1 체결용)
         self.returns = price_data.pct_change().fillna(0).values
         
-        # Gym spaces
+        # Gym spaces - 동적 feature 차원
+        feature_dim = self.feature_extractor.total_dim if hasattr(self.feature_extractor, 'total_dim') else 12
         self.observation_space = spaces.Box(
             low=-np.inf, high=np.inf, 
-            shape=(12 + self.n_assets + 1,),  # features + weights + crisis
+            shape=(feature_dim + self.n_assets + 1,),  # features + weights + crisis
             dtype=np.float32
         )
         
@@ -285,7 +286,7 @@ class PortfolioEnv(gym.Env):
                 'prices': np.zeros((self.feature_extractor.window, self.n_assets)),
                 'returns': np.zeros((self.feature_extractor.window, self.n_assets)),
                 'volumes': np.ones((self.feature_extractor.window, self.n_assets)),
-                'features': np.zeros(12)
+                'features': np.zeros(feature_dim)
             }
         
         # 현재 윈도우의 데이터 추출

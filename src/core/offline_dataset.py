@@ -3,7 +3,9 @@
 import numpy as np
 import torch
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
+from tqdm import tqdm
+from src.utils.logger import FinFlowLogger
 
 class OfflineDataset:
     """
@@ -17,6 +19,7 @@ class OfflineDataset:
         Args:
             data_path: NPZ 파일 경로 또는 디렉토리
         """
+        self.logger = FinFlowLogger("OfflineDataset")
         # 데이터 초기화
         self.states = np.array([])
         self.actions = np.array([])
@@ -143,71 +146,200 @@ class OfflineDataset:
         )
         print(f"데이터셋 저장: {path}")
     
-    def collect_from_env(self, env, n_episodes: int = 100, policy: str = 'random', 
+    def collect_from_env(self, env, n_episodes: int = 500, diversity_bonus: bool = True,
                         verbose: bool = True) -> None:
         """
-        환경에서 직접 오프라인 데이터 수집
+        다양한 투자 전략으로 데이터 수집
         
         Args:
             env: 거래 환경 (PortfolioEnv)
             n_episodes: 수집할 에피소드 수
-            policy: 정책 타입 ('random', 'uniform' 등)
+            diversity_bonus: 다양성 증강 여부
             verbose: 진행 상황 출력 여부
         """
-        from tqdm import tqdm
+        strategies = {
+            'random': 0.2,           # 20% - 탐색용
+            'momentum': 0.2,         # 20% - 모멘텀 전략
+            'mean_reversion': 0.2,   # 20% - 평균회귀
+            'equal_weight': 0.15,    # 15% - 균등가중
+            'risk_parity': 0.15,     # 15% - 위험균등
+            'min_variance': 0.1      # 10% - 최소분산
+        }
         
-        all_states = []
-        all_actions = []
-        all_rewards = []
-        all_next_states = []
-        all_dones = []
+        all_transitions = []
         
-        iterator = tqdm(range(n_episodes), desc="Collecting offline data") if verbose else range(n_episodes)
-        
-        for episode in iterator:
-            state, info = env.reset()
-            done = False
-            truncated = False
+        for strategy_name, ratio in strategies.items():
+            n_eps = int(n_episodes * ratio)
+            self.logger.info(f"{strategy_name} 전략으로 {n_eps} 에피소드 수집")
             
-            while not done and not truncated:
-                # 정책에 따른 액션 선택
-                if policy == 'random':
-                    # Dirichlet 분포로 유효한 포트폴리오 가중치 생성
-                    action = np.random.dirichlet(np.ones(env.n_assets))
-                elif policy == 'uniform':
-                    # 균등 가중치
-                    action = np.ones(env.n_assets) / env.n_assets
-                else:
-                    raise ValueError(f"Unknown policy: {policy}")
-                
-                next_state, reward, done, truncated, info = env.step(action)
-                
-                # 보상은 스케일링 없이 원본 사용
-                all_states.append(state)
-                all_actions.append(action)
-                all_rewards.append(reward)
-                all_next_states.append(next_state)
-                all_dones.append(done or truncated)
-                
-                state = next_state
+            iterator = tqdm(range(n_eps), desc=strategy_name) if verbose else range(n_eps)
+            
+            for episode in iterator:
+                transitions = self._collect_episode(
+                    env, 
+                    strategy=self._get_strategy(strategy_name, env.n_assets),
+                    add_noise=diversity_bonus
+                )
+                all_transitions.extend(transitions)
         
-        # numpy 배열로 변환 및 저장
-        if all_states:
-            self.states = np.array(all_states)
-            self.actions = np.array(all_actions)
-            self.rewards = np.array(all_rewards)
-            self.next_states = np.array(all_next_states)
-            self.dones = np.array(all_dones, dtype=float)
+        # 데이터 품질 검증
+        self._validate_data_quality(all_transitions)
+        
+        # 데이터 증강 (선택적)
+        if diversity_bonus:
+            augmented = self._augment_data(all_transitions)
+            all_transitions.extend(augmented)
+        
+        # 전환을 배열로 변환
+        self._transitions_to_arrays(all_transitions)
+        self.logger.info(f"총 {len(all_transitions)} 전환 수집 완료")
+        
+    def _collect_episode(self, env, strategy, add_noise: bool = False) -> List:
+        """단일 에피소드 수집"""
+        transitions = []
+        state, info = env.reset()
+        done = False
+        truncated = False
+        
+        while not done and not truncated:
+            # 전략에 따른 액션 선택
+            action = strategy(state)
+            
+            # 노이즈 추가 (선택적)
+            if add_noise:
+                noise = np.random.randn(len(action)) * 0.02
+                action = action + noise
+                action = np.maximum(action, 0)
+                action = action / (action.sum() + 1e-8)
+            
+            next_state, reward, done, truncated, info = env.step(action)
+            
+            transitions.append({
+                'state': state,
+                'action': action,
+                'reward': reward,
+                'next_state': next_state,
+                'done': done or truncated
+            })
+            
+            state = next_state
+        
+        return transitions
+    
+    def _get_strategy(self, name: str, n_assets: int):
+        """전략별 정책 함수 반환"""
+        if name == 'random':
+            return lambda s: np.random.dirichlet(np.ones(n_assets))
+        
+        elif name == 'momentum':
+            def momentum_strategy(state):
+                # 최근 수익률 기반 모멘텀
+                if len(state) > n_assets:
+                    # state에서 최근 수익률 추출 (간단한 휴리스틱)
+                    recent_returns = state[:n_assets]
+                    weights = np.exp(recent_returns * 2)
+                else:
+                    weights = np.ones(n_assets)
+                return weights / weights.sum()
+            return momentum_strategy
+        
+        elif name == 'mean_reversion':
+            def mean_reversion_strategy(state):
+                # 평균회귀 전략
+                if len(state) > n_assets:
+                    recent_returns = state[:n_assets]
+                    weights = np.exp(-recent_returns * 2)
+                else:
+                    weights = np.ones(n_assets)
+                return weights / weights.sum()
+            return mean_reversion_strategy
+        
+        elif name == 'equal_weight':
+            return lambda s: np.ones(n_assets) / n_assets
+        
+        elif name == 'risk_parity':
+            def risk_parity_strategy(state):
+                # 간단한 위험균등 (역변동성 가중)
+                if len(state) > n_assets * 2:
+                    # 변동성 추정 (간단한 휴리스틱)
+                    volatilities = np.abs(state[n_assets:n_assets*2]) + 0.01
+                    inv_vol = 1 / volatilities
+                else:
+                    inv_vol = np.ones(n_assets)
+                return inv_vol / inv_vol.sum()
+            return risk_parity_strategy
+        
+        elif name == 'min_variance':
+            def min_variance_strategy(state):
+                # 최소분산 포트폴리오 (간단한 버전)
+                if len(state) > n_assets:
+                    # 낮은 변동성 자산에 높은 가중치
+                    volatilities = np.abs(state[:n_assets]) + 0.01
+                    weights = 1 / (volatilities ** 2)
+                else:
+                    weights = np.ones(n_assets)
+                weights = np.maximum(weights, 0)  # Long only
+                return weights / weights.sum()
+            return min_variance_strategy
+        
+        else:
+            raise ValueError(f"Unknown strategy: {name}")
+    
+    def _augment_data(self, transitions: List) -> List:
+        """데이터 증강으로 다양성 추가"""
+        augmented = []
+        
+        # 일부 전환만 증강 (최대 1000개)
+        for t in transitions[:min(1000, len(transitions) // 10)]:
+            # 노이즈 추가
+            noisy_state = t['state'] + np.random.randn(*t['state'].shape) * 0.01
+            noisy_action = t['action'] + np.random.randn(*t['action'].shape) * 0.05
+            noisy_action = np.maximum(noisy_action, 0)
+            noisy_action = noisy_action / (noisy_action.sum() + 1e-8)
+            
+            augmented.append({
+                'state': noisy_state,
+                'action': noisy_action,
+                'reward': t['reward'] * 0.95,  # 약간 할인
+                'next_state': t['next_state'],
+                'done': t['done']
+            })
+        
+        self.logger.info(f"데이터 증강: {len(augmented)}개 샘플 추가")
+        return augmented
+    
+    def _validate_data_quality(self, transitions: List):
+        """데이터 품질 검증"""
+        if not transitions:
+            raise ValueError("수집된 데이터가 없습니다")
+        
+        # 보상 분포 확인
+        rewards = [t['reward'] for t in transitions]
+        self.logger.info(f"보상 통계: mean={np.mean(rewards):.6f}, std={np.std(rewards):.6f}")
+        
+        # 액션 다양성 확인
+        actions = np.array([t['action'] for t in transitions])
+        action_std = np.std(actions, axis=0)
+        self.logger.info(f"액션 다양성: min_std={np.min(action_std):.6f}, max_std={np.max(action_std):.6f}")
+    
+    def _transitions_to_arrays(self, transitions: List):
+        """전환 리스트를 numpy 배열로 변환"""
+        if transitions:
+            self.states = np.array([t['state'] for t in transitions])
+            self.actions = np.array([t['action'] for t in transitions])
+            self.rewards = np.array([t['reward'] for t in transitions])
+            self.next_states = np.array([t['next_state'] for t in transitions])
+            self.dones = np.array([t['done'] for t in transitions], dtype=float)
             
             self.size = len(self.states)
             self.state_dim = self.states.shape[1] if self.size > 0 else 0
             self.action_dim = self.actions.shape[1] if self.size > 0 else 0
             
-            if verbose:
-                print(f"오프라인 데이터 수집 완료: {self.size} transitions")
-                print(f"  - State 차원: {self.state_dim}")
-                print(f"  - Action 차원: {self.action_dim}")
-                print(f"  - 평균 보상: {np.mean(self.rewards):.4f}")
+            # verbose 파라미터 제거 (undefined)
+            self.logger.info(f"오프라인 데이터 수집 완료: {self.size} transitions")
+            self.logger.info(f"  - State 차원: {self.state_dim}")
+            self.logger.info(f"  - Action 차원: {self.action_dim}")
+            self.logger.info(f"  - 평균 보상: {np.mean(self.rewards):.4f}")
     
     def get_statistics(self) -> Dict[str, Any]:
         """

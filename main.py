@@ -139,7 +139,7 @@ def main():
                 'window_size': config_dict.get('features', {}).get('window', 30)
             },
             data_config={
-                'tickers': tickers,
+                'symbols': tickers,  # trainer.py가 'symbols'를 찾음
                 'start': config_dict.get('data', {}).get('start', '2008-01-01'),
                 'end': config_dict.get('data', {}).get('end', '2020-12-31'),
                 'test_start': config_dict.get('data', {}).get('test_start', '2021-01-01'),
@@ -149,13 +149,13 @@ def main():
                 'auto_download': config_dict.get('data', {}).get('auto_download', True),
                 'use_cache': not args.no_cache
             },
-            iql_epochs=args.iql_epochs or config_dict.get('training', {}).get('iql_epochs', 100),
-            sac_episodes=args.sac_episodes or config_dict.get('training', {}).get('sac_episodes', 1000),
-            iql_batch_size=args.batch_size or config_dict.get('training', {}).get('iql_batch_size', 256),
-            sac_batch_size=args.batch_size or config_dict.get('training', {}).get('sac_batch_size', 256),
-            iql_lr=args.lr or config_dict.get('training', {}).get('iql_lr', 3e-4),
-            sac_lr=args.lr or config_dict.get('training', {}).get('sac_lr', 3e-4),
-            memory_capacity=args.memory_capacity or config_dict.get('training', {}).get('memory_capacity', 50000),
+            iql_epochs=args.iql_epochs or config_dict.get('train', {}).get('offline_steps', 200000) // 1000,
+            sac_episodes=args.sac_episodes or config_dict.get('train', {}).get('online_steps', 300000) // 300,
+            iql_batch_size=args.batch_size or config_dict.get('train', {}).get('offline_batch_size', 512),
+            sac_batch_size=args.batch_size or config_dict.get('train', {}).get('online_batch_size', 512),
+            iql_lr=args.lr or config_dict.get('bcell', {}).get('critic_lr', 3e-4),
+            sac_lr=args.lr or config_dict.get('bcell', {}).get('actor_lr', 3e-4),
+            memory_capacity=args.memory_capacity or config_dict.get('train', {}).get('buffer_size', 100000),
             data_path=args.data_path or config_dict.get('system', {}).get('data_path', 'data/processed'),
             checkpoint_dir=args.checkpoint_dir or config_dict.get('system', {}).get('checkpoint_dir', 'checkpoints'),
             target_sharpe=args.target_sharpe or config_dict.get('targets', {}).get('sharpe_ratio', 1.5),
@@ -203,6 +203,13 @@ def main():
         
         # Quick training with synthetic data
         config = TrainingConfig(
+            data_config={
+                'symbols': ['AAPL', 'GOOGL', 'MSFT'],  # 데모용 3개 심볼
+                'start': '2019-01-01',
+                'end': '2020-12-31',
+                'test_start': '2021-01-01',
+                'test_end': '2021-12-31'
+            },
             iql_epochs=10,  # Reduced for demo
             sac_episodes=50,  # Reduced for demo
             device=args.device,

@@ -3,30 +3,49 @@
 import pandas as pd
 import numpy as np
 import ta
-from typing import Optional
+from typing import Optional, Dict
 from src.utils.logger import FinFlowLogger
 
 class FeatureExtractor:
     """
-    12차원 시장 특성 추출기 (기존 BIPD 스타일 유지)
+    동적 차원 시장 특성 추출기
     """
     
-    def __init__(self, window: int = 20):
+    def __init__(self, window: int = 20, feature_config: Optional[Dict] = None):
         self.window = window
         self.logger = FinFlowLogger("FeatureExtractor")
-        self.logger.info(f"특성 추출기 초기화 - window={window}")
+        
+        # Feature 설정 로드
+        if feature_config is None:
+            # 기본값 사용
+            self.feature_dims = {
+                'returns': 3,
+                'technical': 4,
+                'structure': 3,
+                'momentum': 2
+            }
+        else:
+            self.feature_dims = feature_config.get('dimensions', {
+                'returns': 3,
+                'technical': 4,
+                'structure': 3,
+                'momentum': 2
+            })
+        
+        self.total_dim = sum(self.feature_dims.values())
+        self.logger.info(f"특성 추출기 초기화 - window={window}, total_dim={self.total_dim}")
     
     def extract_features(self, price_data: pd.DataFrame, 
                         current_idx: Optional[int] = None) -> np.ndarray:
         """
-        12차원 시장 특성 추출
+        동적 차원 시장 특성 추출
         
         Args:
             price_data: 가격 데이터 (DataFrame)
             current_idx: 현재 시점 인덱스 (None이면 마지막 시점)
             
         Returns:
-            features: np.array of shape (12,)
+            features: np.array of shape (total_dim,)
         """
         if current_idx is None:
             current_idx = len(price_data) - 1
@@ -35,14 +54,14 @@ class FeatureExtractor:
         start_idx = max(0, current_idx - self.window + 1)
         if current_idx - start_idx < 5:  # 최소 5일 데이터 필요
             self.logger.warning(f"데이터 부족: {current_idx - start_idx + 1}일")
-            return np.zeros(12, dtype=np.float32)
+            return np.zeros(self.total_dim, dtype=np.float32)
         
         # 현재 시점까지의 데이터 추출
         data_slice = price_data.iloc[start_idx:current_idx + 1]
         
         features = []
         
-        # 1. 수익률 통계 (3개)
+        # 1. 수익률 통계 (동적)
         returns = data_slice.pct_change().dropna()
         if len(returns) > 0:
             # 평균 수익률로 집계
@@ -60,9 +79,9 @@ class FeatureExtractor:
             volatility = mean_returns.std()
             features.append(np.clip(volatility, 0, 0.1))
         else:
-            features.extend([0, 0, 0])
+            features.extend([0] * self.feature_dims['returns'])
         
-        # 2. 기술적 지표 (4개) - 대표 자산으로 계산
+        # 2. 기술적 지표 (동적) - 대표 자산으로 계산
         if len(data_slice.columns) > 0:
             # 첫 번째 자산 또는 평균 가격 사용
             if len(data_slice.columns) == 1:
@@ -108,9 +127,9 @@ class FeatureExtractor:
             volume_proxy = returns.std(axis=1).iloc[-1] if len(returns) > 0 else 0
             features.append(np.clip(volume_proxy * 10, 0, 1))
         else:
-            features.extend([0, 0, 0.5, 0])
+            features.extend([0] * self.feature_dims['technical'])
         
-        # 3. 시장 구조 (3개)
+        # 3. 시장 구조 (동적)
         if len(returns) > 1:
             # 자산 간 상관관계
             if len(data_slice.columns) > 1:
@@ -140,9 +159,9 @@ class FeatureExtractor:
             max_dd = drawdown.min()
             features.append(np.clip(max_dd, -0.5, 0))
         else:
-            features.extend([0, 1.0, 0])
+            features.extend([0] * self.feature_dims['structure'])
         
-        # 4. 모멘텀 (2개)
+        # 4. 모멘텀 (동적)
         if len(mean_returns) >= 5:
             # 단기 모멘텀 (5일)
             short_momentum = mean_returns.iloc[-5:].mean()
@@ -163,6 +182,6 @@ class FeatureExtractor:
         # NaN 체크
         features = np.nan_to_num(features, 0)
         
-        assert len(features) == 12, f"Feature dimension mismatch: {len(features)} != 12"
+        assert len(features) == self.total_dim, f"Feature dimension mismatch: {len(features)} != {self.total_dim}"
         
         return features

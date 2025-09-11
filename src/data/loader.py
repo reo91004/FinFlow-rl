@@ -7,6 +7,7 @@ import pickle
 import os
 from typing import List, Tuple, Optional, Dict
 from src.utils.logger import FinFlowLogger
+from src.data.validator import DataValidator
 
 class DataLoader:
     """
@@ -16,10 +17,12 @@ class DataLoader:
     캐싱 기능을 제공하여 반복 사용 시 효율성 증대
     """
     
-    def __init__(self, cache_dir: str = "data/cache"):
+    def __init__(self, cache_dir: str = "data/cache", validate_data: bool = True):
         self.cache_dir = cache_dir
         os.makedirs(cache_dir, exist_ok=True)
         self.logger = FinFlowLogger("DataLoader")
+        self.validate_data = validate_data
+        self.validator = DataValidator() if validate_data else None
         
     def download_data(self, symbols: List[str], start_date: str, end_date: str, 
                      use_cache: bool = True) -> pd.DataFrame:
@@ -81,8 +84,14 @@ class DataLoader:
                     price_data = raw_data['Close'].copy()
                     self.logger.warning("Adj Close가 없어 Close를 사용합니다.")
             
-            # 데이터 정제
+            # 데이터 정제 및 검증
             price_data = self._clean_data(price_data)
+            
+            # DataValidator를 사용한 검증
+            if self.validate_data and self.validator:
+                self.logger.info("데이터 검증 시작...")
+                price_data = self.validator.validate_and_clean(price_data)
+                self.logger.info("데이터 검증 완료")
             
             # 캐시 저장
             if use_cache:

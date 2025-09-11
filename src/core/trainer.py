@@ -165,9 +165,8 @@ class FinFlowTrainer:
         # DataLoader를 사용하여 실제 데이터 로드
         data_loader = DataLoader(cache_dir="data/cache")
         
-        # 설정에서 티커 가져오기
-        tickers = self.config.data_config.get('tickers', 
-            ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NVDA', 'TSLA', 'JPM', 'V', 'JNJ'])
+        # 설정에서 티커 가져오기 (config에서 읽기)
+        tickers = self.config.data_config.get('symbols')
         
         # config에서 날짜 읽기
         config_data = self.config.data_config
@@ -187,8 +186,12 @@ class FinFlowTrainer:
         
         self.logger.info(f"데이터 로드 성공: {len(price_data)} 일, {len(price_data.columns)} 자산")
         
-        # 특성 추출기
-        self.feature_extractor = FeatureExtractor(window=self.config.env_config.get('window_size', 30))
+        # 특성 추출기 (config 전달)
+        feature_config = config_data.get('features', {}) if 'features' in locals() else {}
+        self.feature_extractor = FeatureExtractor(
+            window=self.config.env_config.get('window_size', 30),
+            feature_config=feature_config
+        )
         
         # Environment 생성
         self.env = PortfolioEnv(
@@ -206,12 +209,14 @@ class FinFlowTrainer:
         
         self.logger.info(f"환경 초기화: state_dim={self.state_dim}, action_dim={self.action_dim}")
         
-        # T-Cell (Crisis Detection)
+        # T-Cell (Crisis Detection) - config 기반
+        feature_config = self.config.data_config.get('features', {}) if hasattr(self.config, 'data_config') else {}
         self.t_cell = TCell(
-            feature_dim=12,
+            feature_dim=None,  # config에서 자동 계산
             contamination=0.1,
             n_estimators=100,
-            window_size=30
+            window_size=30,
+            feature_config=feature_config
         )
         
         # Memory Cell
@@ -359,7 +364,7 @@ class FinFlowTrainer:
             dataset.collect_from_env(
                 env=self.env,
                 n_episodes=n_episodes,
-                policy='random',
+                diversity_bonus=True,
                 verbose=True
             )
             
@@ -453,15 +458,144 @@ class FinFlowTrainer:
         self.logger.info("IQL 사전학습 완료 및 지식 전이 완료")
     
     def _transfer_iql_to_bcell(self):
-        """IQL에서 B-Cell로 지식 전이"""
-        # Transfer actor weights
+        """IQL에서 B-Cell로 완전한 지식 전이"""
+        
+        # 1. Actor 네트워크 전이 (정책)
         self.b_cell.actor.load_state_dict(
             self.iql_agent.actor.state_dict()
         )
+        self.logger.info("Actor 네트워크 전이 완료")
         
-        # Initialize critics with IQL Q-networks
-        # Note: Architecture difference may require adaptation
-        self.logger.info("IQL → B-Cell 가중치 전이 완료")
+        # 2. Value network를 Critic 초기화에 활용
+        with torch.no_grad():
+            # IQL의 value function을 SAC의 baseline으로 사용
+            if hasattr(self.iql_agent, 'value'):
+                self.b_cell.value_baseline = self.iql_agent.value
+                
+            # Q-network 가중치를 Critic 초기화에 활용
+            # 주의: IQL은 단일 Q값, SAC는 Quantile 분포 사용
+            if hasattr(self.b_cell, 'critic'):
+                # 호환 가능한 레이어만 복사
+                self._transfer_compatible_layers(
+                    source=self.iql_agent.q1,
+                    target=self.b_cell.critic.q1,
+                    layer_mapping={
+                        'fc1': 'fc1',  # 첫 번째 레이어는 동일
+                        'fc2': 'fc2',  # 두 번째 레이어도 호환
+                        # fc3는 출력 차원이 다르므로 제외
+                    }
+                )
+                self._transfer_compatible_layers(
+                    source=self.iql_agent.q2,
+                    target=self.b_cell.critic.q2,
+                    layer_mapping={
+                        'fc1': 'fc1',
+                        'fc2': 'fc2',
+                    }
+                )
+        
+        # 3. IQL 학습 통계 전이
+        self.b_cell.initial_stats = {
+            'iql_final_value': self._compute_iql_average_value(),
+            'iql_final_q': self._compute_iql_average_q(),
+            'iql_training_steps': self.iql_agent.training_steps if hasattr(self.iql_agent, 'training_steps') else 0
+        }
+        
+        # 4. Temperature (alpha) 초기화
+        # IQL의 advantage 분포를 기반으로 SAC의 엔트로피 목표 설정
+        advantages = self._compute_iql_advantages()
+        if advantages is not None:
+            initial_entropy = -np.mean(advantages) * 0.1  # 휴리스틱
+            self.b_cell.target_entropy = initial_entropy
+        
+        # 5. 모든 B-Cell 전략에 전이
+        for bcell_name, bcell in self.b_cells.items():
+            if bcell != self.b_cell:  # 기본 B-Cell은 이미 전이됨
+                bcell.actor.load_state_dict(self.iql_agent.actor.state_dict())
+                if hasattr(bcell, 'critic'):
+                    self._transfer_compatible_layers(
+                        source=self.iql_agent.q1,
+                        target=bcell.critic.q1,
+                        layer_mapping={'fc1': 'fc1', 'fc2': 'fc2'}
+                    )
+                    self._transfer_compatible_layers(
+                        source=self.iql_agent.q2,
+                        target=bcell.critic.q2,
+                        layer_mapping={'fc1': 'fc1', 'fc2': 'fc2'}
+                    )
+                self.logger.debug(f"B-Cell [{bcell_name}] 지식 전이 완료")
+        
+        self.logger.info(f"지식 전이 완료: Value baseline={self.b_cell.initial_stats.get('iql_final_value', 0):.3f}")
+    
+    def _transfer_compatible_layers(self, source, target, layer_mapping):
+        """호환 가능한 레이어만 선택적 전이"""
+        source_dict = source.state_dict()
+        target_dict = target.state_dict()
+        
+        for src_name, tgt_name in layer_mapping.items():
+            src_key_w = f"{src_name}.weight"
+            src_key_b = f"{src_name}.bias"
+            tgt_key_w = f"{tgt_name}.weight"
+            tgt_key_b = f"{tgt_name}.bias"
+            
+            if src_key_w in source_dict and tgt_key_w in target_dict:
+                if source_dict[src_key_w].shape == target_dict[tgt_key_w].shape:
+                    target_dict[tgt_key_w] = source_dict[src_key_w].clone()
+                    target_dict[tgt_key_b] = source_dict[src_key_b].clone()
+                    self.logger.debug(f"레이어 전이: {src_name} → {tgt_name}")
+                else:
+                    self.logger.debug(f"레이어 크기 불일치: {src_name} {source_dict[src_key_w].shape} → {tgt_name} {target_dict[tgt_key_w].shape}")
+        
+        target.load_state_dict(target_dict)
+    
+    def _compute_iql_average_value(self):
+        """IQL의 평균 value 계산"""
+        if not hasattr(self.iql_agent, 'value'):
+            return 0.0
+        
+        # 샘플 상태들에 대한 평균 value 계산
+        with torch.no_grad():
+            if len(self.replay_buffer) > 100:
+                transitions, _, _ = self.replay_buffer.sample(100)
+                states = torch.FloatTensor([t.state for t in transitions]).to(self.device)
+                values = self.iql_agent.value(states)
+                return values.mean().item()
+        return 0.0
+    
+    def _compute_iql_average_q(self):
+        """IQL의 평균 Q값 계산"""
+        if not hasattr(self.iql_agent, 'q1'):
+            return 0.0
+        
+        with torch.no_grad():
+            if len(self.replay_buffer) > 100:
+                transitions, _, _ = self.replay_buffer.sample(100)
+                states = torch.FloatTensor([t.state for t in transitions]).to(self.device)
+                actions = torch.FloatTensor([t.action for t in transitions]).to(self.device)
+                q1_values = self.iql_agent.q1(states, actions)
+                q2_values = self.iql_agent.q2(states, actions)
+                return torch.min(q1_values, q2_values).mean().item()
+        return 0.0
+    
+    def _compute_iql_advantages(self):
+        """IQL의 advantage 분포 계산"""
+        if not hasattr(self.iql_agent, 'value') or not hasattr(self.iql_agent, 'q1'):
+            return None
+        
+        with torch.no_grad():
+            if len(self.replay_buffer) > 100:
+                transitions, _, _ = self.replay_buffer.sample(100)
+                states = torch.FloatTensor([t.state for t in transitions]).to(self.device)
+                actions = torch.FloatTensor([t.action for t in transitions]).to(self.device)
+                
+                values = self.iql_agent.value(states)
+                q1_values = self.iql_agent.q1(states, actions)
+                q2_values = self.iql_agent.q2(states, actions)
+                q_values = torch.min(q1_values, q2_values)
+                
+                advantages = q_values - values
+                return advantages.cpu().numpy()
+        return None
     
     def _train_sac(self):
         """SAC 온라인 미세조정"""
@@ -1003,13 +1137,10 @@ class FinFlowTrainer:
                     bcell.load_iql_checkpoint(checkpoint)
                     self.logger.info(f"B-Cell [{bcell_name}]에 IQL 체크포인트 로드 완료")
                 else:
-                    # load_iql_checkpoint가 없으면 직접 actor만 로드 시도
-                    try:
-                        if 'actor' in checkpoint:
-                            bcell.actor.load_state_dict(checkpoint['actor'])
-                            self.logger.info(f"B-Cell [{bcell_name}]에 IQL actor 가중치 로드 완료")
-                    except Exception as e:
-                        self.logger.warning(f"B-Cell [{bcell_name}] IQL 가중치 로드 실패: {e}")
+                    # load_iql_checkpoint가 없으면 직접 actor만 로드
+                    if 'actor' in checkpoint:
+                        bcell.actor.load_state_dict(checkpoint['actor'])
+                        self.logger.info(f"B-Cell [{bcell_name}]에 IQL actor 가중치 로드 완료")
             
             # 기본 B-Cell도 업데이트
             if hasattr(self.b_cell, 'load_iql_checkpoint'):

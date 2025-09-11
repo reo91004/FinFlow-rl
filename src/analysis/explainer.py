@@ -60,7 +60,7 @@ class XAIExplainer:
         """기본 특성 이름 생성"""
         names = []
         
-        # Market features (12)
+        # Market features (dynamic dimensions from config)
         names.extend([
             'recent_return', 'avg_return', 'volatility',
             'rsi', 'macd', 'bb_position', 'volume_ratio',
@@ -545,7 +545,8 @@ class XAIExplainer:
                 }
         
         # 포트폴리오 가중치 정규화 (필요시)
-        weight_start_idx = 12  # 시장 특성 12개 이후
+        # 동적 feature 차원 처리
+        weight_start_idx = len([f for f in self.feature_names if 'weight' not in f.lower()])
         weight_end_idx = 42    # 30개 가중치
         if weight_start_idx < len(cf_state):
             weights = cf_state[weight_start_idx:weight_end_idx]

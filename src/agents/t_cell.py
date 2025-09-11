@@ -24,20 +24,31 @@ class TCell:
     """
     
     def __init__(self, 
-                 feature_dim: int = 12,
+                 feature_dim: Optional[int] = None,
                  contamination: float = 0.1,
                  n_estimators: int = 100,
                  ema_beta: float = 0.9,
-                 window_size: int = 100):
+                 window_size: int = 100,
+                 feature_config: Optional[Dict] = None):
         """
         Args:
-            feature_dim: 특성 차원 수
+            feature_dim: 특성 차원 수 (None이면 config에서 계산)
             contamination: 이상치 비율
             n_estimators: Isolation Forest 트리 개수
             ema_beta: EMA 평활 계수
             window_size: 적응형 임계값 윈도우
+            feature_config: feature 설정 딕셔너리
         """
-        self.feature_dim = feature_dim
+        # feature_dim 동적 계산
+        if feature_dim is None:
+            if feature_config and 'dimensions' in feature_config:
+                self.feature_dim = sum(feature_config['dimensions'].values())
+            else:
+                # 기본값
+                # 기본값은 config에서 정의된 총 차원
+                self.feature_dim = feature_config.get('total_dim', sum(feature_config.get('dimensions', {}).values())) if feature_config else sum({'returns': 3, 'technical': 4, 'structure': 3, 'momentum': 2}.values())
+        else:
+            self.feature_dim = feature_dim
         self.contamination = contamination
         self.ema_beta = ema_beta
         self.window_size = window_size
@@ -195,41 +206,36 @@ class TCell:
                 'top_features': [(i, 0.0) for i in range(min(5, self.feature_dim))]
             }
         
-        try:
-            # Reshape if needed
-            if features.ndim == 1:
-                features = features.reshape(1, -1)
-            
-            # Scale features
-            features_scaled = self.scaler.transform(features)
-            
-            # Get SHAP values
-            shap_values = self.explainer(features_scaled)
-            
-            # Get absolute importance
-            importance = np.abs(shap_values.values[0])
-            
-            # Get top 5 features
-            top_indices = np.argsort(importance)[-5:][::-1]
-            top_features = [(int(idx), float(importance[idx])) for idx in top_indices]
-            
-            # Feature names (if available)
-            feature_names = [
-                "recent_return", "avg_return", "volatility",
-                "rsi", "macd", "bollinger", "volume",
-                "correlation", "beta", "max_drawdown",
-                "short_momentum", "long_momentum"
-            ]
-            
-            return {
-                'top_features': top_features,
-                'feature_names': [feature_names[idx] if idx < len(feature_names) else f"feature_{idx}" 
-                                  for idx, _ in top_features]
-            }
-            
-        except Exception as e:
-            self.logger.warning(f"Feature importance 계산 실패: {e}")
-            return {'top_features': [(0, 0.0)]}
+        # Reshape if needed
+        if features.ndim == 1:
+            features = features.reshape(1, -1)
+        
+        # Scale features
+        features_scaled = self.scaler.transform(features)
+        
+        # Get SHAP values
+        shap_values = self.explainer(features_scaled)
+        
+        # Get absolute importance
+        importance = np.abs(shap_values.values[0])
+        
+        # Get top 5 features
+        top_indices = np.argsort(importance)[-5:][::-1]
+        top_features = [(int(idx), float(importance[idx])) for idx in top_indices]
+        
+        # Feature names (if available)
+        feature_names = [
+            "recent_return", "avg_return", "volatility",
+            "rsi", "macd", "bollinger", "volume",
+            "correlation", "beta", "max_drawdown",
+            "short_momentum", "long_momentum"
+        ]
+        
+        return {
+            'top_features': top_features,
+            'feature_names': [feature_names[idx] if idx < len(feature_names) else f"feature_{idx}" 
+                              for idx, _ in top_features]
+        }
     
     def _normalize_score(self, score: float) -> float:
         """Normalize anomaly score to [0, 1]"""
