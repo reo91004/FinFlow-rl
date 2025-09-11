@@ -20,10 +20,24 @@ jspm_packages/
 # Python
 __pycache__/
 *.py[cod]
+*$py.class
+*.so
+.Python
 *.egg
 *.egg-info/
 dist/
 build/
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+.installed.cfg
 
 # Java / Kotlin
 *.class
@@ -61,6 +75,39 @@ build/
 
 # Windows
 Desktop.ini
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Project specific
+logs/
+reports/
+*.pkl
+*.pickle
+*.pth
+*.h5
+*.hdf5
+checkpoints/
+runs/
+wandb/
+mlruns/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Documentation
+docs/_build/
+site/
 
 # Others
 .env

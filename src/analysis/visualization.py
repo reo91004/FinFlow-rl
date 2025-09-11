@@ -1,4 +1,4 @@
-# src/utils/visualization.py
+# src/analysis/visualization.py
 
 import numpy as np
 import pandas as pd

@@ -1,4 +1,4 @@
-# src/learning/optimizer_utils.py
+# src/utils/optimizer_utils.py
 
 import torch
 import torch.nn as nn
