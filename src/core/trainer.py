@@ -1019,21 +1019,57 @@ class FinFlowTrainer:
         """체크포인트 로드"""
         checkpoint = torch.load(path, map_location=self.device)
         
-        self.episode = checkpoint['episode']
-        self.global_step = checkpoint['global_step']
+        # IQL 체크포인트인지 full 체크포인트인지 확인
+        is_iql_checkpoint = 'actor' in checkpoint and 'episode' not in checkpoint
         
-        self.b_cell.load_state_dict(checkpoint['b_cell'])
-        self.gating_network.load_state_dict(checkpoint['gating_network'])
-        
-        # Load memory cell
-        memory_data = checkpoint['memory_cell']
-        self.memory_cell.memories = memory_data['memories']
-        self.memory_cell.memory_stats = memory_data['stats']
-        
-        # Load T-Cell state
-        self.t_cell.load_state(checkpoint['t_cell'])
-        
-        self.logger.info(f"체크포인트 로드: {path}")
+        if is_iql_checkpoint:
+            # IQL 체크포인트 로드
+            self.logger.info("IQL 체크포인트 감지 - IQL 가중치만 로드합니다")
+            
+            # episode와 global_step은 0으로 초기화
+            self.episode = 0
+            self.global_step = checkpoint.get('training_steps', 0)
+            
+            # 모든 B-Cell에 IQL 가중치 로드
+            for bcell_name, bcell in self.b_cells.items():
+                if hasattr(bcell, 'load_iql_checkpoint'):
+                    bcell.load_iql_checkpoint(checkpoint)
+                    self.logger.info(f"B-Cell [{bcell_name}]에 IQL 체크포인트 로드 완료")
+                else:
+                    # load_iql_checkpoint가 없으면 직접 actor만 로드 시도
+                    try:
+                        if 'actor' in checkpoint:
+                            bcell.actor.load_state_dict(checkpoint['actor'])
+                            self.logger.info(f"B-Cell [{bcell_name}]에 IQL actor 가중치 로드 완료")
+                    except Exception as e:
+                        self.logger.warning(f"B-Cell [{bcell_name}] IQL 가중치 로드 실패: {e}")
+            
+            # 기본 B-Cell도 업데이트
+            if hasattr(self.b_cell, 'load_iql_checkpoint'):
+                self.b_cell.load_iql_checkpoint(checkpoint)
+            
+            self.logger.info(f"IQL 체크포인트 로드 완료: {path}")
+            self.logger.info("SAC 파인튜닝을 시작할 준비가 되었습니다")
+            
+        else:
+            # Full 체크포인트 로드
+            self.episode = checkpoint['episode']
+            self.global_step = checkpoint['global_step']
+            
+            self.b_cell.load_state_dict(checkpoint['b_cell'])
+            self.gating_network.load_state_dict(checkpoint['gating_network'])
+            
+            # Load memory cell
+            if 'memory_cell' in checkpoint:
+                memory_data = checkpoint['memory_cell']
+                self.memory_cell.memories = memory_data['memories']
+                self.memory_cell.memory_stats = memory_data['stats']
+            
+            # Load T-Cell state
+            if 't_cell' in checkpoint:
+                self.t_cell.load_state(checkpoint['t_cell'])
+            
+            self.logger.info(f"Full 체크포인트 로드: {path}")
     
     def _generate_report(self, final_metrics: Dict[str, float]):
         """최종 보고서 생성"""
