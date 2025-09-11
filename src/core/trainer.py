@@ -550,12 +550,13 @@ class FinFlowTrainer:
                     next_states = torch.FloatTensor([t.next_state for t in transitions]).to(self.device)
                     dones = torch.FloatTensor([t.done for t in transitions]).to(self.device)
                     
+                    # 배치 생성 - 텐서 그대로 유지
                     batch = {
-                        'states': states,
-                        'actions': actions,
-                        'rewards': rewards,
-                        'next_states': next_states,
-                        'dones': dones,
+                        'states': states,  # 이미 텐서
+                        'actions': actions,  # 이미 텐서
+                        'rewards': rewards,  # 이미 텐서
+                        'next_states': next_states,  # 이미 텐서
+                        'dones': dones,  # 이미 텐서
                         'weights': torch.FloatTensor(weights).to(self.device),
                         'indices': indices
                     }

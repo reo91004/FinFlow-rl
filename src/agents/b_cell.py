@@ -322,16 +322,28 @@ class BCell:
         Returns:
             losses: 손실 딕셔너리
         """
-        # Convert batch format
-        states = torch.FloatTensor(batch['states']).to(self.device)
-        actions = torch.FloatTensor(batch['actions']).to(self.device)
-        rewards = torch.FloatTensor(batch['rewards']).unsqueeze(1).to(self.device)
-        next_states = torch.FloatTensor(batch['next_states']).to(self.device)
-        dones = torch.FloatTensor(batch['dones']).unsqueeze(1).to(self.device)
+        # Convert batch format - 텐서 타입 체크
+        if isinstance(batch['states'], torch.Tensor):
+            # 이미 텐서인 경우 그대로 사용
+            states = batch['states']
+            actions = batch['actions']
+            rewards = batch['rewards'] if batch['rewards'].dim() == 2 else batch['rewards'].unsqueeze(1)
+            next_states = batch['next_states']
+            dones = batch['dones'] if batch['dones'].dim() == 2 else batch['dones'].unsqueeze(1)
+        else:
+            # numpy array인 경우 변환
+            states = torch.FloatTensor(batch['states']).to(self.device)
+            actions = torch.FloatTensor(batch['actions']).to(self.device)
+            rewards = torch.FloatTensor(batch['rewards']).unsqueeze(1).to(self.device)
+            next_states = torch.FloatTensor(batch['next_states']).to(self.device)
+            dones = torch.FloatTensor(batch['dones']).unsqueeze(1).to(self.device)
         
         # Default weights if not provided
         if 'weights' in batch:
-            weights = torch.FloatTensor(batch['weights']).unsqueeze(1).to(self.device)
+            if isinstance(batch['weights'], torch.Tensor):
+                weights = batch['weights'] if batch['weights'].dim() == 2 else batch['weights'].unsqueeze(1)
+            else:
+                weights = torch.FloatTensor(batch['weights']).unsqueeze(1).to(self.device)
         else:
             weights = torch.ones_like(rewards)
         
