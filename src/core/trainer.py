@@ -436,10 +436,15 @@ class FinFlowTrainer:
                 if (epoch + 1) % self.config.log_interval == 0:
                     self.logger.info(
                         f"IQL Epoch {epoch+1}/{self.config.iql_epochs} | "
-                        f"V Loss: {avg_losses['value_loss']:.4f} | "
-                        f"Q Loss: {avg_losses['q_loss']:.4f} | "
-                        f"Actor Loss: {avg_losses['actor_loss']:.4f}"
+                        f"V Loss: {avg_losses['value_loss']:.6f} | "
+                        f"Q Loss: {avg_losses['q_loss']:.6f} | "
+                        f"Actor Loss: {avg_losses['actor_loss']:.6f}"
                     )
+                    
+                    # IQL 학습 진단 정보
+                    self.logger.debug(f"Value gradient norm: {avg_losses.get('value_grad_norm', 0):.6f}")
+                    self.logger.debug(f"Q gradient norm: {avg_losses.get('q_grad_norm', 0):.6f}")
+                    self.logger.debug(f"Actor gradient norm: {avg_losses.get('actor_grad_norm', 0):.6f}")
                     
                     self.logger.log_metrics(avg_losses, self.global_step)
         
@@ -680,10 +685,15 @@ class FinFlowTrainer:
                 self.logger.info("=" * 60)
                 self.logger.info(f"Episode {episode+1}/{self.config.sac_episodes} 완료")
                 self.logger.info("-" * 60)
-                self.logger.info(f"📊 수익률: {total_return:.2%} | 포트폴리오: ${portfolio_value:,.0f}")
+                self.logger.info(f"📊 수익률: {total_return:.6%} | 포트폴리오: ${portfolio_value:,.2f}")
                 self.logger.info(f"📈 Sharpe: {episode_sharpe:.3f} | Calmar: {episode_calmar:.3f} | Sortino: {episode_sortino:.3f}")
-                self.logger.info(f"📉 CVaR(5%): {episode_cvar:.3f} | MaxDD: {max_drawdown:.2%} | Vol: {volatility:.2%}")
-                self.logger.info(f"🔄 Turnover: {avg_turnover:.2%} | Steps: {episode_steps} | Reward: {episode_reward:.4f}")
+                self.logger.info(f"📉 CVaR(5%): {episode_cvar:.6f} | MaxDD: {max_drawdown:.6%} | Vol: {volatility:.4%}")
+                self.logger.info(f"🔄 Turnover: {avg_turnover:.4%} | Steps: {episode_steps} | Reward: {episode_reward:.6f}")
+                
+                # 디버그 정보 추가
+                self.logger.debug(f"Raw portfolio value: {self.portfolio_value}")
+                self.logger.debug(f"Transaction costs: {np.mean(self.all_costs[-episode_steps:]) if hasattr(self, 'all_costs') else 0:.6f}")
+                self.logger.debug(f"Action std: {np.std(action):.6f}")
                 self.logger.info("=" * 60)
             
             # 10 에피소드마다 통계 요약

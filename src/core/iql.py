@@ -249,6 +249,9 @@ class IQLAgent:
         action_dist = self.actor.get_distribution(states)
         log_probs = action_dist.log_prob(actions)
         
+        # Clamp log probabilities to prevent extreme values
+        log_probs = torch.clamp(log_probs, min=-100, max=0)
+        
         # Weighted regression loss
         actor_loss = -(weights * log_probs).mean()
         

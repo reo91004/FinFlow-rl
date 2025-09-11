@@ -182,12 +182,10 @@ class OfflineDataset:
                 
                 next_state, reward, done, truncated, info = env.step(action)
                 
-                # 보상 스케일링 (IQL 학습 안정성을 위해)
-                scaled_reward = reward * 100.0  # 스케일 업
-                
+                # 보상은 스케일링 없이 원본 사용
                 all_states.append(state)
                 all_actions.append(action)
-                all_rewards.append(scaled_reward)
+                all_rewards.append(reward)
                 all_next_states.append(next_state)
                 all_dones.append(done or truncated)
                 

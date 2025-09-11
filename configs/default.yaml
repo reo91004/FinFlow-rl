@@ -75,8 +75,8 @@ tcell:
 bcell:
   # 오프라인 사전학습
   offline_algo: "iql"
-  iql_expectile: 0.9  # 0.7 -> 0.9 (더 보수적)
-  iql_temperature: 1.0  # 3.0 -> 1.0 (더 집중적)
+  iql_expectile: 0.7  # IQL 원논문 기본값 (Kostrikov et al., 2022)
+  iql_temperature: 3.0  # IQL 원논문 기본값
 
   # 온라인 학습
   online_algo: "dist_sac_cql"
@@ -87,7 +87,7 @@ bcell:
   n_quantiles: 32
 
   # 학습률
-  actor_lr: 1.0e-4  # 3e-4 -> 1e-4 (더 안정적)
+  actor_lr: 3.0e-4  # 원논문 기본값 유지
   critic_lr: 3.0e-4
   alpha_lr: 3.0e-4
 
