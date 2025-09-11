@@ -143,6 +143,7 @@ objectives:
 # 학습 설정
 train:
   # 오프라인 사전학습
+  offline_episodes: 100  # 오프라인 데이터 수집 에피소드 수
   offline_steps: 200000
   offline_batch_size: 512
   offline_eval_interval: 10000

@@ -169,17 +169,31 @@ class OfflineDataset:
         return batch
     
     def save(self, path: str):
-        """데이터셋 저장 (pt 형식)"""
+        """데이터셋 저장 (npz 또는 pt 형식)"""
         path = Path(path)
-        torch.save({
-            'states': self.states,
-            'actions': self.actions,
-            'rewards': self.rewards,
-            'next_states': self.next_states,
-            'dones': self.dones,
-            'transitions': self.transitions if self.transitions else []
-        }, path)
-        print(f"데이터셋 저장: {path}")
+        
+        if str(path).endswith('.npz'):
+            # NPZ 형식으로 저장
+            np.savez(
+                path,
+                states=self.states,
+                actions=self.actions,
+                rewards=self.rewards,
+                next_states=self.next_states,
+                dones=self.dones
+            )
+            print(f"데이터셋 저장 (NPZ): {path}")
+        else:
+            # PT 형식으로 저장
+            torch.save({
+                'states': self.states,
+                'actions': self.actions,
+                'rewards': self.rewards,
+                'next_states': self.next_states,
+                'dones': self.dones,
+                'transitions': self.transitions if self.transitions else []
+            }, path)
+            print(f"데이터셋 저장 (PT): {path}")
     
     def load(self, path: str):
         """데이터셋 로드 (pt 형식)"""

@@ -51,6 +51,14 @@ class TrainingConfig:
         'use_cache': True  # use cached data if available
     })
     
+    # Training configuration
+    train_config: Dict = field(default_factory=lambda: {
+        'offline_episodes': 100,  # 오프라인 데이터 수집 에피소드
+        'offline_steps': 200000,
+        'offline_batch_size': 512,
+        'offline_eval_interval': 10000
+    })
+    
     # IQL Pretraining
     iql_epochs: int = 100
     iql_batch_size: int = 256
@@ -342,10 +350,15 @@ class FinFlowTrainer:
             
             # OfflineDataset 생성 및 데이터 수집
             from src.core.offline_dataset import OfflineDataset
-            dataset = OfflineDataset(capacity=100000)
+            
+            # config에서 에피소드 수 가져오기 (기본값: 100)
+            n_episodes = self.config.train_config.get('offline_episodes', 100)
+            self.logger.info(f"{n_episodes}개 에피소드로 오프라인 데이터 수집")
+            
+            dataset = OfflineDataset(capacity=1000000)  # 더 큰 capacity
             dataset.collect_from_env(
                 env=self.env,
-                n_episodes=10,  # 여러 에피소드로 데이터 수집
+                n_episodes=n_episodes,
                 policy='random',
                 verbose=True
             )
