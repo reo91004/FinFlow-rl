@@ -284,7 +284,25 @@ class IQLAgent:
             return action.cpu().numpy().squeeze()
     
     def save(self, path: str):
-        """Save model"""
+        """Save model with metadata"""
+        import datetime
+        
+        # 메타데이터 생성
+        metadata = {
+            'checkpoint_type': 'iql',  # IQL 체크포인트 표시
+            'timestamp': datetime.datetime.now().isoformat(),
+            'state_dim': self.state_dim,
+            'action_dim': self.action_dim,
+            'hidden_dim': self.hidden_dim,
+            'expectile': self.expectile,
+            'temperature': self.temperature,
+            'discount': self.discount,
+            'tau': self.tau,
+            'framework_version': '2.0',
+            'training_mode': 'iql',
+            'total_steps': self.training_steps
+        }
+        
         torch.save({
             'actor': self.actor.state_dict(),
             'value': self.value.state_dict(),
@@ -292,9 +310,10 @@ class IQLAgent:
             'q2': self.q2.state_dict(),
             'q1_target': self.q1_target.state_dict(),
             'q2_target': self.q2_target.state_dict(),
-            'training_steps': self.training_steps
+            'training_steps': self.training_steps,
+            'metadata': metadata  # 메타데이터 추가
         }, path)
-        self.logger.info(f"모델 저장: {path}")
+        self.logger.info(f"모델 저장 (메타데이터 포함): {path}")
     
     def load(self, path: str):
         """Load model"""

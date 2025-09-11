@@ -22,7 +22,7 @@ from src.utils.seed import set_seed, DeviceManager
 from src.utils.logger import FinFlowLogger, get_session_directory
 from src.data import DataLoader, FeatureExtractor
 from src.core.env import PortfolioEnv
-from src.core.replay import OfflineDataset
+from src.core.offline_dataset import OfflineDataset
 from src.core.iql import IQLAgent
 from src.agents.t_cell import TCell
 
@@ -31,41 +31,6 @@ def load_config(config_path: str) -> dict:
     with open(config_path, 'r') as f:
         return yaml.safe_load(f)
 
-def collect_offline_data(env, n_episodes: int = 100) -> OfflineDataset:
-    """
-    오프라인 데이터 수집 (랜덤 정책)
-    """
-    dataset = OfflineDataset(capacity=100000)
-    logger = FinFlowLogger("DataCollection")
-    
-    for episode in tqdm(range(n_episodes), desc="Collecting offline data"):
-        state, info = env.reset()
-        trajectory = []
-        done = False
-        truncated = False
-        
-        while not done and not truncated:
-            # Random policy (Dirichlet)
-            action = np.random.dirichlet(np.ones(env.n_assets))
-            next_state, reward, done, truncated, info = env.step(action)
-            
-            trajectory.append({
-                'state': state,
-                'action': action,
-                'reward': reward,
-                'next_state': next_state,
-                'done': done or truncated
-            })
-            
-            state = next_state
-        
-        # Add trajectory to dataset
-        from src.core.replay import Transition
-        transitions = [Transition(**t) for t in trajectory]
-        dataset.add_trajectory(transitions)
-    
-    logger.info(f"오프라인 데이터 수집 완료: {len(dataset)} transitions")
-    return dataset
 
 def main():
     parser = argparse.ArgumentParser(description='IQL Pretraining')
@@ -145,11 +110,11 @@ def main():
     
     if os.path.exists(dataset_path):
         logger.info(f"기존 데이터셋 로드: {dataset_path}")
-        dataset = OfflineDataset()
-        dataset.load(dataset_path)
+        dataset = OfflineDataset(data_path=dataset_path)
     else:
         logger.info(f"오프라인 데이터 수집 중... ({args.collect_episodes} 에피소드)")
-        dataset = collect_offline_data(env, n_episodes=args.collect_episodes)
+        dataset = OfflineDataset(capacity=100000)
+        dataset.collect_from_env(env, n_episodes=args.collect_episodes, policy='random')
         dataset.save(dataset_path)
         logger.info(f"데이터셋 저장: {dataset_path}")
     

@@ -164,7 +164,7 @@ class FinFlowTrainer:
         # config에서 날짜 읽기
         config_data = self.config.data_config
         market_data = data_loader.get_market_data(
-            symbols=tickers[:10],  # 최대 10개 자산
+            symbols=tickers,  # 모든 티커 사용
             train_start=config_data.get('start', '2008-01-01'),
             train_end=config_data.get('end', '2020-12-31'),
             test_start=config_data.get('test_start', '2021-01-01'),
@@ -332,115 +332,36 @@ class FinFlowTrainer:
         return data_path.exists() and len(list(data_path.glob("*.npz"))) > 0
     
     def _prepare_offline_data(self):
-        """오프라인 데이터 준비 - 환경의 데이터 재사용"""
+        """오프라인 데이터 준비 - OfflineDataset.collect_from_env() 사용"""
         data_path = Path(self.config.data_path)
         data_path.mkdir(parents=True, exist_ok=True)
         
-        # 이미 환경에 로드된 데이터 사용
+        # 현재 환경에서 데이터 수집
         if hasattr(self, 'env') and self.env is not None:
-            self.logger.info("환경에서 오프라인 데이터를 생성합니다...")
+            self.logger.info("환경에서 오프라인 데이터를 수집합니다...")
             
-            # 환경의 price_data에서 returns 계산
-            price_data = self.env.price_data
-            returns = price_data.pct_change().fillna(0).values
-            prices = price_data.values
+            # OfflineDataset 생성 및 데이터 수집
+            from src.core.offline_dataset import OfflineDataset
+            dataset = OfflineDataset(capacity=100000)
+            dataset.collect_from_env(
+                env=self.env,
+                n_episodes=10,  # 여러 에피소드로 데이터 수집
+                policy='random',
+                verbose=True
+            )
             
-            self.logger.info(f"데이터 shape: returns={returns.shape}, prices={prices.shape}")
-            
-            # 오프라인 데이터셋 생성
-            self._create_offline_dataset(returns, prices, data_path)
+            # 데이터셋 저장
+            save_path = data_path / 'offline_data.npz'
+            dataset.save(save_path)
+            self.logger.info(f"오프라인 데이터셋 저장: {save_path}")
             return
         
-        # 환경이 없으면 DataLoader로 로드
-        self.logger.info("DataLoader를 통해 데이터를 로드합니다...")
-        from src.data.loader import DataLoader
-        
-        data_loader = DataLoader(cache_dir=self.config.data_config.get('cache_dir', 'data/cache'))
-        tickers = self.config.data_config.get('tickers', ['AAPL', 'MSFT', 'GOOGL'])[:10]
-        
-        # config의 날짜 사용
-        config_data = self.config.data_config
-        market_data = data_loader.get_market_data(
-            symbols=tickers,
-            train_start=config_data.get('start', '2008-01-01'),
-            train_end=config_data.get('end', '2020-12-31'),
-            test_start=config_data.get('test_start', '2021-01-01'),
-            test_end=config_data.get('test_end', '2024-12-31')
+        # 환경이 없으면 오류
+        raise ValueError(
+            "환경이 초기화되지 않았습니다. "
+            "trainer를 생성할 때 환경이 설정되었는지 확인하세요."
         )
-        
-        if market_data['train_data'].empty:
-            raise ValueError(
-                "오프라인 데이터를 찾을 수 없습니다. "
-                "인터넷 연결을 확인하거나 캐시 디렉토리를 확인하세요."
-            )
-        
-        price_data = market_data['train_data']
-        returns = price_data.pct_change().fillna(0).values
-        prices = price_data.values
-        
-        self.logger.info(f"DataLoader로 데이터 로드 성공: shape={returns.shape}")
-        
-        self._create_offline_dataset(returns, prices, data_path)
     
-    def _create_offline_dataset(self, returns, prices, data_path):
-        """오프라인 데이터셋 생성 - 환경 시뮬레이션"""
-        experiences = []
-        
-        # 환경을 여러 번 리셋하면서 데이터 수집
-        num_episodes = 10  # 여러 에피소드로 데이터 수집
-        
-        for episode in range(num_episodes):
-            # 환경 리셋
-            state, _ = self.env.reset()
-            episode_length = 0
-            max_steps = len(self.env.price_data) - self.env.window - 1
-            
-            # 에피소드 실행
-            while episode_length < max_steps // num_episodes:
-                # 랜덤 액션 생성 (Dirichlet 분포로 유효한 포트폴리오 가중치)
-                action = np.random.dirichlet(np.ones(self.action_dim))
-                
-                # 환경 스텝
-                next_state, reward, done, truncated, info = self.env.step(action)
-                
-                experiences.append({
-                    'state': state,
-                    'action': action,
-                    'reward': reward,
-                    'next_state': next_state,
-                    'done': 1 if (done or truncated) else 0
-                })
-                
-                state = next_state
-                episode_length += 1
-                
-                if done or truncated:
-                    break
-        
-        if len(experiences) > 0:
-            # Save dataset
-            states = np.array([e['state'] for e in experiences])
-            actions = np.array([e['action'] for e in experiences])
-            rewards = np.array([e['reward'] for e in experiences])
-            next_states = np.array([e['next_state'] for e in experiences])
-            dones = np.array([e['done'] for e in experiences])
-            
-            save_path = data_path / 'offline_data.npz'
-            np.savez(
-                save_path,
-                states=states,
-                actions=actions,
-                rewards=rewards,
-                next_states=next_states,
-                dones=dones
-            )
-            
-            self.logger.info(f"오프라인 데이터셋 저장: {save_path}")
-            self.logger.info(f"  샘플 수: {len(experiences)}")
-            self.logger.info(f"  State 차원: {states.shape}")
-            self.logger.info(f"  Action 차원: {actions.shape}")
-        else:
-            self.logger.warning("생성된 경험이 없습니다. 환경을 확인하세요.")
     
     def _pretrain_iql(self):
         """IQL 오프라인 사전학습"""
@@ -450,6 +371,7 @@ class FinFlowTrainer:
             self._prepare_offline_data()
         
         # Load offline dataset
+        from src.core.offline_dataset import OfflineDataset
         dataset = OfflineDataset(self.config.data_path)
         
         self.logger.info(f"오프라인 데이터셋 로드: {len(dataset)} samples")
@@ -953,7 +875,22 @@ class FinFlowTrainer:
         return False
     
     def _save_checkpoint(self, tag: str):
-        """체크포인트 저장"""
+        """체크포인트 저장 (메타데이터 포함)"""
+        import datetime
+        
+        # 메타데이터 수집
+        metadata = {
+            'checkpoint_type': 'full',  # 'full' or 'iql'
+            'timestamp': datetime.datetime.now().isoformat(),
+            'state_dim': self.state_dim,
+            'action_dim': self.action_dim,
+            'n_assets': self.action_dim,  # 포트폴리오 자산 수
+            'framework_version': '2.0',  # BIPD 버전
+            'training_mode': 'sac' if self.episode > 0 else 'iql',
+            'total_steps': self.global_step,
+            'episode': self.episode
+        }
+        
         checkpoint = {
             'episode': self.episode,
             'global_step': self.global_step,
@@ -966,7 +903,8 @@ class FinFlowTrainer:
             't_cell': self.t_cell.get_state(),
             'metrics': self.metrics_history[-1] if self.metrics_history else {},
             'config': self.config.__dict__,
-            'stability_report': self.stability_monitor.get_report()
+            'stability_report': self.stability_monitor.get_report(),
+            'metadata': metadata  # 메타데이터 추가
         }
         
         path = self.checkpoint_dir / f"checkpoint_{tag}.pt"
@@ -978,11 +916,43 @@ class FinFlowTrainer:
         self.logger.info(f"체크포인트 저장: {path}")
     
     def load_checkpoint(self, path: str):
-        """체크포인트 로드"""
+        """체크포인트 로드 (호환성 검사 포함)"""
         checkpoint = torch.load(path, map_location=self.device)
         
+        # 메타데이터 확인
+        metadata = checkpoint.get('metadata', {})
+        if metadata:
+            self.logger.info("체크포인트 메타데이터:")
+            self.logger.info(f"  - 타입: {metadata.get('checkpoint_type', 'unknown')}")
+            self.logger.info(f"  - 타임스탬프: {metadata.get('timestamp', 'N/A')}")
+            self.logger.info(f"  - State 차원: {metadata.get('state_dim', 'N/A')}")
+            self.logger.info(f"  - Action 차원: {metadata.get('action_dim', 'N/A')}")
+            self.logger.info(f"  - 자산 수: {metadata.get('n_assets', 'N/A')}")
+            self.logger.info(f"  - 학습 모드: {metadata.get('training_mode', 'N/A')}")
+            
+            # 호환성 검사
+            if 'state_dim' in metadata and metadata['state_dim'] != self.state_dim:
+                self.logger.warning(
+                    f"State 차원 불일치: 체크포인트={metadata['state_dim']}, 현재={self.state_dim}"
+                )
+                self.logger.warning("모델 아키텍처가 변경되었을 수 있습니다. 계속 진행합니다.")
+            
+            if 'action_dim' in metadata and metadata['action_dim'] != self.action_dim:
+                self.logger.warning(
+                    f"Action 차원 불일치: 체크포인트={metadata['action_dim']}, 현재={self.action_dim}"
+                )
+                self.logger.warning("자산 수가 변경되었을 수 있습니다. 로드를 중단합니다.")
+                raise ValueError("체크포인트와 현재 환경의 자산 수가 일치하지 않습니다.")
+        
         # IQL 체크포인트인지 full 체크포인트인지 확인
-        is_iql_checkpoint = 'actor' in checkpoint and 'episode' not in checkpoint
+        checkpoint_type = metadata.get('checkpoint_type', None)
+        if checkpoint_type == 'iql':
+            is_iql_checkpoint = True
+        elif checkpoint_type == 'full':
+            is_iql_checkpoint = False
+        else:
+            # 레거시 체크포인트 (메타데이터 없음) - 휴리스틱으로 판단
+            is_iql_checkpoint = 'actor' in checkpoint and 'episode' not in checkpoint
         
         if is_iql_checkpoint:
             # IQL 체크포인트 로드

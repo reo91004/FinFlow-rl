@@ -88,9 +88,14 @@ class FinFlowEvaluator:
         
         checkpoint = torch.load(self.checkpoint_path, map_location=self.device)
         
-        # Get dimensions from checkpoint
-        state_dim = 43  # Default
-        action_dim = 10  # Default
+        # Get dimensions from checkpoint or environment
+        if 'state_dim' in checkpoint:
+            state_dim = checkpoint['state_dim']
+            action_dim = checkpoint.get('action_dim', checkpoint.get('n_assets', 10))
+        else:
+            # 환경에서 동적으로 가져오기 (환경이 초기화된 후)
+            state_dim = self.env.observation_space.shape[0] if hasattr(self, 'env') else 43
+            action_dim = self.env.action_space.shape[0] if hasattr(self, 'env') else 10
         
         # Initialize components
         self.b_cell = BCell(state_dim, action_dim, device=self.device)
