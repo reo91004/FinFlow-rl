@@ -109,6 +109,11 @@ class IQLAgent:
         
         # Statistics
         self.training_steps = 0
+        self.losses = {
+            'value_loss': [],
+            'q_loss': [],
+            'actor_loss': []
+        }
         
         self.logger = FinFlowLogger("IQLAgent")
         self.logger.info(f"IQL Agent 초기화 - expectile={expectile}, temperature={temperature}")
@@ -146,6 +151,11 @@ class IQLAgent:
         self._soft_update(self.q2_target, self.q2)
         
         self.training_steps += 1
+        
+        # Track losses for statistics
+        self.losses['value_loss'].append(value_loss)
+        self.losses['q_loss'].append(q_loss)
+        self.losses['actor_loss'].append(actor_loss)
         
         return {
             'value_loss': value_loss,

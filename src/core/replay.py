@@ -320,10 +320,14 @@ class OfflineDataset:
         
         logger.info(f"데이터 수집 완료: {len(self.transitions)} transitions")
     
-    def get_batch(self, batch_size: int) -> Dict[str, torch.Tensor]:
+    def get_batch(self, batch_size: int, device: torch.device = None) -> Dict[str, torch.Tensor]:
         """
         배치 샘플링 (텐서 변환 포함)
         
+        Args:
+            batch_size: 배치 크기
+            device: 텐서를 올릴 디바이스
+            
         Returns:
             dict with 'states', 'actions', 'rewards', 'next_states', 'dones'
         """
@@ -332,11 +336,20 @@ class OfflineDataset:
         
         batch = random.sample(self.transitions, min(batch_size, len(self.transitions)))
         
-        states = torch.FloatTensor([t.state for t in batch])
-        actions = torch.FloatTensor([t.action for t in batch])
-        rewards = torch.FloatTensor([t.reward for t in batch]).unsqueeze(1)
-        next_states = torch.FloatTensor([t.next_state for t in batch])
-        dones = torch.FloatTensor([t.done for t in batch]).unsqueeze(1)
+        # numpy array로 먼저 변환하여 속도 개선
+        states = torch.FloatTensor(np.array([t.state for t in batch]))
+        actions = torch.FloatTensor(np.array([t.action for t in batch]))
+        rewards = torch.FloatTensor(np.array([t.reward for t in batch])).unsqueeze(1)
+        next_states = torch.FloatTensor(np.array([t.next_state for t in batch]))
+        dones = torch.FloatTensor(np.array([t.done for t in batch])).unsqueeze(1)
+        
+        # device가 지정되면 해당 device로 이동
+        if device is not None:
+            states = states.to(device)
+            actions = actions.to(device)
+            rewards = rewards.to(device)
+            next_states = next_states.to(device)
+            dones = dones.to(device)
         
         return {
             'states': states,

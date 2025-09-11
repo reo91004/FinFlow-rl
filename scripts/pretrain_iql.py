@@ -158,10 +158,17 @@ def main():
     action_dim = env.action_space.shape[0]
     
     logger.info(f"IQL 초기화 - State dim: {state_dim}, Action dim: {action_dim}")
-    iql = IQL(
+    # IQLAgent 초기화 - config에서 필요한 파라미터 추출
+    bcell_config = config.get('bcell', {})
+    iql = IQLAgent(
         state_dim=state_dim,
         action_dim=action_dim,
-        config=config['bcell'],
+        hidden_dim=bcell_config.get('actor_hidden', [256, 256])[0],
+        expectile=bcell_config.get('iql_expectile', 0.7),
+        temperature=bcell_config.get('iql_temperature', 3.0),
+        discount=bcell_config.get('gamma', 0.99),
+        tau=bcell_config.get('tau', 0.005),
+        learning_rate=bcell_config.get('actor_lr', 3e-4),
         device=device
     )
     
@@ -172,15 +179,21 @@ def main():
     pbar = tqdm(range(args.train_steps), desc="IQL Training")
     
     for step in pbar:
-        # Get batch
-        batch = dataset.get_batch(batch_size)
+        # Get batch - device 전달
+        batch = dataset.get_batch(batch_size, device=device)
         
         if batch is None:
             logger.warning("데이터셋이 비어있습니다!")
             break
         
-        # Train step
-        losses = iql.train_step(batch)
+        # Train step - IQLAgent.update() 메서드 사용
+        losses = iql.update(
+            states=batch['states'],
+            actions=batch['actions'],
+            rewards=batch['rewards'],
+            next_states=batch['next_states'],
+            dones=batch['dones']
+        )
         
         # Update progress bar
         pbar.set_postfix({
@@ -209,7 +222,7 @@ def main():
             truncated = False
             
             while not done and not truncated:
-                action = iql.get_action(state, deterministic=True)
+                action = iql.select_action(state, deterministic=True)
                 next_state, reward, done, truncated, info = env.step(action)
                 episode_reward += reward
                 state = next_state
@@ -221,14 +234,15 @@ def main():
     # 모델 저장
     model_path = os.path.join(session_dir, "models", "iql_pretrained.pt")
     os.makedirs(os.path.dirname(model_path), exist_ok=True)
+    # IQLAgent.save() 메서드 사용
     iql.save(model_path)
     
-    # T-Cell 저장
-    tcell_path = os.path.join(session_dir, "models", "tcell.pkl")
-    import pickle
-    with open(tcell_path, 'wb') as f:
-        pickle.dump(tcell, f)
-    logger.info(f"T-Cell 저장: {tcell_path}")
+    # T-Cell 저장 - detector 저장
+    tcell_path = os.path.join(session_dir, "models", "tcell_model.pkl")
+    import joblib
+    # sklearn 모델은 joblib으로 저장
+    joblib.dump(tcell.detector, tcell_path)
+    logger.info(f"T-Cell 모델 저장: {tcell_path}")
     
     logger.info("=" * 80)
     logger.info("IQL 사전학습 완료!")
