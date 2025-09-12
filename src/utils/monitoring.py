@@ -412,3 +412,16 @@ class StabilityMonitor:
         """경고 카운터 리셋"""
         self.alert_counts = {k: 0 for k in self.alert_counts}
         self.logger.info("경고 카운터 리셋")
+    
+    def __getstate__(self):
+        """pickle 지원을 위한 state 처리"""
+        state = self.__dict__.copy()
+        # logger 객체는 pickle 불가
+        if 'logger' in state:
+            state['logger'] = None
+        return state
+    
+    def __setstate__(self, state):
+        """pickle에서 복원 시 logger 재설정"""
+        self.__dict__.update(state)
+        self.logger = FinFlowLogger("StabilityMonitor")

@@ -1177,6 +1177,54 @@ class FinFlowTrainer:
             'episode': self.episode
         }
         
+        # 필요한 하이퍼파라미터만 추출 (pickle 가능한 값들만)
+        config_params = {
+            # 오프라인 학습 설정
+            'offline_episodes': self.config.offline_episodes,
+            'offline_steps': self.config.offline_steps,
+            'offline_batch_size': self.config.offline_batch_size,
+            'offline_eval_interval': self.config.offline_eval_interval,
+            
+            # IQL 설정
+            'iql_epochs': self.config.iql_epochs,
+            'iql_batch_size': self.config.iql_batch_size,
+            'iql_lr': self.config.iql_lr,
+            'iql_expectile': self.config.iql_expectile,
+            'iql_temperature': self.config.iql_temperature,
+            
+            # SAC 설정
+            'sac_episodes': self.config.sac_episodes,
+            'sac_batch_size': self.config.sac_batch_size,
+            'sac_lr': self.config.sac_lr,
+            'sac_gamma': self.config.sac_gamma,
+            'sac_tau': self.config.sac_tau,
+            'sac_alpha': self.config.sac_alpha,
+            'sac_cql_weight': self.config.sac_cql_weight,
+            
+            # Memory 설정
+            'memory_capacity': self.config.memory_capacity,
+            'memory_k_neighbors': self.config.memory_k_neighbors,
+            
+            # 평가 및 체크포인트 설정
+            'eval_interval': self.config.eval_interval,
+            'checkpoint_interval': self.config.checkpoint_interval,
+            'log_interval': self.config.log_interval,
+            
+            # 시스템 설정
+            'device': str(self.config.device) if hasattr(self.config, 'device') else 'cpu',
+            'seed': self.config.seed,
+            'data_path': self.config.data_path,
+            'checkpoint_dir': self.config.checkpoint_dir,
+            
+            # 목표 지표
+            'target_sharpe': self.config.target_sharpe,
+            'target_cvar': self.config.target_cvar,
+            
+            # 조기 종료
+            'patience': self.config.patience,
+            'min_improvement': self.config.min_improvement,
+        }
+        
         checkpoint = {
             'episode': self.episode,
             'global_step': self.global_step,
@@ -1188,7 +1236,7 @@ class FinFlowTrainer:
             },
             't_cell': self.t_cell.get_state(),
             'metrics': self.metrics_history[-1] if self.metrics_history else {},
-            'config': self.config.__dict__,
+            'config_params': config_params,  # config 대신 파라미터만 저장
             'stability_report': self.stability_monitor.get_report(),
             'metadata': metadata  # 메타데이터 추가
         }

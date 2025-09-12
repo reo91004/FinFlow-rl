@@ -85,8 +85,7 @@ class FinFlowLogger:
         self.logger.addHandler(file_handler)
 
         # JSON 로거 추가 (메트릭 추적용)
-        json_file = os.path.join(session_dir, "metrics.jsonl")
-        self.json_handler = open(json_file, 'a', encoding='utf-8')
+        self.json_file_path = os.path.join(session_dir, "metrics.jsonl")
 
     def debug(self, msg):
         self.logger.debug(msg)
@@ -110,13 +109,9 @@ class FinFlowLogger:
             "step": step,
             **metrics
         }
-        self.json_handler.write(json.dumps(log_entry) + '\n')
-        self.json_handler.flush()
+        with open(self.json_file_path, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(log_entry) + '\n')
     
-    def __del__(self):
-        """JSON 핸들러 정리"""
-        if hasattr(self, 'json_handler'):
-            self.json_handler.close()
 
 # Backward compatibility alias
 BIPDLogger = FinFlowLogger
