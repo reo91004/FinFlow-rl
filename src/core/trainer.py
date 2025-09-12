@@ -258,6 +258,10 @@ class FinFlowTrainer:
         # Metrics tracking
         self.metrics_history = []
         
+        # 알람 시각화 쿨다운 설정
+        self.last_visualization_step = 0
+        self.visualization_cooldown = 1000  # 최소 1000 step 간격
+        
         self.logger.info("FinFlow Trainer 초기화 완료")
     
     def _initialize_components(self):
@@ -843,32 +847,39 @@ class FinFlowTrainer:
                         # 즉시 개입
                         self.stability_monitor.intervene(self)
                         
-                        # 알람 스냅샷 시각화 저장
-                        alert_timestamp = f"{self.global_step}"
+                        # 알람 스냅샷 시각화 저장 (critical만 + 쿨다운 체크)
+                        should_visualize = (
+                            alerts['severity'] == 'critical' and  # critical만
+                            self.global_step - self.last_visualization_step >= self.visualization_cooldown
+                        )
                         
-                        # Equity curve 저장 (에피소드 수익률로부터 생성)
-                        if hasattr(self, 'episode_returns'):
-                            equity_curve = np.cumprod(1 + np.array(self.episode_returns))
-                            plot_equity_curve(
-                                equity_curve,
-                                save_path=self.run_dir / "alerts" / f"equity_{alert_timestamp}.png"
-                            )
-                            plot_drawdown(
-                                equity_curve,
-                                save_path=self.run_dir / "alerts" / f"dd_{alert_timestamp}.png"
-                            )
-                        
-                        # Portfolio weights 저장
-                        if hasattr(self, 'episode_actions') and len(self.episode_actions) > 0:
-                            asset_names = [f"Asset_{i}" for i in range(len(action))]
-                            latest_weights = self.episode_actions[-1]
-                            plot_portfolio_weights(
-                                latest_weights,
-                                asset_names,
-                                save_path=self.run_dir / "alerts" / f"weights_{alert_timestamp}.png"
-                            )
-                        
-                        self.logger.info(f"알람 시각화 저장: {self.run_dir / 'alerts'}")
+                        if should_visualize:
+                            self.last_visualization_step = self.global_step
+                            alert_timestamp = f"{self.global_step}"
+                            
+                            # Equity curve 저장 (에피소드 수익률로부터 생성)
+                            if hasattr(self, 'episode_returns'):
+                                equity_curve = np.cumprod(1 + np.array(self.episode_returns))
+                                plot_equity_curve(
+                                    equity_curve,
+                                    save_path=self.run_dir / "alerts" / f"equity_{alert_timestamp}.png"
+                                )
+                                plot_drawdown(
+                                    equity_curve,
+                                    save_path=self.run_dir / "alerts" / f"dd_{alert_timestamp}.png"
+                                )
+                            
+                            # Portfolio weights 저장
+                            if hasattr(self, 'episode_actions') and len(self.episode_actions) > 0:
+                                asset_names = [f"Asset_{i}" for i in range(len(action))]
+                                latest_weights = self.episode_actions[-1]
+                                plot_portfolio_weights(
+                                    latest_weights,
+                                    asset_names,
+                                    save_path=self.run_dir / "alerts" / f"weights_{alert_timestamp}.png"
+                                )
+                            
+                            self.logger.info(f"Critical 알람 시각화 저장: {self.run_dir / 'alerts'}")
                     
                     # Update priorities
                     td_errors = losses.get('td_error', None)
