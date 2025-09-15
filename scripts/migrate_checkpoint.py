@@ -183,7 +183,71 @@ def migrate_checkpoint(input_path: str, output_path: str = None) -> None:
         logger.info("Metrics 변환 중...")
         new_checkpoint["metrics"] = deep_convert_to_tensor(checkpoint["metrics"], "metrics")
 
-    # 8. 기타 필드 변환
+    # 8. Optimizer States 변환 (새로 추가)
+    if "optimizer_states" in checkpoint:
+        logger.info("Optimizer states 변환 중...")
+        new_optimizer_states = {}
+        for opt_name, opt_state in checkpoint["optimizer_states"].items():
+            new_optimizer_states[opt_name] = convert_state_dict(opt_state)
+        new_checkpoint["optimizer_states"] = new_optimizer_states
+
+    # 9. Specialized B-Cells 변환 (새로 추가)
+    if "specialized_b_cells" in checkpoint and checkpoint["specialized_b_cells"]:
+        logger.info("Specialized B-Cells 변환 중...")
+        new_specialized = {}
+        for name, bcell_state in checkpoint["specialized_b_cells"].items():
+            new_bcell = {}
+            for key in ["actor", "critic_q1", "critic_q2"]:
+                if key in bcell_state:
+                    new_bcell[key] = convert_state_dict(bcell_state[key])
+            if "log_alpha" in bcell_state:
+                if isinstance(bcell_state["log_alpha"], np.ndarray):
+                    new_bcell["log_alpha"] = torch.from_numpy(bcell_state["log_alpha"].copy()).float()
+                else:
+                    new_bcell["log_alpha"] = bcell_state["log_alpha"]
+            for key in ["specialization", "training_step", "performance_score"]:
+                if key in bcell_state:
+                    new_bcell[key] = bcell_state[key]
+            new_specialized[name] = new_bcell
+        new_checkpoint["specialized_b_cells"] = new_specialized
+
+    # 10. Replay Buffer 변환 (새로 추가)
+    if "replay_buffer" in checkpoint and checkpoint["replay_buffer"]:
+        logger.info("Replay Buffer 변환 중...")
+        buffer_data = checkpoint["replay_buffer"]
+        new_buffer = {
+            "buffer": deep_convert_to_tensor(buffer_data["buffer"], "replay_buffer.buffer"),
+            "size": buffer_data["size"],
+            "ptr": buffer_data.get("ptr", 0)
+        }
+        if "priorities" in buffer_data and buffer_data["priorities"] is not None:
+            new_buffer["priorities"] = deep_convert_to_tensor(buffer_data["priorities"], "priorities")
+        new_checkpoint["replay_buffer"] = new_buffer
+
+    # 11. Random States 변환 (새로 추가)
+    if "random_states" in checkpoint:
+        logger.info("Random states 변환 중...")
+        new_checkpoint["random_states"] = checkpoint["random_states"]  # 그대로 유지
+
+    # 12. Gating History 변환 (새로 추가)
+    if "gating_history" in checkpoint and checkpoint["gating_history"]:
+        logger.info("Gating history 변환 중...")
+        new_checkpoint["gating_history"] = deep_convert_to_tensor(checkpoint["gating_history"], "gating_history")
+
+    # 13. T-Cell History 변환 (새로 추가)
+    if "tcell_history" in checkpoint and checkpoint["tcell_history"]:
+        logger.info("T-Cell history 변환 중...")
+        new_checkpoint["tcell_history"] = deep_convert_to_tensor(checkpoint["tcell_history"], "tcell_history")
+
+    # 14. Stability State 변환 (새로 추가)
+    if "stability_state" in checkpoint and checkpoint["stability_state"]:
+        logger.info("Stability state 변환 중...")
+        new_checkpoint["stability_state"] = deep_convert_to_tensor(checkpoint["stability_state"], "stability_state")
+
+    # 15. Version 정보 추가
+    new_checkpoint["version"] = checkpoint.get("version", "2.0")
+
+    # 16. 기타 필드 변환
     other_fields = [
         "episode",
         "global_step",
@@ -225,6 +289,28 @@ def migrate_checkpoint(input_path: str, output_path: str = None) -> None:
         assert (
             test_checkpoint["device"] != "auto"
         ), f"device가 여전히 auto: {test_checkpoint['device']}"
+
+        # 버전 검증
+        version = test_checkpoint.get("version", "1.0")
+        logger.info(f"체크포인트 버전: {version}")
+
+        # Optimizer states 검증 (새로 추가)
+        if "optimizer_states" in test_checkpoint:
+            logger.info("Optimizer states 검증...")
+            for opt_name in ["actor_optimizer", "critic_optimizer", "alpha_optimizer"]:
+                if opt_name in test_checkpoint["optimizer_states"]:
+                    opt_state = test_checkpoint["optimizer_states"][opt_name]
+                    assert "state" in opt_state, f"{opt_name}에 state 누락"
+                    assert "param_groups" in opt_state, f"{opt_name}에 param_groups 누락"
+
+        # Specialized B-Cells 검증 (새로 추가)
+        if "specialized_b_cells" in test_checkpoint and test_checkpoint["specialized_b_cells"]:
+            logger.info(f"Specialized B-Cells 검증 ({len(test_checkpoint['specialized_b_cells'])}개)...")
+
+        # Replay Buffer 검증 (새로 추가)
+        if "replay_buffer" in test_checkpoint and test_checkpoint["replay_buffer"]:
+            buffer_size = len(test_checkpoint["replay_buffer"]["buffer"])
+            logger.info(f"Replay Buffer 검증 (size: {buffer_size})...")
 
         # 메모리 검증
         if "memory_cell" in test_checkpoint:

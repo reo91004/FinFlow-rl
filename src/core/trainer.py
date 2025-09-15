@@ -5,8 +5,10 @@ import torch
 import torch.nn as nn
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass, field
+from collections import defaultdict, deque
 import json
 import time
+import random
 from pathlib import Path
 from tqdm import tqdm
 import pandas as pd
@@ -1227,11 +1229,12 @@ class FinFlowTrainer:
 
         # 실제 device 문자열 저장
         device_str = str(self.device)
-        if device_str == 'auto' or 'auto' in device_str:
+        if device_str == 'auto' or 'auto' in str(device_str):
             if torch.cuda.is_available():
                 device_str = f'cuda:{torch.cuda.current_device()}'
             else:
                 device_str = 'cpu'
+            self.logger.info(f"device='auto'를 '{device_str}'로 변환하여 저장")
 
         # config를 직렬화 가능한 형태로 변환
         def make_serializable(obj):
@@ -1290,6 +1293,79 @@ class FinFlowTrainer:
             if key in b_cell_state:
                 safe_b_cell[key] = b_cell_state[key]
 
+        # Optimizer states 저장
+        optimizer_states = {
+            'actor_optimizer': self.b_cell.actor_optimizer.state_dict(),
+            'critic_optimizer': self.b_cell.critic_optimizer.state_dict(),
+            'alpha_optimizer': self.b_cell.alpha_optimizer.state_dict()
+        }
+
+        # Specialized B-Cells 저장 (있는 경우)
+        specialized_b_cells = {}
+        if hasattr(self, 'b_cells'):
+            for name, bcell in self.b_cells.items():
+                bcell_state = bcell.state_dict()
+                safe_bcell = {}
+                for key in ['actor', 'critic_q1', 'critic_q2']:
+                    if key in bcell_state:
+                        safe_bcell[key] = bcell_state[key]
+                if 'log_alpha' in bcell_state:
+                    if isinstance(bcell_state['log_alpha'], np.ndarray):
+                        safe_bcell['log_alpha'] = torch.tensor(bcell_state['log_alpha'], dtype=torch.float32)
+                    else:
+                        safe_bcell['log_alpha'] = bcell_state['log_alpha']
+                for key in ['specialization', 'training_step', 'performance_score']:
+                    if key in bcell_state:
+                        safe_bcell[key] = bcell_state[key]
+                specialized_b_cells[name] = safe_bcell
+
+        # Replay Buffer 저장 (크기 제한)
+        replay_buffer_data = None
+        if hasattr(self, 'replay_buffer') and len(self.replay_buffer) > 0:
+            # 최근 10000개 샘플만 저장 (메모리 고려)
+            max_samples = min(10000, len(self.replay_buffer))
+            buffer_samples = []
+            for i in range(max_samples):
+                buffer_samples.append(self.replay_buffer.buffer[i])
+            replay_buffer_data = {
+                'buffer': buffer_samples,
+                'priorities': self.replay_buffer.priorities[:max_samples].copy() if hasattr(self.replay_buffer, 'priorities') else None,
+                'size': len(self.replay_buffer),
+                'ptr': self.replay_buffer.ptr if hasattr(self.replay_buffer, 'ptr') else 0
+            }
+
+        # Random states 저장
+        random_states = {
+            'torch': torch.get_rng_state(),
+            'numpy': np.random.get_state(),
+            'python': random.getstate() if 'random' in globals() else None
+        }
+
+        # Gating Network performance history 저장
+        gating_history = None
+        if hasattr(self.gating_network, 'performance_history'):
+            gating_history = {
+                'performance_history': dict(self.gating_network.performance_history),
+                'selection_count': dict(self.gating_network.selection_count) if hasattr(self.gating_network, 'selection_count') else {}
+            }
+
+        # T-Cell crisis history 저장
+        tcell_history = None
+        if hasattr(self.t_cell, 'crisis_history'):
+            tcell_history = {
+                'crisis_history': list(self.t_cell.crisis_history) if hasattr(self.t_cell, 'crisis_history') else [],
+                'detection_stats': self.t_cell.detection_stats if hasattr(self.t_cell, 'detection_stats') else {}
+            }
+
+        # StabilityMonitor state 저장
+        stability_state = None
+        if hasattr(self, 'stability_monitor'):
+            stability_state = {
+                'alert_counts': self.stability_monitor.alert_counts if hasattr(self.stability_monitor, 'alert_counts') else {},
+                'interventions': self.stability_monitor.interventions if hasattr(self.stability_monitor, 'interventions') else [],
+                'report': self.stability_monitor.get_report()
+            }
+
         checkpoint = {
             'episode': int(self.episode),
             'global_step': int(self.global_step),
@@ -1305,7 +1381,16 @@ class FinFlowTrainer:
             'device': device_str,
             'best_sharpe': float(self.best_sharpe),
             'timestamp': datetime.now().isoformat(),
-            'stability_report': self.stability_monitor.get_report()
+            'stability_report': self.stability_monitor.get_report() if hasattr(self, 'stability_monitor') else None,
+            # 새로 추가된 항목들
+            'optimizer_states': optimizer_states,
+            'specialized_b_cells': specialized_b_cells if specialized_b_cells else None,
+            'replay_buffer': replay_buffer_data,
+            'random_states': random_states,
+            'gating_history': gating_history,
+            'tcell_history': tcell_history,
+            'stability_state': stability_state,
+            'version': '2.0'  # 버전 정보 추가
         }
 
         # 체크포인트 저장
@@ -1319,7 +1404,7 @@ class FinFlowTrainer:
     
     def load_checkpoint(self, path: str):
         """체크포인트 로드 (호환성 검사 포함)"""
-        checkpoint = torch.load(path, map_location=self.device)
+        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
         
         # 메타데이터 확인
         metadata = checkpoint.get('metadata', {})
@@ -1386,21 +1471,75 @@ class FinFlowTrainer:
             # Full 체크포인트 로드
             self.episode = checkpoint['episode']
             self.global_step = checkpoint['global_step']
-            
+
             self.b_cell.load_state_dict(checkpoint['b_cell'])
             self.gating_network.load_state_dict(checkpoint['gating_network'])
-            
+
+            # Load optimizer states (새로 추가)
+            if 'optimizer_states' in checkpoint:
+                self.b_cell.actor_optimizer.load_state_dict(checkpoint['optimizer_states']['actor_optimizer'])
+                self.b_cell.critic_optimizer.load_state_dict(checkpoint['optimizer_states']['critic_optimizer'])
+                self.b_cell.alpha_optimizer.load_state_dict(checkpoint['optimizer_states']['alpha_optimizer'])
+                self.logger.info("Optimizer states 로드 완료")
+
+            # Load specialized B-Cells (새로 추가)
+            if 'specialized_b_cells' in checkpoint and checkpoint['specialized_b_cells']:
+                for name, bcell_state in checkpoint['specialized_b_cells'].items():
+                    if name in self.b_cells:
+                        self.b_cells[name].load_state_dict(bcell_state)
+                        self.logger.info(f"Specialized B-Cell [{name}] 로드 완료")
+
+            # Load replay buffer (새로 추가)
+            if 'replay_buffer' in checkpoint and checkpoint['replay_buffer']:
+                buffer_data = checkpoint['replay_buffer']
+                self.replay_buffer.buffer = buffer_data['buffer']
+                if 'priorities' in buffer_data and buffer_data['priorities'] is not None:
+                    self.replay_buffer.priorities = buffer_data['priorities']
+                self.replay_buffer.ptr = buffer_data.get('ptr', 0)
+                self.logger.info(f"Replay buffer 로드 완료 (size: {len(buffer_data['buffer'])})")
+
+            # Load random states (새로 추가)
+            if 'random_states' in checkpoint:
+                torch.set_rng_state(checkpoint['random_states']['torch'])
+                np.random.set_state(checkpoint['random_states']['numpy'])
+                if checkpoint['random_states']['python']:
+                    random.setstate(checkpoint['random_states']['python'])
+                self.logger.info("Random states 복원 완료")
+
+            # Load Gating Network history (새로 추가)
+            if 'gating_history' in checkpoint and checkpoint['gating_history']:
+                if hasattr(self.gating_network, 'performance_history'):
+                    self.gating_network.performance_history = defaultdict(list, checkpoint['gating_history']['performance_history'])
+                    self.gating_network.selection_count = defaultdict(int, checkpoint['gating_history']['selection_count'])
+                    self.logger.info("Gating Network history 로드 완료")
+
+            # Load T-Cell history (새로 추가)
+            if 'tcell_history' in checkpoint and checkpoint['tcell_history']:
+                if hasattr(self.t_cell, 'crisis_history'):
+                    self.t_cell.crisis_history = deque(checkpoint['tcell_history']['crisis_history'], maxlen=100)
+                    self.t_cell.detection_stats = checkpoint['tcell_history'].get('detection_stats', {})
+                    self.logger.info("T-Cell history 로드 완료")
+
+            # Load StabilityMonitor state (새로 추가)
+            if 'stability_state' in checkpoint and checkpoint['stability_state']:
+                if hasattr(self, 'stability_monitor'):
+                    self.stability_monitor.alert_counts = checkpoint['stability_state'].get('alert_counts', {})
+                    self.stability_monitor.interventions = checkpoint['stability_state'].get('interventions', [])
+                    self.logger.info("StabilityMonitor state 로드 완료")
+
             # Load memory cell
             if 'memory_cell' in checkpoint:
                 memory_data = checkpoint['memory_cell']
                 self.memory_cell.memories = memory_data['memories']
                 self.memory_cell.memory_stats = memory_data['stats']
-            
+
             # Load T-Cell state
             if 't_cell' in checkpoint:
                 self.t_cell.load_state(checkpoint['t_cell'])
-            
-            self.logger.info(f"Full 체크포인트 로드: {path}")
+
+            # 버전 정보 확인
+            version = checkpoint.get('version', '1.0')
+            self.logger.info(f"Full 체크포인트 로드 완료: {path} (version: {version})")
     
     def _generate_report(self, final_metrics: Dict[str, float]):
         """최종 보고서 생성"""
