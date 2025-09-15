@@ -2,7 +2,7 @@
 # BIPD 2.0 연구용 설정 - Sharpe + CVaR 최적화 강화
 
 seed: 42
-device: auto # cpu|cuda|mps|auto
+device: auto # cpu|cuda|auto
 
 # 데이터 설정
 data:

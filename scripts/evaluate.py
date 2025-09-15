@@ -52,10 +52,18 @@ class FinFlowEvaluator:
         self.logger = FinFlowLogger("Evaluator")
         self.logger.info("평가기 초기화")
         
-        # Load configuration
-        if config_path and Path(config_path).exists():
-            with open(config_path, 'r') as f:
-                self.config = json.load(f)
+        # Load configuration - YAML 우선, JSON 폴백
+        if config_path is None:
+            config_path = 'configs/default.yaml'
+
+        if Path(config_path).exists():
+            if config_path.endswith('.yaml') or config_path.endswith('.yml'):
+                import yaml
+                with open(config_path, 'r') as f:
+                    self.config = yaml.safe_load(f)
+            else:
+                with open(config_path, 'r') as f:
+                    self.config = json.load(f)
         else:
             self.config = self._get_default_config()
         
@@ -65,10 +73,10 @@ class FinFlowEvaluator:
         
         # Results storage
         self.results = {}
-        self.session_dir = get_session_directory()
+        self.session_dir = Path(get_session_directory())
         self.run_dir = self.session_dir
         (self.run_dir / "reports").mkdir(parents=True, exist_ok=True)
-        self.viz_dir = self.run_dir / "reports"
+        self.viz_dir = self.run_dir / "visualizations"
         self.viz_dir.mkdir(parents=True, exist_ok=True)
     
     def _get_default_config(self) -> Dict:
@@ -88,51 +96,153 @@ class FinFlowEvaluator:
             }
         }
     
-    def _load_models(self):
-        """모델 로드"""
+    def _load_models(self) -> None:
+        """모델과 메모리 셀 로드"""
         self.logger.info(f"체크포인트 로드: {self.checkpoint_path}")
-        
-        checkpoint = torch.load(self.checkpoint_path, map_location=self.device)
-        
-        # Get dimensions from checkpoint
-        state_dim = 43  # Default
-        action_dim = 10  # Default
-        
-        # Initialize components
-        self.b_cell = BCell(state_dim, action_dim, device=self.device)
-        self.b_cell.load_state_dict(checkpoint['b_cell'])
-        self.b_cell.eval()
-        
+
+        # device mapping 함수 정의
+        def device_mapper(storage, loc):
+            """디바이스 매핑 처리"""
+            if isinstance(loc, str):
+                if loc == 'auto':
+                    # auto는 처리하지 않음 - 오류 발생하도록
+                    raise ValueError(f"Invalid device location: {loc}. Run migration script first.")
+                elif loc == 'cpu':
+                    return storage
+                elif loc.startswith('cuda'):
+                    # cuda:0 형태 처리
+                    if torch.cuda.is_available():
+                        return storage.to(torch.device(loc))
+                    else:
+                        return storage
+            return storage
+
+        # weights_only=True로 엄격하게 로드
+        checkpoint = torch.load(
+            self.checkpoint_path,
+            map_location=device_mapper,
+            weights_only=True
+        )
+
+        # 체크포인트 검증
+        required_keys = ['b_cell', 'gating_network', 'device']
+        missing_keys = [k for k in required_keys if k not in checkpoint]
+        if missing_keys:
+            raise KeyError(f"체크포인트에 필수 키가 없습니다: {missing_keys}")
+
+        # device 검증
+        checkpoint_device = checkpoint.get('device', 'cpu')
+        if checkpoint_device == 'auto':
+            raise ValueError("체크포인트의 device가 'auto'입니다. Migration 스크립트를 실행하세요.")
+
+        # Get dimensions from checkpoint or config
+        if 'config' in checkpoint:
+            config = checkpoint['config']
+            state_dim = config.get('state_dim', 43)
+            action_dim = config.get('action_dim', 30)  # 실제 자산 수는 30
+        elif 'config_params' in checkpoint:
+            # 레거시 체크포인트
+            state_dim = 43
+            action_dim = 30  # 실제 자산 수는 30
+        else:
+            state_dim = 43  # Default
+            action_dim = 30  # 실제 자산 수는 30
+
+        # Store action_dim for later validation
+        self.expected_action_dim = action_dim
+
+        # Initialize components with specialization
+        b_cell_data = checkpoint['b_cell']
+        specialization = b_cell_data.get('specialization', 'momentum')  # 기본값
+
+        # BCell 초기화에 필요한 config
+        bcell_config = {
+            'gamma': 0.99,
+            'tau': 0.005,
+            'alpha_init': 0.2,
+            'actor_hidden': [256, 256],
+            'critic_hidden': [256, 256],
+            'actor_lr': 3e-4,
+            'critic_lr': 3e-4,
+            'n_quantiles': 32
+        }
+
+        self.b_cell = BCell(
+            specialization=specialization,
+            state_dim=state_dim,
+            action_dim=action_dim,
+            config=bcell_config,
+            device=self.device
+        )
+        self.b_cell.load_state_dict(b_cell_data)
+        # BCell은 eval() 메서드가 없음 - 내부 네트워크는 자동으로 eval 모드
+
         self.gating_network = GatingNetwork(state_dim).to(self.device)
         self.gating_network.load_state_dict(checkpoint['gating_network'])
         self.gating_network.eval()
-        
+
         self.t_cell = TCell()
         if 't_cell' in checkpoint:
             self.t_cell.load_state(checkpoint['t_cell'])
-        
+
+        # 메모리 셀 복원
         self.memory_cell = MemoryCell()
+
+        # 메모리 데이터 복원
         if 'memory_cell' in checkpoint:
-            memory_data = checkpoint['memory_cell']
-            self.memory_cell.memories = memory_data.get('memories', [])
-        
+            memories = checkpoint['memory_cell'].get('memories', [])
+
+            for m in memories:
+                memory_item = {}
+                for key, value in m.items():
+                    if isinstance(value, torch.Tensor):
+                        # 텐서를 numpy로 변환 (메모리셀은 numpy 사용)
+                        memory_item[key] = value.cpu().numpy()
+                    else:
+                        memory_item[key] = value
+
+                # 필수 키 검증
+                required_memory_keys = ['state', 'action', 'reward']
+                if all(k in memory_item for k in required_memory_keys):
+                    self.memory_cell.memories.append(memory_item)
+                else:
+                    self.logger.warning(f"메모리 항목에 필수 키가 누락됨: {set(required_memory_keys) - set(memory_item.keys())}")
+
+            # stats 복원
+            if 'stats' in checkpoint['memory_cell']:
+                stats = checkpoint['memory_cell']['stats']
+                for key, value in stats.items():
+                    if isinstance(value, torch.Tensor):
+                        stats[key] = value.cpu().numpy()
+                self.memory_cell.memory_stats = stats
+
         # Initialize XAI
         feature_names = self._get_feature_names()
-        action_names = [f"Asset_{i}" for i in range(action_dim)]
-        
+
         self.explainer = XAIExplainer(
-            self.b_cell.actor,
-            feature_names,
-            action_names,
-            self.device
+            model=self.b_cell.actor,
+            feature_names=feature_names,
+            memory_cell=self.memory_cell
         )
-        
-        self.logger.info("모델 로드 완료")
+
+        # 체크포인트 메트릭 저장
+        self.checkpoint_metrics = checkpoint.get('metrics', {})
+        self.checkpoint_epoch = checkpoint.get('episode', 0)
+
+        self.logger.info(f"모델 로드 완료 (Episode: {self.checkpoint_epoch})")
+        self.logger.info(f"메모리 셀 크기: {len(self.memory_cell.memories)}")
+        self.logger.info(f"Device: {checkpoint_device} -> {self.device}")
     
     def _load_data(self):
         """데이터 로드"""
+        # 데이터 경로가 None이면 동적 로드
+        if self.data_path is None:
+            self.logger.info("데이터 경로가 지정되지 않음 - DataLoader로 동적 로드")
+            self._load_data_dynamically()
+            return
+
         self.logger.info(f"데이터 로드: {self.data_path}")
-        
+
         # Load price data
         data_file = Path(self.data_path) / "test_data.npz"
         if data_file.exists():
@@ -141,43 +251,137 @@ class FinFlowEvaluator:
             self.returns = data['returns']
             self.features = data.get('features', None)
         else:
-            # Generate synthetic data for testing
-            self.logger.warning("테스트 데이터 없음 - 합성 데이터 생성")
-            self.prices = np.random.randn(252, 10).cumsum(axis=0) + 100
-            self.prices = np.exp(self.prices / 100)
-            self.returns = np.diff(self.prices, axis=0) / self.prices[:-1]
+            self.logger.warning(f"테스트 데이터를 찾을 수 없습니다: {data_file}")
+            self.logger.info("DataLoader로 동적 로드 시도")
+            self._load_data_dynamically()
     
     def _get_feature_names(self) -> List[str]:
         """특징 이름 생성"""
         feature_names = []
-        
-        # Market features
-        for i in range(10):
-            feature_names.extend([
-                f"return_{i}",
-                f"volatility_{i}",
-                f"volume_{i}"
-            ])
-        
-        # Portfolio features
-        for i in range(10):
-            feature_names.append(f"weight_{i}")
-        
-        # Crisis features
-        feature_names.extend([
-            "crisis_overall",
-            "crisis_volatility",
-            "crisis_correlation"
-        ])
-        
-        return feature_names[:43]  # Ensure 43 features
-    
+        n_assets = self.prices.shape[1] if hasattr(self, 'prices') else 30
+
+        # 실제 FeatureExtractor의 차원과 정확히 일치
+        # FeatureExtractor: returns=3, technical=4, structure=3, momentum=2 = 12차원
+
+        # Returns features (3)
+        feature_names.extend(['return_mean', 'return_std', 'return_skew'])
+
+        # Technical features (4)
+        feature_names.extend(['rsi', 'macd', 'bollinger_upper', 'bollinger_lower'])
+
+        # Structure features (3)
+        feature_names.extend(['correlation', 'beta', 'max_drawdown'])
+
+        # Momentum features (2)
+        feature_names.extend(['momentum_short', 'momentum_long'])
+
+        # Portfolio weights (30)
+        for i in range(n_assets):
+            feature_names.append(f'weight_{i}')
+
+        # Crisis level (1)
+        feature_names.append('crisis_level')
+
+        return feature_names[:43]  # 12 + 30 + 1 = 43
+
+    def _load_data_dynamically(self):
+        """체크포인트 설정을 사용하여 데이터 동적 로드"""
+        from src.data.loader import DataLoader
+        import pandas as pd
+
+        # YAML 설정에서 심볼과 날짜 정보 가져오기
+        data_config = self.config.get('data', {})
+        symbols = data_config.get('symbols', [])
+
+        if not symbols:
+            raise ValueError(
+                "심볼 리스트가 비어있습니다. configs/default.yaml의 data.symbols를 확인하세요."
+            )
+
+        # 테스트 기간 설정
+        test_start = data_config.get('test_start', '2021-01-01')
+        test_end = data_config.get('test_end', '2024-12-31')
+
+        self.logger.info(f"동적 데이터 로드: {len(symbols)}개 자산 (첫 5개: {symbols[:5]}), period={test_start} to {test_end}")
+
+        # DataLoader로 데이터 로드
+        loader = DataLoader(cache_dir='data/cache')
+
+        # 데이터 다운로드
+        price_data = loader.download_data(
+            symbols=symbols,
+            start_date=test_start,
+            end_date=test_end,
+            use_cache=True
+        )
+
+        if price_data.empty:
+            raise ValueError("데이터 로드 실패: 가격 데이터가 비어있습니다")
+
+        # 가격과 수익률 계산
+        self.prices = price_data.values  # (T, N) 형태
+
+        # 수익률 계산
+        returns = price_data.pct_change().fillna(0)
+        self.returns = returns.values
+
+        # FeatureExtractor를 사용한 적절한 특징 계산
+        from src.data.features import FeatureExtractor
+        feature_extractor = FeatureExtractor(window=20)
+
+        T, N = self.prices.shape
+        self.features = []
+
+        for t in range(T):
+            if t < 20:
+                # 초기 윈도우는 0 패딩
+                feat = np.zeros(feature_extractor.total_dim)
+            else:
+                # 가격 윈도우 생성
+                price_window = pd.DataFrame(
+                    self.prices[t-20:t+1],
+                    columns=price_data.columns
+                )
+                # 특징 추출
+                feat = feature_extractor.extract_features(price_window)
+            self.features.append(feat)
+
+        self.features = np.array(self.features)
+
+        self.logger.info(f"데이터 로드 완료: prices shape={self.prices.shape}, "
+                        f"returns shape={self.returns.shape}, features shape={self.features.shape}")
+
     def evaluate(self):
         """전체 평가 실행"""
+        # SHAP explainer 초기화 (데이터 로드 후)
+        if hasattr(self, 'features') and self.features is not None:
+            # 완전한 상태 구성 (43차원)
+            n_samples = min(100, len(self.features))
+            n_assets = self.prices.shape[1]  # 30
+
+            background_states = []
+            for i in range(n_samples):
+                # features (12차원)
+                features = self.features[i]
+
+                # portfolio weights (30차원) - 초기값은 균등 배분
+                weights = np.ones(n_assets) / n_assets
+
+                # crisis level (1차원) - 초기값 0
+                crisis_level = 0.0
+
+                # 완전한 상태 구성 (43차원)
+                full_state = np.concatenate([features, weights, [crisis_level]])
+                background_states.append(full_state)
+
+            background_data = np.array(background_states)
+            self.explainer.initialize_shap(background_data)
+            self.logger.info(f"SHAP explainer 초기화 완료 (background shape: {background_data.shape})")
+
         self.logger.info("=" * 50)
         self.logger.info("평가 시작")
         self.logger.info("=" * 50)
-        
+
         # 1. Backtest FinFlow
         self.logger.info("\n1. FinFlow 백테스팅")
         finflow_results = self._backtest_finflow()
@@ -213,15 +417,54 @@ class FinFlowEvaluator:
     
     def _backtest_finflow(self) -> Dict:
         """FinFlow 백테스팅"""
-        env = PortfolioEnv(**self.config['env'])
-        
+        # 가격 데이터를 DataFrame으로 변환
+        price_df = pd.DataFrame(
+            self.prices,
+            columns=[f'Asset_{i}' for i in range(self.prices.shape[1])]
+        )
+
+        # FeatureExtractor 초기화
+        from src.data.features import FeatureExtractor
+        feature_extractor = FeatureExtractor(window=20)
+
+        # env 섹션 가져오기 (YAML에는 env 섹션이 있음)
+        env_config = self.config.get('env', {})
+
+        # Reports 디렉토리 생성
+        reports_dir = self.run_dir / "reports"
+        reports_dir.mkdir(exist_ok=True)
+
+        # 환경 초기화 (price_data 필수 인자)
+        env = PortfolioEnv(
+            price_data=price_df,
+            feature_extractor=feature_extractor,
+            initial_capital=env_config.get('initial_capital', env_config.get('initial_balance', 1000000)),
+            transaction_cost=env_config.get('turnover_cost', env_config.get('transaction_cost', 0.001)),
+            slippage=env_config.get('slip_coeff', env_config.get('slippage', 0.0005)),
+            no_trade_band=env_config.get('no_trade_band', 0.002),
+            max_leverage=env_config.get('max_leverage', 1.0),
+            max_turnover=env_config.get('max_turnover', 0.5)
+        )
+
+        # 자산 수 검증
+        if env.n_assets != self.expected_action_dim:
+            raise ValueError(
+                f"자산 수 불일치: 데이터={env.n_assets}, "
+                f"모델={self.expected_action_dim}. "
+                f"체크포인트와 일치하는 {self.expected_action_dim}개 자산의 데이터를 준비하세요."
+            )
+
         episode_returns = []
         episode_actions = []
         episode_rewards = []
         episode_equity_curves = []
         xai_reports = []
         
-        for episode in tqdm(range(self.config['evaluation']['n_episodes']), desc="백테스팅"):
+        # eval 또는 evaluation 섹션 지원
+        eval_config = self.config.get('eval', self.config.get('evaluation', {}))
+        n_episodes = eval_config.get('episodes', eval_config.get('n_episodes', 10))
+
+        for episode in tqdm(range(n_episodes), desc="백테스팅"):
             state, _ = env.reset()
             done = False
             
@@ -255,15 +498,26 @@ class FinFlowEvaluator:
                     deterministic=True
                 )
                 
-                # XAI Analysis - 마지막 스텝 또는 10스텝마다
-                if step_count % 10 == 0 or done:
+                # XAI Analysis - 마지막 스텝 또는 100스텝마다
+                if step_count % 100 == 0 or done:
                     # XAI 3함수 호출
                     local_attr = self.explainer.local_attribution(state, action)
                     cf_report = self.explainer.counterfactual(state, action, deltas={"volatility": -0.2})
+
+                    # SHAP top-k 특성 계산
+                    shap_topk_features = list(local_attr.items())[:5]  # 상위 5개 특성
+
+                    # Memory guidance를 similar cases로 변환
+                    similar_cases = None
+                    if isinstance(memory_guidance, dict) and memory_guidance.get('similar_memories'):
+                        similar_cases = memory_guidance['similar_memories']
+                    elif isinstance(memory_guidance, list):
+                        similar_cases = memory_guidance
+
                     reg_report = self.explainer.regime_report(
-                        crisis_info, 
-                        shap_topk=5, 
-                        similar_cases=memory_guidance
+                        crisis_info,
+                        shap_topk=shap_topk_features,
+                        similar_cases=similar_cases
                     )
                     
                     # Decision card 생성 및 저장
@@ -278,10 +532,21 @@ class FinFlowEvaluator:
                         "crisis_info": crisis_info
                     }
                     
-                    # JSON 저장
+                    # JSON 저장 (numpy 타입 변환)
                     card_path = self.run_dir / "reports" / f"decision_card_ep{episode}_step{step_count}.json"
+
+                    # numpy 타입을 Python native 타입으로 변환
+                    def convert_numpy(obj):
+                        if isinstance(obj, np.integer):
+                            return int(obj)
+                        elif isinstance(obj, np.floating):
+                            return float(obj)
+                        elif isinstance(obj, np.ndarray):
+                            return obj.tolist()
+                        return obj
+
                     with open(card_path, 'w') as f:
-                        json.dump(decision_card, f, indent=2)
+                        json.dump(decision_card, f, indent=2, default=convert_numpy)
                     
                     xai_reports.append(decision_card)
                 
@@ -334,19 +599,19 @@ class FinFlowEvaluator:
         
         # 시각화 생성 및 저장
         # Equity curve
-        plot_equity_curve(all_equity, save_path=self.run_dir / "reports" / "equity_curve.png")
-        
+        plot_equity_curve(all_equity, save_path=self.viz_dir / "finflow_equity_curve.png")
+
         # Drawdown
-        plot_drawdown(all_equity, save_path=self.run_dir / "reports" / "drawdown.png")
+        plot_drawdown(all_equity, save_path=self.viz_dir / "finflow_drawdown.png")
         
         # Portfolio weights
         asset_names = [f"Asset_{i}" for i in range(all_actions.shape[1])]
         # 최근 가중치 사용 (시계열 대신 마지막 스텝의 스냅샷)
         latest_weights = all_actions[-1] if len(all_actions) > 0 else all_actions[0]
         plot_portfolio_weights(
-            latest_weights, 
+            latest_weights,
             asset_names,
-            save_path=self.run_dir / "reports" / "weights.png"
+            save_path=self.viz_dir / "finflow_weights.png"
         )
         
         self.logger.info(f"XAI 리포트 {len(xai_reports)}개 생성 완료")
@@ -364,8 +629,15 @@ class FinFlowEvaluator:
     def _evaluate_benchmarks(self) -> Dict:
         """벤치마크 전략 평가"""
         benchmarks = {}
-        
-        for strategy in self.config['evaluation']['benchmarks']:
+
+        # eval.benchmark 사용 (YAML 구조에 맞춤)
+        eval_config = self.config.get('eval', {})
+        benchmark_strategy = eval_config.get('benchmark', 'equal_weight')
+
+        # 단일 벤치마크를 리스트로 처리
+        benchmark_strategies = [benchmark_strategy] if isinstance(benchmark_strategy, str) else benchmark_strategy
+
+        for strategy in benchmark_strategies:
             self.logger.info(f"벤치마크 평가: {strategy}")
             
             if strategy == 'equal_weight':
@@ -508,8 +780,32 @@ class FinFlowEvaluator:
         # Sample some decisions for explanation
         sample_states = []
         sample_actions = []
-        
-        env = PortfolioEnv(**self.config['env'])
+
+        # price_df 생성 (self.prices를 DataFrame으로 변환)
+        price_df = pd.DataFrame(
+            self.prices,
+            columns=[f'Asset_{i}' for i in range(self.prices.shape[1])]
+        )
+
+        # FeatureExtractor 초기화
+        from src.data.features import FeatureExtractor
+        feature_extractor = FeatureExtractor(window=20)
+
+        # env config 가져오기
+        env_config = self.config.get('env', {})
+
+        # PortfolioEnv 초기화 (올바른 파라미터 매핑)
+        env = PortfolioEnv(
+            price_data=price_df,
+            feature_extractor=feature_extractor,
+            initial_capital=env_config.get('initial_capital', 1000000),
+            transaction_cost=env_config.get('turnover_cost', 0.001),  # turnover_cost -> transaction_cost
+            slippage=env_config.get('slip_coeff', 0.0005),           # slip_coeff -> slippage
+            no_trade_band=env_config.get('no_trade_band', 0.002),
+            max_leverage=env_config.get('max_leverage', 1.0),
+            max_turnover=env_config.get('max_turnover', 0.5)
+        )
+
         state, _ = env.reset()
         
         for _ in range(5):  # Explain 5 decisions
@@ -677,7 +973,8 @@ class FinFlowEvaluator:
     
     def _generate_report(self):
         """평가 보고서 생성"""
-        report_path = get_session_directory() / "reports" / "evaluation_report.json"
+        from pathlib import Path
+        report_path = Path(get_session_directory()) / "reports" / "evaluation_report.json"
         report_path.parent.mkdir(exist_ok=True)
         
         # Save detailed results
@@ -692,6 +989,10 @@ class FinFlowEvaluator:
         """객체를 JSON 직렬화 가능하게 변환"""
         if isinstance(obj, np.ndarray):
             return obj.tolist()
+        elif isinstance(obj, (np.float32, np.float64, np.float16)):
+            return float(obj)
+        elif isinstance(obj, (np.int32, np.int64, np.int16, np.int8)):
+            return int(obj)
         elif isinstance(obj, dict):
             return {k: self._make_serializable(v) for k, v in obj.items()}
         elif isinstance(obj, list):

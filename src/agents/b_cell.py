@@ -77,7 +77,7 @@ class BCell:
         ).to(device)
         
         # Temperature parameter (learnable)
-        self.log_alpha = torch.tensor(np.log(self.alpha_init), requires_grad=True, device=device)
+        self.log_alpha = torch.tensor(np.log(self.alpha_init), requires_grad=True, device=device, dtype=torch.float32)
         self.target_entropy = -action_dim * self.target_entropy_ratio  # Heuristic
         
         # Optimizers

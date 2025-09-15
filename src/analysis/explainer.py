@@ -3,6 +3,7 @@
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn as nn
 import shap
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass, asdict
@@ -25,35 +26,29 @@ class DecisionReport:
 
 class XAIExplainer:
     """
-    설명 가능한 AI (XAI) 모듈
-    SHAP 기반 특성 중요도 + 반사실적 분석
+    신뢰성 있는 XAI 모듈 - 3가지 전략
     """
-    
+
     def __init__(self, model: Any, feature_names: Optional[List[str]] = None, memory_cell: Optional[Any] = None):
-        """
-        Args:
-            model: 설명할 모델
-            feature_names: 특성 이름 리스트
-            memory_cell: 메모리 셀 (유사 레짐 검색용)
-        """
         self.model = model
         self.memory_cell = memory_cell
         self.logger = FinFlowLogger("XAIExplainer")
-        
-        # 특성 이름 설정
+
         if feature_names is None:
             self.feature_names = self._generate_feature_names()
         else:
             self.feature_names = feature_names
-        
-        # SHAP explainer 초기화
+
         self.explainer = None
         self.background_data = None
-        
+        self.proxy_model = None  # 근사 모델
+        self.baseline = None  # Integrated Gradients용
+        self._explainer_type = None  # 전략 타입
+
         # 반사실 분석용 파라미터
         self.counterfactual_n_samples = 10
         self.counterfactual_step_size = 0.1
-        
+
         self.logger.info("XAI Explainer 초기화 완료")
     
     def _generate_feature_names(self) -> List[str]:
@@ -77,29 +72,84 @@ class XAIExplainer:
         return names
     
     def initialize_shap(self, background_data: np.ndarray):
-        """SHAP explainer 초기화"""
+        """
+        SHAP explainer 초기화 - 신뢰성 있는 방법 선택
+        """
         self.background_data = background_data
-        
-        # DeepExplainer 사용 (신경망 모델용)
-        try:
-            if hasattr(self.model, 'actor'):
-                # SAC 모델의 경우
-                self.explainer = shap.DeepExplainer(
-                    self.model.actor,
-                    torch.FloatTensor(background_data)
-                )
-            else:
-                self.explainer = shap.DeepExplainer(
-                    self.model,
-                    torch.FloatTensor(background_data)
-                )
-            self.logger.info("SHAP DeepExplainer 초기화 완료")
-        except Exception as e:
-            self.logger.warning(f"DeepExplainer 초기화 실패, KernelExplainer 사용: {e}")
-            self.explainer = shap.KernelExplainer(
-                self._model_predict,
-                background_data
-            )
+
+        # 자동으로 최적 전략 선택
+        strategy = self._select_best_strategy()
+
+        if strategy == "gradient":
+            self._init_gradient_explainer(background_data)
+        elif strategy == "proxy":
+            self._init_proxy_explainer(background_data)
+        else:  # integrated
+            self._init_integrated_gradients(background_data)
+
+    def _select_best_strategy(self) -> str:
+        """모델 구조를 분석하여 최적 전략 선택"""
+        # 모델이 BatchNorm, Dropout 등을 포함하는지 확인
+        has_problematic_layers = self._check_problematic_layers()
+
+        if has_problematic_layers:
+            self.logger.info("문제가 될 수 있는 레이어 감지, Integrated Gradients 사용")
+            return "integrated"
+        else:
+            self.logger.info("GradientExplainer 사용 (가장 정확)")
+            return "gradient"
+
+    def _check_problematic_layers(self) -> bool:
+        """SHAP와 충돌할 수 있는 레이어 확인"""
+        if hasattr(self.model, 'actor'):
+            model_to_check = self.model.actor
+        else:
+            model_to_check = self.model
+
+        problematic_types = (nn.BatchNorm1d, nn.BatchNorm2d, nn.Dropout,
+                           nn.LayerNorm, nn.GroupNorm)
+
+        for module in model_to_check.modules():
+            if isinstance(module, problematic_types):
+                return True
+        return False
+
+    def _init_gradient_explainer(self, background_data: np.ndarray):
+        """GradientExplainer - DeepExplainer보다 안정적"""
+        # 배경 데이터 샘플링 (계산 효율성)
+        n_background = min(100, len(background_data))
+        indices = np.random.choice(len(background_data), n_background, replace=False)
+        background_subset = background_data[indices]
+
+        if hasattr(self.model, 'actor'):
+            target_model = self.model.actor
+        else:
+            target_model = self.model
+
+        # GradientExplainer는 더 안정적
+        self.explainer = shap.GradientExplainer(
+            target_model,
+            torch.FloatTensor(background_subset)
+        )
+
+        self.logger.info(f"GradientExplainer 초기화 완료 (samples: {n_background})")
+        self._explainer_type = "gradient"
+
+    def _init_integrated_gradients(self, background_data: np.ndarray):
+        """Integrated Gradients - 이론적으로 가장 견고"""
+        self.logger.info("Integrated Gradients 방식 사용")
+
+        # 기준점 설정 (보통 0 또는 평균)
+        self.baseline = np.mean(background_data, axis=0)
+        self._explainer_type = "integrated_gradients"
+        self.explainer = None  # IG는 직접 구현
+
+    def _init_proxy_explainer(self, background_data: np.ndarray):
+        """복잡한 모델을 단순한 모델로 근사 (사용하지 않음 - 연구용 코드)"""
+        # 연구용 코드에서는 proxy 모델 사용하지 않음
+        # 대신 Integrated Gradients 사용
+        self.logger.info("Proxy 모델 대신 Integrated Gradients 사용")
+        self._init_integrated_gradients(background_data)
     
     def _model_predict(self, X: np.ndarray) -> np.ndarray:
         """모델 예측 래퍼"""
@@ -450,58 +500,155 @@ class XAIExplainer:
     
     def local_attribution(self, state: np.ndarray, action: np.ndarray) -> Dict[str, float]:
         """
-        로컬 특성 기여도 분석 (SHAP 기반)
-        
-        Args:
-            state: 현재 상태
-            action: 선택된 액션
-            
-        Returns:
-            feature_name -> contribution 매핑
+        신뢰성 있는 특성 기여도 분석
         """
-        assert self.explainer is not None, "SHAP explainer not initialized. Call initialize_shap() first"
+        if state.ndim > 1:
+            state = state.squeeze()
+
         assert state.shape[-1] == len(self.feature_names), f"State dimension mismatch: {state.shape[-1]} vs {len(self.feature_names)}"
-        
-        # SHAP values 계산
-        if state.ndim == 1:
-            state = state.reshape(1, -1)
-        
-        shap_values = self.explainer.shap_values(torch.FloatTensor(state))
-        
+
+        if self._explainer_type == "integrated_gradients":
+            shap_values = self._integrated_gradients_attribution(state)
+        elif self._explainer_type == "gradient":
+            shap_values = self._gradient_explainer_attribution(state)
+        else:
+            # Fallback
+            shap_values = self._simple_gradient_attribution(state)
+
         # 텐서/배열 처리
         if isinstance(shap_values, list):
             # 다중 출력의 경우 첫 번째 사용
             shap_values = shap_values[0]
-        
+
         if hasattr(shap_values, 'cpu'):
             shap_values = shap_values.cpu().numpy()
-        
+
         shap_values = shap_values.squeeze()
-        
+
         # NaN 체크
         assert not np.any(np.isnan(shap_values)), "NaN in SHAP values"
-        
+
         # 특성별 기여도 매핑
         attribution = {}
         for i, feature_name in enumerate(self.feature_names):
             attribution[feature_name] = float(shap_values[i])
-        
+
         # 정규화 (합이 1이 되도록)
         total_abs = np.sum(np.abs(list(attribution.values())))
         if total_abs > 0:
             for key in attribution:
                 attribution[key] /= total_abs
-        
+
         # 중요도 순으로 정렬
         sorted_attribution = dict(sorted(
             attribution.items(),
             key=lambda x: abs(x[1]),
             reverse=True
         ))
-        
+
         self.logger.debug(f"Top 5 attributions: {list(sorted_attribution.items())[:5]}")
-        
+
         return sorted_attribution
+
+    def _integrated_gradients_attribution(self, state: np.ndarray) -> np.ndarray:
+        """Integrated Gradients를 사용한 attribution 계산"""
+        state_tensor = torch.FloatTensor(state).unsqueeze(0)
+        baseline_tensor = torch.FloatTensor(self.baseline).unsqueeze(0)
+
+        # Device 확인
+        if hasattr(self.model, 'device'):
+            device = self.model.device
+        else:
+            device = torch.device('cpu')
+
+        state_tensor = state_tensor.to(device)
+        baseline_tensor = baseline_tensor.to(device)
+
+        # 적분 스텝 수
+        n_steps = 50
+        alphas = np.linspace(0, 1, n_steps)
+
+        # 그래디언트 누적
+        integrated_grads = torch.zeros_like(state_tensor)
+
+        for alpha in alphas:
+            # 보간된 입력
+            interpolated = baseline_tensor + alpha * (state_tensor - baseline_tensor)
+            interpolated.requires_grad = True
+
+            # Forward pass
+            if hasattr(self.model, 'actor'):
+                output = self.model.actor(interpolated)
+                if isinstance(output, tuple):
+                    output = output[0]  # mean action
+            else:
+                output = self.model(interpolated)
+
+            # 액션 선택 (최대값 또는 평균)
+            action_value = output.mean()
+
+            # Backward pass
+            self.model.zero_grad()
+            action_value.backward()
+
+            # 그래디언트 누적
+            integrated_grads += interpolated.grad / n_steps
+
+        # (입력 - 베이스라인) * 통합 그래디언트
+        attributions = (state_tensor - baseline_tensor) * integrated_grads
+
+        return attributions.detach().cpu().numpy().squeeze()
+
+    def _gradient_explainer_attribution(self, state: np.ndarray) -> np.ndarray:
+        """SHAP GradientExplainer를 사용한 attribution"""
+        if self.explainer is None:
+            self.logger.error("GradientExplainer가 초기화되지 않음")
+            return np.zeros_like(state)
+
+        # SHAP 값 계산
+        shap_values = self.explainer.shap_values(np.array([state]))
+
+        # 다중 출력인 경우 평균
+        if isinstance(shap_values, list):
+            shap_values = np.mean(shap_values, axis=0)
+
+        return shap_values.squeeze()
+
+    def _simple_gradient_attribution(self, state: np.ndarray) -> np.ndarray:
+        """단순 그래디언트 기반 attribution (최종 폴백)"""
+        state_tensor = torch.FloatTensor(state).unsqueeze(0)
+
+        # Device 확인
+        if hasattr(self.model, 'device'):
+            device = self.model.device
+        else:
+            device = torch.device('cpu')
+
+        state_tensor = state_tensor.to(device)
+        state_tensor.requires_grad = True
+
+        # Forward pass
+        if hasattr(self.model, 'actor'):
+            output = self.model.actor(state_tensor)
+            if isinstance(output, tuple):
+                output = output[0]  # mean action
+        else:
+            output = self.model(state_tensor)
+
+        # 출력의 평균 또는 합계에 대한 그래디언트
+        target = output.mean()
+
+        # Backward pass
+        self.model.zero_grad()
+        target.backward()
+
+        # 그래디언트가 attribution
+        gradients = state_tensor.grad.detach().cpu().numpy().squeeze()
+
+        # 입력값과 곱하기 (Gradient * Input)
+        attributions = gradients * state
+
+        return attributions
     
     def counterfactual(self, state: np.ndarray, action: np.ndarray, 
                       deltas: Dict[str, float]) -> Dict[str, Any]:
@@ -734,6 +881,6 @@ class XAIExplainer:
             'timestamp': datetime.now().isoformat()
         }
         
-        self.logger.info(f"Regime report generated: {regime} (crisis={overall_crisis:.2f})")
+        self.logger.debug(f"Regime report generated: {regime} (crisis={overall_crisis:.2f})")
         
         return report

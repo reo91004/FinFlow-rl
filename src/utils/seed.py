@@ -10,8 +10,6 @@ def get_best_device() -> torch.device:
     """사용 가능한 최적의 디바이스 자동 선택"""
     if torch.cuda.is_available():
         return torch.device("cuda")
-    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        return torch.device("mps")
     else:
         return torch.device("cpu")
 
@@ -35,12 +33,10 @@ def get_device_info(device: Optional[torch.device] = None) -> str:
     """현재 사용 중인 device 정보 반환"""
     if device is None:
         device = get_best_device()
-    
+
     if device.type == "cuda":
         props = torch.cuda.get_device_properties(0)
         return f"CUDA GPU: {torch.cuda.get_device_name(0)} (Memory: {props.total_memory // 1024**3}GB)"
-    elif device.type == "mps":
-        return "Apple MPS GPU (Metal Performance Shaders)"
     else:
         return "CPU"
 

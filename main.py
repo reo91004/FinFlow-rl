@@ -9,6 +9,7 @@ IQL → Distributional SAC 파이프라인 기반 포트폴리오 최적화 시�
 import argparse
 import json
 import yaml
+import torch
 from pathlib import Path
 from src.core.trainer import FinFlowTrainer, TrainingConfig
 from src.utils.logger import FinFlowLogger
@@ -77,7 +78,7 @@ def main():
     
     # System parameters
     parser.add_argument('--device', type=str, default='auto',
-                       help='Device (auto, cuda, mps, cpu)')
+                       help='Device (auto, cuda, cpu)')
     parser.add_argument('--seed', type=int, default=42,
                        help='Random seed')
     parser.add_argument('--verbose', action='store_true',
@@ -194,16 +195,25 @@ def main():
     elif args.mode == 'evaluate':
         # Import evaluation module
         from scripts.evaluate import FinFlowEvaluator
-        
+
         if not args.resume:
             print("평가 모드는 --resume 체크포인트가 필요합니다")
             return
-        
+
+        # device='auto'를 실제 디바이스로 변환
+        if args.device == 'auto':
+            if torch.cuda.is_available():
+                device = 'cuda'
+            else:
+                device = 'cpu'
+        else:
+            device = args.device
+
         # Create evaluator
         evaluator = FinFlowEvaluator(
             checkpoint_path=args.resume,
             data_path=args.data_path,
-            device=args.device
+            device=device
         )
         
         # Run evaluation

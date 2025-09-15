@@ -1186,92 +1186,135 @@ class FinFlowTrainer:
         return False
     
     def _save_checkpoint(self, tag: str):
-        """체크포인트 저장 (메타데이터 포함)"""
-        import datetime
-        
-        # 메타데이터 수집
-        metadata = {
-            'checkpoint_type': 'full',  # 'full' or 'iql'
-            'timestamp': datetime.datetime.now().isoformat(),
-            'state_dim': self.state_dim,
-            'action_dim': self.action_dim,
-            'n_assets': self.action_dim,  # 포트폴리오 자산 수
-            'framework_version': '2.0',  # BIPD 버전
-            'training_mode': 'sac' if self.episode > 0 else 'iql',
-            'total_steps': self.global_step,
-            'episode': self.episode
-        }
-        
-        # 필요한 하이퍼파라미터만 추출 (pickle 가능한 값들만)
-        config_params = {
-            # 오프라인 학습 설정
-            'offline_episodes': self.config.offline_episodes,
-            'offline_steps': self.config.offline_steps,
-            'offline_batch_size': self.config.offline_batch_size,
-            'offline_eval_interval': self.config.offline_eval_interval,
-            
-            # IQL 설정
-            'iql_epochs': self.config.iql_epochs,
-            'iql_batch_size': self.config.iql_batch_size,
-            'iql_lr': self.config.iql_lr,
-            'iql_expectile': self.config.iql_expectile,
-            'iql_temperature': self.config.iql_temperature,
-            
-            # SAC 설정
-            'sac_episodes': self.config.sac_episodes,
-            'sac_batch_size': self.config.sac_batch_size,
-            'sac_lr': self.config.sac_lr,
-            'sac_gamma': self.config.sac_gamma,
-            'sac_tau': self.config.sac_tau,
-            'sac_alpha': self.config.sac_alpha,
-            'sac_cql_weight': self.config.sac_cql_weight,
-            
-            # Memory 설정
-            'memory_capacity': self.config.memory_capacity,
-            'memory_k_neighbors': self.config.memory_k_neighbors,
-            
-            # 평가 및 체크포인트 설정
-            'eval_interval': self.config.eval_interval,
-            'checkpoint_interval': self.config.checkpoint_interval,
-            'log_interval': self.config.log_interval,
-            
-            # 시스템 설정
-            'device': str(self.config.device) if hasattr(self.config, 'device') else 'cpu',
-            'seed': self.config.seed,
-            'data_path': self.config.data_path,
-            'checkpoint_dir': self.config.checkpoint_dir,
-            
-            # 목표 지표
-            'target_sharpe': self.config.target_sharpe,
-            'target_cvar': self.config.target_cvar,
-            
-            # 조기 종료
-            'patience': self.config.patience,
-            'min_improvement': self.config.min_improvement,
-        }
-        
+        """체크포인트 저장"""
+        import numpy as np
+        import copy
+        from datetime import datetime
+
+        # memory_cell 데이터를 완전히 텐서로 변환
+        memory_data = []
+        for m in list(self.memory_cell.memories):
+            memory_item = {}
+            for key, value in m.items():
+                if isinstance(value, np.ndarray):
+                    memory_item[key] = torch.tensor(value, dtype=torch.float32)
+                elif isinstance(value, (list, tuple)) and len(value) > 0 and isinstance(value[0], (int, float)):
+                    memory_item[key] = torch.tensor(value, dtype=torch.float32)
+                elif isinstance(value, (int, float, bool)):
+                    memory_item[key] = value
+                elif isinstance(value, str):
+                    memory_item[key] = value
+                elif value is None:
+                    memory_item[key] = value
+                else:
+                    # 다른 타입은 텐서로 변환 시도
+                    try:
+                        memory_item[key] = torch.tensor(value, dtype=torch.float32)
+                    except:
+                        memory_item[key] = value
+            memory_data.append(memory_item)
+
+        # memory_stats도 안전하게 변환
+        memory_stats = {}
+        if hasattr(self.memory_cell, 'memory_stats'):
+            for key, value in self.memory_cell.memory_stats.items():
+                if isinstance(value, np.ndarray):
+                    memory_stats[key] = torch.tensor(value, dtype=torch.float32)
+                elif isinstance(value, (np.integer, np.floating)):
+                    memory_stats[key] = float(value)
+                else:
+                    memory_stats[key] = value
+
+        # 실제 device 문자열 저장
+        device_str = str(self.device)
+        if device_str == 'auto' or 'auto' in device_str:
+            if torch.cuda.is_available():
+                device_str = f'cuda:{torch.cuda.current_device()}'
+            else:
+                device_str = 'cpu'
+
+        # config를 직렬화 가능한 형태로 변환
+        def make_serializable(obj):
+            """객체를 직렬화 가능한 형태로 변환"""
+            if isinstance(obj, dict):
+                return {k: make_serializable(v) for k, v in obj.items()}
+            elif isinstance(obj, (list, tuple)):
+                return [make_serializable(v) for v in obj]
+            elif isinstance(obj, np.ndarray):
+                return obj.tolist()
+            elif isinstance(obj, (np.integer, np.floating)):
+                return float(obj)
+            elif isinstance(obj, (int, float, bool, str)) or obj is None:
+                return obj
+            else:
+                return str(obj)
+
+        # config 전체를 직렬화 가능한 형태로 변환
+        config_dict = {}
+        for key in dir(self.config):
+            if not key.startswith('_') and key != 'logger':
+                value = getattr(self.config, key)
+                if not callable(value):
+                    config_dict[key] = value
+        serializable_config = make_serializable(config_dict)
+
+        # metrics도 안전하게 변환
+        safe_metrics = {}
+        if self.metrics_history:
+            for key, value in self.metrics_history[-1].items():
+                if isinstance(value, (np.ndarray, torch.Tensor)):
+                    safe_metrics[key] = float(value.item() if hasattr(value, 'item') else value)
+                elif isinstance(value, (np.integer, np.floating)):
+                    safe_metrics[key] = float(value)
+                else:
+                    safe_metrics[key] = value
+
+        # B-Cell state_dict를 안전하게 변환
+        b_cell_state = self.b_cell.state_dict()
+        safe_b_cell = {}
+
+        # state_dict들은 그대로 유지
+        for key in ['actor', 'critic_q1', 'critic_q2']:
+            if key in b_cell_state:
+                safe_b_cell[key] = b_cell_state[key]
+
+        # log_alpha numpy array를 텐서로 변환
+        if 'log_alpha' in b_cell_state:
+            if isinstance(b_cell_state['log_alpha'], np.ndarray):
+                safe_b_cell['log_alpha'] = torch.tensor(b_cell_state['log_alpha'], dtype=torch.float32)
+            else:
+                safe_b_cell['log_alpha'] = b_cell_state['log_alpha']
+
+        # 메타데이터는 그대로 유지
+        for key in ['specialization', 'training_step', 'performance_score']:
+            if key in b_cell_state:
+                safe_b_cell[key] = b_cell_state[key]
+
         checkpoint = {
-            'episode': self.episode,
-            'global_step': self.global_step,
-            'b_cell': self.b_cell.state_dict(),
+            'episode': int(self.episode),
+            'global_step': int(self.global_step),
+            'b_cell': safe_b_cell,
             'gating_network': self.gating_network.state_dict(),
             'memory_cell': {
-                'memories': list(self.memory_cell.memories),
-                'stats': self.memory_cell.memory_stats
+                'memories': memory_data,
+                'stats': memory_stats
             },
             't_cell': self.t_cell.get_state(),
-            'metrics': self.metrics_history[-1] if self.metrics_history else {},
-            'config_params': config_params,  # config 대신 파라미터만 저장
-            'stability_report': self.stability_monitor.get_report(),
-            'metadata': metadata  # 메타데이터 추가
+            'metrics': safe_metrics,
+            'config': serializable_config,
+            'device': device_str,
+            'best_sharpe': float(self.best_sharpe),
+            'timestamp': datetime.now().isoformat(),
+            'stability_report': self.stability_monitor.get_report()
         }
-        
+
+        # 체크포인트 저장
         path = self.checkpoint_dir / f"checkpoint_{tag}.pt"
         torch.save(checkpoint, path)
-        
+
         # Notify StabilityMonitor about checkpoint
         self.stability_monitor.save_checkpoint(str(path))
-        
+
         self.logger.info(f"체크포인트 저장: {path}")
     
     def load_checkpoint(self, path: str):
