@@ -736,6 +736,9 @@ class FinFlowTrainer:
             done = False
             
             # Episode loop
+            max_episode_steps = min(self.env.max_steps, len(self.env.price_data) - 2)
+            last_progress_checkpoint = 0
+
             while not done:
                 # Crisis detection
                 crisis_info = self.t_cell.detect_crisis(self.env.get_market_data())
@@ -771,7 +774,29 @@ class FinFlowTrainer:
                 if portfolio_return == 0:  # fallback
                     portfolio_return = reward / self.config.env_config['initial_balance']
                 self.episode_returns.append(portfolio_return)
-                self.logger.debug(f"Step {episode_steps}: portfolio_return={portfolio_return:.6f}, cumulative_return={np.prod(1 + np.array(self.episode_returns)) - 1:.4f}")
+
+                # 에피소드 10% 진행 시점마다 통계 출력 (과도한 로그 방지)
+                progress_percentage = (episode_steps / max_episode_steps) * 100 if max_episode_steps > 0 else 0
+                current_checkpoint = int(progress_percentage // 10) * 10  # 10, 20, 30, ...
+
+                if current_checkpoint > last_progress_checkpoint and current_checkpoint > 0:
+                    last_progress_checkpoint = current_checkpoint
+
+                    # 최근 수익률 통계 계산
+                    window_size = max(10, episode_steps // 10)  # 최소 10 스텝, 아니면 전체의 10%
+                    recent_returns = self.episode_returns[-window_size:] if len(self.episode_returns) >= window_size else self.episode_returns
+                    cumulative_return = np.prod(1 + np.array(self.episode_returns)) - 1
+
+                    self.logger.debug(
+                        f"진행률 {current_checkpoint}% (Step {episode_steps}/{max_episode_steps}) | "
+                        f"최근 {len(recent_returns)}스텝 통계: "
+                        f"평균={np.mean(recent_returns):.6f}, "
+                        f"표준편차={np.std(recent_returns):.6f}, "
+                        f"최대={np.max(recent_returns):.6f}, "
+                        f"최소={np.min(recent_returns):.6f} | "
+                        f"누적수익률={cumulative_return:.4%}"
+                    )
+
                 self.episode_actions.append(action.copy())
                 
                 # 거래 비용 추적
