@@ -16,7 +16,7 @@ class DirichletActor(nn.Module):
     """
     
     def __init__(self, state_dim: int, action_dim: int, hidden_dims: list = [256, 256],
-                 min_concentration: float = 0.01, max_concentration: float = 10.0):
+                 min_concentration: float = 0.01, max_concentration: float = 100.0):
         super().__init__()
         
         self.action_dim = action_dim
@@ -108,8 +108,11 @@ class DirichletActor(nn.Module):
             action = action / action.sum(dim=-1, keepdim=True)
             log_prob = dist.log_prob(action)
         else:
-            # Sample from distribution
+            # Sample from distribution with epsilon clamping
             action = dist.rsample()  # Reparameterized sampling
+            eps = 1e-8
+            action = torch.clamp(action, eps, 1.0 - eps)
+            action = action / action.sum(dim=-1, keepdim=True)  # 재정규화
             log_prob = dist.log_prob(action)
         
         return action, log_prob

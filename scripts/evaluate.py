@@ -84,7 +84,8 @@ class FinFlowEvaluator:
         return {
             'env': {
                 'initial_balance': 1000000,
-                'transaction_cost': 0.001,
+                'turnover_cost': 0.001,
+                'slip_coeff': 0.0005,
                 'max_weight': 0.2,
                 'min_weight': 0.0,
                 'window_size': 30
@@ -439,8 +440,8 @@ class FinFlowEvaluator:
             price_data=price_df,
             feature_extractor=feature_extractor,
             initial_capital=env_config.get('initial_capital', env_config.get('initial_balance', 1000000)),
-            transaction_cost=env_config.get('turnover_cost', env_config.get('transaction_cost', 0.001)),
-            slippage=env_config.get('slip_coeff', env_config.get('slippage', 0.0005)),
+            turnover_cost=env_config.get('turnover_cost', 0.001),
+            slip_coeff=env_config.get('slip_coeff', 0.0005),
             no_trade_band=env_config.get('no_trade_band', 0.002),
             max_leverage=env_config.get('max_leverage', 1.0),
             max_turnover=env_config.get('max_turnover', 0.5)
@@ -799,8 +800,8 @@ class FinFlowEvaluator:
             price_data=price_df,
             feature_extractor=feature_extractor,
             initial_capital=env_config.get('initial_capital', 1000000),
-            transaction_cost=env_config.get('turnover_cost', 0.001),  # turnover_cost -> transaction_cost
-            slippage=env_config.get('slip_coeff', 0.0005),           # slip_coeff -> slippage
+            turnover_cost=env_config.get('turnover_cost', 0.001),
+            slip_coeff=env_config.get('slip_coeff', 0.0005),
             no_trade_band=env_config.get('no_trade_band', 0.002),
             max_leverage=env_config.get('max_leverage', 1.0),
             max_turnover=env_config.get('max_turnover', 0.5)

@@ -151,14 +151,14 @@ class DistributionalSAC:
         critic2_loss = self._quantile_huber_loss(current_q2, targets.detach())
         
         # Optimize with gradient clipping
-        self.critic1_optimizer.zero_grad()
+        self.critic1_optimizer.zero_grad(set_to_none=True)
         critic1_loss.backward()
-        clip_gradients(self.critic1, max_norm=1.0)
+        torch.nn.utils.clip_grad_norm_(self.critic1.parameters(), max_norm=5.0)  # 강화된 클립
         self.critic1_optimizer.step()
-        
-        self.critic2_optimizer.zero_grad()
+
+        self.critic2_optimizer.zero_grad(set_to_none=True)
         critic2_loss.backward()
-        clip_gradients(self.critic2, max_norm=1.0)
+        torch.nn.utils.clip_grad_norm_(self.critic2.parameters(), max_norm=5.0)  # 강화된 클립
         self.critic2_optimizer.step()
         
         return critic1_loss.item(), critic2_loss.item()
@@ -178,9 +178,9 @@ class DistributionalSAC:
         actor_loss = -(q - self.alpha * log_probs).mean()
         
         # Optimize with gradient clipping
-        self.actor_optimizer.zero_grad()
+        self.actor_optimizer.zero_grad(set_to_none=True)
         actor_loss.backward()
-        grad_norm = clip_gradients(self.actor, max_norm=1.0)
+        torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=5.0)  # 강화된 클립
         self.actor_optimizer.step()
         
         return actor_loss.item(), log_probs.mean().item()

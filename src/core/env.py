@@ -36,15 +36,15 @@ class PortfolioEnv(gym.Env):
     Gymnasium API 준수
     """
     
-    def __init__(self, 
+    def __init__(self,
                  price_data: pd.DataFrame,
                  feature_extractor: Optional[FeatureExtractor] = None,
                  initial_capital: float = 1000000,
-                 transaction_cost: float = 0.001,
-                 slippage: float = 0.0005,
-                 no_trade_band: float = 0.002,
+                 turnover_cost: float = 0.001,  # transaction_cost 대신 turnover_cost 사용
+                 slip_coeff: float = 0.0005,  # slippage 대신 slip_coeff 사용
+                 no_trade_band: float = 0.0005,  # 0.002에서 완화
                  max_leverage: float = 1.0,
-                 max_turnover: float = 0.5,
+                 max_turnover: float = 0.9,  # 0.5에서 상향
                  max_steps: Optional[int] = None):
         """
         Args:
@@ -69,12 +69,15 @@ class PortfolioEnv(gym.Env):
         
         # 환경 파라미터
         self.initial_capital = initial_capital
-        self.transaction_cost = transaction_cost
-        self.slippage = slippage
+        self.turnover_cost = turnover_cost  # 비용 키 통일
+        self.slip_coeff = slip_coeff  # 비용 키 통일
         self.no_trade_band = no_trade_band
         self.max_leverage = max_leverage
         self.max_turnover = max_turnover
         self.max_steps = max_steps or len(price_data) - 1
+
+        # 잔량 누적 버퍼 (fractional shares 처리)
+        self._residual = np.zeros(self.n_assets)
         
         # 로거
         self.logger = FinFlowLogger("PortfolioEnv")
@@ -100,20 +103,29 @@ class PortfolioEnv(gym.Env):
         # 상태 변수는 reset()에서 초기화
         self.current_step = 0
         self.portfolio_value = initial_capital
-        self.cash = initial_capital
-        self.weights = np.zeros(self.n_assets)
+        self.cash = 0.0  # 균등가중치로 시작하므로 현금 0
+        self.weights = np.ones(self.n_assets) / self.n_assets  # 균등가중치 초기화
         self.crisis_level = 0.0
         self.market_data_cache = None
+        self.holdings = np.zeros(self.n_assets)  # 실제 보유 주식 수
     
     def reset(self, seed: Optional[int] = None, options: Optional[Dict] = None) -> Tuple[np.ndarray, Dict]:
         """환경 초기화 (Gymnasium API)"""
         super().reset(seed=seed, options=options)
-        
+
         self.current_step = self.feature_extractor.window  # 충분한 데이터 확보
         self.portfolio_value = self.initial_capital
-        self.cash = self.initial_capital
-        self.weights = np.zeros(self.n_assets)
+
+        # 균등 가중치로 시작하여 현금 고착 방지
+        self.weights = np.ones(self.n_assets, dtype=np.float32) / self.n_assets
+
+        # 초기 가격으로 보유 주식 수 계산
+        initial_prices = self.price_data.iloc[self.current_step].values
+        self.holdings = (self.weights * self.portfolio_value / initial_prices).astype(np.float32)
+        self.cash = 0.0  # 모든 자금을 주식에 투자
+
         self.crisis_level = 0.0
+        self._residual = np.zeros(self.n_assets)  # 잔량 버퍼 초기화
         
         # 성과 추적
         self.portfolio_values = [self.initial_capital]
@@ -145,9 +157,9 @@ class PortfolioEnv(gym.Env):
         # 액션 정규화 (심플렉스 투영)
         action = self._normalize_weights(action)
         
-        # No-trade band 적용
+        # No-trade band 적용 (완화된 기준)
         weight_change = np.abs(action - self.weights)
-        if np.max(weight_change) < self.no_trade_band:
+        if np.sum(weight_change) < self.no_trade_band:  # max 대신 sum 사용
             action = self.weights.copy()
         
         # 최대 턴오버 제약
@@ -159,9 +171,9 @@ class PortfolioEnv(gym.Env):
             action = self._normalize_weights(action)
             turnover = self.max_turnover
         
-        # 거래 비용 계산
-        trade_cost = self.transaction_cost * turnover
-        slippage_cost = self.slippage * turnover
+        # 거래 비용 계산 (통일된 키 사용)
+        trade_cost = self.turnover_cost * turnover
+        slippage_cost = self.slip_coeff * turnover
         total_cost = trade_cost + slippage_cost
         
         # T+1 수익률 적용 (다음 날 수익률)
@@ -277,7 +289,63 @@ class PortfolioEnv(gym.Env):
     def set_crisis_level(self, crisis_level: float):
         """T-Cell로부터 위기 수준 업데이트"""
         self.crisis_level = np.clip(crisis_level, 0, 1)
-    
+
+        # 위기 점수에 따른 제약 조정
+        if crisis_level >= 0.7:
+            self.max_turnover = max(0.3, self.max_turnover * 0.7)  # 높은 위기 시 턴오버 제한
+            self.no_trade_band = min(0.01, self.no_trade_band * 1.5)  # 무거래 밴드 확대
+        else:
+            # 기본값 유지 (이미 완화된 값)
+            self.max_turnover = 0.9
+            self.no_trade_band = 0.0005
+
+    def _apply_trading_rules(self, target_weights: np.ndarray) -> float:
+        """
+        거래 규칙 적용 및 체결 처리
+
+        Returns:
+            executed_turnover: 실제 체결된 턴오버
+        """
+        # 무거래 밴드 적용 (완화된 기준)
+        delta = target_weights - self.weights
+        if np.sum(np.abs(delta)) < self.no_trade_band:
+            return 0.0  # 체결 없음
+
+        # 가중치 -> 수량 변환 (min_trade_size 완화)
+        min_trade_size = 1  # 기존 100에서 크게 완화
+        current_prices = self.price_data.iloc[self.current_step].values
+        desired_shares = target_weights * self.portfolio_value / current_prices
+        trade_shares = desired_shares - self.holdings
+
+        # 라운딩 후 잔량 누적
+        executed = np.zeros_like(trade_shares)
+        for i in range(self.n_assets):
+            trade_value = abs(trade_shares[i]) * current_prices[i]
+            if trade_value >= min_trade_size:
+                executed[i] = trade_shares[i]
+            else:
+                # 잔량 누적 버퍼에 저장
+                self._residual[i] += trade_shares[i]
+                # 누적된 잔량이 충분하면 체결
+                if abs(self._residual[i]) * current_prices[i] >= min_trade_size:
+                    executed[i] = self._residual[i]
+                    self._residual[i] = 0.0
+
+        # 턴오버 제한 적용
+        turnover = np.sum(np.abs(executed)) / np.maximum(np.sum(np.abs(self.holdings)), 1e-12)
+        if turnover > self.max_turnover:
+            scale = self.max_turnover / (turnover + 1e-12)
+            executed *= scale
+            turnover = self.max_turnover
+
+        # 체결 반영
+        self.holdings += executed
+        self.weights = (self.holdings * current_prices) / np.maximum(self.portfolio_value, 1e-12)
+        self.weights = self._normalize_weights(self.weights)
+
+        return float(np.sum(np.abs(executed * current_prices)) / self.portfolio_value)
+
+
     def get_market_data(self) -> Dict[str, np.ndarray]:
         """현재 시장 데이터 반환 (T-Cell용)"""
         if self.current_step < self.feature_extractor.window:
@@ -286,7 +354,7 @@ class PortfolioEnv(gym.Env):
                 'prices': np.zeros((self.feature_extractor.window, self.n_assets)),
                 'returns': np.zeros((self.feature_extractor.window, self.n_assets)),
                 'volumes': np.ones((self.feature_extractor.window, self.n_assets)),
-                'features': np.zeros(feature_dim)
+                'features': np.zeros(self.feature_extractor.total_dim if hasattr(self.feature_extractor, 'total_dim') else 12)
             }
         
         # 현재 윈도우의 데이터 추출

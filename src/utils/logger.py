@@ -111,6 +111,18 @@ class FinFlowLogger:
         }
         with open(self.json_file_path, 'a', encoding='utf-8') as f:
             f.write(json.dumps(log_entry) + '\n')
+
+    def format_return(self, return_value: float, as_bps: bool = False) -> str:
+        """수익률을 bps 또는 % 형식으로 포맷팅"""
+        if as_bps:
+            return f"{return_value * 10000:.1f}bps"
+        else:
+            return f"{return_value * 100:.2f}%"
+
+    def log_return(self, return_value: float, cumulative: float, prefix: str = ""):
+        """수익률 로깅 (개선된 포맷)"""
+        msg = f"{prefix}ret={self.format_return(return_value)}, cum={self.format_return(cumulative)}"
+        self.info(msg)
     
 
 # Backward compatibility alias

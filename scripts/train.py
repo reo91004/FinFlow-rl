@@ -64,7 +64,8 @@ def main():
             # Environment
             env_config={
                 'initial_balance': config['env']['initial_capital'],
-                'transaction_cost': config['env']['turnover_cost'],
+                'turnover_cost': config['env']['turnover_cost'],
+                'slip_coeff': config['env']['slip_coeff'],
                 'max_leverage': config['env']['max_leverage'],
                 'window_size': config['features']['window']
             },

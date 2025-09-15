@@ -53,14 +53,14 @@ class BCell:
         # Hyperparameters
         self.gamma = config.get('gamma', 0.99)
         self.tau = config.get('tau', 0.005)
-        self.alpha_init = config.get('alpha_init', 0.2)
+        self.alpha_init = 0.79  # 중요: 초기 탐색 강화 (0.75~0.79 중 0.79 권장)
         self.alpha_min = config.get('alpha_min', 5e-4)
-        self.alpha_max = config.get('alpha_max', 0.2)
-        self.target_entropy_ratio = config.get('target_entropy_ratio', 0.98)
+        self.alpha_max = config.get('alpha_max', 2.0)  # 상한 상향
+        self.target_entropy_ratio = 0.5  # -0.5 * |A| 목표
         
-        # CQL settings
-        self.cql_alpha_start = config.get('cql_alpha_start', 0.01)
-        self.cql_alpha_end = config.get('cql_alpha_end', 0.05)
+        # CQL settings (표준 범위로 상향)
+        self.cql_weight = 5.0  # 표준 범위 시작값 (5.0~10.0)
+        self.cql_min_q_weight = 5.0  # min Q weight 동치
         self.cql_num_samples = config.get('cql_num_samples', 8)
         self.enable_cql = config.get('enable_cql', True)
         
@@ -78,7 +78,8 @@ class BCell:
         
         # Temperature parameter (learnable)
         self.log_alpha = torch.tensor(np.log(self.alpha_init), requires_grad=True, device=device, dtype=torch.float32)
-        self.target_entropy = -action_dim * self.target_entropy_ratio  # Heuristic
+        self.alpha = self.alpha_init  # 명시적 초기값
+        self.target_entropy = -self.target_entropy_ratio * action_dim  # -0.5 * |A|
         
         # Optimizers
         self.actor_optimizer = optim.Adam(
@@ -110,9 +111,6 @@ class BCell:
         self.training_step = 0
         self.recent_rewards = deque(maxlen=100)
         self.performance_score = 0.0
-        
-        # CQL alpha scheduling
-        self.cql_alpha = self.cql_alpha_start
         
         self.logger.info(f"B-Cell [{specialization}] 초기화 완료")
     
@@ -238,10 +236,7 @@ class BCell:
         # Update priorities in replay buffer
         priorities = td_errors.abs().cpu().numpy() + 1e-6
         self.replay_buffer.update_priorities(indices, priorities)
-        
-        # Update CQL alpha (scheduling)
-        self._update_cql_alpha()
-        
+
         # Update performance score
         self._update_performance()
         
@@ -309,7 +304,7 @@ class BCell:
             'avg_recent_reward': np.mean(self.recent_rewards) if self.recent_rewards else 0,
             'buffer_size': len(self.replay_buffer),
             'alpha': self.log_alpha.exp().item(),
-            'cql_alpha': self.cql_alpha
+            'cql_weight': self.cql_weight
         }
     
     def update(self, batch: Dict) -> Dict[str, float]:
@@ -358,9 +353,6 @@ class BCell:
         # Update temperature
         alpha_loss = self._update_alpha(states)
         
-        # Update CQL alpha
-        self._update_cql_alpha()
-        
         # Update performance
         self._update_performance()
         
@@ -371,7 +363,7 @@ class BCell:
             'actor_loss': actor_loss,
             'alpha_loss': alpha_loss,
             'alpha': self.log_alpha.exp().item(),
-            'cql_alpha': self.cql_alpha,
+            'cql_weight': self.cql_weight,
             'performance': self.performance_score
         }
     
@@ -406,7 +398,7 @@ class BCell:
         # CQL regularization
         if self.enable_cql:
             cql_loss = self._compute_cql_loss(states, current_q1, current_q2)
-            critic_loss = loss_q1 + loss_q2 + self.cql_alpha * cql_loss
+            critic_loss = loss_q1 + loss_q2 + self.cql_weight * cql_loss
         else:
             critic_loss = loss_q1 + loss_q2
         
@@ -414,8 +406,8 @@ class BCell:
         self.critic_optimizer.zero_grad()
         critic_loss.backward()
         torch.nn.utils.clip_grad_norm_(
-            list(self.critic.q1.parameters()) + list(self.critic.q2.parameters()), 
-            1.0
+            list(self.critic.q1.parameters()) + list(self.critic.q2.parameters()),
+            5.0
         )
         self.critic_optimizer.step()
         
@@ -450,25 +442,51 @@ class BCell:
         return actor_loss.item()
     
     def _update_alpha(self, states):
-        """Update temperature parameter"""
-        
+        """Update temperature parameter (자동 튜닝 항상 활성)"""
+
         with torch.no_grad():
             actions, log_probs = self.actor.get_action(states)
-        
+
         # Alpha loss: maintain target entropy
         alpha_loss = -(self.log_alpha * (log_probs + self.target_entropy).detach()).mean()
-        
+
         # Optimize
-        self.alpha_optimizer.zero_grad()
+        self.alpha_optimizer.zero_grad(set_to_none=True)
         alpha_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.alpha_optimizer.param_groups[0]['params'], max_norm=5.0)
         self.alpha_optimizer.step()
-        
-        # Clamp alpha
-        with torch.no_grad():
-            self.log_alpha.clamp_(np.log(self.alpha_min), np.log(self.alpha_max))
-        
+
+        # Update alpha value
+        self.alpha = self.log_alpha.exp().clamp(self.alpha_min, self.alpha_max).item()
+
         return alpha_loss.item()
     
+    def _cql_penalty(self, states, actions, q1, q2):
+        """
+        CQL penalty 계산 (표준 가중치 사용)
+        """
+        # 기존 _compute_cql_loss를 _cql_penalty로 명츰 변경
+        # 가중치만 self.cql_weight 사용
+        with torch.no_grad():
+            # Random actions
+            random_actions = torch.rand_like(actions).to(self.device)
+            random_actions = random_actions / random_actions.sum(dim=-1, keepdim=True)
+
+            # Current policy actions
+            current_actions, _ = self.actor.get_action(states)
+
+        # Q values for different actions
+        q1_random = self.critic.q1(states, random_actions)
+        q2_random = self.critic.q2(states, random_actions)
+        q1_current = self.critic.q1(states, current_actions)
+        q2_current = self.critic.q2(states, current_actions)
+
+        # CQL penalty
+        cql_q1_loss = torch.mean(torch.max(q1_random, q1_current) - q1)
+        cql_q2_loss = torch.mean(torch.max(q2_random, q2_current) - q2)
+
+        return self.cql_weight * cql_q1_loss + self.cql_min_q_weight * cql_q2_loss
+
     def _compute_cql_loss(self, states, q1, q2):
         """
         Compute CQL (Conservative Q-Learning) loss
@@ -523,12 +541,6 @@ class BCell:
         
         return cql_loss
     
-    def _update_cql_alpha(self):
-        """Schedule CQL alpha"""
-        # Linear scheduling
-        progress = min(1.0, self.training_step / 100000)
-        self.cql_alpha = self.cql_alpha_start + \
-                        (self.cql_alpha_end - self.cql_alpha_start) * progress
     
     def _update_performance(self):
         """Update performance score for specialization"""

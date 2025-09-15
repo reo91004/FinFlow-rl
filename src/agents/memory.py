@@ -15,8 +15,8 @@ class MemoryCell:
     위기 수준별 계층화 및 시간적 다양성 고려
     """
     
-    def __init__(self, 
-                 capacity: int = 500,
+    def __init__(self,
+                 capacity: int = 50000,  # 500에서 50000으로 통일
                  embedding_dim: int = 32,
                  k_neighbors: int = 5,
                  similarity_threshold: float = 0.7):
@@ -32,15 +32,16 @@ class MemoryCell:
         self.k_neighbors = k_neighbors
         self.similarity_threshold = similarity_threshold
         
-        # Memory storage
-        self.memories = deque(maxlen=capacity)
+        # Memory storage (Reservoir sampling을 위해 list 사용)
+        self.memories = []  # deque 대신 list로 변경
         self.embeddings = []
-        
+        self.total_seen = 0  # Reservoir sampling용 카운터
+
         # Crisis-stratified storage
         self.stratified_memories = {
-            'low': deque(maxlen=capacity // 3),     # crisis < 0.3
-            'medium': deque(maxlen=capacity // 3),  # 0.3 <= crisis < 0.7
-            'high': deque(maxlen=capacity // 3)     # crisis >= 0.7
+            'low': [],     # crisis < 0.3
+            'medium': [],  # 0.3 <= crisis < 0.7
+            'high': []     # crisis >= 0.7
         }
         
         # Performance tracking
@@ -90,18 +91,29 @@ class MemoryCell:
             'info': additional_info or {}
         }
         
-        # Store in main memory
-        self.memories.append(memory)
-        
-        # Store in stratified memory
-        if crisis_level < 0.3:
-            self.stratified_memories['low'].append(memory)
-        elif crisis_level < 0.7:
-            self.stratified_memories['medium'].append(memory)
+        # Reservoir sampling으로 저장 (기존 store 내부 로직만 교체)
+        if len(self.memories) < self.capacity:
+            self.memories.append(memory)
         else:
-            self.stratified_memories['high'].append(memory)
-        
-        self.memory_stats['total_stored'] += 1
+            # Reservoir sampling
+            j = np.random.randint(0, self.total_seen + 1)
+            if j < self.capacity:
+                self.memories[j] = memory
+
+        # Store in stratified memory (Reservoir sampling 적용)
+        stratum = 'low' if crisis_level < 0.3 else 'medium' if crisis_level < 0.7 else 'high'
+        stratum_cap = self.capacity // 3
+
+        if len(self.stratified_memories[stratum]) < stratum_cap:
+            self.stratified_memories[stratum].append(memory)
+        else:
+            # Reservoir sampling for stratum
+            j = np.random.randint(0, self.total_seen + 1)
+            if j < stratum_cap:
+                self.stratified_memories[stratum][j] = memory
+
+        self.total_seen += 1
+        self.memory_stats['total_stored'] = self.total_seen
         
         # Update embeddings cache
         self._update_embeddings_cache()

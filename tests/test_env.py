@@ -36,7 +36,8 @@ class TestPortfolioEnv:
             price_data=self.price_data,
             feature_extractor=self.feature_extractor,
             initial_capital=1000000,
-            transaction_cost=0.001
+            turnover_cost=0.001,
+            slip_coeff=0.0005
         )
     
     def test_reset(self):
@@ -49,8 +50,8 @@ class TestPortfolioEnv:
         # 초기 포트폴리오 가치
         assert info['portfolio_value'] == 1000000
         
-        # 초기 가중치 (모두 0)
-        assert np.allclose(info['current_weights'], 0)
+        # 초기 가중치 (균등 가중치)
+        assert np.allclose(info['current_weights'], 1.0 / self.env.n_assets)
     
     def test_step_with_uniform_weights(self):
         """균등 가중치 액션 테스트"""
@@ -67,9 +68,9 @@ class TestPortfolioEnv:
         # 가중치 합 = 1
         assert np.abs(info['current_weights'].sum() - 1.0) < 1e-6
         
-        # 종료 조건
-        assert isinstance(done, bool)
-        assert isinstance(truncated, bool)
+        # 종료 조건 (numpy bool도 허용)
+        assert isinstance(done, (bool, np.bool_))
+        assert isinstance(truncated, (bool, np.bool_))
     
     def test_action_normalization(self):
         """액션 정규화 테스트"""
@@ -92,23 +93,29 @@ class TestPortfolioEnv:
             price_data=self.price_data,
             feature_extractor=self.feature_extractor,
             initial_capital=1000000,
-            transaction_cost=0.001,
+            turnover_cost=0.001,
+            slip_coeff=0.0005,
             max_turnover=0.2  # 20% 최대 턴오버
         )
-        
+
         state, info = env.reset()
-        
+
         # 첫 번째 스텝: [1,0,0,0,0] 가중치
         action1 = np.array([1, 0, 0, 0, 0])
-        env.step(action1)
-        
+        _, _, _, _, info1 = env.step(action1)
+        weights_after_step1 = info1['current_weights'].copy()
+
         # 두 번째 스텝: [0,0,0,0,1] 가중치 (200% 턴오버 시도)
         action2 = np.array([0, 0, 0, 0, 1])
-        next_state, reward, done, truncated, info = env.step(action2)
-        
-        # 실제 턴오버가 제약 이하
-        actual_turnover = np.abs(info['current_weights'] - action1).sum()
-        assert actual_turnover <= 0.2 + 1e-6
+        next_state, reward, done, truncated, info2 = env.step(action2)
+        weights_after_step2 = info2['current_weights']
+
+        # 실제로 발생한 턴오버 계산 (step1 -> step2)
+        actual_turnover = np.abs(weights_after_step2 - weights_after_step1).sum()
+
+        # 목표 턴오버가 2.0이었지만 제약(0.2)이 적용되어야 함
+        # 실제로는 제약에 의해 부분적으로만 이동
+        assert actual_turnover <= 0.2 + 1e-6  # 제약 확인
     
     def test_t_plus_1_settlement(self):
         """T+1 체결 규칙 테스트"""

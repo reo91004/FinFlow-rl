@@ -43,14 +43,26 @@ class PrioritizedReplayBuffer:
     
     def push(self, transition: Transition):
         """경험 저장"""
+        # 유입 데이터 검증 (assert로 즉시 실패)
+        assert transition.state is not None, "State cannot be None"
+        assert transition.action is not None, "Action cannot be None"
+        assert transition.next_state is not None, "Next state cannot be None"
+        assert not np.isnan(transition.reward), "Reward cannot be NaN"
+
         if len(self.buffer) < self.capacity:
             self.buffer.append(transition)
         else:
             self.buffer[self.position] = transition
-        
+
         # 새 경험은 최대 우선순위
         self.priorities[self.position] = self.max_priority
         self.position = (self.position + 1) % self.capacity
+
+        # 버퍼 텔레메트리: 100스텝마다 로깅
+        if len(self.buffer) % 100 == 0:
+            from src.utils.logger import FinFlowLogger
+            logger = FinFlowLogger("PrioritizedReplayBuffer")
+            logger.debug(f"[Replay] buffer_size={len(self.buffer)}, position={self.position}")
     
     def sample(self, batch_size: int) -> Tuple[list, np.ndarray, np.ndarray]:
         """
@@ -94,15 +106,41 @@ class PrioritizedReplayBuffer:
 class ReservoirBuffer:
     """
     Reservoir Sampling Buffer
-    
+
     균등한 확률로 과거 경험 유지 (다양성 확보)
     """
-    
+
     def __init__(self, capacity: int):
         self.capacity = capacity
         self.buffer = []
         self.total_seen = 0
-    
+
+    def push(self, transition: Transition):
+        """Reservoir sampling으로 경험 저장"""
+        # 유입 데이터 검증
+        assert transition.state is not None, "State cannot be None"
+        assert transition.action is not None, "Action cannot be None"
+        assert transition.next_state is not None, "Next state cannot be None"
+
+        if len(self.buffer) < self.capacity:
+            self.buffer.append(transition)
+        else:
+            # Reservoir sampling
+            j = random.randint(0, self.total_seen)
+            if j < self.capacity:
+                self.buffer[j] = transition
+
+        self.total_seen += 1
+
+    def sample(self, batch_size: int) -> list:
+        """균등 샘플링"""
+        if len(self.buffer) < batch_size:
+            return self.buffer
+        return random.sample(self.buffer, batch_size)
+
+    def __len__(self):
+        return len(self.buffer)
+
     def push(self, transition: Transition):
         """Reservoir sampling으로 경험 저장"""
         self.total_seen += 1

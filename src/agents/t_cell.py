@@ -116,6 +116,24 @@ class TCell:
         self.logger.info("SHAP explainer 초기화 완료")
         
         self.logger.info("T-Cell 학습 완료")
+
+    def prefit(self, feat_window: np.ndarray):
+        """
+        학습 시작 전 1회 프리픿 및 검증
+
+        Args:
+            feat_window: 초기 특성 윈도우 [window_size, feature_dim]
+        """
+        if not self.is_fitted:
+            self.logger.info("T-Cell prefit 시작")
+            self.fit(feat_window)
+
+        # Prefit 검증
+        assert self.is_fitted is True, "T-Cell prefit failed - detector not fitted"
+        assert self.detector is not None, "T-Cell prefit failed - detector is None"
+        assert self.scaler is not None, "T-Cell prefit failed - scaler is None"
+
+        self.logger.info("T-Cell prefit 성공")
     
     def detect_crisis(self, market_data: Dict[str, np.ndarray]) -> Dict[str, float]:
         """
@@ -135,6 +153,7 @@ class TCell:
         
         if not self.is_fitted:
             # Not fitted yet, return default
+            self.logger.warning("T-Cell not fitted yet - returning default values")
             return {
                 'overall_crisis': 0.0,
                 'volatility_crisis': 0.0,

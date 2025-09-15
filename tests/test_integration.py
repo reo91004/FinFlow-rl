@@ -60,7 +60,15 @@ def test_environment():
         )
 
         # Create environment
-        env = PortfolioEnv(price_data=prices, initial_capital=1000000, transaction_cost=0.001)
+        from src.data.features import FeatureExtractor
+        feature_extractor = FeatureExtractor(window=20)
+        env = PortfolioEnv(
+            price_data=prices,
+            feature_extractor=feature_extractor,
+            initial_capital=1000000,
+            turnover_cost=0.001,
+            slip_coeff=0.0005
+        )
 
         # Reset
         state, info = env.reset()

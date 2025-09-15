@@ -87,10 +87,10 @@ class CVaRConstraint(nn.Module):
     def forward(self, returns: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         CVaR 계산 및 제약 위반 손실
-        
+
         Args:
             returns: 수익률 텐서 [batch_size]
-            
+
         Returns:
             cvar: CVaR 값
             violation: 제약 위반 손실 (0 if satisfied)
@@ -98,13 +98,13 @@ class CVaRConstraint(nn.Module):
         # 하위 α% 분위수 계산
         k = max(1, int(len(returns) * self.alpha))
         bottom_k = torch.topk(-returns, k, largest=True)[0]  # 가장 작은 k개
-        
+
         # CVaR = 하위 α% 평균
         cvar = -bottom_k.mean()
-        
-        # 제약 위반 계산 (CVaR < target이면 페널티)
-        violation = torch.relu(self.target - cvar)
-        
+
+        # 강한 CVaR 페널티 (제약 위반 시)
+        violation = torch.clamp(self.target - cvar, min=0.0) * 10.0  # 강한 페널티
+
         return cvar, violation
 
 class PortfolioObjective(nn.Module):
@@ -180,11 +180,11 @@ class PortfolioObjective(nn.Module):
         else:
             drawdown_penalty = torch.tensor(0.0)
         
-        # 5. 통합 목적함수
+        # 5. 통합 목적함수 (CVaR 페널티 강화)
         objective = (
             returns.mean() +  # 기본 수익률
             self.sharpe_beta * sharpe -  # 샤프 보너스
-            self.lagrange_lambda * cvar_violation -  # CVaR 제약
+            self.lambda_cvar * cvar_violation -  # CVaR 페널티 (강화)
             turnover_penalty -  # 턴오버 페널티
             drawdown_penalty  # 낙폭 페널티
         )
@@ -251,3 +251,44 @@ class RewardNormalizer:
         self.mean = 0.0
         self.var = 1.0
         self.count = 0
+
+
+def portfolio_objective(returns_t: torch.Tensor, weights_t: torch.Tensor, cfg: Dict) -> torch.Tensor:
+    """
+    포트폴리오 목적함수 편의 함수 (CVaR 통합)
+
+    Args:
+        returns_t: 수익률 텐서 [batch_size] 또는 [batch_size, n_assets]
+        weights_t: 포트폴리오 가중치 [batch_size, n_assets]
+        cfg: 설정 딕셔너리
+
+    Returns:
+        objective: 통합 목적함수 값
+    """
+    # 포트폴리오 수익률 계산
+    if returns_t.dim() == 2:
+        port_ret = (returns_t * weights_t).sum(dim=-1)
+    else:
+        port_ret = returns_t
+
+    # 기본 샤프 보상
+    sharpe_reward = port_ret.mean() / (port_ret.std() + 1e-8) * np.sqrt(252)
+
+    # CVaR 페널티 계산 (alpha=0.95, target=-0.02)
+    alpha = 0.95  # cvar_alpha=0.05와 동치
+    threshold = -0.02  # -2% 목표
+    var = torch.quantile(port_ret, q=1.0 - alpha)
+    cvar = port_ret[port_ret <= var].mean() if (port_ret <= var).sum() > 0 else var
+    cvar_penalty = torch.clamp(threshold - cvar, min=0.0) * 10.0  # 강한 페널티
+
+    # 턴오버 페널티 (선택적)
+    turnover_penalty = 0.0
+    if 'prev_weights' in cfg:
+        turnover = torch.abs(weights_t - cfg['prev_weights']).sum(dim=-1).mean()
+        turnover_penalty = turnover * cfg.get('lambda_turn', 0.1)
+
+    # 최종 목적함수
+    lambda_cvar = cfg.get('lambda_cvar', 1.0)
+    total = sharpe_reward - lambda_cvar * cvar_penalty - turnover_penalty
+
+    return total

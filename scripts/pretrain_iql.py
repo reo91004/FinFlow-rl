@@ -84,8 +84,8 @@ def main():
         price_data=train_data,
         feature_extractor=feature_extractor,
         initial_capital=config['env']['initial_capital'],
-        transaction_cost=config['env']['turnover_cost'],
-        slippage=config['env']['slip_coeff']
+        turnover_cost=config['env']['turnover_cost'],
+        slip_coeff=config['env']['slip_coeff']
     )
     
     # T-Cell 학습 (정상 시장 패턴)

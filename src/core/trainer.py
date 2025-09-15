@@ -110,7 +110,8 @@ class TrainingConfig:
         env = config.get('env', {})
         self.env_config = {
             'initial_balance': env.get('initial_capital', 1000000),
-            'transaction_cost': env.get('turnover_cost', 0.001),
+            'turnover_cost': env.get('turnover_cost', 0.001),
+            'slip_coeff': env.get('slip_coeff', 0.0005),
             'max_weight': env.get('max_weight', 0.2),
             'min_weight': env.get('min_weight', 0.0),
             'window_size': config.get('features', {}).get('window', 30),
@@ -121,6 +122,7 @@ class TrainingConfig:
         data = config.get('data', {})
         self.data_config = {
             'tickers': data.get('symbols'),
+            'symbols': data.get('symbols'),  # 호환성을 위해 둘 다 저장
             'start': data.get('start', '2008-01-01'),
             'end': data.get('end', '2020-12-31'),
             'test_start': data.get('test_start', '2021-01-01'),
@@ -256,6 +258,10 @@ class FinFlowTrainer:
         self.episode = 0
         self.best_sharpe = -float('inf')
         self.patience_counter = 0
+
+        # 무체결 감지를 위한 카운터
+        self.zero_return_count = 0
+        self.zero_return_threshold = 50  # K=50 연속 무체결 시 경고
         
         # Metrics tracking
         self.metrics_history = []
@@ -263,7 +269,12 @@ class FinFlowTrainer:
         # 알람 시각화 쿨다운 설정
         self.last_visualization_step = 0
         self.visualization_cooldown = 1000  # 최소 1000 step 간격
-        
+
+        # 모니터링 설정 완화 (초기 학습 안정화)
+        if hasattr(self, 'monitoring'):
+            self.monitoring.rollback_on_divergence = False  # 초기에는 rollback 비활성화
+            self.monitoring.intervention_threshold = 6.0  # 기준 완화
+
         self.logger.info("FinFlow Trainer 초기화 완료")
     
     def _initialize_components(self):
@@ -279,7 +290,7 @@ class FinFlowTrainer:
         data_loader = DataLoader(cache_dir="data/cache")
         
         # 설정에서 티커 가져오기 (config에서 읽기)
-        tickers = self.config.data_config.get('symbols')
+        tickers = self.config.data_config.get('tickers')
         
         # config에서 날짜 읽기
         config_data = self.config.data_config
@@ -310,9 +321,12 @@ class FinFlowTrainer:
         self.env = PortfolioEnv(
             price_data=price_data,
             feature_extractor=self.feature_extractor,
-            initial_capital=self.config.env_config.get('initial_balance', 1000000),
-            transaction_cost=self.config.env_config.get('transaction_cost', 0.001),
-            max_leverage=self.config.env_config.get('max_leverage', 1.0)
+            initial_capital=self.config.env_config.get('initial_capital', 1000000),
+            turnover_cost=self.config.env_config.get('turnover_cost', 0.001),
+            slip_coeff=self.config.env_config.get('slip_coeff', 0.0005),
+            no_trade_band=self.config.env_config.get('no_trade_band', 0.002),
+            max_leverage=self.config.env_config.get('max_leverage', 1.0),
+            max_turnover=self.config.env_config.get('max_turnover', 0.5)
         )
         
         # Get dimensions
@@ -387,7 +401,7 @@ class FinFlowTrainer:
         stability_config = {
             'window_size': 100,
             'n_sigma': 3.0,
-            'intervention_threshold': 3,
+            'intervention_threshold': 6.0,  # 가이드 요구값으로 상향
             'rollback_enabled': True,
             'q_value_max': 100.0,
             'q_value_min': -100.0,
@@ -400,9 +414,12 @@ class FinFlowTrainer:
         self.logger.info("StabilityMonitor 초기화 완료")
         
         # Replay Buffer
+        # 초기에는 PER off (uniform sampling)로 시작
+        self.use_per = False  # 초기 PER off
+        self.per_activation_step = 10000  # 10k 스텝 후 PER 활성화
         self.replay_buffer = PrioritizedReplayBuffer(
             capacity=self.config.memory_capacity,
-            alpha=0.6,
+            alpha=0.0 if not self.use_per else 0.6,  # 초기 alpha=0 (uniform)
             beta=0.4
         )
         
@@ -723,9 +740,23 @@ class FinFlowTrainer:
         episode_sharpes = []
         episode_cvars = []
         
+        # T-Cell prefit 강제 수행
+        if hasattr(self, 't_cell') and not self.t_cell.is_fitted:
+            # 초기 특성 윈도우 준비
+            initial_features = []
+            for i in range(self.t_cell.window_size):
+                feat = self.feature_extractor.extract_features(
+                    self.env.price_data,
+                    current_idx=self.feature_extractor.window + i
+                )
+                initial_features.append(feat)
+            initial_features = np.array(initial_features)
+            self.t_cell.prefit(initial_features)
+            self.logger.info("T-Cell prefit 완료")
+
         from tqdm import tqdm
         pbar = tqdm(range(self.config.sac_episodes), desc="SAC Training", unit="episode")
-        
+
         for episode in pbar:
             self.episode = episode
             episode_reward = 0
@@ -792,11 +823,11 @@ class FinFlowTrainer:
                     self.logger.debug(
                         f"진행률 {current_checkpoint}% (Step {episode_steps}/{max_episode_steps}) | "
                         f"최근 {len(recent_returns)}스텝 통계: "
-                        f"평균={np.mean(recent_returns):.6f}, "
-                        f"표준편차={np.std(recent_returns):.6f}, "
-                        f"최대={np.max(recent_returns):.6f}, "
-                        f"최소={np.min(recent_returns):.6f} | "
-                        f"누적수익률={cumulative_return:.4%}"
+                        f"평균={np.mean(recent_returns)*100:.2f}%, "
+                        f"표준편차={np.std(recent_returns)*100:.2f}%, "
+                        f"최대={np.max(recent_returns)*100:.2f}%, "
+                        f"최소={np.min(recent_returns)*100:.2f}% | "
+                        f"누적수익률={(cumulative_return)*100:.2f}%"
                     )
 
                 self.episode_actions.append(action.copy())
@@ -805,6 +836,18 @@ class FinFlowTrainer:
                 transaction_cost = info.get('transaction_cost', 0)
                 self.all_costs.append(transaction_cost)
                 
+                # CVaR 페널티 적용 (최근 수익률 기반)
+                if len(self.episode_returns) >= 20:
+                    recent_returns = np.array(self.episode_returns[-20:])
+                    cvar_alpha = 0.95  # 하위 5%
+                    var_idx = int(len(recent_returns) * (1 - cvar_alpha))
+                    if var_idx > 0:
+                        sorted_returns = np.sort(recent_returns)
+                        cvar = np.mean(sorted_returns[:var_idx])
+                        cvar_target = -0.02  # -2% 목표
+                        cvar_penalty = max(0, cvar_target - cvar) * 10.0  # 강한 페널티
+                        reward = reward - cvar_penalty * 0.1  # 보상에 CVaR 페널티 반영
+
                 # Store experience
                 from src.core.replay import Transition
                 transition = Transition(
@@ -823,8 +866,26 @@ class FinFlowTrainer:
                     {'episode': episode, 'step': episode_steps}
                 )
                 
-                # Update B-Cell
-                if len(self.replay_buffer) > self.config.sac_batch_size:
+                # 무체결 감지 로직
+                if abs(portfolio_return) < 1e-12:
+                    self.zero_return_count += 1
+                else:
+                    self.zero_return_count = 0
+
+                if self.zero_return_count >= self.zero_return_threshold:
+                    self.logger.error(f"{self.zero_return_threshold}회 연속 무거래 감지!")
+                    self._diagnose_no_trade()
+                    assert False, f"무거래 루프 감지: {self.zero_return_threshold}회 연속 0 수익"
+
+                # PER 활성화 체크
+                if not self.use_per and self.global_step >= self.per_activation_step:
+                    self.use_per = True
+                    self.replay_buffer.alpha = 0.6  # PER 활성화
+                    self.logger.info(f"PER 활성화 (step {self.global_step})")
+
+                # Update B-Cell (최소 버퍼 사이즈 완화: 256)
+                min_buffer_size = 256  # 기존 1000에서 완화
+                if len(self.replay_buffer) > min_buffer_size:
                     transitions, indices, weights = self.replay_buffer.sample(self.config.sac_batch_size)
                     
                     # Convert transitions to batch format
@@ -1011,6 +1072,34 @@ class FinFlowTrainer:
             if (episode + 1) % self.config.checkpoint_interval == 0:
                 self._save_checkpoint(f"episode_{episode+1}")
     
+    def _diagnose_no_trade(self):
+        """무거래 상황 진단"""
+        self.logger.error("\n" + "="*60)
+        self.logger.error("🔍 무거래 진단 스냅샷")
+        self.logger.error("="*60)
+
+        # 현재 포트폴리오 상태
+        self.logger.error(f"Portfolio value: {self.env.portfolio_value}")
+        self.logger.error(f"Cash: {self.env.cash}")
+        self.logger.error(f"Weights: {self.env.weights}")
+        self.logger.error(f"Holdings: {getattr(self.env, 'holdings', 'N/A')}")
+
+        # 거래 제약
+        self.logger.error(f"No-trade band: {self.env.no_trade_band}")
+        self.logger.error(f"Max turnover: {self.env.max_turnover}")
+        self.logger.error(f"Min trade size: {getattr(self.env, 'min_trade_size', 1)}")
+
+        # 최근 액션
+        if hasattr(self, 'last_action'):
+            self.logger.error(f"Last action: {self.last_action}")
+            self.logger.error(f"Action L1 norm: {np.sum(np.abs(self.last_action))}")
+            self.logger.error(f"Action change from weights: {np.sum(np.abs(self.last_action - self.env.weights))}")
+
+        # 버퍼 상태
+        self.logger.error(f"Replay buffer size: {len(self.replay_buffer)}")
+        self.logger.error(f"Zero return count: {self.zero_return_count}")
+        self.logger.error("="*60 + "\n")
+
     def _evaluate(self) -> Dict[str, float]:
         """모델 평가"""
         self.logger.info("평가 시작...")

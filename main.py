@@ -164,7 +164,7 @@ def main():
         if args.transaction_cost is not None:
             if 'env_config' not in overrides:
                 overrides['env_config'] = {}
-            overrides['env_config']['transaction_cost'] = args.transaction_cost
+            overrides['env_config']['turnover_cost'] = args.transaction_cost
         if seed != 42:  # 기본값이 아니면 오버라이드
             overrides['seed'] = seed
         

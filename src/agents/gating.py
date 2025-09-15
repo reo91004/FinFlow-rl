@@ -28,8 +28,8 @@ class GatingNetwork(nn.Module):
                  state_dim: int,
                  hidden_dim: int = 256,
                  num_experts: int = 5,
-                 temperature: float = 1.0,
-                 min_dwell_steps: int = 5):
+                 temperature: float = 1.8,  # 1.0에서 상향
+                 min_dwell_steps: int = 2):  # 5에서 하향
         """
         Args:
             state_dim: 상태 차원
@@ -63,6 +63,7 @@ class GatingNetwork(nn.Module):
         
         # Performance tracking
         self.performance_history = {bcell: deque(maxlen=100) for bcell in self.bcell_types}
+        self.turnover_history = {bcell: deque(maxlen=100) for bcell in self.bcell_types}  # 턴오버 추적
         self.selection_count = {bcell: 0 for bcell in self.bcell_types}
         self.current_bcell = None
         self.dwell_counter = 0
@@ -124,8 +125,20 @@ class GatingNetwork(nn.Module):
         else:
             self.dwell_counter = 0
         
+        # 성과 기반 가중치 조정
+        adjusted_weights = {}
+        for bcell in self.bcell_types:
+            base_weight = weights_dict[bcell]
+            perf_score = self._score_bcell(bcell)
+            adjusted_weights[bcell] = base_weight * (1.0 + 0.3 * perf_score)  # 성과 가중
+
+        # 정규화
+        total = sum(adjusted_weights.values())
+        adjusted_weights = {k: v/total for k, v in adjusted_weights.items()}
+
         # Select B-Cell
-        selected_bcell = max(weights_dict.items(), key=lambda x: x[1])[0]
+        selected_bcell = max(adjusted_weights.items(), key=lambda x: x[1])[0]
+        weights_dict = adjusted_weights  # 조정된 가중치 사용
         
         # Track switches
         if self.current_bcell and self.current_bcell != selected_bcell:
@@ -148,20 +161,45 @@ class GatingNetwork(nn.Module):
         
         return decision
     
-    def update_performance(self, 
+    def _score_bcell(self, bcell_name: str) -> float:
+        """
+        B-Cell 성과 점수 계산 (샤프 - 턴오버 페널티)
+        """
+        hist = self.performance_history[bcell_name]
+        if len(hist) < 5:
+            return 0.0
+
+        # 샤프 비율 계산
+        returns = np.array(list(hist)[-20:])  # 최근 20개
+        sharpe = float(np.mean(returns) / (np.std(returns) + 1e-8))
+
+        # 턴오버 페널티
+        turnover_hist = self.turnover_history[bcell_name]
+        if len(turnover_hist) > 0:
+            turn_pen = float(np.mean(list(turnover_hist)[-10:])) * 0.5
+        else:
+            turn_pen = 0.0
+
+        return sharpe - turn_pen
+
+    def update_performance(self,
                           bcell_type: str,
                           reward: float,
                           info: Optional[Dict] = None):
         """
         B-Cell 성능 업데이트
-        
+
         Args:
             bcell_type: B-Cell 유형
-            reward: 획득 보상
+            reward: 획듍 보상
             info: 추가 정보
         """
         if bcell_type in self.performance_history:
             self.performance_history[bcell_type].append(reward)
+
+        # 턴오버 기록
+        if info and 'turnover' in info:
+            self.turnover_history[bcell_type].append(info['turnover'])
     
     def _encode_crisis(self, crisis_level: float) -> np.ndarray:
         """위기 수준을 특성으로 인코딩"""
