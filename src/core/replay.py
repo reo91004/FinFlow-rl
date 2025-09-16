@@ -58,11 +58,11 @@ class PrioritizedReplayBuffer:
         self.priorities[self.position] = self.max_priority
         self.position = (self.position + 1) % self.capacity
 
-        # 버퍼 텔레메트리: 100스텝마다 로깅
-        if len(self.buffer) % 100 == 0:
+        # 버퍼 텔레메트리: 1000스텝마다 통계 로깅
+        if self.position % 1000 == 0 and self.position > 0:
             from src.utils.logger import FinFlowLogger
             logger = FinFlowLogger("PrioritizedReplayBuffer")
-            logger.debug(f"[Replay] buffer_size={len(self.buffer)}, position={self.position}")
+            logger.info(f"[Replay Stats] size={len(self.buffer)}/{self.capacity}, position={self.position}, max_priority={self.max_priority:.4f}")
     
     def sample(self, batch_size: int) -> Tuple[list, np.ndarray, np.ndarray]:
         """
