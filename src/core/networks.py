@@ -10,13 +10,13 @@ from typing import Tuple, Optional
 class DirichletActor(nn.Module):
     """
     Dirichlet Policy Network for Portfolio Allocation
-    
+
     Outputs concentration parameters for Dirichlet distribution
     ensuring valid portfolio weights (simplex constraint)
     """
-    
+
     def __init__(self, state_dim: int, action_dim: int, hidden_dims: list = [256, 256],
-                 min_concentration: float = 0.01, max_concentration: float = 100.0):
+                 min_concentration: float = 0.05, max_concentration: float = 100.0):
         super().__init__()
         
         self.action_dim = action_dim
@@ -110,10 +110,11 @@ class DirichletActor(nn.Module):
         else:
             # Sample from distribution with epsilon clamping
             action = dist.rsample()  # Reparameterized sampling
-            eps = 1e-8
+            eps = 1e-6  # 1e-8 → 1e-6 상향
             action = torch.clamp(action, eps, 1.0 - eps)
             action = action / action.sum(dim=-1, keepdim=True)  # 재정규화
             log_prob = dist.log_prob(action)
+            log_prob = torch.clamp(log_prob, -100, 100)  # 수치 안정화
         
         return action, log_prob
     
@@ -130,7 +131,8 @@ class DirichletActor(nn.Module):
         """
         concentration = self.forward(state)
         dist = Dirichlet(concentration)
-        return dist.log_prob(action + 1e-8)  # Add small epsilon for numerical stability
+        log_prob = dist.log_prob(action + 1e-6)  # 1e-8 → 1e-6
+        return torch.clamp(log_prob, -100, 100)  # 수치 안정화
     
     def entropy(self, state: torch.Tensor) -> torch.Tensor:
         """

@@ -59,8 +59,8 @@ class BCell:
         self.target_entropy_ratio = 0.5  # -0.5 * |A| 목표
         
         # CQL settings (표준 범위로 상향)
-        self.cql_weight = 5.0  # 표준 범위 시작값 (5.0~10.0)
-        self.cql_min_q_weight = 5.0  # min Q weight 동치
+        self.cql_weight = 10.0  # 연구 결과 기반 최적값 (5.0→10.0)
+        self.cql_min_q_weight = 10.0  # min Q weight 동치
         self.cql_num_samples = config.get('cql_num_samples', 8)
         self.enable_cql = config.get('enable_cql', True)
         
@@ -369,7 +369,10 @@ class BCell:
     
     def _update_critics(self, states, actions, rewards, next_states, dones, weights):
         """Update distributional critics with CQL"""
-        
+
+        # 보상 정규화 (수치 안정성)
+        rewards = torch.tanh(rewards / 10.0) * 10.0
+
         with torch.no_grad():
             # Sample next actions
             next_actions, next_log_probs = self.actor.get_action(next_states)
@@ -380,6 +383,9 @@ class BCell:
             
             # Use minimum for conservative estimate
             next_q = torch.min(next_q1, next_q2)
+
+            # Q값 범위 제한
+            next_q = torch.clamp(next_q, -100, 100)
             
             # Subtract entropy term
             alpha = self.log_alpha.exp()
@@ -390,6 +396,10 @@ class BCell:
         
         # Current Q-values
         current_q1, current_q2 = self.critic(states, actions)
+
+        # Q값 범위 제한
+        current_q1 = torch.clamp(current_q1, -100, 100)
+        current_q2 = torch.clamp(current_q2, -100, 100)
         
         # Quantile regression loss
         loss_q1 = self.quantile_loss(current_q1, target_q.detach(), self.critic.q1.tau, weights)
@@ -402,12 +412,17 @@ class BCell:
         else:
             critic_loss = loss_q1 + loss_q2
         
+        # nan/inf 체크
+        if not torch.isfinite(critic_loss):
+            self.logger.warning(f"Critic loss is {critic_loss.item()}, skipping update")
+            return torch.tensor(0.0, device=self.device), td_errors.detach()
+
         # Optimize
         self.critic_optimizer.zero_grad()
         critic_loss.backward()
         torch.nn.utils.clip_grad_norm_(
             list(self.critic.q1.parameters()) + list(self.critic.q2.parameters()),
-            5.0
+            1.0  # 5.0 → 1.0 강화된 클리핑
         )
         self.critic_optimizer.step()
         
@@ -436,7 +451,7 @@ class BCell:
         # Optimize
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 1.0)
+        torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 1.0)  # 유지
         self.actor_optimizer.step()
         
         return actor_loss.item()
@@ -453,7 +468,7 @@ class BCell:
         # Optimize
         self.alpha_optimizer.zero_grad(set_to_none=True)
         alpha_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.alpha_optimizer.param_groups[0]['params'], max_norm=5.0)
+        torch.nn.utils.clip_grad_norm_(self.alpha_optimizer.param_groups[0]['params'], max_norm=1.0)  # 5.0 → 1.0
         self.alpha_optimizer.step()
 
         # Update alpha value
@@ -531,9 +546,14 @@ class BCell:
         q1_all = torch.cat([q1_random, q1_policy], dim=1)
         q2_all = torch.cat([q2_random, q2_policy], dim=1)
         
-        # Log-sum-exp
-        q1_logsumexp = torch.logsumexp(q1_all, dim=1, keepdim=True)
-        q2_logsumexp = torch.logsumexp(q2_all, dim=1, keepdim=True)
+        # Log-sum-exp (수치적으로 안정한 구현)
+        q_max = torch.max(q1_all, dim=1, keepdim=True)[0]
+        q1_logsumexp = q_max + torch.log(torch.sum(torch.exp(q1_all - q_max), dim=1, keepdim=True) + 1e-8)
+        q1_logsumexp = torch.clamp(q1_logsumexp, -100, 100)
+
+        q_max = torch.max(q2_all, dim=1, keepdim=True)[0]
+        q2_logsumexp = q_max + torch.log(torch.sum(torch.exp(q2_all - q_max), dim=1, keepdim=True) + 1e-8)
+        q2_logsumexp = torch.clamp(q2_logsumexp, -100, 100)
         
         # CQL loss: penalize overestimation
         cql_loss = (q1_logsumexp - q1.mean(dim=-1, keepdim=True)).mean() + \

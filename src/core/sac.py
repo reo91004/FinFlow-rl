@@ -153,12 +153,12 @@ class DistributionalSAC:
         # Optimize with gradient clipping
         self.critic1_optimizer.zero_grad(set_to_none=True)
         critic1_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.critic1.parameters(), max_norm=5.0)  # 강화된 클립
+        torch.nn.utils.clip_grad_norm_(self.critic1.parameters(), max_norm=1.0)  # 5.0 → 1.0
         self.critic1_optimizer.step()
 
         self.critic2_optimizer.zero_grad(set_to_none=True)
         critic2_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.critic2.parameters(), max_norm=5.0)  # 강화된 클립
+        torch.nn.utils.clip_grad_norm_(self.critic2.parameters(), max_norm=1.0)  # 5.0 → 1.0
         self.critic2_optimizer.step()
         
         return critic1_loss.item(), critic2_loss.item()
@@ -180,7 +180,7 @@ class DistributionalSAC:
         # Optimize with gradient clipping
         self.actor_optimizer.zero_grad(set_to_none=True)
         actor_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=5.0)  # 강화된 클립
+        torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=1.0)  # 5.0 → 1.0
         self.actor_optimizer.step()
         
         return actor_loss.item(), log_probs.mean().item()

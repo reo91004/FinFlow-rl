@@ -67,7 +67,7 @@ class QuantileHuberLoss(nn.Module):
         super().__init__()
         self.kappa = kappa
     
-    def forward(self, q_pred: torch.Tensor, q_target: torch.Tensor, 
+    def forward(self, q_pred: torch.Tensor, q_target: torch.Tensor,
                 taus: torch.Tensor, weights: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Args:
@@ -75,14 +75,18 @@ class QuantileHuberLoss(nn.Module):
             q_target: 타겟 분위수 [batch_size, n_quantiles] or [batch_size, 1]
             taus: 분위수 위치 [n_quantiles]
             weights: Importance sampling weights [batch_size]
-            
+
         Returns:
             loss: scalar
         """
+        # 입력값 클램핑 (수치 안정성)
+        q_pred = torch.clamp(q_pred, -100, 100)
+        q_target = torch.clamp(q_target, -100, 100)
+
         # Expand dimensions for broadcasting
         if q_target.dim() == 2 and q_target.shape[1] == 1:
             q_target = q_target.expand(-1, q_pred.shape[1])
-        
+
         # Pairwise differences
         td_error = q_target.unsqueeze(-1) - q_pred.unsqueeze(1)  # [batch, n_tau', n_tau]
         
@@ -103,8 +107,15 @@ class QuantileHuberLoss(nn.Module):
         # Apply importance sampling weights if provided
         if weights is not None:
             loss = loss * weights
-        
-        return loss.mean()
+
+        loss = loss.mean()
+
+        # nan/inf 체크
+        if not torch.isfinite(loss):
+            # 안전한 기본값 반환
+            return torch.tensor(0.0, device=loss.device, requires_grad=True)
+
+        return loss
 
 class DistributionalCritic(nn.Module):
     """

@@ -78,8 +78,9 @@ class PrioritizedReplayBuffer:
         
         # 유효한 우선순위만 사용
         priorities = self.priorities[:len(self.buffer)]
+        priorities = np.maximum(priorities, 1e-6)  # 하한 설정
         probabilities = priorities ** self.alpha
-        probabilities /= probabilities.sum()
+        probabilities = probabilities / (probabilities.sum() + 1e-10)  # 안전한 정규화
         
         # 샘플링
         indices = np.random.choice(len(self.buffer), batch_size, p=probabilities)
