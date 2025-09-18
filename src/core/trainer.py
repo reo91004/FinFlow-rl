@@ -249,11 +249,8 @@ class FinFlowTrainer:
         self.checkpoint_dir = self.session_dir / "models"
         self.checkpoint_dir.mkdir(exist_ok=True)
         (self.run_dir / "alerts").mkdir(parents=True, exist_ok=True)
-        
-        # Initialize components
-        self._initialize_components()
-        
-        # Training state
+
+        # Training state (초기화 순서 중요: _initialize_components 호출 전에 설정)
         self.global_step = 0
         self.episode = 0
         self.best_sharpe = -float('inf')
@@ -262,25 +259,40 @@ class FinFlowTrainer:
         # 무체결 감지를 위한 카운터
         self.zero_return_count = 0
         self.zero_return_threshold = 50  # K=50 연속 무체결 시 경고
-        
+
         # Metrics tracking
         self.metrics_history = []
-        
+
         # 알람 시각화 쿨다운 설정
         self.last_visualization_step = 0
         self.visualization_cooldown = 1000  # 최소 1000 step 간격
 
-        # 모니터링 설정 완화 (초기 학습 안정화)
-        if hasattr(self, 'monitoring'):
-            self.monitoring.rollback_on_divergence = False  # 초기에는 rollback 비활성화
-            self.monitoring.intervention_threshold = 6.0  # 기준 완화
-
-        # 턴오버 단계적 완화 설정
+        # 턴오버 단계적 완화 설정 (초기화 순서 중요: get_adaptive_turnover_limit 호출 전에 설정)
         self.turnover_schedule = {
             'warmup_episodes': 20,
             'stabilization_episodes': 50,
             'exploration_episodes': 100
         }
+
+        # 안전 체크포인트 관련 속성 초기화
+        self.last_safe_checkpoint = None
+        self.failure_count = 0
+        self.max_failures = 3
+
+        # 설정에서 safety_stages 로드 (있는 경우)
+        self.safety_stages = config.raw_config.get('safety_stages', {
+            'warmup': {'max_turnover': 0.3, 'cql_weight': 10.0, 'lr_scale': 0.5, 'min_buffer_size': 256},
+            'stabilization': {'max_turnover': 0.5, 'cql_weight': 5.0, 'lr_scale': 0.75, 'min_buffer_size': 512},
+            'exploration': {'max_turnover': 0.9, 'cql_weight': 1.0, 'lr_scale': 1.0, 'min_buffer_size': 1000}
+        })
+
+        # Initialize components (모든 필수 속성 정의 후에 호출)
+        self._initialize_components()
+
+        # 모니터링 설정 완화 (초기 학습 안정화)
+        if hasattr(self, 'monitoring'):
+            self.monitoring.rollback_on_divergence = False  # 초기에는 rollback 비활성화
+            self.monitoring.intervention_threshold = 6.0  # 기준 완화
 
         self.logger.info("FinFlow Trainer 초기화 완료")
 
@@ -303,6 +315,38 @@ class FinFlowTrainer:
         else:
             return 0.9  # Final exploration phase
 
+    def get_safety_config(self, episode: int) -> dict:
+        """
+        Get safety configuration based on episode number
+
+        Args:
+            episode: Current episode number
+
+        Returns:
+            Safety configuration dictionary
+        """
+        if episode < self.turnover_schedule['warmup_episodes']:
+            return self.safety_stages.get('warmup', {
+                'max_turnover': 0.3,
+                'cql_weight': 10.0,
+                'lr_scale': 0.5,
+                'min_buffer_size': 256
+            })
+        elif episode < self.turnover_schedule['stabilization_episodes']:
+            return self.safety_stages.get('stabilization', {
+                'max_turnover': 0.5,
+                'cql_weight': 5.0,
+                'lr_scale': 0.75,
+                'min_buffer_size': 512
+            })
+        else:
+            return self.safety_stages.get('exploration', {
+                'max_turnover': 0.9,
+                'cql_weight': 1.0,
+                'lr_scale': 1.0,
+                'min_buffer_size': 1000
+            })
+
     def check_network_health(self) -> bool:
         """
         Check network parameters for NaN/Inf values
@@ -310,19 +354,39 @@ class FinFlowTrainer:
         Returns:
             True if healthy, False otherwise
         """
-        if not hasattr(self, 'b_cell'):
+        # Return True if networks not initialized yet
+        if not hasattr(self, 'b_cell') or self.b_cell is None:
+            return True
+
+        # Check if b_cell has required attributes
+        if not hasattr(self.b_cell, 'actor') or not hasattr(self.b_cell, 'critic'):
             return True
 
         import torch
-        for name, param in self.b_cell.actor.named_parameters():
-            if torch.isnan(param).any() or torch.isinf(param).any():
-                self.logger.error(f"NaN/Inf detected in actor {name}")
-                return False
+        try:
+            # Check actor network
+            if hasattr(self.b_cell.actor, 'named_parameters'):
+                for name, param in self.b_cell.actor.named_parameters():
+                    if param is not None and (torch.isnan(param).any() or torch.isinf(param).any()):
+                        self.logger.error(f"NaN/Inf detected in actor {name}")
+                        return False
 
-        for name, param in self.b_cell.critic.named_parameters():
-            if torch.isnan(param).any() or torch.isinf(param).any():
-                self.logger.error(f"NaN/Inf detected in critic {name}")
-                return False
+            # Check critic network
+            if hasattr(self.b_cell.critic, 'named_parameters'):
+                for name, param in self.b_cell.critic.named_parameters():
+                    if param is not None and (torch.isnan(param).any() or torch.isinf(param).any()):
+                        self.logger.error(f"NaN/Inf detected in critic {name}")
+                        return False
+
+            # Check log_alpha if it exists
+            if hasattr(self.b_cell, 'log_alpha') and self.b_cell.log_alpha is not None:
+                if torch.isnan(self.b_cell.log_alpha).any() or torch.isinf(self.b_cell.log_alpha).any():
+                    self.logger.error("NaN/Inf detected in log_alpha")
+                    return False
+
+        except Exception as e:
+            self.logger.warning(f"Error during network health check: {e}")
+            return True  # Assume healthy if check fails
 
         return True
 
@@ -937,8 +1001,9 @@ class FinFlowTrainer:
                     self.replay_buffer.alpha = 0.6  # PER 활성화
                     self.logger.info(f"PER 활성화 (step {self.global_step})")
 
-                # Update B-Cell (최소 버퍼 사이즈 완화: 256)
-                min_buffer_size = 256  # 기존 1000에서 완화
+                # Update B-Cell (adaptive min buffer size from safety config)
+                safety_config = self.get_safety_config(episode)
+                min_buffer_size = safety_config.get('min_buffer_size', 256)
                 if len(self.replay_buffer) > min_buffer_size:
                     transitions, indices, weights = self.replay_buffer.sample(self.config.sac_batch_size)
                     
@@ -1352,8 +1417,28 @@ class FinFlowTrainer:
         
         return False
     
+    def save_checkpoint(self, filename: Optional[str] = None) -> str:
+        """
+        Save checkpoint with optional filename
+
+        Args:
+            filename: Optional checkpoint filename. If None, auto-generates based on episode
+
+        Returns:
+            Path to saved checkpoint
+        """
+        if filename is None:
+            filename = f"checkpoint_ep{self.episode}_step{self.global_step}.pt"
+
+        # Use _save_checkpoint internally with filename as tag
+        tag = filename.replace('.pt', '').replace('checkpoint_', '')
+        self._save_checkpoint(tag)
+
+        # Return the full path
+        return str(self.checkpoint_dir / f"checkpoint_{tag}.pt")
+
     def _save_checkpoint(self, tag: str):
-        """체크포인트 저장"""
+        """체크포인트 저장 (internal method)"""
         import numpy as np
         import copy
         from datetime import datetime
@@ -1569,6 +1654,18 @@ class FinFlowTrainer:
     
     def load_checkpoint(self, path: str):
         """체크포인트 로드 (호환성 검사 포함)"""
+        # Convert to Path object and handle relative paths
+        path_obj = Path(path)
+        if not path_obj.is_absolute():
+            # If relative path, check in checkpoint_dir first
+            checkpoint_path = self.checkpoint_dir / path
+            if checkpoint_path.exists():
+                path = str(checkpoint_path)
+            elif path_obj.exists():
+                path = str(path_obj)
+            else:
+                raise FileNotFoundError(f"Checkpoint not found: {path}")
+
         checkpoint = torch.load(path, map_location=self.device, weights_only=False)
         
         # 메타데이터 확인
