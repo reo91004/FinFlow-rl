@@ -28,8 +28,8 @@ class GatingNetwork(nn.Module):
                  state_dim: int,
                  hidden_dim: int = 256,
                  num_experts: int = 5,
-                 temperature: float = 1.0,
-                 min_dwell_steps: int = 5):
+                 temperature: float = 1.5,  # 1.0 → 1.5 (탐색 강화)
+                 min_dwell_steps: int = 2):  # 5 → 2 (빠른 전환)
         """
         Args:
             state_dim: 상태 차원

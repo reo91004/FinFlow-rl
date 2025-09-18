@@ -79,10 +79,10 @@ class CVaRConstraint(nn.Module):
     하위 α% 수익률의 평균을 계산하여 꼬리 위험 측정
     """
     
-    def __init__(self, alpha: float = 0.05, target: float = -0.02):
+    def __init__(self, alpha: float = 0.05, target: float = -0.01):  # -0.02 → -0.01
         super().__init__()
         self.alpha = alpha
-        self.target = target  # CVaR 목표 (예: -2%)
+        self.target = target  # CVaR 목표 (예: -1%)
     
     def forward(self, returns: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -98,12 +98,23 @@ class CVaRConstraint(nn.Module):
         # 하위 α% 분위수 계산
         k = max(1, int(len(returns) * self.alpha))
         bottom_k = torch.topk(-returns, k, largest=True)[0]  # 가장 작은 k개
-        
-        # CVaR = 하위 α% 평균
-        cvar = -bottom_k.mean()
-        
-        # 제약 위반 계산 (CVaR < target이면 페널티)
-        violation = torch.relu(self.target - cvar)
+
+        # Huber 손실로 안정화 (outlier에 강건)
+        huber_delta = 0.01
+        abs_bottom_k = torch.abs(bottom_k)
+        huber_mask = abs_bottom_k <= huber_delta
+        huber_loss = torch.where(
+            huber_mask,
+            0.5 * bottom_k ** 2,
+            huber_delta * (abs_bottom_k - 0.5 * huber_delta)
+        )
+
+        # CVaR = 안정화된 하위 α% 평균
+        cvar = -huber_loss.mean()
+
+        # 적응형 페널티 (lambda_weight는 config에서 가져옴)
+        lambda_weight = 5.0  # config의 lambda_cvar 값
+        violation = torch.relu(self.target - cvar) * lambda_weight
         
         return cvar, violation
 

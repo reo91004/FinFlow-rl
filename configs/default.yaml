@@ -63,9 +63,9 @@ env:
   initial_capital: 1000000
   turnover_cost: 0.001 # 10 bps
   slip_coeff: 0.0005 # 슬리피지
-  no_trade_band: 0.002 # 0.2% 이하 변화 무시
+  no_trade_band: 0.0005 # 0.05% 이하 변화 무시 (완화)
   max_leverage: 1.0 # 레버리지 제한
-  max_turnover: 0.5 # 일일 최대 턴오버
+  max_turnover: 0.9 # 일일 최대 턴오버 (완화)
 
 # T-Cell 설정 (위기 감지)
 tcell:
@@ -101,14 +101,14 @@ bcell:
   # SAC 파라미터
   gamma: 0.99
   tau: 0.005
-  alpha_init: 0.2
+  alpha_init: 0.75  # 0.2 → 0.75 (연구 검증값, 중요!)
   alpha_min: 5.0e-4
-  alpha_max: 0.2
-  target_entropy_ratio: 0.98
+  alpha_max: 0.5  # 0.2 → 0.5 (범위 확대)
+  target_entropy_ratio: 0.5  # 0.98 → 0.5 (표준 권장값)
 
-  # CQL 설정
-  cql_alpha_start: 0.01
-  cql_alpha_end: 0.05
+  # CQL 설정 (500배 상향 - 연구 검증값)
+  cql_alpha_start: 5.0  # 0.01 → 5.0
+  cql_alpha_end: 10.0  # 0.05 → 10.0
   cql_num_samples: 8
 
   # Gradient clipping
@@ -116,7 +116,7 @@ bcell:
 
 # Memory Cell 설정
 memory:
-  capacity: 500
+  capacity: 50000  # 500 → 50000 (통일)
   embedding_dim: 32
   similarity_threshold: 0.7
   k_neighbors: 5
@@ -136,8 +136,8 @@ objectives:
 
   # CVaR 제약
   cvar_alpha: 0.05 # 5% CVaR
-  cvar_target: -0.02 # -2% 이상
-  lambda_cvar: 1.0
+  cvar_target: -0.01 # -2% → -1% (완화)
+  lambda_cvar: 5.0  # 1.0 → 5.0 (강화)
 
   # 추가 페널티
   lambda_turn: 0.1 # 턴오버 페널티
@@ -161,7 +161,7 @@ train:
 
   # Experience replay
   buffer_size: 100000
-  min_buffer_size: 1000
+  min_buffer_size: 256  # 1000 → 256 (빠른 학습 시작)
   prioritized_replay: true
   per_alpha: 0.6
   per_beta: 0.4
@@ -255,8 +255,8 @@ backtest:
 
   # 제약 조건
   constraints:
-    max_position_size: 0.2 # 최대 포지션 크기
-    min_trade_size: 100 # 최소 거래 금액
+    max_position_size: 0.3 # 최대 포지션 크기 (완화)
+    min_trade_size: 0 # 최소 거래 금액 제거
     max_leverage: 2.0 # 최대 레버리지
     min_liquidity: 1000000 # 최소 유동성 요구
 

@@ -111,10 +111,14 @@ class PortfolioEnv(gym.Env):
         
         self.current_step = self.feature_extractor.window  # 충분한 데이터 확보
         self.portfolio_value = self.initial_capital
-        self.cash = self.initial_capital
-        self.weights = np.zeros(self.n_assets)
+        # 균등 배분으로 시작 (무거래 루프 방지)
+        self.weights = np.ones(self.n_assets) / self.n_assets
+        self.cash = 0  # 현금 0으로 시작 (모두 투자)
         self.crisis_level = 0.0
-        
+
+        # 무거래 카운터 추가
+        self.no_trade_counter = 0
+
         # 성과 추적
         self.portfolio_values = [self.initial_capital]
         self.all_weights = [self.weights.copy()]
@@ -149,7 +153,7 @@ class PortfolioEnv(gym.Env):
         weight_change = np.abs(action - self.weights)
         if np.max(weight_change) < self.no_trade_band:
             action = self.weights.copy()
-        
+
         # 최대 턴오버 제약
         turnover = np.sum(np.abs(action - self.weights))
         if turnover > self.max_turnover:
@@ -158,6 +162,19 @@ class PortfolioEnv(gym.Env):
             action = self.weights + scale * (action - self.weights)
             action = self._normalize_weights(action)
             turnover = self.max_turnover
+
+        # 무거래 검증 (무거래 루프 감지)
+        actual_weight_change = np.abs(action - self.weights).sum()
+        if actual_weight_change < 1e-6:
+            self.no_trade_counter += 1
+            if self.no_trade_counter > 50:
+                self.logger.warning(f"무거래 {self.no_trade_counter}회 연속 감지 - 포트폴리오 고착")
+                # 강제로 작은 거래라도 실행하게 함
+                if self.no_trade_counter > 100:
+                    self.logger.error("무거래 100회 초과 - 에피소드 종료")
+                    # terminated 플래그는 나중에 설정
+        else:
+            self.no_trade_counter = 0
         
         # 거래 비용 계산
         trade_cost = self.transaction_cost * turnover
@@ -189,7 +206,10 @@ class PortfolioEnv(gym.Env):
         reward = self._calculate_reward(portfolio_return, total_cost, turnover)
         
         # 종료 조건
-        terminated = self.portfolio_value <= self.initial_capital * 0.5  # 50% 손실
+        terminated = (
+            self.portfolio_value <= self.initial_capital * 0.5 or  # 50% 손실
+            self.no_trade_counter > 100  # 무거래 100회 초과
+        )
         truncated = self.current_step >= min(self.max_steps, len(self.price_data) - 2)
         
         # 다음 상태

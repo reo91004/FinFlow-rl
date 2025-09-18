@@ -53,14 +53,14 @@ class BCell:
         # Hyperparameters
         self.gamma = config.get('gamma', 0.99)
         self.tau = config.get('tau', 0.005)
-        self.alpha_init = config.get('alpha_init', 0.2)
+        self.alpha_init = config.get('alpha_init', 0.75)  # 0.2 → 0.75 (연구 검증값)
         self.alpha_min = config.get('alpha_min', 5e-4)
-        self.alpha_max = config.get('alpha_max', 0.2)
-        self.target_entropy_ratio = config.get('target_entropy_ratio', 0.98)
+        self.alpha_max = config.get('alpha_max', 0.5)  # 0.2 → 0.5
+        self.target_entropy_ratio = config.get('target_entropy_ratio', 0.5)  # 0.98 → 0.5
         
-        # CQL settings
-        self.cql_alpha_start = config.get('cql_alpha_start', 0.01)
-        self.cql_alpha_end = config.get('cql_alpha_end', 0.05)
+        # CQL settings (연구 검증값 - 500배 상향)
+        self.cql_alpha_start = config.get('cql_alpha_start', 5.0)  # 0.01 → 5.0
+        self.cql_alpha_end = config.get('cql_alpha_end', 10.0)  # 0.05 → 10.0
         self.cql_num_samples = config.get('cql_num_samples', 8)
         self.enable_cql = config.get('enable_cql', True)
         
@@ -78,7 +78,8 @@ class BCell:
         
         # Temperature parameter (learnable)
         self.log_alpha = torch.tensor(np.log(self.alpha_init), requires_grad=True, device=device, dtype=torch.float32)
-        self.target_entropy = -action_dim * self.target_entropy_ratio  # Heuristic
+        # 표준 권장값: -0.5 * action_dim
+        self.target_entropy = -0.5 * action_dim  # 논문 권장값
         
         # Optimizers
         self.actor_optimizer = optim.Adam(

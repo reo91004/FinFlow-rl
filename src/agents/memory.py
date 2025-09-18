@@ -15,8 +15,8 @@ class MemoryCell:
     위기 수준별 계층화 및 시간적 다양성 고려
     """
     
-    def __init__(self, 
-                 capacity: int = 500,
+    def __init__(self,
+                 capacity: int = 50000,  # 500 → 50000 통일
                  embedding_dim: int = 32,
                  k_neighbors: int = 5,
                  similarity_threshold: float = 0.7):
