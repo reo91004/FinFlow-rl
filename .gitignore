@@ -118,3 +118,4 @@ site/
 tmp/
 temp/
 CLAUDE.md
+data/processed/offline_data.npz
