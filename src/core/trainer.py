@@ -275,8 +275,57 @@ class FinFlowTrainer:
             self.monitoring.rollback_on_divergence = False  # 초기에는 rollback 비활성화
             self.monitoring.intervention_threshold = 6.0  # 기준 완화
 
+        # 턴오버 단계적 완화 설정
+        self.turnover_schedule = {
+            'warmup_episodes': 20,
+            'stabilization_episodes': 50,
+            'exploration_episodes': 100
+        }
+
         self.logger.info("FinFlow Trainer 초기화 완료")
-    
+
+    def get_adaptive_turnover_limit(self, episode: int) -> float:
+        """
+        Get adaptive turnover limit based on episode number
+
+        Args:
+            episode: Current episode number
+
+        Returns:
+            Maximum allowed turnover for this episode
+        """
+        if episode < self.turnover_schedule['warmup_episodes']:
+            return 0.3  # Conservative during warmup
+        elif episode < self.turnover_schedule['stabilization_episodes']:
+            return 0.5  # Moderate during stabilization
+        elif episode < self.turnover_schedule['exploration_episodes']:
+            return 0.7  # Progressive increase
+        else:
+            return 0.9  # Final exploration phase
+
+    def check_network_health(self) -> bool:
+        """
+        Check network parameters for NaN/Inf values
+
+        Returns:
+            True if healthy, False otherwise
+        """
+        if not hasattr(self, 'b_cell'):
+            return True
+
+        import torch
+        for name, param in self.b_cell.actor.named_parameters():
+            if torch.isnan(param).any() or torch.isinf(param).any():
+                self.logger.error(f"NaN/Inf detected in actor {name}")
+                return False
+
+        for name, param in self.b_cell.critic.named_parameters():
+            if torch.isnan(param).any() or torch.isinf(param).any():
+                self.logger.error(f"NaN/Inf detected in critic {name}")
+                return False
+
+        return True
+
     def _initialize_components(self):
         """컴포넌트 초기화"""
         # 실제 데이터 로드
@@ -317,7 +366,8 @@ class FinFlowTrainer:
             feature_config=feature_config
         )
         
-        # Environment 생성
+        # Environment 생성 with adaptive turnover
+        initial_max_turnover = self.get_adaptive_turnover_limit(0)
         self.env = PortfolioEnv(
             price_data=price_data,
             feature_extractor=self.feature_extractor,
@@ -326,7 +376,7 @@ class FinFlowTrainer:
             slip_coeff=self.config.env_config.get('slip_coeff', 0.0005),
             no_trade_band=self.config.env_config.get('no_trade_band', 0.002),
             max_leverage=self.config.env_config.get('max_leverage', 1.0),
-            max_turnover=self.config.env_config.get('max_turnover', 0.5)
+            max_turnover=initial_max_turnover
         )
         
         # Get dimensions
@@ -763,7 +813,11 @@ class FinFlowTrainer:
             episode_steps = 0
             self.episode_returns = []  # 에피소드 수익률 추적
             self.episode_actions = []  # 에피소드 액션 추적
-            
+
+            # Update environment with adaptive turnover limit
+            adaptive_turnover = self.get_adaptive_turnover_limit(episode)
+            self.env.max_turnover = adaptive_turnover
+
             # Reset environment
             state, _ = self.env.reset()
             done = False
@@ -906,8 +960,23 @@ class FinFlowTrainer:
                         'indices': indices
                     }
                     
+                    # Check network health before update
+                    if not self.check_network_health():
+                        self.logger.error("Network unhealthy, restoring checkpoint")
+                        if hasattr(self, 'last_safe_checkpoint'):
+                            self.load_checkpoint(self.last_safe_checkpoint)
+                        break  # Exit episode
+
                     losses = self.b_cell.update(batch)
-                    
+
+                    # Check for NaN in losses
+                    if any(not torch.isfinite(torch.tensor(v)) if isinstance(v, float) else False
+                           for v in losses.values()):
+                        self.logger.error("NaN detected in losses, restoring checkpoint")
+                        if hasattr(self, 'last_safe_checkpoint'):
+                            self.load_checkpoint(self.last_safe_checkpoint)
+                        break  # Exit episode
+
                     # Monitor stability
                     stability_metrics = {
                         'q_value': losses.get('q_value', 0.0),
@@ -992,7 +1061,14 @@ class FinFlowTrainer:
                 self.global_step += 1
             
             episode_rewards.append(episode_reward)
-            
+
+            # Save checkpoint periodically if network is healthy
+            if episode > 0 and episode % 10 == 0 and self.check_network_health():
+                self.last_safe_checkpoint = self.save_checkpoint(
+                    f"safe_checkpoint_ep{episode}.pt"
+                )
+                self.logger.info(f"Saved safe checkpoint at episode {episode}")
+
             # Calculate episode metrics
             if len(self.episode_returns) > 0:
                 episode_sharpe = self._calculate_sharpe(self.episode_returns)

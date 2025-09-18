@@ -405,9 +405,17 @@ class BCell:
         loss_q1 = self.quantile_loss(current_q1, target_q.detach(), self.critic.q1.tau, weights)
         loss_q2 = self.quantile_loss(current_q2, target_q.detach(), self.critic.q2.tau, weights)
         
-        # CQL regularization
+        # CQL regularization with adaptive weight
         if self.enable_cql:
             cql_loss = self._compute_cql_loss(states, current_q1, current_q2)
+
+            # Adaptive CQL weight adjustment
+            q_mean = (current_q1.abs().mean() + current_q2.abs().mean()) / 2
+            if q_mean > 50:  # Q-value getting too large
+                self.cql_weight = min(self.cql_weight * 1.5, 20.0)
+            elif q_mean < 10 and self.cql_weight > 1.0:  # Q-value stable
+                self.cql_weight = max(self.cql_weight * 0.95, 1.0)
+
             critic_loss = loss_q1 + loss_q2 + self.cql_weight * cql_loss
         else:
             critic_loss = loss_q1 + loss_q2
@@ -457,22 +465,30 @@ class BCell:
         return actor_loss.item()
     
     def _update_alpha(self, states):
-        """Update temperature parameter (자동 튜닝 항상 활성)"""
+        """Update temperature parameter with improved stability"""
 
         with torch.no_grad():
             actions, log_probs = self.actor.get_action(states)
 
+        # Clamp entropy difference to prevent extreme updates
+        entropy_diff = (log_probs + self.target_entropy).detach()
+        entropy_diff = torch.clamp(entropy_diff, min=-5.0, max=5.0)  # Prevent extreme values
+
         # Alpha loss: maintain target entropy
-        alpha_loss = -(self.log_alpha * (log_probs + self.target_entropy).detach()).mean()
+        alpha_loss = -(self.log_alpha * entropy_diff).mean()
 
         # Optimize
         self.alpha_optimizer.zero_grad(set_to_none=True)
         alpha_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.alpha_optimizer.param_groups[0]['params'], max_norm=1.0)  # 5.0 → 1.0
+        torch.nn.utils.clip_grad_norm_([self.log_alpha], max_norm=1.0)  # Proper gradient clipping
         self.alpha_optimizer.step()
 
+        # Enforce alpha bounds with clamping
+        with torch.no_grad():
+            self.log_alpha.clamp_(min=np.log(self.alpha_min), max=np.log(self.alpha_max))
+
         # Update alpha value
-        self.alpha = self.log_alpha.exp().clamp(self.alpha_min, self.alpha_max).item()
+        self.alpha = self.log_alpha.exp().item()
 
         return alpha_loss.item()
     

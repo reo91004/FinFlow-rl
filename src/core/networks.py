@@ -51,22 +51,27 @@ class DirichletActor(nn.Module):
     
     def forward(self, state: torch.Tensor) -> torch.Tensor:
         """
-        Forward pass to get concentration parameters
-        
+        Forward pass to get concentration parameters with improved numerical stability
+
         Args:
             state: [batch_size, state_dim]
-            
+
         Returns:
             concentration: [batch_size, action_dim]
         """
         features = self.net(state)
-        
-        # Softplus to ensure positive concentrations
-        concentration = F.softplus(self.concentration_layer(features)) + self.min_concentration
-        
-        # Clamp to max value for stability
-        concentration = torch.clamp(concentration, self.min_concentration, self.max_concentration)
-        
+
+        # Get logits and apply hard clamping for stability
+        logits = self.concentration_layer(features)
+        logits = torch.clamp(logits, min=-10, max=10)  # Hard clamping to prevent extreme values
+
+        # More stable transformation with scaled exponential
+        # Using exp with scaling factor instead of softplus
+        concentration = torch.exp(logits * 0.1) + 0.1  # Scale adjustment for stability
+
+        # Final clamping with wider but stable range
+        concentration = torch.clamp(concentration, min=0.01, max=100.0)
+
         return concentration
     
     def get_distribution(self, state: torch.Tensor) -> Dirichlet:

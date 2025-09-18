@@ -42,13 +42,34 @@ class PrioritizedReplayBuffer:
         self.max_priority = 1.0
     
     def push(self, transition: Transition):
-        """경험 저장"""
+        """경험 저장 with quality control"""
         # 유입 데이터 검증 (assert로 즉시 실패)
         assert transition.state is not None, "State cannot be None"
         assert transition.action is not None, "Action cannot be None"
         assert transition.next_state is not None, "Next state cannot be None"
         assert not np.isnan(transition.reward), "Reward cannot be NaN"
 
+        # Filter extreme rewards
+        if abs(transition.reward) > 10:
+            return  # Skip extreme rewards
+
+        # Check for NaN/Inf in states and actions
+        import torch
+        if isinstance(transition.state, torch.Tensor):
+            if torch.isnan(transition.state).any() or torch.isinf(transition.state).any():
+                return
+        elif isinstance(transition.state, np.ndarray):
+            if np.isnan(transition.state).any() or np.isinf(transition.state).any():
+                return
+
+        if isinstance(transition.action, torch.Tensor):
+            if torch.isnan(transition.action).any() or torch.isinf(transition.action).any():
+                return
+        elif isinstance(transition.action, np.ndarray):
+            if np.isnan(transition.action).any() or np.isinf(transition.action).any():
+                return
+
+        # Add to buffer
         if len(self.buffer) < self.capacity:
             self.buffer.append(transition)
         else:
