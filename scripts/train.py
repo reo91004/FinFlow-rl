@@ -76,14 +76,16 @@ def main():
                 'auto_download': True,
                 'use_cache': True
             },
-            # IQL
-            iql_epochs=config['train']['offline_steps'] // 1000,
-            iql_batch_size=config['train']['offline_batch_size'],
+            # 오프라인 학습
+            offline_episodes=config['train'].get('offline_episodes', 500),
+            offline_training_epochs=config['train'].get('offline_training_epochs', 50),
+            offline_steps_per_epoch=config['train'].get('offline_steps_per_epoch', 1000),
+            offline_batch_size=config['train']['offline_batch_size'],
             iql_expectile=config['bcell']['iql_expectile'],
             iql_temperature=config['bcell']['iql_temperature'],
-            # SAC
-            sac_episodes=config['train']['online_steps'] // 100,
-            sac_batch_size=config['train']['online_batch_size'],
+            # 온라인 학습
+            online_episodes=config['train'].get('online_episodes', 1000),
+            online_batch_size=config['train'].get('online_batch_size', 512),
             sac_gamma=config['bcell']['gamma'],
             sac_tau=config['bcell']['tau'],
             sac_alpha=config['bcell']['alpha_init'],
@@ -92,9 +94,9 @@ def main():
             memory_capacity=config['train']['buffer_size'],
             memory_k_neighbors=config['memory']['k_neighbors'],
             # Monitoring
-            eval_interval=config['train']['eval_interval'] // 100,
-            checkpoint_interval=config['train']['save_interval'] // 100,
-            log_interval=config['train']['log_interval'] // 100,
+            eval_interval=config['train']['eval_interval'],
+            checkpoint_interval=config['train']['save_interval'],
+            log_interval=config['train']['log_interval'],
             # Target metrics
             target_sharpe=config['objectives']['sharpe_beta'] * 1.5,
             target_cvar=config['objectives']['cvar_target'],

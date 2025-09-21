@@ -57,24 +57,55 @@ class TrainingConfig:
     # Data validation
     data_validation_config: Optional[Dict] = None
 
-    # IQL Pretraining
-    iql_epochs: int = 50
-    iql_batch_size: int = 256
+    # Offline Training
+    offline_episodes: int = 500
+    offline_training_epochs: int = 50
+    offline_steps_per_epoch: int = 1000
+    offline_batch_size: int = 512
     iql_expectile: float = 0.7
     iql_temperature: float = 3.0
 
-    # SAC Training
-    sac_episodes: int = 1000
-    sac_batch_size: int = 256
+    # Online Training
+    online_episodes: int = 1000
+    online_batch_size: int = 512
+
+    # SAC Parameters
     sac_gamma: float = 0.99
     sac_tau: float = 0.005
     sac_alpha: float = 0.2
     sac_cql_weight: float = 1.0
 
+    # B-Cell Network
+    bcell_actor_hidden: List[int] = field(default_factory=lambda: [256, 256])
+    bcell_critic_hidden: List[int] = field(default_factory=lambda: [256, 256])
+    bcell_n_quantiles: int = 32
+    bcell_actor_lr: float = 3e-4
+    bcell_critic_lr: float = 3e-4
+    bcell_alpha_lr: float = 3e-4
+
+    # T-Cell
+    tcell_contamination: float = 0.1
+    tcell_n_estimators: int = 100
+
+    # Gating Network
+    gating_hidden_dim: int = 128
+    gating_temperature: float = 1.0
+    gating_lr: float = 3e-4
+
+    # Stability Monitor
+    stability_window_size: int = 100
+    stability_n_sigma: float = 3.0
+
     # Memory & Replay
     memory_capacity: int = 10000
     memory_k_neighbors: int = 5
     replay_buffer_size: int = 100000
+
+    # Deprecated (for backward compatibility check)
+    iql_epochs: Optional[int] = None  # Use offline_training_epochs
+    iql_batch_size: Optional[int] = None  # Use offline_batch_size
+    sac_episodes: Optional[int] = None  # Use online_episodes
+    sac_batch_size: Optional[int] = None  # Use online_batch_size
 
     # Monitoring & Logging
     eval_interval: int = 10
@@ -210,7 +241,8 @@ class TrainingConfig:
         overrides = self.override_params
 
         # Direct field overrides
-        for field_name in ['iql_epochs', 'sac_episodes', 'iql_batch_size', 'sac_batch_size',
+        for field_name in ['offline_episodes', 'offline_training_epochs', 'offline_steps_per_epoch',
+                          'offline_batch_size', 'online_episodes', 'online_batch_size',
                           'memory_capacity', 'target_sharpe', 'target_cvar', 'device', 'seed',
                           'data_path', 'checkpoint_dir']:
             if field_name in overrides:
@@ -491,14 +523,14 @@ class FinFlowTrainer:
         self.gating_network = GatingNetwork(
             state_dim=self.state_dim,
             num_experts=len(self.b_cells),
-            hidden_dim=128,
-            temperature=1.0
+            hidden_dim=self.config.gating_hidden_dim,
+            temperature=self.config.gating_temperature
         ).to(self.device)
 
         # GatingNetwork Optimizer (추가: expert 선택 학습)
         self.gating_optimizer = torch.optim.Adam(
             self.gating_network.parameters(),
-            lr=3e-4
+            lr=self.config.gating_lr
         )
 
     def train(self):
@@ -508,12 +540,12 @@ class FinFlowTrainer:
         self.logger.info("=" * 80)
 
         # Phase 1: Offline Pretraining with IQL
-        if self.config.iql_epochs > 0:
+        if self.config.offline_training_epochs > 0:
             self.logger.info("\n[Phase 1] IQL 오프라인 사전학습")
             self._pretrain_iql()
 
         # Phase 2: Online Fine-tuning with SAC
-        if self.config.sac_episodes > 0:
+        if self.config.online_episodes > 0:
             self.logger.info("\n[Phase 2] SAC 온라인 파인튜닝")
             self._train_sac()
 
@@ -532,8 +564,10 @@ class FinFlowTrainer:
         # Collect offline dataset
         offline_dataset = OfflineDataset()
 
-        # Use the built-in collect_from_env method
-        n_episodes = min(50, self.config.iql_epochs * 10)  # Collect more episodes but with fewer epochs
+        # Config에서 직접 가져오기 (하드코딩 제거)
+        n_episodes = self.config.offline_episodes
+        self.logger.info(f"{n_episodes} 에피소드 수집 시작")
+
         offline_dataset.collect_from_env(
             env=self.env,
             n_episodes=n_episodes,
@@ -543,26 +577,32 @@ class FinFlowTrainer:
 
         self.logger.info(f"오프라인 데이터셋 크기: {len(offline_dataset)}")
 
+        # 데이터 저장 (누락된 부분 추가)
+        dataset_path = Path(self.config.data_path) / 'offline_data.npz'
+        dataset_path.parent.mkdir(parents=True, exist_ok=True)
+        offline_dataset.save(dataset_path)
+        self.logger.info(f"오프라인 데이터 저장: {dataset_path}")
+
         # Initialize IQL agent
         iql_agent = IQLAgent(
             state_dim=self.state_dim,
             action_dim=self.action_dim,
-            hidden_dim=256,
+            hidden_dim=self.config.bcell_actor_hidden[0],  # 하드코딩 제거
             expectile=self.config.iql_expectile,
             temperature=self.config.iql_temperature,
             discount=self.config.sac_gamma,
             tau=self.config.sac_tau,
-            learning_rate=3e-4,
+            learning_rate=self.config.bcell_actor_lr,  # 하드코딩 제거
             device=self.device
         )
 
         # Train IQL
         self.logger.info("IQL 학습 시작...")
-        for epoch in tqdm(range(self.config.iql_epochs), desc="IQL Pretraining"):
+        for epoch in tqdm(range(self.config.offline_training_epochs), desc="IQL Pretraining"):
             epoch_losses = []
 
-            for _ in range(1000):  # Steps per epoch
-                batch = offline_dataset.get_batch(self.config.iql_batch_size, device=self.device)
+            for _ in range(self.config.offline_steps_per_epoch):  # 하드코딩 제거
+                batch = offline_dataset.get_batch(self.config.offline_batch_size, device=self.device)
                 losses = iql_agent.update(**batch)
                 epoch_losses.append(losses)
 
@@ -571,7 +611,7 @@ class FinFlowTrainer:
 
             if epoch % 10 == 0:
                 self.logger.info(
-                    f"Epoch {epoch}/{self.config.iql_epochs} - "
+                    f"Epoch {epoch}/{self.config.offline_training_epochs} - "
                     f"Value Loss: {avg_losses['value_loss']:.4f}, "
                     f"Q Loss: {avg_losses['q_loss']:.4f}, "
                     f"Actor Loss: {avg_losses['actor_loss']:.4f}"
@@ -595,7 +635,7 @@ class FinFlowTrainer:
         self._train_tcell()
 
         # Main training loop
-        for episode in tqdm(range(self.config.sac_episodes), desc="SAC Training"):
+        for episode in tqdm(range(self.config.online_episodes), desc="SAC Training"):
             self.episode = episode
             state, _ = self.env.reset()
             episode_reward = 0
@@ -727,9 +767,9 @@ class FinFlowTrainer:
                     )
 
                 # Update B-Cells
-                if len(self.replay_buffer) >= self.config.sac_batch_size:
+                if len(self.replay_buffer) >= self.config.online_batch_size:
                     for bcell_name, bcell in self.b_cells.items():
-                        update_losses = bcell.update(batch_size=self.config.sac_batch_size)
+                        update_losses = bcell.update(batch_size=self.config.online_batch_size)
 
                         # 실시간 학습 메트릭 로깅
                         if update_losses and self.global_step % 10 == 0:
@@ -794,7 +834,7 @@ class FinFlowTrainer:
             if hasattr(self, 'stability_monitor'):
                 episode_stability_metrics = {
                     'q_value': np.mean(episode_metrics.get('q_values', [0])),
-                    'entropy': np.mean(episode_metrics.get('entropies', [1.0])),
+                    'entropy': np.abs(np.mean(episode_metrics.get('entropies', [1.0]))),  # 음수 방지
                     'reward': episode_reward,
                     'loss': 0,  # 에피소드 레벨에서는 loss가 없음
                     'portfolio_concentration': np.sum(episode_metrics['actions'][-1] ** 2) if episode_metrics['actions'] else 0,
@@ -914,7 +954,7 @@ class FinFlowTrainer:
                 # 상세 로그 출력
                 self.logger.info(
                     f"\n{'='*60}\n"
-                    f"Episode {episode}/{self.config.sac_episodes}\n"
+                    f"Episode {episode}/{self.config.online_episodes}\n"
                     f"{'-'*60}\n"
                     f"Performance:\n"
                     f"  Reward: {episode_reward:.4f} | Sharpe: {episode_sharpe:.4f} | Best: {self.best_sharpe:.4f}\n"
@@ -1254,12 +1294,36 @@ class FinFlowTrainer:
         else:
             metadata['t_cell']['has_training_data'] = False
 
-        # Memory Cell 통계
+        # Memory Cell 통계 및 실제 메모리 내용 저장
         memory_stats = {}
+        memory_contents = []
         if hasattr(self.memory_cell, 'memories') and self.memory_cell.memories:
             memory_stats['size'] = len(self.memory_cell.memories)
             memory_stats['capacity'] = self.memory_cell.capacity
+
+            # 실제 메모리 내용 저장 (최대 1000개)
+            max_memories = min(1000, len(self.memory_cell.memories))
+            for i in range(max_memories):
+                memory = self.memory_cell.memories[i]
+                # numpy array를 list로 변환하여 저장
+                memory_item = {
+                    'state': memory['state'].tolist() if isinstance(memory['state'], np.ndarray) else memory['state'],
+                    'action': memory['action'].tolist() if isinstance(memory['action'], np.ndarray) else memory['action'],
+                    'reward': float(memory['reward']) if isinstance(memory['reward'], (np.floating, np.integer)) else memory['reward'],
+                    'next_state': memory['next_state'].tolist() if 'next_state' in memory and isinstance(memory['next_state'], np.ndarray) else memory.get('next_state'),
+                    'done': bool(memory['done']) if 'done' in memory else False,
+                    'crisis_level': float(memory['crisis_level']) if 'crisis_level' in memory and isinstance(memory['crisis_level'], (np.floating, np.integer)) else memory.get('crisis_level', 0.0),
+                    'selected_bcell': memory.get('selected_bcell', 'unknown')
+                }
+                memory_contents.append(memory_item)
+
+            self.logger.info(f"Memory Cell 내용 저장: {max_memories} 항목")
+
         metadata['memory_stats'] = memory_stats
+        metadata['memory_cell'] = {
+            'memories': memory_contents,
+            'stats': memory_stats
+        }
 
         # 최근 메트릭 (numpy 타입을 Python 타입으로 변환)
         if self.metrics_history:

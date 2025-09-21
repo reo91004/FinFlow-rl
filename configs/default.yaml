@@ -150,13 +150,13 @@ objectives:
 # 학습 설정
 train:
   # 오프라인 사전학습
-  offline_episodes: 500 # 오프라인 데이터 수집 에피소드 수
-  offline_steps: 200000
+  offline_episodes: 500  # 데이터 수집 에피소드 수
+  offline_training_epochs: 50  # IQL 학습 에폭 수
+  offline_steps_per_epoch: 1000  # 에폭당 스텝 수
   offline_batch_size: 512
-  offline_eval_interval: 10000
 
   # 온라인 학습
-  online_steps: 300000
+  online_episodes: 1000  # SAC 학습 에피소드 수
   online_batch_size: 512
 
   # Experience replay
@@ -167,9 +167,28 @@ train:
   per_beta: 0.4
 
   # 평가 및 저장
-  eval_interval: 5000
-  save_interval: 20000
-  log_interval: 100
+  eval_interval: 50  # 에피소드 단위
+  save_interval: 200  # 에피소드 단위
+  log_interval: 1  # 에피소드 단위
+  checkpoint_interval: 100  # 체크포인트 저장 간격
+
+  # Feature extraction
+  feature_window: 20  # FeatureExtractor window
+  momentum_lookback: 20  # Momentum strategy lookback
+
+  # Gating Network
+  gating_hidden_dim: 128
+  gating_temperature: 1.0
+  n_experts: 5
+
+  # B-Cell network configs (for evaluation compatibility)
+  bcell_actor_hidden: [256, 256]
+  bcell_critic_hidden: [256, 256]
+  bcell_n_quantiles: 32
+  bcell_actor_lr: 3e-4
+  bcell_critic_lr: 3e-4
+  tcell_contamination: 0.1
+  tcell_n_estimators: 100
 
   # 조기 종료
   early_stop_patience: 50000
@@ -197,6 +216,8 @@ monitoring:
   # StabilityMonitor 설정
   stability:
     enabled: true
+    window_size: 100  # 히스토리 윈도우 크기
+    n_sigma: 3.0  # 이상치 판정 시그마
     max_weight_change: 0.2 # 포트폴리오 가중치 최대 변화 (20%)
     min_effective_assets: 3 # 최소 유효 자산 수
     log_interval: 100 # 로그 요약 출력 간격

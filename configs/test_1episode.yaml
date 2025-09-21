@@ -22,14 +22,14 @@ data:
 
 # 학습 설정 (1 에피소드만)
 train:
-  # 오프라인 사전학습 - 0으로 설정하여 스킵
-  offline_episodes: 0
-  offline_steps: 0
+  # 오프라인 사전학습 - 테스트용 최소한으로
+  offline_episodes: 10  # 10개 에피소드만 수집
+  offline_training_epochs: 2  # 2 에폭만 학습
+  offline_steps_per_epoch: 100  # 에폭당 100 스텝
   offline_batch_size: 512
-  offline_eval_interval: 10000
 
   # 온라인 학습 - 1 에피소드만
-  online_steps: 100  # // 100 = 1 episode
+  online_episodes: 1  # 1 에피소드만
   online_batch_size: 512
 
   # Experience replay
@@ -38,9 +38,26 @@ train:
   prioritized_replay: false  # 간단하게
 
   # 평가 및 저장
-  eval_interval: 5000
-  save_interval: 100  # 1 에피소드 후 바로 저장
-  log_interval: 100  # 1 에피소드마다 로그
+  eval_interval: 1  # 매 에피소드
+  save_interval: 1  # 1 에피소드 후 바로 저장
+  log_interval: 1  # 1 에피소드마다 로그
+  checkpoint_interval: 1  # 체크포인트 저장 간격
+
+  # Feature extraction
+  feature_window: 20  # FeatureExtractor window
+  momentum_lookback: 20  # Momentum strategy lookback
+
+  # Gating Network
+  gating_hidden_dim: 128
+  gating_temperature: 1.0
+  n_experts: 5
+
+  # B-Cell network configs (for evaluation compatibility)
+  bcell_actor_hidden: [256, 256]
+  bcell_critic_hidden: [256, 256]
+  bcell_n_quantiles: 32
+  bcell_actor_lr: 3e-4
+  bcell_critic_lr: 3e-4
 
 # B-Cell 설정
 bcell:

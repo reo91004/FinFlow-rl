@@ -43,10 +43,15 @@ def get_session_directory(base_dir: str = "logs"):
 class FinFlowLogger:
     """FinFlow 시스템 전용 로거 (기존 BIPDLogger 스타일 유지)"""
 
-    def __init__(self, name="FinFlow", level=logging.DEBUG, console_level=logging.INFO):
+    def __init__(self, name="FinFlow", level=logging.DEBUG, console_level=logging.INFO, use_file=None):
         self.name = name
         self.level = level
         self.console_level = console_level
+        # 환경 변수로 파일 로깅 비활성화 가능 (평가 스크립트용)
+        if use_file is None:
+            self.use_file = os.environ.get('FINFLOW_NO_FILE_LOG') != '1'
+        else:
+            self.use_file = use_file
         self.logger = None
         self._setup_logger()
 
@@ -76,16 +81,19 @@ class FinFlowLogger:
         console_handler.setFormatter(formatter)
         self.logger.addHandler(console_handler)
 
-        # 파일 핸들러 (세션 디렉토리 사용)
-        session_dir = get_session_directory()
-        log_file = os.path.join(session_dir, "finflow_training.log")
-        file_handler = logging.FileHandler(log_file, encoding="utf-8")
-        file_handler.setLevel(logging.DEBUG)
-        file_handler.setFormatter(formatter)
-        self.logger.addHandler(file_handler)
+        # 파일 핸들러 (세션 디렉토리 사용) - use_file=True일 때만
+        if self.use_file:
+            session_dir = get_session_directory()
+            log_file = os.path.join(session_dir, "finflow_training.log")
+            file_handler = logging.FileHandler(log_file, encoding="utf-8")
+            file_handler.setLevel(logging.DEBUG)
+            file_handler.setFormatter(formatter)
+            self.logger.addHandler(file_handler)
 
-        # JSON 로거 추가 (메트릭 추적용)
-        self.json_file_path = os.path.join(session_dir, "metrics.jsonl")
+            # JSON 로거 추가 (메트릭 추적용)
+            self.json_file_path = os.path.join(session_dir, "metrics.jsonl")
+        else:
+            self.json_file_path = None
 
     def debug(self, msg):
         self.logger.debug(msg)
@@ -104,13 +112,14 @@ class FinFlowLogger:
     
     def log_metrics(self, metrics: Dict[str, Any], step: Optional[int] = None):
         """메트릭을 JSON 형식으로 저장"""
-        log_entry = {
-            "timestamp": datetime.datetime.now().isoformat(),
-            "step": step,
-            **metrics
-        }
-        with open(self.json_file_path, 'a', encoding='utf-8') as f:
-            f.write(json.dumps(log_entry) + '\n')
+        if self.json_file_path:  # 파일 경로가 있을 때만 저장
+            log_entry = {
+                "timestamp": datetime.datetime.now().isoformat(),
+                "step": step,
+                **metrics
+            }
+            with open(self.json_file_path, 'a', encoding='utf-8') as f:
+                f.write(json.dumps(log_entry) + '\n')
     
 
 # Backward compatibility alias

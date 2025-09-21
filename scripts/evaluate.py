@@ -1,5 +1,9 @@
 # scripts/evaluate.py
 
+import os
+# 평가 스크립트에서는 새 로그 디렉토리 생성 방지
+os.environ['FINFLOW_NO_FILE_LOG'] = '1'
+
 import numpy as np
 import pandas as pd
 import torch
@@ -28,8 +32,8 @@ from src.agents.gating import GatingNetwork
 from src.analysis.explainer import XAIExplainer
 from src.analysis.metrics import calculate_sharpe_ratio, calculate_cvar, calculate_max_drawdown
 from src.analysis.visualization import plot_portfolio_weights, plot_equity_curve, plot_drawdown
-from src.utils.logger import FinFlowLogger, get_session_directory
 from src.utils.seed import set_seed
+import logging
 
 class FinFlowEvaluator:
     """
@@ -54,7 +58,20 @@ class FinFlowEvaluator:
         self.data_path = data_path
         self.device = device
         
-        self.logger = FinFlowLogger("Evaluator")
+        # 표준 logging 사용 (새 세션 디렉토리 생성 방지)
+        self.logger = logging.getLogger("Evaluator")
+        self.logger.setLevel(logging.INFO)
+
+        # 콘솔 핸들러만 추가 (파일 로깅 제외)
+        if not self.logger.handlers:
+            console_handler = logging.StreamHandler()
+            formatter = logging.Formatter(
+                "%(asctime)s | %(levelname)-8s | %(name)-20s | %(message)s",
+                datefmt="%H:%M:%S"
+            )
+            console_handler.setFormatter(formatter)
+            self.logger.addHandler(console_handler)
+
         self.logger.info("평가기 초기화")
         
         # Load configuration - YAML 우선, JSON 폴백
@@ -100,6 +117,18 @@ class FinFlowEvaluator:
                 'n_episodes': 10,
                 'benchmarks': ['equal_weight', 'market_cap', 'momentum'],
                 'metrics': ['sharpe', 'cvar', 'max_drawdown', 'turnover']
+            },
+            'train': {
+                'bcell_actor_hidden': [256, 256],
+                'bcell_critic_hidden': [256, 256],
+                'bcell_n_quantiles': 32,
+                'bcell_actor_lr': 3e-4,
+                'bcell_critic_lr': 3e-4,
+                'gating_hidden_dim': 128,
+                'gating_temperature': 1.0,
+                'n_experts': 5,
+                'feature_window': 20,
+                'momentum_lookback': 20
             }
         }
     
@@ -166,17 +195,22 @@ class FinFlowEvaluator:
         b_cell_data = checkpoint['b_cell']
         specialization = b_cell_data.get('specialization', 'momentum')  # 기본값
 
-        # BCell 초기화에 필요한 config
-        bcell_config = {
-            'gamma': 0.99,
-            'tau': 0.005,
-            'alpha_init': 0.2,
-            'actor_hidden': [256, 256],
-            'critic_hidden': [256, 256],
-            'actor_lr': 3e-4,
-            'critic_lr': 3e-4,
-            'n_quantiles': 32
+        # BCell 초기화에 필요한 config (YAML config에서 가져오기)
+        train_config = self.config.get('train', {})
+        bcell_config = self.config.get('bcell', {})  # bcell 섹션도 확인
+
+        # bcell 섹션과 train 섹션에서 config 가져오기
+        bcell_config_dict = {
+            'gamma': bcell_config.get('gamma', train_config.get('gamma', 0.99)),
+            'tau': bcell_config.get('tau', train_config.get('tau', 0.005)),
+            'alpha_init': bcell_config.get('alpha_init', train_config.get('alpha_init', 0.2)),
+            'actor_hidden': train_config.get('bcell_actor_hidden', bcell_config.get('actor_hidden', [256, 256])),
+            'critic_hidden': train_config.get('bcell_critic_hidden', bcell_config.get('critic_hidden', [256, 256])),
+            'actor_lr': float(train_config.get('bcell_actor_lr', bcell_config.get('actor_lr', 3e-4))),
+            'critic_lr': float(train_config.get('bcell_critic_lr', bcell_config.get('critic_lr', 3e-4))),
+            'n_quantiles': train_config.get('bcell_n_quantiles', bcell_config.get('n_quantiles', 32))
         }
+        bcell_config = bcell_config_dict
 
         self.b_cell = BCell(
             specialization=specialization,
@@ -188,11 +222,13 @@ class FinFlowEvaluator:
         self.b_cell.load_state_dict(b_cell_data)
         # BCell은 eval() 메서드가 없음 - 내부 네트워크는 자동으로 eval 모드
 
+        # GatingNetwork config from YAML
+        train_config = self.config.get('train', {})
         self.gating_network = GatingNetwork(
             state_dim=state_dim,
-            hidden_dim=128,  # Match training configuration
-            num_experts=5,
-            temperature=1.0
+            hidden_dim=train_config.get('gating_hidden_dim', 128),
+            num_experts=train_config.get('n_experts', 5),
+            temperature=train_config.get('gating_temperature', 1.0)
         ).to(self.device)
         self.gating_network.load_state_dict(checkpoint['gating_network'])
         self.gating_network.eval()
@@ -555,9 +591,11 @@ class FinFlowEvaluator:
             columns=[f'Asset_{i}' for i in range(self.prices.shape[1])]
         )
 
-        # FeatureExtractor 초기화
+        # FeatureExtractor 초기화 (config에서 window 가져오기)
         from src.data.features import FeatureExtractor
-        feature_extractor = FeatureExtractor(window=20)
+        train_config = self.config.get('train', {})
+        feature_window = train_config.get('feature_window', 20)
+        feature_extractor = FeatureExtractor(window=feature_window)
 
         # T-Cell이 학습되지 않았다면 평가 데이터로 학습
         if hasattr(self, 't_cell_needs_fitting') and self.t_cell_needs_fitting:
@@ -848,7 +886,8 @@ class FinFlowEvaluator:
     
     def _momentum_strategy(self) -> Tuple[np.ndarray, np.ndarray]:
         """모멘텀 전략"""
-        lookback = 20
+        train_config = self.config.get('train', {})
+        lookback = train_config.get('momentum_lookback', 20)
         returns_list = []
         actions_list = []
         
@@ -940,9 +979,11 @@ class FinFlowEvaluator:
             columns=[f'Asset_{i}' for i in range(self.prices.shape[1])]
         )
 
-        # FeatureExtractor 초기화
+        # FeatureExtractor 초기화 (config에서 window 가져오기)
         from src.data.features import FeatureExtractor
-        feature_extractor = FeatureExtractor(window=20)
+        train_config = self.config.get('train', {})
+        feature_window = train_config.get('feature_window', 20)
+        feature_extractor = FeatureExtractor(window=feature_window)
 
         # env config 가져오기
         env_config = self.config.get('env', {})
@@ -1127,7 +1168,7 @@ class FinFlowEvaluator:
     def _generate_report(self):
         """평가 보고서 생성"""
         from pathlib import Path
-        report_path = Path(get_session_directory()) / "reports" / "evaluation_report.json"
+        report_path = self.run_dir / "reports" / "evaluation_report.json"
         report_path.parent.mkdir(exist_ok=True)
         
         # Save detailed results
