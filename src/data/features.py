@@ -14,7 +14,7 @@ class FeatureExtractor:
     def __init__(self, window: int = 20, feature_config: Optional[Dict] = None):
         self.window = window
         self.logger = FinFlowLogger("FeatureExtractor")
-        
+
         # Feature 설정 로드
         if feature_config is None:
             # 기본값 사용
@@ -24,6 +24,11 @@ class FeatureExtractor:
                 'structure': 3,
                 'momentum': 2
             }
+            self.rsi_window = 14
+            self.bollinger_window = 20
+            self.macd_fast = 12
+            self.macd_slow = 26
+            self.macd_signal = 9
         else:
             self.feature_dims = feature_config.get('dimensions', {
                 'returns': 3,
@@ -31,7 +36,13 @@ class FeatureExtractor:
                 'structure': 3,
                 'momentum': 2
             })
-        
+            # Technical indicator windows from config
+            self.rsi_window = feature_config.get('rsi_window', 14)
+            self.bollinger_window = feature_config.get('bollinger_window', 20)
+            self.macd_fast = feature_config.get('macd_fast', 12)
+            self.macd_slow = feature_config.get('macd_slow', 26)
+            self.macd_signal = feature_config.get('macd_signal', 9)
+
         self.total_dim = sum(self.feature_dims.values())
         self.logger.info(f"특성 추출기 초기화 - window={window}, total_dim={self.total_dim}")
     
@@ -90,25 +101,28 @@ class FeatureExtractor:
                 repr_prices = data_slice.mean(axis=1)
             
             # RSI
-            if len(repr_prices) >= 14:
-                rsi = ta.momentum.RSIIndicator(repr_prices, window=14).rsi()
+            if len(repr_prices) >= self.rsi_window:
+                rsi = ta.momentum.RSIIndicator(repr_prices, window=self.rsi_window).rsi()
                 rsi_value = rsi.iloc[-1] if len(rsi) > 0 and not pd.isna(rsi.iloc[-1]) else 50
                 features.append((rsi_value - 50) / 50)  # 정규화 [-1, 1]
             else:
                 features.append(0)
-            
+
             # MACD
-            if len(repr_prices) >= 26:
-                macd = ta.trend.MACD(repr_prices)
+            if len(repr_prices) >= self.macd_slow:
+                macd = ta.trend.MACD(repr_prices,
+                                    window_slow=self.macd_slow,
+                                    window_fast=self.macd_fast,
+                                    window_sign=self.macd_signal)
                 macd_diff = macd.macd_diff()
                 macd_value = macd_diff.iloc[-1] if len(macd_diff) > 0 and not pd.isna(macd_diff.iloc[-1]) else 0
                 features.append(np.clip(macd_value / repr_prices.iloc[-1], -0.1, 0.1))
             else:
                 features.append(0)
-            
+
             # Bollinger Bands 위치
-            if len(repr_prices) >= 20:
-                bb = ta.volatility.BollingerBands(repr_prices, window=20)
+            if len(repr_prices) >= self.bollinger_window:
+                bb = ta.volatility.BollingerBands(repr_prices, window=self.bollinger_window)
                 bb_high = bb.bollinger_hband()
                 bb_low = bb.bollinger_lband()
                 if len(bb_high) > 0 and not pd.isna(bb_high.iloc[-1]) and not pd.isna(bb_low.iloc[-1]):

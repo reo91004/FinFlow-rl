@@ -1,9 +1,16 @@
 # src/utils/monitoring.py
 
 """
-StabilityMonitor: 실시간 학습 안정성 모니터링 및 자동 개입 시스템
+StabilityMonitor: 학습 안정성 모니터링 및 자동 개입 시스템
 
-연구용 코드로 try-except 없이 assert로 명확한 검증
+주요 역할:
+- 학습 중 Q-value 폭발/붕괴 감지
+- 그래디언트 발산 체크
+- 엔트로피 급락 감지
+- 보상 클리프 모니터링
+- 자동 개입 및 체크포인트 롤백
+
+Note: 학습 안정성 중심. 비즈니스 메트릭은 src/analysis/monitor.py의 PerformanceMonitor 사용
 """
 
 import numpy as np

@@ -216,10 +216,8 @@ class TCell:
             importance: Top important features for crisis detection
         """
         if self.explainer is None:
-            # Return dummy importance if explainer not initialized
-            return {
-                'top_features': [(i, 0.0) for i in range(min(5, self.feature_dim))]
-            }
+            # Explainer not initialized - raise error
+            raise RuntimeError("SHAP explainer not initialized. Call train() first to initialize the explainer.")
         
         # Reshape if needed
         if features.ndim == 1:

@@ -256,17 +256,20 @@ class HybridReplayBuffer:
         # 전체 유니크 경험 수 (중복 제거는 복잡하므로 최대값 사용)
         return max(len(self.prioritized_buffer), len(self.reservoir_buffer))
 
-class OfflineDataset:
+class ReplayOfflineDataset:
     """
-    오프라인 IQL 학습용 데이터셋
-    
+    오프라인 IQL 학습용 데이터셋 (Replay 버전)
+
     과거 경험을 저장하고 배치 단위로 제공
+    환경에서 직접 데이터를 수집하는 기능 포함
+
+    Note: src/core/offline_dataset.py의 OfflineDataset과 구분
     """
-    
+
     def __init__(self, capacity: int = 100000):
         self.transitions = []
         self.capacity = capacity
-    
+
     def add_trajectory(self, trajectory: list):
         """전체 에피소드 추가"""
         for transition in trajectory:
@@ -274,18 +277,18 @@ class OfflineDataset:
                 # FIFO로 오래된 데이터 제거
                 self.transitions.pop(0)
             self.transitions.append(transition)
-    
+
     def add_from_env(self, env, policy=None, n_episodes: int = 100):
         """
         환경에서 데이터 수집
-        
+
         Args:
             env: 환경
             policy: 정책 (None이면 랜덤)
             n_episodes: 수집할 에피소드 수
         """
         from src.utils.logger import FinFlowLogger
-        logger = FinFlowLogger("OfflineDataset")
+        logger = FinFlowLogger("ReplayOfflineDataset")
         
         for episode in range(n_episodes):
             state, info = env.reset()

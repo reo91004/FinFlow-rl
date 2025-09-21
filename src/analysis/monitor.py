@@ -31,12 +31,16 @@ class Alert:
 
 class PerformanceMonitor:
     """
-    실시간 성능 모니터링 및 안정성 추적
-    
-    - 실시간 대시보드
-    - 강화된 알림 시스템
-    - 상세 메트릭 추적
+    비즈니스/포트폴리오 성능 모니터링 시스템
+
+    주요 역할:
+    - 포트폴리오 수익률, Sharpe ratio 등 비즈니스 메트릭 추적
     - 거래 비용 분석
+    - ML 기반 이상치 탐지
+    - 실시간 대시보드 (TensorBoard 연동)
+    - 경고/알림 시스템
+
+    Note: 비즈니스 메트릭 중심. 학습 안정성은 src/utils/monitoring.py의 StabilityMonitor 사용
     """
     
     def __init__(self, 
@@ -420,18 +424,10 @@ class PerformanceMonitor:
     def _setup_notification_handlers(self) -> Dict[str, Callable]:
         """알림 핸들러 설정"""
         handlers = {}
-        
-        # 이메일 핸들러
-        if self.notification_config.get('email_enabled'):
-            handlers['email'] = self._send_email_notification
-        
-        # Slack 핸들러
-        if self.notification_config.get('slack_enabled'):
-            handlers['slack'] = self._send_slack_notification
-        
+
         # 콘솔 핸들러 (기본)
         handlers['console'] = self._send_console_notification
-        
+
         return handlers
     
     def _format_alert_message(self, metric: str, value: float, level: str) -> str:
@@ -472,15 +468,6 @@ class PerformanceMonitor:
         print(f"Action Required: {alert.action_required}")
         print(f"{'='*60}\n")
     
-    def _send_email_notification(self, alert: Alert):
-        """이메일 알림 (구현 예시)"""
-        # 실제 구현 시 SMTP 설정 필요
-        pass
-    
-    def _send_slack_notification(self, alert: Alert):
-        """Slack 알림 (구현 예시)"""
-        # 실제 구현 시 Slack Webhook URL 필요
-        pass
     
     def log_trade(self, trade: Dict[str, Any]):
         """거래 로깅 및 비용 추적"""

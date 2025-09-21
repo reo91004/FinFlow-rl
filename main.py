@@ -98,7 +98,7 @@ def main():
     if args.tickers:
         if 'data' not in config_dict:
             config_dict['data'] = {}
-        config_dict['data']['tickers'] = args.tickers
+        config_dict['data']['symbols'] = args.tickers
     
     if args.data_period:
         if 'data' not in config_dict:

@@ -6,45 +6,8 @@ import torch.optim as optim
 import torch.nn.functional as F
 import numpy as np
 from typing import Dict, Tuple, Optional
-from src.core.networks import DirichletActor
+from src.core.networks import DirichletActor, ValueNetwork, QNetwork
 from src.utils.logger import FinFlowLogger
-
-class ValueNetwork(nn.Module):
-    """Value function V(s) for IQL"""
-    
-    def __init__(self, state_dim: int, hidden_dim: int = 256):
-        super().__init__()
-        self.fc1 = nn.Linear(state_dim, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
-        self.fc3 = nn.Linear(hidden_dim, 1)
-        
-        # Layer norm for stability
-        self.ln1 = nn.LayerNorm(hidden_dim)
-        self.ln2 = nn.LayerNorm(hidden_dim)
-    
-    def forward(self, state: torch.Tensor) -> torch.Tensor:
-        x = F.relu(self.ln1(self.fc1(state)))
-        x = F.relu(self.ln2(self.fc2(x)))
-        return self.fc3(x)
-
-class QNetwork(nn.Module):
-    """Q-function Q(s, a) for IQL"""
-    
-    def __init__(self, state_dim: int, action_dim: int, hidden_dim: int = 256):
-        super().__init__()
-        self.fc1 = nn.Linear(state_dim + action_dim, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
-        self.fc3 = nn.Linear(hidden_dim, 1)
-        
-        # Layer norm for stability
-        self.ln1 = nn.LayerNorm(hidden_dim)
-        self.ln2 = nn.LayerNorm(hidden_dim)
-    
-    def forward(self, state: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
-        x = torch.cat([state, action], dim=1)
-        x = F.relu(self.ln1(self.fc1(x)))
-        x = F.relu(self.ln2(self.fc2(x)))
-        return self.fc3(x)
 
 class IQLAgent:
     """
@@ -86,14 +49,14 @@ class IQLAgent:
         
         # Networks
         self.actor = DirichletActor(state_dim, action_dim, [hidden_dim, hidden_dim]).to(device)
-        self.value = ValueNetwork(state_dim, hidden_dim).to(device)
-        
-        self.q1 = QNetwork(state_dim, action_dim, hidden_dim).to(device)
-        self.q2 = QNetwork(state_dim, action_dim, hidden_dim).to(device)
-        
+        self.value = ValueNetwork(state_dim, [hidden_dim, hidden_dim]).to(device)
+
+        self.q1 = QNetwork(state_dim, action_dim, [hidden_dim, hidden_dim]).to(device)
+        self.q2 = QNetwork(state_dim, action_dim, [hidden_dim, hidden_dim]).to(device)
+
         # Target networks
-        self.q1_target = QNetwork(state_dim, action_dim, hidden_dim).to(device)
-        self.q2_target = QNetwork(state_dim, action_dim, hidden_dim).to(device)
+        self.q1_target = QNetwork(state_dim, action_dim, [hidden_dim, hidden_dim]).to(device)
+        self.q2_target = QNetwork(state_dim, action_dim, [hidden_dim, hidden_dim]).to(device)
         
         # Initialize targets
         self.q1_target.load_state_dict(self.q1.state_dict())

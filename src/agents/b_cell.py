@@ -98,18 +98,18 @@ class BCell:
         )
         
         # Loss functions
-        self.quantile_loss = QuantileHuberLoss(kappa=1.0)
-        
+        self.quantile_loss = QuantileHuberLoss(kappa=config.get('quantile_kappa', 1.0))
+
         # Experience replay
         self.replay_buffer = PrioritizedReplayBuffer(
             capacity=config.get('buffer_size', 100000),
-            alpha=0.6,
-            beta=0.4
+            alpha=config.get('per_alpha', 0.6),
+            beta=config.get('per_beta', 0.4)
         )
-        
+
         # Training stats
         self.training_step = 0
-        self.recent_rewards = deque(maxlen=100)
+        self.recent_rewards = deque(maxlen=config.get('recent_rewards_maxlen', 100))
         self.performance_score = 0.0
         
         # CQL alpha scheduling

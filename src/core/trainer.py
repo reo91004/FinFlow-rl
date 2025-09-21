@@ -19,7 +19,6 @@ from src.core.env import PortfolioEnv
 from src.core.replay import PrioritizedReplayBuffer
 from src.core.offline_dataset import OfflineDataset
 from src.core.iql import IQLAgent
-# from src.core.sac import DistributionalSAC  # 사용 시 import
 from src.agents.b_cell import BCell
 from src.agents.t_cell import TCell
 from src.agents.memory import MemoryCell
@@ -319,7 +318,7 @@ class FinFlowTrainer:
 
         # 데이터 다운로드
         if self.config.data_config.get('auto_download', True):
-            tickers = self.config.data_config['tickers']
+            tickers = self.config.data_config.get('symbols', self.config.data_config.get('tickers', []))
 
             # 기간 설정 (YAML 설정에서 start/end 사용)
             if 'start' in self.config.data_config and 'end' in self.config.data_config:
@@ -525,7 +524,8 @@ class FinFlowTrainer:
             state_dim=self.state_dim,
             num_experts=len(self.b_cells),
             hidden_dim=self.config.gating_hidden_dim,
-            temperature=self.config.gating_temperature
+            temperature=self.config.gating_temperature,
+            performance_maxlen=getattr(self.config, 'gating_performance_maxlen', 100)
         ).to(self.device)
 
         # GatingNetwork Optimizer (추가: expert 선택 학습)

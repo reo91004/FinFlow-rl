@@ -32,6 +32,7 @@ from src.agents.gating import GatingNetwork
 from src.analysis.explainer import XAIExplainer
 from src.analysis.metrics import calculate_sharpe_ratio, calculate_cvar, calculate_max_drawdown
 from src.analysis.visualization import plot_portfolio_weights, plot_equity_curve, plot_drawdown
+from src.analysis.backtest import RealisticBacktester  # 백테스터 통합
 from src.utils.seed import set_seed
 import logging
 
@@ -92,7 +93,11 @@ class FinFlowEvaluator:
         # Initialize components
         self._load_models()
         self._load_data()
-        
+
+        # Initialize RealisticBacktester
+        backtest_config = self.config.get('backtest', None)
+        self.backtester = RealisticBacktester(config=backtest_config)
+
         # Results storage
         self.results = {}
         # 평가 결과를 checkpoint 폴더 내에 저장
@@ -228,7 +233,8 @@ class FinFlowEvaluator:
             state_dim=state_dim,
             hidden_dim=train_config.get('gating_hidden_dim', 128),
             num_experts=train_config.get('n_experts', 5),
-            temperature=train_config.get('gating_temperature', 1.0)
+            temperature=train_config.get('gating_temperature', 1.0),
+            performance_maxlen=train_config.get('gating_performance_maxlen', 100)
         ).to(self.device)
         self.gating_network.load_state_dict(checkpoint['gating_network'])
         self.gating_network.eval()
@@ -816,7 +822,76 @@ class FinFlowEvaluator:
             'equity_curve': all_equity,
             'xai_reports': xai_reports
         }
-    
+
+    def evaluate_with_backtest(self) -> Dict:
+        """현실적인 백테스트를 포함한 평가"""
+        self.logger.info("현실적인 백테스트 시작...")
+
+        # Strategy wrapper for backtester
+        def finflow_strategy(data: pd.DataFrame, positions: np.ndarray, timestamp: int) -> np.ndarray:
+            """FinFlow 전략을 백테스터에 맞게 래핑"""
+            # 현재 시점 features 추출
+            if timestamp < self.config.get('features', {}).get('window', 20):
+                # 초기에는 균등 배분
+                n_assets = len(positions)
+                return np.ones(n_assets) / n_assets
+
+            # 상태 구성
+            from src.data.features import FeatureExtractor
+            extractor = FeatureExtractor(
+                window=self.config.get('features', {}).get('window', 20),
+                feature_config=self.config.get('features', {})
+            )
+            features = extractor.extract_features(data, current_idx=timestamp)
+
+            # 위기 감지
+            crisis_info = self.t_cell.detect_crisis(features)
+
+            # 전체 상태 구성
+            state = np.concatenate([features, positions, [crisis_info['overall_crisis']]])
+            state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+
+            # 메모리 가이던스
+            memory_guidance = self.memory_cell.get_memory_guidance(
+                state, crisis_info['overall_crisis']
+            )
+
+            # Gating decision
+            gating_decision = self.gating_network(
+                state_tensor, memory_guidance, crisis_info['overall_crisis']
+            )
+
+            # Select action
+            action = self.b_cell.select_action(
+                state_tensor,
+                bcell_type=gating_decision.selected_bcell,
+                deterministic=True
+            )
+
+            return action
+
+        # 백테스트 실행
+        backtest_results = self.backtester.backtest(
+            strategy=finflow_strategy,
+            data=pd.DataFrame(self.prices),
+            initial_capital=self.config.get('env', {}).get('initial_capital', 1000000),
+            verbose=True
+        )
+
+        # 결과 저장
+        backtest_report_path = self.run_dir / "reports" / "backtest_results.json"
+        with open(backtest_report_path, 'w') as f:
+            # numpy array를 리스트로 변환하여 JSON serializable하게 만듦
+            serializable_results = {
+                k: v.tolist() if isinstance(v, np.ndarray) else v
+                for k, v in backtest_results.items()
+            }
+            json.dump(serializable_results, f, indent=2)
+
+        self.logger.info(f"백테스트 결과 저장: {backtest_report_path}")
+
+        return backtest_results
+
     def _evaluate_benchmarks(self) -> Dict:
         """벤치마크 전략 평가"""
         benchmarks = {}
@@ -1249,12 +1324,14 @@ def main():
                        help='Device to use')
     parser.add_argument('--seed', type=int, default=42,
                        help='Random seed')
-    
+    parser.add_argument('--with-backtest', action='store_true',
+                       help='Run realistic backtest')
+
     args = parser.parse_args()
-    
+
     # Set seed
     set_seed(args.seed)
-    
+
     # Create evaluator
     evaluator = FinFlowEvaluator(
         checkpoint_path=args.checkpoint,
@@ -1262,9 +1339,17 @@ def main():
         config_path=args.config,
         device=args.device
     )
-    
+
     # Run evaluation
     evaluator.evaluate()
+
+    # Run realistic backtest if requested
+    if args.with_backtest:
+        print("\n" + "="*60)
+        print("Running Realistic Backtest...")
+        print("="*60)
+        backtest_results = evaluator.evaluate_with_backtest()
+        print(f"\nBacktest completed. Results saved to: {evaluator.run_dir / 'reports' / 'backtest_results.json'}")
 
 
 if __name__ == "__main__":

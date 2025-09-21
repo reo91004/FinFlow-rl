@@ -29,7 +29,8 @@ class GatingNetwork(nn.Module):
                  hidden_dim: int = 256,
                  num_experts: int = 5,
                  temperature: float = 1.5,  # 1.0 → 1.5 (탐색 강화)
-                 min_dwell_steps: int = 2):  # 5 → 2 (빠른 전환)
+                 min_dwell_steps: int = 2,  # 5 → 2 (빠른 전환)
+                 performance_maxlen: int = 100):  # deque maxlen for performance history
         """
         Args:
             state_dim: 상태 차원
@@ -37,32 +38,33 @@ class GatingNetwork(nn.Module):
             num_experts: B-Cell 전문가 수
             temperature: 소프트맥스 온도
             min_dwell_steps: 최소 유지 스텝
+            performance_maxlen: 성과 기록 최대 길이
         """
         super().__init__()
-        
+
         self.state_dim = state_dim
         self.hidden_dim = hidden_dim
         self.num_experts = num_experts
         self.temperature = temperature
         self.min_dwell_steps = min_dwell_steps
-        
+
         # B-Cell types
         self.bcell_types = ['volatility', 'correlation', 'momentum', 'defensive', 'growth']
-        
+
         # Network layers
         self.fc1 = nn.Linear(state_dim + 11, hidden_dim)  # +11 for crisis(4) + memory(7)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
         self.fc3 = nn.Linear(hidden_dim, num_experts)
-        
+
         # LayerNorm for stability
         self.ln1 = nn.LayerNorm(hidden_dim)
         self.ln2 = nn.LayerNorm(hidden_dim)
-        
+
         # Dropout
         self.dropout = nn.Dropout(0.1)
-        
+
         # Performance tracking
-        self.performance_history = {bcell: deque(maxlen=100) for bcell in self.bcell_types}
+        self.performance_history = {bcell: deque(maxlen=performance_maxlen) for bcell in self.bcell_types}
         self.selection_count = {bcell: 0 for bcell in self.bcell_types}
         self.current_bcell = None
         self.dwell_counter = 0

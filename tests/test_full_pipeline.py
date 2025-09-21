@@ -37,7 +37,6 @@ from src.data.validator import DataValidator
 from src.analysis.backtest import RealisticBacktester
 from src.analysis.monitor import PerformanceMonitor
 from src.utils.monitoring import StabilityMonitor
-from src.utils.live_trading import LiveTradingSystem
 from src.utils.logger import FinFlowLogger
 
 class TestColors:
@@ -242,73 +241,7 @@ def test_realistic_backtest():
         traceback.print_exc()
         return False
 
-def test_live_trading_system():
-    """실거래 시스템 테스트"""
-    print_test_header("5. 실거래 시스템 (Paper Trading)")
-    
-    try:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            # 더미 모델 저장
-            model_path = Path(temp_dir) / "model.pt"
-            torch.save({
-                'b_cell': BCell(
-                    specialization='momentum',
-                    state_dim=43,
-                    action_dim=5,
-                    config={},
-                    device=torch.device('cpu')
-                ).state_dict(),
-                't_cell': {},
-                'memory_cell': {'memories': []},
-                'gating_network': GatingNetwork(
-                    state_dim=43,
-                    hidden_dim=256,
-                    num_experts=5
-                ).state_dict(),
-                'state_dim': 43,
-                'action_dim': 5
-            }, model_path)
-            
-            # Paper Trading 시스템 생성
-            config = {
-                'symbols': ['AAPL', 'GOOGL', 'MSFT', 'AMZN', 'META'],
-                'rebalance_frequency': 'daily',
-                'initial_capital': 100000
-            }
-            
-            trading_system = LiveTradingSystem(
-                model_path=str(model_path),
-                config=config,
-                mode='paper',
-                broker='alpaca'
-            )
-            
-            print_info(f"거래 모드: {trading_system.mode}")
-            print_info(f"브로커: {trading_system.broker}")
-            print_info(f"종목 수: {len(trading_system.config['symbols'])}")
-            
-            # 시장 상태 생성
-            state = trading_system._get_market_state()
-            assert isinstance(state, np.ndarray), "시장 상태 생성 실패"
-            
-            # 신호 생성
-            weights = trading_system._generate_signals(state)
-            assert np.allclose(weights.sum(), 1.0, atol=1e-5), "가중치 합이 1이 아님"
-            assert np.all(weights >= 0), "음수 가중치"
-            
-            print_info(f"생성된 가중치: {weights}")
-            
-            # 위험 관리 테스트
-            risk_check = trading_system.risk_manager.check_risk(weights, {})
-            assert isinstance(risk_check, bool), "위험 체크 실패"
-            
-            print_success("실거래 시스템 테스트 통과")
-            return True
-            
-    except Exception as e:
-        print_error(f"실거래 시스템 테스트 실패: {e}")
-        traceback.print_exc()
-        return False
+# LiveTradingSystem 테스트 제거 (파일이 존재하지 않음)
 
 def test_monitoring_systems():
     """강화된 모니터링 시스템 테스트"""
@@ -546,7 +479,7 @@ def main():
         ("동적 특징", test_dynamic_features),
         ("오프라인 데이터셋", test_offline_dataset_strategies),
         ("현실적 백테스트", test_realistic_backtest),
-        ("실거래 시스템", test_live_trading_system),
+        # ("실거래 시스템", test_live_trading_system), # 파일 누락으로 제거
         ("모니터링", test_monitoring_systems),
         ("지식 전이", test_knowledge_transfer),
         ("전체 파이프라인", test_full_pipeline)

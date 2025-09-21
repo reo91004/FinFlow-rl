@@ -167,6 +167,10 @@ train:
   per_alpha: 0.6
   per_beta: 0.4
 
+  # B-Cell specific
+  recent_rewards_maxlen: 100  # deque maxlen for recent rewards tracking
+  quantile_kappa: 1.0  # Quantile Huber loss kappa parameter
+
   # 평가 및 저장
   eval_interval: 50  # 에피소드 단위
   save_interval: 200  # 에피소드 단위
@@ -176,11 +180,17 @@ train:
   # Feature extraction
   feature_window: 20  # FeatureExtractor window
   momentum_lookback: 20  # Momentum strategy lookback
+  rsi_window: 14  # RSI indicator window
+  bollinger_window: 20  # Bollinger Bands window
+  macd_fast: 12  # MACD fast period
+  macd_slow: 26  # MACD slow period
+  macd_signal: 9  # MACD signal period
 
   # Gating Network
   gating_hidden_dim: 128
   gating_temperature: 1.0
   n_experts: 5
+  gating_performance_maxlen: 100  # deque maxlen for performance history
 
   # B-Cell network configs (for evaluation compatibility)
   bcell_actor_hidden: [256, 256]
