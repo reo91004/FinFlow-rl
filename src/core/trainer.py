@@ -383,6 +383,23 @@ class FinFlowTrainer:
         )
 
         # Stability Monitor
+        from src.utils.monitoring import StabilityMonitor
+        stability_config = {
+            'window_size': 100,
+            'n_sigma': 3.0,
+            'intervention_threshold': 3,
+            'rollback_enabled': False,  # 연구용 코드이므로 롤백 비활성화
+            'q_value_max': 100.0,
+            'q_value_min': -100.0,
+            'entropy_min': 0.1,
+            'gradient_max': 10.0,
+            'concentration_max': 0.8,
+            'turnover_max': 0.8
+        }
+        self.stability_monitor = StabilityMonitor(stability_config)
+        self.logger.info("StabilityMonitor 활성화")
+
+        # Stability Monitor
         stability_config = {
             'window_size': 100,
             'n_sigma': 3.0,
@@ -541,7 +558,7 @@ class FinFlowTrainer:
 
         # Train IQL
         self.logger.info("IQL 학습 시작...")
-        for epoch in range(self.config.iql_epochs):
+        for epoch in tqdm(range(self.config.iql_epochs), desc="IQL Pretraining"):
             epoch_losses = []
 
             for _ in range(1000):  # Steps per epoch
@@ -578,7 +595,7 @@ class FinFlowTrainer:
         self._train_tcell()
 
         # Main training loop
-        for episode in range(self.config.sac_episodes):
+        for episode in tqdm(range(self.config.sac_episodes), desc="SAC Training"):
             self.episode = episode
             state, _ = self.env.reset()
             episode_reward = 0
@@ -589,7 +606,11 @@ class FinFlowTrainer:
                 'returns': [],
                 'actions': [],
                 'q_values': [],
-                'entropies': []
+                'entropies': [],
+                'bcell_selections': [],  # B-Cell 선택 기록
+                'crisis_levels': [],     # 위기 수준 기록
+                'gating_weights': [],    # Gating 가중치 기록
+                'memory_guidances': []   # 메모리 가이던스 기록
             }
 
             done = False
@@ -681,20 +702,77 @@ class FinFlowTrainer:
                 episode_metrics['actions'].append(action)
                 episode_metrics['q_values'].append(action_info.get('q_value', 0))
                 episode_metrics['entropies'].append(action_info.get('entropy', 0))
+                episode_metrics['bcell_selections'].append(selected_bcell)
+                episode_metrics['crisis_levels'].append(crisis_info['overall_crisis'])
+                episode_metrics['gating_weights'].append(gating_decision.weights)
+                episode_metrics['memory_guidances'].append(memory_guidance is not None)
+
+                # 10% 간격으로 중간 통계 로깅
+                if episode_steps > 0 and episode_steps % max(1, self.env.max_steps // 10) == 0:
+                    progress = (episode_steps / self.env.max_steps) * 100
+                    avg_reward = np.mean(episode_metrics['returns'][-10:]) if len(episode_metrics['returns']) >= 10 else np.mean(episode_metrics['returns'])
+                    avg_q = np.mean(episode_metrics['q_values'][-10:]) if len(episode_metrics['q_values']) >= 10 else np.mean(episode_metrics['q_values'])
+                    current_crisis = episode_metrics['crisis_levels'][-1]
+
+                    # B-Cell 선택 통계
+                    bcell_counts = {}
+                    for bcell in episode_metrics['bcell_selections']:
+                        bcell_counts[bcell] = bcell_counts.get(bcell, 0) + 1
+                    dominant_bcell = max(bcell_counts, key=bcell_counts.get) if bcell_counts else 'none'
+
+                    self.logger.debug(
+                        f"  [{progress:5.1f}%] Step {episode_steps}: "
+                        f"Avg Reward: {avg_reward:.4f} | Avg Q: {avg_q:.3f} | "
+                        f"Crisis: {current_crisis:.2f} | Dominant B-Cell: {dominant_bcell}"
+                    )
 
                 # Update B-Cells
                 if len(self.replay_buffer) >= self.config.sac_batch_size:
                     for bcell_name, bcell in self.b_cells.items():
                         update_losses = bcell.update(batch_size=self.config.sac_batch_size)
 
-                        # Stability check - commented out for now (method doesn't exist)
-                        # if update_losses:
-                        #     self.stability_monitor.check_training_stability(
-                        #         q_values=update_losses.get('td_error', 0),
-                        #         actor_loss=update_losses.get('actor_loss', 0),
-                        #         critic_loss=update_losses.get('critic_loss', 0),
-                        #         step=self.global_step
-                        #     )
+                        # 실시간 학습 메트릭 로깅
+                        if update_losses and self.global_step % 10 == 0:
+                            self.performance_monitor.log_metrics({
+                                f'{bcell_name}/actor_loss': update_losses.get('actor_loss', 0),
+                                f'{bcell_name}/critic_loss': update_losses.get('critic_loss', 0),
+                                f'{bcell_name}/alpha': update_losses.get('alpha', 0),
+                                f'{bcell_name}/entropy': update_losses.get('entropy', 0)
+                            }, step=self.global_step)
+
+                        # Stability monitoring
+                        if update_losses and hasattr(self, 'stability_monitor'):
+                            # 기본 메트릭 수집
+                            stability_metrics = {
+                                'q_value': update_losses.get('q_value_mean', 0),
+                                'entropy': update_losses.get('entropy', 1.0),
+                                'loss': update_losses.get('critic_loss', 0) + update_losses.get('actor_loss', 0),
+                                'gradient_norm': update_losses.get('grad_norm', 0)
+                            }
+
+                            # Q-value 목록이 있으면 표준편차 계산을 위해 추가
+                            if 'q_values' in update_losses:
+                                stability_metrics['q_values'] = update_losses['q_values']
+
+                            # 안정성 체크
+                            self.stability_monitor.push(stability_metrics)
+
+                            # 주기적 체크와 개입
+                            if self.global_step % 100 == 0:
+                                stability_check = self.stability_monitor.check()
+                                if stability_check['severity'] == 'critical':
+                                    self.logger.warning(
+                                        f"Critical stability issue detected: {stability_check['issues']}\n"
+                                        f"Recommendations: {stability_check['recommendations']}"
+                                    )
+                                    # 자동 개입 (learning rate 조정 등)
+                                    if 'reduce_learning_rate' in stability_check['recommendations']:
+                                        for optimizer in [bcell.actor_optimizer for bcell in self.b_cells.values()]:
+                                            for param_group in optimizer.param_groups:
+                                                param_group['lr'] *= 0.5
+                                        self.logger.info("학습률을 50% 감소시킴")
+                                elif stability_check['severity'] == 'warning':
+                                    self.logger.debug(f"Stability warning: {stability_check['issues']}")
 
                 # Update gating network (간단한 버전: 성과 기반 업데이트)
                 # TODO: gradient-based 업데이트를 위해 GatingNetwork.forward() 수정 필요
@@ -712,6 +790,95 @@ class FinFlowTrainer:
             # Episode complete
             episode_sharpe = self._compute_episode_metrics(episode_metrics)
 
+            # Stability Monitor에 에피소드 상태 기록
+            if hasattr(self, 'stability_monitor'):
+                episode_stability_metrics = {
+                    'q_value': np.mean(episode_metrics.get('q_values', [0])),
+                    'entropy': np.mean(episode_metrics.get('entropies', [1.0])),
+                    'reward': episode_reward,
+                    'loss': 0,  # 에피소드 레벨에서는 loss가 없음
+                    'portfolio_concentration': np.sum(episode_metrics['actions'][-1] ** 2) if episode_metrics['actions'] else 0,
+                    'turnover': np.mean([np.sum(np.abs(episode_metrics['actions'][i] - episode_metrics['actions'][i-1]))
+                                         for i in range(1, len(episode_metrics['actions']))]) if len(episode_metrics['actions']) > 1 else 0
+                }
+                self.stability_monitor.push(episode_stability_metrics)
+
+            # PerformanceMonitor 로깅 (강화)
+            # B-Cell 선택 통계 계산
+            bcell_counts = {}
+            for bcell in episode_metrics.get('bcell_selections', []):
+                bcell_counts[bcell] = bcell_counts.get(bcell, 0) + 1
+
+            # 위기 수준 통계
+            crisis_levels = episode_metrics.get('crisis_levels', [])
+
+            self.performance_monitor.log_metrics({
+                # 기본 성과 메트릭
+                'episode/reward': episode_reward,
+                'episode/sharpe': episode_sharpe,
+                'episode/steps': episode_steps,
+
+                # Q-value 통계
+                'q_values/mean': np.mean(episode_metrics.get('q_values', [0])),
+                'q_values/std': np.std(episode_metrics.get('q_values', [0])),
+                'q_values/max': np.max(episode_metrics.get('q_values', [0])) if episode_metrics.get('q_values') else 0,
+                'q_values/min': np.min(episode_metrics.get('q_values', [0])) if episode_metrics.get('q_values') else 0,
+
+                # 엔트로피 통계
+                'entropy/mean': np.mean(episode_metrics.get('entropies', [0])),
+                'entropy/std': np.std(episode_metrics.get('entropies', [0])),
+
+                # 수익률 통계
+                'returns/mean': np.mean(episode_metrics.get('returns', [0])),
+                'returns/std': np.std(episode_metrics.get('returns', [0])),
+                'returns/skew': float(pd.Series(episode_metrics.get('returns', [0])).skew()) if len(episode_metrics.get('returns', [])) > 1 else 0,
+                'returns/kurtosis': float(pd.Series(episode_metrics.get('returns', [0])).kurtosis()) if len(episode_metrics.get('returns', [])) > 1 else 0,
+
+                # B-Cell 사용 통계
+                **{f'bcell_usage/{k}': v/len(episode_metrics.get('bcell_selections', [1])) for k, v in bcell_counts.items()},
+
+                # 위기 수준 통계
+                'crisis/mean': np.mean(crisis_levels) if crisis_levels else 0,
+                'crisis/max': np.max(crisis_levels) if crisis_levels else 0,
+                'crisis/std': np.std(crisis_levels) if crisis_levels else 0,
+
+                # 메모리 사용 통계
+                'memory/usage_rate': sum(episode_metrics.get('memory_guidances', [])) / len(episode_metrics.get('memory_guidances', [1])),
+
+                # 학습 진행 상태
+                'training/global_step': self.global_step,
+                'training/episode': episode,
+                'training/best_sharpe': self.best_sharpe
+            }, step=episode)
+
+            # 포트폴리오 가중치 로깅 (마지막 액션)
+            if episode_metrics['actions']:
+                latest_weights = episode_metrics['actions'][-1]
+                self.performance_monitor.log_portfolio(
+                    weights=latest_weights,
+                    asset_names=self.env.asset_names if hasattr(self.env, 'asset_names') else [f"Asset_{i}" for i in range(self.action_dim)],
+                    step=episode
+                )
+
+                # 포트폴리오 통계도 추가 로깅
+                effective_assets = np.sum(latest_weights > 0.01)
+                concentration = np.sum(latest_weights ** 2)  # HHI
+                entropy = -np.sum(latest_weights * np.log(latest_weights + 1e-8))
+
+                self.performance_monitor.log_metrics({
+                    'portfolio/effective_assets': effective_assets,
+                    'portfolio/concentration': concentration,
+                    'portfolio/entropy': entropy,
+                    'portfolio/max_weight': np.max(latest_weights),
+                    'portfolio/min_weight': np.min(latest_weights[latest_weights > 0.001]) if np.any(latest_weights > 0.001) else 0
+                }, step=episode)
+
+            # 그래디언트 로깅 (주기적으로)
+            if episode % 10 == 0:
+                for bcell_name, bcell in self.b_cells.items():
+                    self.performance_monitor.log_gradients(bcell.actor, step=episode)
+                self.performance_monitor.log_gradients(self.gating_network, step=episode)
+
             # Update best
             if episode_sharpe > self.best_sharpe:
                 self.best_sharpe = episode_sharpe
@@ -719,18 +886,95 @@ class FinFlowTrainer:
 
             # Logging
             if episode % self.config.log_interval == 0:
+                # 포트폴리오 통계 계산
+                latest_weights = episode_metrics['actions'][-1] if episode_metrics['actions'] else np.ones(self.action_dim) / self.action_dim
+                effective_assets = np.sum(latest_weights > 0.01)
+                concentration = np.sum(latest_weights ** 2)  # Herfindahl-Hirschman Index
+                entropy = -np.sum(latest_weights * np.log(latest_weights + 1e-8))
+
+                # 상위 3개 자산 추출
+                top_indices = np.argsort(latest_weights)[-3:][::-1]
+                top_weights = [(i, latest_weights[i]) for i in top_indices]
+                weight_str = ', '.join([f'Asset_{i}:{w:.1%}' for i, w in top_weights])
+
+                # B-Cell 선택 통계
+                bcell_counts = {}
+                for bcell in episode_metrics['bcell_selections']:
+                    bcell_counts[bcell] = bcell_counts.get(bcell, 0) + 1
+                bcell_str = ', '.join([f'{k}:{v/len(episode_metrics["bcell_selections"])*100:.1f}%'
+                                       for k, v in sorted(bcell_counts.items())])
+
+                # 위기 수준 통계
+                avg_crisis = np.mean(episode_metrics['crisis_levels']) if episode_metrics['crisis_levels'] else 0
+                max_crisis = np.max(episode_metrics['crisis_levels']) if episode_metrics['crisis_levels'] else 0
+
+                # 메모리 가이던스 사용률
+                memory_usage = sum(episode_metrics['memory_guidances']) / len(episode_metrics['memory_guidances']) * 100 if episode_metrics['memory_guidances'] else 0
+
+                # 상세 로그 출력
                 self.logger.info(
-                    f"Episode {episode}/{self.config.sac_episodes} - "
-                    f"Reward: {episode_reward:.4f}, "
-                    f"Steps: {episode_steps}, "
-                    f"Sharpe: {episode_sharpe:.4f}, "
-                    f"Best Sharpe: {self.best_sharpe:.4f}"
+                    f"\n{'='*60}\n"
+                    f"Episode {episode}/{self.config.sac_episodes}\n"
+                    f"{'-'*60}\n"
+                    f"Performance:\n"
+                    f"  Reward: {episode_reward:.4f} | Sharpe: {episode_sharpe:.4f} | Best: {self.best_sharpe:.4f}\n"
+                    f"  Steps: {episode_steps} | Avg Q: {np.mean(episode_metrics.get('q_values', [0])):.3f}\n"
+                    f"  Returns Std: {np.std(episode_metrics.get('returns', [0])):.4f}\n"
+                    f"Portfolio Stats:\n"
+                    f"  Effective Assets: {effective_assets}/{self.action_dim}\n"
+                    f"  Concentration (HHI): {concentration:.3f} | Entropy: {entropy:.3f}\n"
+                    f"  Top Holdings: {weight_str}\n"
+                    f"B-Cell Selection:\n"
+                    f"  Distribution: {bcell_str}\n"
+                    f"Crisis Detection:\n"
+                    f"  Avg Level: {avg_crisis:.3f} | Max Level: {max_crisis:.3f}\n"
+                    f"Memory Usage: {memory_usage:.1f}%\n"
+                    f"{'='*60}"
                 )
 
             # Evaluation
             if episode % self.config.eval_interval == 0:
                 eval_metrics = self._evaluate()
                 self.logger.info(f"Evaluation: {eval_metrics}")
+
+                # 시각화 생성 (평가 후)
+                if episode_metrics.get('returns') and len(episode_metrics['returns']) > 1:
+                    try:
+                        # Equity curve 그래프
+                        returns_array = np.array(episode_metrics['returns'])
+                        cumulative_returns = np.cumprod(1 + returns_array) - 1
+
+                        equity_path = self.log_dir / f"equity_curve_ep{episode}.png"
+                        plot_equity_curve(
+                            returns=returns_array,
+                            title=f"Equity Curve - Episode {episode}",
+                            save_path=str(equity_path)
+                        )
+                        self.logger.debug(f"Equity curve saved: {equity_path}")
+
+                        # Drawdown 그래프
+                        drawdown_path = self.log_dir / f"drawdown_ep{episode}.png"
+                        plot_drawdown(
+                            returns=returns_array,
+                            title=f"Drawdown - Episode {episode}",
+                            save_path=str(drawdown_path)
+                        )
+                        self.logger.debug(f"Drawdown plot saved: {drawdown_path}")
+
+                        # Portfolio weights 그래프
+                        if episode_metrics.get('actions'):
+                            weights_path = self.log_dir / f"portfolio_weights_ep{episode}.png"
+                            weights_matrix = np.array(episode_metrics['actions'])
+                            plot_portfolio_weights(
+                                weights=weights_matrix,
+                                asset_names=self.env.asset_names if hasattr(self.env, 'asset_names') else [f"Asset_{i}" for i in range(self.action_dim)],
+                                title=f"Portfolio Weights - Episode {episode}",
+                                save_path=str(weights_path)
+                            )
+                            self.logger.debug(f"Portfolio weights plot saved: {weights_path}")
+                    except Exception as e:
+                        # 연구용 코드이므로 시각화 실패는 로그만
+                        self.logger.debug(f"Visualization failed: {e}")
 
             # Checkpoint
             if episode % self.config.checkpoint_interval == 0:
@@ -744,6 +988,10 @@ class FinFlowTrainer:
                 'steps': episode_steps,
                 **episode_metrics
             })
+
+            # 주기적 시각화 및 리포트 생성 (100 에피소드마다)
+            if episode > 0 and episode % 100 == 0:
+                self._generate_training_report(episode)
 
     def _train_tcell(self):
         """T-Cell 학습"""
@@ -838,6 +1086,42 @@ class FinFlowTrainer:
         running_max = np.maximum.accumulate(cumulative)
         drawdown = (cumulative - running_max) / running_max
         return np.min(drawdown) if len(drawdown) > 0 else 0
+
+    def _generate_training_report(self, episode: int):
+        """\ud559\uc2b5 \ub9ac\ud3ec\ud2b8 \uc0dd\uc131 \ubc0f \uc2dc\uac01\ud654"""
+        self.logger.info(f"\uc5d0\ud53c\uc18c\ub4dc {episode} \ud559\uc2b5 \ub9ac\ud3ec\ud2b8 \uc0dd\uc131 \uc911...")
+
+        # \uba54\ud2b8\ub9ad \ud788\uc2a4\ud1a0\ub9ac \ubd84\uc11d
+        if len(self.metrics_history) > 0:
+            import pandas as pd
+
+            # DataFrame\uc73c\ub85c \ubcc0\ud658
+            df = pd.DataFrame(self.metrics_history)
+
+            # \ud1b5\uacc4 \uc694\uc57d
+            summary = {
+                'episodes_completed': episode,
+                'avg_reward': df['reward'].mean(),
+                'std_reward': df['reward'].std(),
+                'avg_sharpe': df['sharpe'].mean(),
+                'best_sharpe': df['sharpe'].max(),
+                'best_episode': df.loc[df['sharpe'].idxmax(), 'episode'],
+                'avg_steps': df['steps'].mean(),
+                'total_steps': self.global_step
+            }
+
+            # JSON \ud30c\uc77c\ub85c \uc800\uc7a5
+            report_path = self.log_dir / f"training_report_ep{episode}.json"
+            with open(report_path, 'w') as f:
+                json.dump(summary, f, indent=2)
+
+            self.logger.info(
+                f"\ud559\uc2b5 \ub9ac\ud3ec\ud2b8 \uc0dd\uc131 \uc644\ub8cc:\\n"
+                f"  \ud3c9\uade0 Sharpe: {summary['avg_sharpe']:.4f}\\n"
+                f"  \ucd5c\uace0 Sharpe: {summary['best_sharpe']:.4f} (Episode {summary['best_episode']})\\n"
+                f"  \ud3c9\uade0 \ubcf4\uc0c1: {summary['avg_reward']:.4f}\\n"
+                f"  \ub9ac\ud3ec\ud2b8 \uc800\uc7a5: {report_path}"
+            )
 
     def _convert_numpy_types(self, obj):
         """numpy 타입을 Python 네이티브 타입으로 재귀적 변환"""
