@@ -358,8 +358,8 @@ def test_knowledge_transfer():
             # TrainingConfig 생성
             training_config = TrainingConfig(
                 data_config={'symbols': ['A', 'B', 'C']},
-                iql_epochs=1,
-                sac_episodes=1
+                offline_training_epochs=1,
+                online_episodes=1
             )
             
             # Trainer 생성
@@ -427,8 +427,8 @@ def test_full_pipeline():
             print_info("4) 학습 실행")
             training_config = TrainingConfig(
                 data_config={'symbols': [f'Asset_{i}' for i in range(5)]},
-                iql_epochs=1,
-                sac_episodes=1
+                offline_training_epochs=1,
+                online_episodes=1
             )
             trainer = FinFlowTrainer(training_config)
             # 간단한 테스트를 위해 실제 학습은 스킵

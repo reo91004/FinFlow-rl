@@ -136,12 +136,12 @@ def main():
         
         # CLI 인자들을 오버라이드로 변환
         if args.iql_epochs is not None:
-            overrides['iql_epochs'] = args.iql_epochs
+            overrides['offline_training_epochs'] = args.iql_epochs
         if args.sac_episodes is not None:
-            overrides['sac_episodes'] = args.sac_episodes
+            overrides['online_episodes'] = args.sac_episodes
         if args.batch_size is not None:
-            overrides['iql_batch_size'] = args.batch_size
-            overrides['sac_batch_size'] = args.batch_size
+            overrides['offline_batch_size'] = args.batch_size
+            overrides['online_batch_size'] = args.batch_size
         if args.lr is not None:
             overrides['iql_lr'] = args.lr
             overrides['sac_lr'] = args.lr
@@ -236,8 +236,8 @@ def main():
                 'test_start': '2021-01-01',
                 'test_end': '2021-12-31'
             },
-            iql_epochs=10,  # Reduced for demo
-            sac_episodes=50,  # Reduced for demo
+            offline_training_epochs=10,  # Reduced for demo
+            online_episodes=50,  # Reduced for demo
             device=args.device,
             seed=args.seed
         )

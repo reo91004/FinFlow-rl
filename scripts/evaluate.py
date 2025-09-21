@@ -112,8 +112,8 @@ class FinFlowEvaluator:
         """기본 설정"""
         return {
             'env': {
-                'initial_balance': 1000000,
-                'transaction_cost': 0.001,
+                'initial_capital': 1000000,
+                'turnover_cost': 0.001,
                 'max_weight': 0.2,
                 'min_weight': 0.0,
                 'window_size': 30
@@ -123,17 +123,24 @@ class FinFlowEvaluator:
                 'benchmarks': ['equal_weight', 'market_cap', 'momentum'],
                 'metrics': ['sharpe', 'cvar', 'max_drawdown', 'turnover']
             },
+            'bcell': {
+                'actor_hidden': [256, 256],
+                'critic_hidden': [256, 256],
+                'n_quantiles': 32,
+                'actor_lr': 3e-4,
+                'critic_lr': 3e-4
+            },
+            'gating': {
+                'hidden_dim': 128,
+                'temperature': 1.0
+            },
             'train': {
-                'bcell_actor_hidden': [256, 256],
-                'bcell_critic_hidden': [256, 256],
-                'bcell_n_quantiles': 32,
-                'bcell_actor_lr': 3e-4,
-                'bcell_critic_lr': 3e-4,
-                'gating_hidden_dim': 128,
-                'gating_temperature': 1.0,
                 'n_experts': 5,
                 'feature_window': 20,
-                'momentum_lookback': 20
+                'momentum_lookback': 20,
+                'gating_hidden_dim': 128,
+                'gating_temperature': 1.0,
+                'gating_performance_maxlen': 100
             }
         }
     
@@ -201,19 +208,18 @@ class FinFlowEvaluator:
         specialization = b_cell_data.get('specialization', 'momentum')  # 기본값
 
         # BCell 초기화에 필요한 config (YAML config에서 가져오기)
-        train_config = self.config.get('train', {})
-        bcell_config = self.config.get('bcell', {})  # bcell 섹션도 확인
+        bcell_config = self.config.get('bcell', {})
 
-        # bcell 섹션과 train 섹션에서 config 가져오기
+        # bcell 섹션에서 config 가져오기 (올바른 키 사용)
         bcell_config_dict = {
-            'gamma': bcell_config.get('gamma', train_config.get('gamma', 0.99)),
-            'tau': bcell_config.get('tau', train_config.get('tau', 0.005)),
-            'alpha_init': bcell_config.get('alpha_init', train_config.get('alpha_init', 0.2)),
-            'actor_hidden': train_config.get('bcell_actor_hidden', bcell_config.get('actor_hidden', [256, 256])),
-            'critic_hidden': train_config.get('bcell_critic_hidden', bcell_config.get('critic_hidden', [256, 256])),
-            'actor_lr': float(train_config.get('bcell_actor_lr', bcell_config.get('actor_lr', 3e-4))),
-            'critic_lr': float(train_config.get('bcell_critic_lr', bcell_config.get('critic_lr', 3e-4))),
-            'n_quantiles': train_config.get('bcell_n_quantiles', bcell_config.get('n_quantiles', 32))
+            'gamma': bcell_config.get('gamma', 0.99),
+            'tau': bcell_config.get('tau', 0.005),
+            'alpha_init': bcell_config.get('alpha_init', 0.2),
+            'actor_hidden': bcell_config.get('actor_hidden', [256, 256]),
+            'critic_hidden': bcell_config.get('critic_hidden', [256, 256]),
+            'actor_lr': float(bcell_config.get('actor_lr', 3e-4)),
+            'critic_lr': float(bcell_config.get('critic_lr', 3e-4)),
+            'n_quantiles': bcell_config.get('n_quantiles', 32)
         }
         bcell_config = bcell_config_dict
 
@@ -635,9 +641,9 @@ class FinFlowEvaluator:
         env = PortfolioEnv(
             price_data=price_df,
             feature_extractor=feature_extractor,
-            initial_capital=env_config.get('initial_capital', env_config.get('initial_balance', 1000000)),
-            transaction_cost=env_config.get('turnover_cost', env_config.get('transaction_cost', 0.001)),
-            slippage=env_config.get('slip_coeff', env_config.get('slippage', 0.0005)),
+            initial_capital=env_config.get('initial_capital', 1000000),
+            transaction_cost=env_config.get('turnover_cost', 0.001),
+            slippage=env_config.get('slip_coeff', 0.0005),
             no_trade_band=env_config.get('no_trade_band', 0.002),
             max_leverage=env_config.get('max_leverage', 1.0),
             max_turnover=env_config.get('max_turnover', 0.5)
@@ -1068,8 +1074,8 @@ class FinFlowEvaluator:
             price_data=price_df,
             feature_extractor=feature_extractor,
             initial_capital=env_config.get('initial_capital', 1000000),
-            transaction_cost=env_config.get('turnover_cost', 0.001),  # turnover_cost -> transaction_cost
-            slippage=env_config.get('slip_coeff', 0.0005),           # slip_coeff -> slippage
+            transaction_cost=env_config.get('turnover_cost', 0.001),
+            slippage=env_config.get('slip_coeff', 0.0005),
             no_trade_band=env_config.get('no_trade_band', 0.002),
             max_leverage=env_config.get('max_leverage', 1.0),
             max_turnover=env_config.get('max_turnover', 0.5)

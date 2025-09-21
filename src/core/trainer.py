@@ -101,11 +101,11 @@ class TrainingConfig:
     memory_k_neighbors: int = 5
     replay_buffer_size: int = 100000
 
-    # Deprecated (for backward compatibility check)
-    iql_epochs: Optional[int] = None  # Use offline_training_epochs
-    iql_batch_size: Optional[int] = None  # Use offline_batch_size
-    sac_episodes: Optional[int] = None  # Use online_episodes
-    sac_batch_size: Optional[int] = None  # Use online_batch_size
+    # Deprecated 필드들 (더 이상 사용하지 않음, 하위 호환성을 위해 유지)
+    # iql_epochs: Optional[int] = None  # Use offline_training_epochs
+    # iql_batch_size: Optional[int] = None  # Use offline_batch_size
+    # sac_episodes: Optional[int] = None  # Use online_episodes
+    # sac_batch_size: Optional[int] = None  # Use online_batch_size
 
     # Monitoring & Logging
     eval_interval: int = 10
@@ -175,14 +175,27 @@ class TrainingConfig:
         # Training config
         if 'train' in config_dict:
             train = config_dict['train']
-            if 'offline_steps' in train:
-                self.iql_epochs = train['offline_steps'] // 1000
-            if 'online_steps' in train:
-                self.sac_episodes = train['online_steps'] // 100
+            # 오프라인 학습 설정
+            if 'offline_episodes' in train:
+                self.offline_episodes = train['offline_episodes']
+            if 'offline_training_epochs' in train:
+                self.offline_training_epochs = train['offline_training_epochs']
+            if 'offline_steps_per_epoch' in train:
+                self.offline_steps_per_epoch = train['offline_steps_per_epoch']
             if 'offline_batch_size' in train:
-                self.iql_batch_size = train['offline_batch_size']
+                self.offline_batch_size = train['offline_batch_size']
+
+            # 온라인 학습 설정
+            if 'online_episodes' in train:
+                self.online_episodes = train['online_episodes']
             if 'online_batch_size' in train:
-                self.sac_batch_size = train['online_batch_size']
+                self.online_batch_size = train['online_batch_size']
+
+            # 기타 설정
+            if 'force_recollect_offline' in train:
+                self.force_recollect_offline = train['force_recollect_offline']
+            if 'buffer_size' in train:
+                self.replay_buffer_size = train['buffer_size']
 
         # BCell config
         if 'bcell' in config_dict:
@@ -212,11 +225,13 @@ class TrainingConfig:
         if 'train' in config_dict:
             train = config_dict['train']
             if 'eval_interval' in train:
-                self.eval_interval = max(1, train['eval_interval'] // 100)
+                self.eval_interval = train['eval_interval']
             if 'save_interval' in train:
-                self.checkpoint_interval = max(1, train['save_interval'] // 100)
+                self.checkpoint_interval = train['save_interval']
             if 'log_interval' in train:
-                self.log_interval = max(1, train['log_interval'] // 100)
+                self.log_interval = train['log_interval']
+            if 'checkpoint_interval' in train:
+                self.checkpoint_interval = train['checkpoint_interval']
 
         # Target metrics
         if 'objectives' in config_dict:
