@@ -15,6 +15,11 @@ from datetime import datetime
 import sys
 sys.path.append(str(Path(__file__).parent.parent))
 
+# Safe globals 등록 (마이그레이션된 체크포인트용)
+import torch.serialization
+# 기본 타입들은 이미 안전하므로, 필요한 경우에만 추가
+# torch.serialization.add_safe_globals([dict, list, tuple])  # 이미 기본으로 허용됨
+
 from src.core.env import PortfolioEnv
 from src.agents.b_cell import BCell
 from src.agents.t_cell import TCell
@@ -73,7 +78,9 @@ class FinFlowEvaluator:
         
         # Results storage
         self.results = {}
-        self.session_dir = Path(get_session_directory())
+        # 평가 결과를 checkpoint 폴더 내에 저장
+        self.session_dir = Path(self.checkpoint_path) / "evaluation"
+        self.session_dir.mkdir(parents=True, exist_ok=True)
         self.run_dir = self.session_dir
         (self.run_dir / "reports").mkdir(parents=True, exist_ok=True)
         self.viz_dir = self.run_dir / "visualizations"
@@ -100,29 +107,14 @@ class FinFlowEvaluator:
         """모델과 메모리 셀 로드"""
         self.logger.info(f"체크포인트 로드: {self.checkpoint_path}")
 
-        # device mapping 함수 정의
-        def device_mapper(storage, loc):
-            """디바이스 매핑 처리"""
-            if isinstance(loc, str):
-                if loc == 'auto':
-                    # auto는 처리하지 않음 - 오류 발생하도록
-                    raise ValueError(f"Invalid device location: {loc}. Run migration script first.")
-                elif loc == 'cpu':
-                    return storage
-                elif loc.startswith('cuda'):
-                    # cuda:0 형태 처리
-                    if torch.cuda.is_available():
-                        return storage.to(torch.device(loc))
-                    else:
-                        return storage
-            return storage
+        checkpoint_path = Path(self.checkpoint_path)
 
-        # weights_only=True로 엄격하게 로드
-        checkpoint = torch.load(
-            self.checkpoint_path,
-            map_location=device_mapper,
-            weights_only=True
-        )
+        # SafeTensors 형식 체크
+        if checkpoint_path.is_dir() and (checkpoint_path / "model.safetensors").exists():
+            checkpoint = self._load_safetensors_checkpoint(checkpoint_path)
+        else:
+            # 기존 .pt 형식
+            checkpoint = self._load_legacy_checkpoint(self.checkpoint_path)
 
         # 체크포인트 검증
         required_keys = ['b_cell', 'gating_network', 'device']
@@ -135,18 +127,37 @@ class FinFlowEvaluator:
         if checkpoint_device == 'auto':
             raise ValueError("체크포인트의 device가 'auto'입니다. Migration 스크립트를 실행하세요.")
 
-        # Get dimensions from checkpoint or config
-        if 'config' in checkpoint:
-            config = checkpoint['config']
-            state_dim = config.get('state_dim', 43)
-            action_dim = config.get('action_dim', 30)  # 실제 자산 수는 30
-        elif 'config_params' in checkpoint:
-            # 레거시 체크포인트
-            state_dim = 43
-            action_dim = 30  # 실제 자산 수는 30
-        else:
-            state_dim = 43  # Default
-            action_dim = 30  # 실제 자산 수는 30
+        # Get dimensions from checkpoint metadata
+        state_dim = checkpoint.get('state_dim', None)
+        action_dim = checkpoint.get('action_dim', None)
+
+        # Fallback to config if not in top-level metadata
+        if state_dim is None or action_dim is None:
+            if 'config' in checkpoint:
+                config = checkpoint['config']
+                state_dim = config.get('state_dim', None)
+                action_dim = config.get('action_dim', None)
+
+            # If still None, calculate from data
+            if state_dim is None or action_dim is None:
+                self.logger.warning("차원 정보가 체크포인트에 없음 - 데이터에서 추론")
+                # 데이터 설정 가져오기
+                data_config = self.config.get('data', {})
+                symbols = data_config.get('symbols', data_config.get('tickers', []))
+
+                if symbols:
+                    n_assets = len(symbols)
+                    # state_dim = features(12) + weights(n_assets) + crisis(1)
+                    state_dim = 12 + n_assets + 1
+                    action_dim = n_assets
+                    self.logger.info(f"자산 수({n_assets})에서 차원 추론: state_dim={state_dim}, action_dim={action_dim}")
+                else:
+                    # 최종 fallback
+                    state_dim = 43  # 12 + 30 + 1
+                    action_dim = 30
+                    self.logger.warning(f"기본값 사용: state_dim={state_dim}, action_dim={action_dim}")
+
+        self.logger.info(f"체크포인트 차원: state_dim={state_dim}, action_dim={action_dim}")
 
         # Store action_dim for later validation
         self.expected_action_dim = action_dim
@@ -177,13 +188,39 @@ class FinFlowEvaluator:
         self.b_cell.load_state_dict(b_cell_data)
         # BCell은 eval() 메서드가 없음 - 내부 네트워크는 자동으로 eval 모드
 
-        self.gating_network = GatingNetwork(state_dim).to(self.device)
+        self.gating_network = GatingNetwork(
+            state_dim=state_dim,
+            hidden_dim=128,  # Match training configuration
+            num_experts=5,
+            temperature=1.0
+        ).to(self.device)
         self.gating_network.load_state_dict(checkpoint['gating_network'])
         self.gating_network.eval()
 
         self.t_cell = TCell()
         if 't_cell' in checkpoint:
-            self.t_cell.load_state(checkpoint['t_cell'])
+            # T-Cell 학습 데이터 로드 (재학습용)
+            t_cell_training_data = None
+            if checkpoint['t_cell'].get('has_training_data', False):
+                t_cell_data_path = Path(self.checkpoint_path) / "t_cell_training_data.npz"
+                if t_cell_data_path.exists():
+                    t_cell_data = np.load(t_cell_data_path)
+                    t_cell_training_data = t_cell_data['features']
+                    self.logger.info(f"T-Cell 학습 데이터 로드: {t_cell_training_data.shape}")
+                else:
+                    self.logger.warning("T-Cell 학습 데이터 파일이 없음")
+
+            # T-Cell 상태 로드 및 재학습
+            if t_cell_training_data is not None:
+                self.t_cell.load_state(checkpoint['t_cell'], training_data=t_cell_training_data)
+            else:
+                # 학습 데이터가 없으면, 평가 데이터를 사용하여 자동 학습 예정
+                self.logger.warning("T-Cell 학습 데이터 없음 - 평가 시 자동 학습 필요")
+                self.t_cell.load_state(checkpoint['t_cell'])
+                # 평가 시작 시 데이터를 모아서 학습할 필요가 있음을 표시
+                self.t_cell_needs_fitting = True
+        else:
+            self.t_cell_needs_fitting = True
 
         # 메모리 셀 복원
         self.memory_cell = MemoryCell()
@@ -232,6 +269,94 @@ class FinFlowEvaluator:
         self.logger.info(f"모델 로드 완료 (Episode: {self.checkpoint_epoch})")
         self.logger.info(f"메모리 셀 크기: {len(self.memory_cell.memories)}")
         self.logger.info(f"Device: {checkpoint_device} -> {self.device}")
+
+
+    def _load_safetensors_checkpoint(self, checkpoint_path: Path) -> Dict:
+        """"""
+        from safetensors.torch import load_file
+        import json
+
+        self.logger.info(f"SafeTensors 체크포인트 로드: {checkpoint_path}")
+
+        # 메타데이터 로드
+        with open(checkpoint_path / "metadata.json", 'r') as f:
+            metadata = json.load(f)
+
+        # 모델 가중치 로드
+        model_tensors = load_file(checkpoint_path / "model.safetensors")
+
+        # 체크포인트 형식으로 변환
+        checkpoint = {
+            'device': metadata.get('device', 'cpu'),
+            'episode': metadata.get('episode', 0),
+            'global_step': metadata.get('global_step', 0),
+            'state_dim': metadata.get('state_dim'),
+            'action_dim': metadata.get('action_dim'),
+            'config': metadata.get('config', {}),
+            'metrics': metadata.get('recent_metrics', {})
+        }
+
+        # B-Cell state 복원
+        b_cell_state = {'actor': {}, 'critic_q1': {}, 'critic_q2': {}}
+        for key, value in model_tensors.items():
+            if key.startswith("b_cell."):
+                parts = key.replace("b_cell.", "").split(".", 1)
+                if len(parts) == 2 and parts[0] in ['actor', 'critic_q1', 'critic_q2']:
+                    b_cell_state[parts[0]][parts[1]] = value
+                elif parts[0] == 'log_alpha':
+                    b_cell_state['log_alpha'] = value
+
+        # 메타데이터 추가
+        if 'b_cell_meta' in metadata:
+            b_cell_state.update(metadata['b_cell_meta'])
+
+        checkpoint['b_cell'] = b_cell_state
+
+        # Gating Network state 복원
+        gating_state = {}
+        for key, value in model_tensors.items():
+            if key.startswith("gating_network."):
+                param_name = key.replace("gating_network.", "")
+                gating_state[param_name] = value
+        checkpoint['gating_network'] = gating_state
+
+        # T-Cell state
+        if 't_cell' in metadata:
+            checkpoint['t_cell'] = metadata['t_cell']
+
+        # Memory cell stats
+        if 'memory_stats' in metadata:
+            checkpoint['memory_cell'] = {'stats': metadata['memory_stats']}
+
+        return checkpoint
+
+    def _load_legacy_checkpoint(self, checkpoint_path: str) -> Dict:
+        """Legacy .pt 체크포인트 로드"""
+        # device mapping 함수 정의
+        def device_mapper(storage, loc):
+            """디바이스 매핑 처리"""
+            if isinstance(loc, str):
+                if loc == 'auto':
+                    # auto는 처리하지 않음 - 오류 발생하도록
+                    raise ValueError(f"Invalid device location: {loc}. Run migration script first.")
+                elif loc == 'cpu':
+                    return storage
+                elif loc.startswith('cuda'):
+                    # cuda:0 형태 처리
+                    if torch.cuda.is_available():
+                        return storage.to(loc)  # torch.device 래핑 제거
+                    else:
+                        return storage
+            return storage
+
+        # 체크포인트 로드 (weights_only=True로 안전하게)
+        checkpoint = torch.load(
+            checkpoint_path,
+            map_location=device_mapper,
+            weights_only=True  # 보안을 위해 True 사용
+        )
+
+        return checkpoint
     
     def _load_data(self):
         """데이터 로드"""
@@ -258,7 +383,8 @@ class FinFlowEvaluator:
     def _get_feature_names(self) -> List[str]:
         """특징 이름 생성"""
         feature_names = []
-        n_assets = self.prices.shape[1] if hasattr(self, 'prices') else 30
+        # 체크포인트에서 가져온 action_dim 사용
+        n_assets = self.expected_action_dim if hasattr(self, 'expected_action_dim') else 30
 
         # 실제 FeatureExtractor의 차원과 정확히 일치
         # FeatureExtractor: returns=3, technical=4, structure=3, momentum=2 = 12차원
@@ -275,14 +401,16 @@ class FinFlowEvaluator:
         # Momentum features (2)
         feature_names.extend(['momentum_short', 'momentum_long'])
 
-        # Portfolio weights (30)
+        # Portfolio weights (n_assets)
         for i in range(n_assets):
             feature_names.append(f'weight_{i}')
 
         # Crisis level (1)
         feature_names.append('crisis_level')
 
-        return feature_names[:43]  # 12 + 30 + 1 = 43
+        # 실제 state dimension에 맞게 반환
+        total_features = 12 + n_assets + 1
+        return feature_names[:total_features]
 
     def _load_data_dynamically(self):
         """체크포인트 설정을 사용하여 데이터 동적 로드"""
@@ -305,7 +433,11 @@ class FinFlowEvaluator:
         self.logger.info(f"동적 데이터 로드: {len(symbols)}개 자산 (첫 5개: {symbols[:5]}), period={test_start} to {test_end}")
 
         # DataLoader로 데이터 로드
-        loader = DataLoader(cache_dir='data/cache')
+        validation_config = self.config.get('data_validation', None)
+        loader = DataLoader(
+            cache_dir='data/cache',
+            validation_config=validation_config
+        )
 
         # 데이터 다운로드
         price_data = loader.download_data(
@@ -426,6 +558,27 @@ class FinFlowEvaluator:
         # FeatureExtractor 초기화
         from src.data.features import FeatureExtractor
         feature_extractor = FeatureExtractor(window=20)
+
+        # T-Cell이 학습되지 않았다면 평가 데이터로 학습
+        if hasattr(self, 't_cell_needs_fitting') and self.t_cell_needs_fitting:
+            self.logger.info("T-Cell을 평가 데이터로 학습 중...")
+
+            # 평가 데이터의 처음 100개 샘플 사용
+            if hasattr(self, 'features') and self.features is not None:
+                # 기존에 추출된 features 사용
+                training_features = self.features[:min(100, len(self.features))]
+            else:
+                # features가 없으면 새로 추출
+                training_features = []
+                for i in range(20, min(120, len(price_df))):
+                    feature = feature_extractor.extract_features(price_df, current_idx=i)
+                    training_features.append(feature)
+                training_features = np.array(training_features)
+
+            # T-Cell 학습
+            self.t_cell.fit(training_features)
+            self.logger.info(f"T-Cell 학습 완료: {len(training_features)} 샘플 사용")
+            self.t_cell_needs_fitting = False
 
         # env 섹션 가져오기 (YAML에는 env 섹션이 있음)
         env_config = self.config.get('env', {})

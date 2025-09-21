@@ -213,6 +213,7 @@ def main():
         evaluator = FinFlowEvaluator(
             checkpoint_path=args.resume,
             data_path=args.data_path,
+            config_path=args.config,  # Pass the config file
             device=device
         )
         

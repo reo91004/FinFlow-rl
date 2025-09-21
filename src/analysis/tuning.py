@@ -95,41 +95,36 @@ class HyperparameterTuner:
     
     def _objective(self, trial: Any, metric: str) -> float:
         """목적 함수"""
-        try:
-            # 하이퍼파라미터 샘플링
-            params = self._sample_hyperparameters(trial)
-            
-            # 환경 생성
-            env = PortfolioEnv(
-                price_data=self.train_data,
-                initial_cash=self.env_config.get('initial_cash', 1000000),
-                fee_rate=self.env_config.get('fee_rate', 0.001),
-                slippage=self.env_config.get('slippage', 0.001)
-            )
-            
-            # 모델 설정
-            model_config = {
-                'hidden_dim': params['hidden_dim'],
-                'num_layers': params['num_layers'],
-                'lr': params['lr'],
-                'gamma': params['gamma'],
-                'tau': params['tau'],
-                'batch_size': params['batch_size'],
-                'alpha': params.get('alpha', 0.2)
-            }
-            
-            # 학습 실행 (간소화된 버전)
-            score = self._train_and_evaluate(env, model_config, metric)
-            
-            # 조기 종료
-            if trial.should_prune():
-                raise optuna.TrialPruned()
-            
-            return score
-            
-        except Exception as e:
-            self.logger.warning(f"Trial {trial.number} 실패: {e}")
-            return float('-inf') if metric == 'sharpe_ratio' else float('inf')
+        # 하이퍼파라미터 샘플링
+        params = self._sample_hyperparameters(trial)
+
+        # 환경 생성
+        env = PortfolioEnv(
+            price_data=self.train_data,
+            initial_cash=self.env_config.get('initial_cash', 1000000),
+            fee_rate=self.env_config.get('fee_rate', 0.001),
+            slippage=self.env_config.get('slippage', 0.001)
+        )
+
+        # 모델 설정
+        model_config = {
+            'hidden_dim': params['hidden_dim'],
+            'num_layers': params['num_layers'],
+            'lr': params['lr'],
+            'gamma': params['gamma'],
+            'tau': params['tau'],
+            'batch_size': params['batch_size'],
+            'alpha': params.get('alpha', 0.2)
+        }
+
+        # 학습 실행 (간소화된 버전)
+        score = self._train_and_evaluate(env, model_config, metric)
+
+        # 조기 종료
+        if trial.should_prune():
+            raise optuna.TrialPruned()
+
+        return score
     
     def _sample_hyperparameters(self, trial: Any) -> Dict:
         """하이퍼파라미터 샘플링"""

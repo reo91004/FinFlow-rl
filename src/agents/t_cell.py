@@ -89,7 +89,10 @@ class TCell:
             'correlation': 0.0,
             'volume': 0.0
         }
-        
+
+        # Auto-fit 용 데이터 버퍼
+        self.feature_buffer = []
+
         self.logger.info(f"T-Cell 초기화 완료 - contamination={contamination}, n_estimators={n_estimators}")
     
     def fit(self, features: np.ndarray):
@@ -132,16 +135,28 @@ class TCell:
             features = market_data.get('features', np.zeros(self.feature_dim))
         else:
             features = market_data
-        
+
+        # Auto-fit 로직: 충분한 데이터가 버퍼에 쌓이면 자동 학습
         if not self.is_fitted:
-            # Not fitted yet, return default
-            return {
-                'overall_crisis': 0.0,
-                'volatility_crisis': 0.0,
-                'correlation_crisis': 0.0,
-                'volume_crisis': 0.0,
-                'is_anomaly': False
-            }
+            # 버퍼에 데이터 추가
+            self.feature_buffer.append(features.copy())
+
+            # 100개 이상 데이터가 모이면 자동 학습
+            if len(self.feature_buffer) >= 100:
+                self.logger.info("T-Cell 자동 학습 실행 (100개 샘플 누적)")
+                buffer_array = np.array(self.feature_buffer)
+                self.fit(buffer_array)
+                # 버퍼 비우기
+                self.feature_buffer = []
+            else:
+                # 아직 학습되지 않음 - 기본값 반환
+                return {
+                    'overall_crisis': 0.0,
+                    'volatility_crisis': 0.0,
+                    'correlation_crisis': 0.0,
+                    'volume_crisis': 0.0,
+                    'is_anomaly': False
+                }
         
         # Reshape if needed
         if features.ndim == 1:
@@ -326,18 +341,34 @@ class TCell:
             'scaler_scale': self.scaler.scale_ if self.is_fitted else None
         }
     
-    def load_state(self, state: Dict):
-        """T-Cell 상태 로드"""
+    def load_state(self, state: Dict, training_data: Optional[np.ndarray] = None):
+        """T-Cell 상태 로드
+
+        Args:
+            state: 저장된 T-Cell 상태
+            training_data: IsolationForest 재학습용 데이터 (선택적)
+        """
         self.is_fitted = state.get('is_fitted', False)
         self.crisis_history = deque(state.get('crisis_history', []), maxlen=self.window_size)
         self.crisis_ema = state.get('crisis_ema', {k: 0.0 for k in self.crisis_ema})
         self.thresholds = state.get('thresholds', self.thresholds)
-        
+
         # Restore scaler state if fitted
         if self.is_fitted and state.get('scaler_mean') is not None:
-            self.scaler.mean_ = state['scaler_mean']
-            self.scaler.scale_ = state['scaler_scale']
+            self.scaler.mean_ = np.array(state['scaler_mean'])
+            self.scaler.scale_ = np.array(state['scaler_scale'])
             self.scaler.n_features_in_ = len(state['scaler_mean'])
+
+            # IsolationForest는 state 저장이 불가능하므로 재학습 필요
+            # 실제 데이터가 제공되면 사용, 아니면 일단 초기화만 (나중에 detect_crisis에서 학습)
+            if training_data is not None and len(training_data) > 0:
+                # 제공된 실제 데이터로 재학습
+                self.detector.fit(training_data)
+                self.logger.info(f"T-Cell detector 재학습 완료: {training_data.shape[0]} 샘플")
+            else:
+                # 데이터가 없으면 초기화된 상태로 둠
+                # 첫 detect_crisis 호출 시 자동으로 학습됨
+                self.logger.warning("T-Cell detector 재학습용 데이터 없음 - 첫 사용 시 학습 예정")
     
     def get_statistics(self) -> Dict:
         """통계 정보 반환"""

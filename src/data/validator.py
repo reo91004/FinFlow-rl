@@ -11,14 +11,18 @@ class DataValidator:
     """데이터 무결성 검증 및 정제"""
     
     def __init__(self, config: Optional[Dict] = None):
-        self.config = config or self._default_config()
+        # 기본값과 제공된 config를 병합
+        default = self._default_config()
+        if config:
+            default.update(config)
+        self.config = default
         self.logger = FinFlowLogger("DataValidator")
         self.validation_report = []
-    
+
     def _default_config(self) -> Dict:
         """기본 검증 설정"""
         return {
-            'min_samples': 252,  # 최소 1년 데이터
+            'min_samples': 252,  # 최소 1년 데이터 (기본값)
             'max_nan_ratio': 0.2,  # 최대 20% 결측치
             'outlier_iqr_factor': 5,  # IQR 5배 이상 이상치
             'extreme_return_threshold': 0.5,  # 일일 ±50% 이상

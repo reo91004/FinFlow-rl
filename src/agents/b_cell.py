@@ -249,9 +249,9 @@ class BCell:
         self.training_step += 1
         
         return {
-            'critic_loss': critic_loss.item(),
-            'actor_loss': actor_loss.item(),
-            'alpha_loss': alpha_loss.item(),
+            'critic_loss': critic_loss,  # Already a float from _update_critics
+            'actor_loss': actor_loss,    # Already a float from _update_actor
+            'alpha_loss': alpha_loss,    # Already a float from _update_alpha
             'alpha': self.log_alpha.exp().item(),
             'td_error': td_errors.mean().item()
         }
@@ -282,7 +282,7 @@ class BCell:
             'actor': self.actor.state_dict(),
             'critic_q1': self.critic.q1.state_dict(),
             'critic_q2': self.critic.q2.state_dict(),
-            'log_alpha': self.log_alpha.detach().cpu().numpy(),
+            'log_alpha': self.log_alpha.detach(),  # Keep as tensor for SafeTensors compatibility
             'specialization': self.specialization,
             'training_step': self.training_step,
             'performance_score': self.performance_score
@@ -293,11 +293,21 @@ class BCell:
         self.actor.load_state_dict(state_dict['actor'])
         self.critic.q1.load_state_dict(state_dict['critic_q1'])
         self.critic.q2.load_state_dict(state_dict['critic_q2'])
-        self.log_alpha = torch.tensor(
-            state_dict['log_alpha'], 
-            requires_grad=True, 
-            device=self.device
-        )
+
+        # Handle both tensor and numpy array formats for backward compatibility
+        log_alpha = state_dict['log_alpha']
+        if isinstance(log_alpha, torch.Tensor):
+            self.log_alpha = log_alpha.detach().to(self.device)
+            if not self.log_alpha.requires_grad:
+                self.log_alpha = torch.nn.Parameter(self.log_alpha)
+        else:
+            # Legacy numpy format
+            self.log_alpha = torch.tensor(
+                log_alpha,
+                requires_grad=True,
+                device=self.device
+            )
+
         self.training_step = state_dict.get('training_step', 0)
         self.performance_score = state_dict.get('performance_score', 0.0)
     
@@ -313,68 +323,6 @@ class BCell:
             'cql_alpha': self.cql_alpha
         }
     
-    def update(self, batch: Dict) -> Dict[str, float]:
-        """
-        업데이트 메서드 (Trainer 호환)
-        
-        Args:
-            batch: 배치 데이터 딕셔너리
-            
-        Returns:
-            losses: 손실 딕셔너리
-        """
-        # Convert batch format - 텐서 타입 체크
-        if isinstance(batch['states'], torch.Tensor):
-            # 이미 텐서인 경우 그대로 사용
-            states = batch['states']
-            actions = batch['actions']
-            rewards = batch['rewards'] if batch['rewards'].dim() == 2 else batch['rewards'].unsqueeze(1)
-            next_states = batch['next_states']
-            dones = batch['dones'] if batch['dones'].dim() == 2 else batch['dones'].unsqueeze(1)
-        else:
-            # numpy array인 경우 변환
-            states = torch.FloatTensor(batch['states']).to(self.device)
-            actions = torch.FloatTensor(batch['actions']).to(self.device)
-            rewards = torch.FloatTensor(batch['rewards']).unsqueeze(1).to(self.device)
-            next_states = torch.FloatTensor(batch['next_states']).to(self.device)
-            dones = torch.FloatTensor(batch['dones']).unsqueeze(1).to(self.device)
-        
-        # Default weights if not provided
-        if 'weights' in batch:
-            if isinstance(batch['weights'], torch.Tensor):
-                weights = batch['weights'] if batch['weights'].dim() == 2 else batch['weights'].unsqueeze(1)
-            else:
-                weights = torch.FloatTensor(batch['weights']).unsqueeze(1).to(self.device)
-        else:
-            weights = torch.ones_like(rewards)
-        
-        # Update critics
-        critic_loss, td_errors = self._update_critics(
-            states, actions, rewards, next_states, dones, weights
-        )
-        
-        # Update actor
-        actor_loss = self._update_actor(states)
-        
-        # Update temperature
-        alpha_loss = self._update_alpha(states)
-        
-        # Update CQL alpha
-        self._update_cql_alpha()
-        
-        # Update performance
-        self._update_performance()
-        
-        self.training_step += 1
-        
-        return {
-            'critic_loss': critic_loss,
-            'actor_loss': actor_loss,
-            'alpha_loss': alpha_loss,
-            'alpha': self.log_alpha.exp().item(),
-            'cql_alpha': self.cql_alpha,
-            'performance': self.performance_score
-        }
     
     def _update_critics(self, states, actions, rewards, next_states, dones, weights):
         """Update distributional critics with CQL"""
@@ -588,28 +536,3 @@ class BCell:
         
         self.logger.info("IQL checkpoint loaded successfully into B-Cell")
     
-    def save(self, path: str):
-        """Save B-Cell model"""
-        torch.save({
-            'specialization': self.specialization,
-            'actor': self.actor.state_dict(),
-            'critic_q1': self.critic.q1.state_dict(),
-            'critic_q2': self.critic.q2.state_dict(),
-            'critic_q1_target': self.critic.q1_target.state_dict(),
-            'critic_q2_target': self.critic.q2_target.state_dict(),
-            'log_alpha': self.log_alpha,
-            'training_step': self.training_step,
-            'performance_score': self.performance_score
-        }, path)
-        
-    def load(self, path: str):
-        """Load B-Cell model"""
-        checkpoint = torch.load(path, map_location=self.device)
-        self.actor.load_state_dict(checkpoint['actor'])
-        self.critic.q1.load_state_dict(checkpoint['critic_q1'])
-        self.critic.q2.load_state_dict(checkpoint['critic_q2'])
-        self.critic.q1_target.load_state_dict(checkpoint['critic_q1_target'])
-        self.critic.q2_target.load_state_dict(checkpoint['critic_q2_target'])
-        self.log_alpha = checkpoint['log_alpha']
-        self.training_step = checkpoint.get('training_step', 0)
-        self.performance_score = checkpoint.get('performance_score', 0.0)

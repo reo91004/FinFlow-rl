@@ -17,12 +17,13 @@ class DataLoader:
     캐싱 기능을 제공하여 반복 사용 시 효율성 증대
     """
     
-    def __init__(self, cache_dir: str = "data/cache", validate_data: bool = True):
+    def __init__(self, cache_dir: str = "data/cache", validate_data: bool = True,
+                 validation_config: Optional[Dict] = None):
         self.cache_dir = cache_dir
         os.makedirs(cache_dir, exist_ok=True)
         self.logger = FinFlowLogger("DataLoader")
         self.validate_data = validate_data
-        self.validator = DataValidator() if validate_data else None
+        self.validator = DataValidator(validation_config) if validate_data else None
         
     def download_data(self, symbols: List[str], start_date: str, end_date: str, 
                      use_cache: bool = True) -> pd.DataFrame:

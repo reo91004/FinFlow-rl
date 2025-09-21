@@ -47,7 +47,7 @@ class DistributionalSAC:
         self.device = device
         
         # Networks
-        self.actor = DirichletActor(state_dim, action_dim, hidden_dim).to(device)
+        self.actor = DirichletActor(state_dim, action_dim, [hidden_dim, hidden_dim]).to(device)
         
         self.critic1 = QuantileNetwork(
             state_dim + action_dim, 1, hidden_dim, num_quantiles
@@ -231,35 +231,159 @@ class DistributionalSAC:
         polyak_update(target, source, self.tau)
     
     def save(self, path: str):
-        """모델 저장"""
-        torch.save({
-            'actor': self.actor.state_dict(),
-            'critic1': self.critic1.state_dict(),
-            'critic2': self.critic2.state_dict(),
-            'critic1_target': self.critic1_target.state_dict(),
-            'critic2_target': self.critic2_target.state_dict(),
-            'log_alpha': self.log_alpha,
+        """모델 저장 (SafeTensors)"""
+        import json
+        from pathlib import Path
+        from safetensors.torch import save_file
+
+        # 경로 준비
+        save_path = Path(path)
+        if save_path.suffix == '.pt':
+            save_path = save_path.parent / save_path.stem  # Remove .pt extension
+        save_path.mkdir(exist_ok=True, parents=True)
+
+        # 1. 모델 가중치를 safetensors로 저장
+        model_tensors = {}
+
+        # Actor
+        for key, value in self.actor.state_dict().items():
+            if isinstance(value, torch.Tensor):
+                model_tensors[f"actor.{key}"] = value
+
+        # Critics
+        for key, value in self.critic1.state_dict().items():
+            if isinstance(value, torch.Tensor):
+                model_tensors[f"critic1.{key}"] = value
+
+        for key, value in self.critic2.state_dict().items():
+            if isinstance(value, torch.Tensor):
+                model_tensors[f"critic2.{key}"] = value
+
+        # Critic targets
+        for key, value in self.critic1_target.state_dict().items():
+            if isinstance(value, torch.Tensor):
+                model_tensors[f"critic1_target.{key}"] = value
+
+        for key, value in self.critic2_target.state_dict().items():
+            if isinstance(value, torch.Tensor):
+                model_tensors[f"critic2_target.{key}"] = value
+
+        # Alpha
+        model_tensors['log_alpha'] = self.log_alpha.detach()
+
+        # 모델 저장
+        save_file(model_tensors, save_path / "model.safetensors")
+
+        # 2. Optimizer states를 별도로 저장
+        optimizer_states = {
             'actor_optimizer': self.actor_optimizer.state_dict(),
             'critic1_optimizer': self.critic1_optimizer.state_dict(),
             'critic2_optimizer': self.critic2_optimizer.state_dict(),
             'alpha_optimizer': self.alpha_optimizer.state_dict()
-        }, path)
-        self.logger.info(f"모델 저장: {path}")
+        }
+        torch.save(optimizer_states, save_path / "optimizers.pt")
+
+        # 3. 메타데이터를 JSON으로 저장
+        import datetime
+        metadata = {
+            'checkpoint_type': 'sac',
+            'timestamp': datetime.datetime.now().isoformat(),
+            'state_dim': self.state_dim,
+            'action_dim': self.action_dim,
+            'gamma': self.gamma,
+            'tau': self.tau,
+            'alpha': self.alpha,
+            'framework_version': '3.0'  # SafeTensors version
+        }
+
+        with open(save_path / "metadata.json", 'w') as f:
+            json.dump(metadata, f, indent=2)
+
+        self.logger.info(f"모델 저장 (SafeTensors): {save_path}")
     
     def load(self, path: str):
-        """모델 로드"""
-        checkpoint = torch.load(path, map_location=self.device)
-        
-        self.actor.load_state_dict(checkpoint['actor'])
-        self.critic1.load_state_dict(checkpoint['critic1'])
-        self.critic2.load_state_dict(checkpoint['critic2'])
-        self.critic1_target.load_state_dict(checkpoint['critic1_target'])
-        self.critic2_target.load_state_dict(checkpoint['critic2_target'])
-        self.log_alpha = checkpoint['log_alpha']
-        self.actor_optimizer.load_state_dict(checkpoint['actor_optimizer'])
-        self.critic1_optimizer.load_state_dict(checkpoint['critic1_optimizer'])
-        self.critic2_optimizer.load_state_dict(checkpoint['critic2_optimizer'])
-        self.alpha_optimizer.load_state_dict(checkpoint['alpha_optimizer'])
-        
-        self.alpha = self.log_alpha.exp().item()
-        self.logger.info(f"모델 로드: {path}")
+        """모델 로드 (SafeTensors or legacy format)"""
+        from pathlib import Path
+        from safetensors.torch import load_file
+        import json
+
+        load_path = Path(path)
+
+        # SafeTensors 형식 체크
+        if load_path.is_dir() and (load_path / "model.safetensors").exists():
+            # SafeTensors 형식 로드
+            self.logger.info(f"SafeTensors 체크포인트 로드: {load_path}")
+
+            # 메타데이터 로드
+            with open(load_path / "metadata.json", 'r') as f:
+                metadata = json.load(f)
+
+            # 모델 가중치 로드
+            model_tensors = load_file(load_path / "model.safetensors")
+
+            # Actor
+            actor_state = {}
+            for key, value in model_tensors.items():
+                if key.startswith("actor."):
+                    actor_state[key.replace("actor.", "")] = value
+            self.actor.load_state_dict(actor_state)
+
+            # Critics
+            critic1_state = {}
+            for key, value in model_tensors.items():
+                if key.startswith("critic1.") and not key.startswith("critic1_target."):
+                    critic1_state[key.replace("critic1.", "")] = value
+            self.critic1.load_state_dict(critic1_state)
+
+            critic2_state = {}
+            for key, value in model_tensors.items():
+                if key.startswith("critic2.") and not key.startswith("critic2_target."):
+                    critic2_state[key.replace("critic2.", "")] = value
+            self.critic2.load_state_dict(critic2_state)
+
+            # Critic targets
+            critic1_target_state = {}
+            for key, value in model_tensors.items():
+                if key.startswith("critic1_target."):
+                    critic1_target_state[key.replace("critic1_target.", "")] = value
+            self.critic1_target.load_state_dict(critic1_target_state)
+
+            critic2_target_state = {}
+            for key, value in model_tensors.items():
+                if key.startswith("critic2_target."):
+                    critic2_target_state[key.replace("critic2_target.", "")] = value
+            self.critic2_target.load_state_dict(critic2_target_state)
+
+            # Alpha
+            self.log_alpha = model_tensors['log_alpha'].to(self.device)
+            if self.log_alpha.requires_grad:
+                self.log_alpha = torch.nn.Parameter(self.log_alpha)
+            self.alpha = self.log_alpha.exp().item()
+
+            # Optimizer states
+            if (load_path / "optimizers.pt").exists():
+                optimizer_states = torch.load(load_path / "optimizers.pt", map_location=self.device)
+                self.actor_optimizer.load_state_dict(optimizer_states['actor_optimizer'])
+                self.critic1_optimizer.load_state_dict(optimizer_states['critic1_optimizer'])
+                self.critic2_optimizer.load_state_dict(optimizer_states['critic2_optimizer'])
+                self.alpha_optimizer.load_state_dict(optimizer_states['alpha_optimizer'])
+
+            self.logger.info(f"SafeTensors 모델 로드 완료: {load_path}")
+
+        else:
+            # 기존 .pt 형식 로드 (호환성)
+            checkpoint = torch.load(path, map_location=self.device, weights_only=False)
+
+            self.actor.load_state_dict(checkpoint['actor'])
+            self.critic1.load_state_dict(checkpoint['critic1'])
+            self.critic2.load_state_dict(checkpoint['critic2'])
+            self.critic1_target.load_state_dict(checkpoint['critic1_target'])
+            self.critic2_target.load_state_dict(checkpoint['critic2_target'])
+            self.log_alpha = checkpoint['log_alpha']
+            self.actor_optimizer.load_state_dict(checkpoint['actor_optimizer'])
+            self.critic1_optimizer.load_state_dict(checkpoint['critic1_optimizer'])
+            self.critic2_optimizer.load_state_dict(checkpoint['critic2_optimizer'])
+            self.alpha_optimizer.load_state_dict(checkpoint['alpha_optimizer'])
+
+            self.alpha = self.log_alpha.exp().item()
+            self.logger.info(f"레거시 모델 로드: {path}")

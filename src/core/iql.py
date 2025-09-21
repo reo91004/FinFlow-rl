@@ -287,45 +287,144 @@ class IQLAgent:
             return action.cpu().numpy().squeeze()
     
     def save(self, path: str):
-        """Save model with metadata"""
+        """Save model with SafeTensors"""
         import datetime
-        
-        # 메타데이터 생성
+        import json
+        from pathlib import Path
+        from safetensors.torch import save_file
+
+        # 경로 준비
+        save_path = Path(path)
+        if save_path.suffix == '.pt':
+            save_path = save_path.parent / save_path.stem  # Remove .pt extension
+        save_path.mkdir(exist_ok=True, parents=True)
+
+        # 1. 모델 가중치를 safetensors로 저장
+        model_tensors = {}
+
+        # Actor
+        for key, value in self.actor.state_dict().items():
+            if isinstance(value, torch.Tensor):
+                model_tensors[f"actor.{key}"] = value
+
+        # Value
+        for key, value in self.value.state_dict().items():
+            if isinstance(value, torch.Tensor):
+                model_tensors[f"value.{key}"] = value
+
+        # Q networks
+        for key, value in self.q1.state_dict().items():
+            if isinstance(value, torch.Tensor):
+                model_tensors[f"q1.{key}"] = value
+
+        for key, value in self.q2.state_dict().items():
+            if isinstance(value, torch.Tensor):
+                model_tensors[f"q2.{key}"] = value
+
+        # Q targets
+        for key, value in self.q1_target.state_dict().items():
+            if isinstance(value, torch.Tensor):
+                model_tensors[f"q1_target.{key}"] = value
+
+        for key, value in self.q2_target.state_dict().items():
+            if isinstance(value, torch.Tensor):
+                model_tensors[f"q2_target.{key}"] = value
+
+        # 모델 저장
+        save_file(model_tensors, save_path / "model.safetensors")
+
+        # 2. 메타데이터를 JSON으로 저장
         metadata = {
-            'checkpoint_type': 'iql',  # IQL 체크포인트 표시
+            'checkpoint_type': 'iql',
             'timestamp': datetime.datetime.now().isoformat(),
             'state_dim': self.state_dim,
             'action_dim': self.action_dim,
-            'hidden_dim': self.hidden_dim,
             'expectile': self.expectile,
             'temperature': self.temperature,
             'discount': self.discount,
             'tau': self.tau,
-            'framework_version': '2.0',
+            'framework_version': '3.0',  # SafeTensors version
             'training_mode': 'iql',
-            'total_steps': self.training_steps
+            'training_steps': self.training_steps
         }
-        
-        torch.save({
-            'actor': self.actor.state_dict(),
-            'value': self.value.state_dict(),
-            'q1': self.q1.state_dict(),
-            'q2': self.q2.state_dict(),
-            'q1_target': self.q1_target.state_dict(),
-            'q2_target': self.q2_target.state_dict(),
-            'training_steps': self.training_steps,
-            'metadata': metadata  # 메타데이터 추가
-        }, path)
-        self.logger.info(f"모델 저장 (메타데이터 포함): {path}")
+
+        with open(save_path / "metadata.json", 'w') as f:
+            json.dump(metadata, f, indent=2)
+
+        self.logger.info(f"모델 저장 (SafeTensors): {save_path}")
     
     def load(self, path: str):
-        """Load model"""
-        checkpoint = torch.load(path, map_location=self.device)
-        self.actor.load_state_dict(checkpoint['actor'])
-        self.value.load_state_dict(checkpoint['value'])
-        self.q1.load_state_dict(checkpoint['q1'])
-        self.q2.load_state_dict(checkpoint['q2'])
-        self.q1_target.load_state_dict(checkpoint['q1_target'])
-        self.q2_target.load_state_dict(checkpoint['q2_target'])
-        self.training_steps = checkpoint['training_steps']
-        self.logger.info(f"모델 로드: {path}")
+        """Load model (SafeTensors or legacy format)"""
+        from pathlib import Path
+        from safetensors.torch import load_file
+        import json
+
+        load_path = Path(path)
+
+        # SafeTensors 형식 체크
+        if load_path.is_dir() and (load_path / "model.safetensors").exists():
+            # SafeTensors 형식 로드
+            self.logger.info(f"SafeTensors 체크포인트 로드: {load_path}")
+
+            # 메타데이터 로드
+            with open(load_path / "metadata.json", 'r') as f:
+                metadata = json.load(f)
+
+            self.training_steps = metadata.get('training_steps', 0)
+
+            # 모델 가중치 로드
+            model_tensors = load_file(load_path / "model.safetensors")
+
+            # Actor
+            actor_state = {}
+            for key, value in model_tensors.items():
+                if key.startswith("actor."):
+                    actor_state[key.replace("actor.", "")] = value
+            self.actor.load_state_dict(actor_state)
+
+            # Value
+            value_state = {}
+            for key, value in model_tensors.items():
+                if key.startswith("value."):
+                    value_state[key.replace("value.", "")] = value
+            self.value.load_state_dict(value_state)
+
+            # Q networks
+            q1_state = {}
+            for key, value in model_tensors.items():
+                if key.startswith("q1.") and not key.startswith("q1_target."):
+                    q1_state[key.replace("q1.", "")] = value
+            self.q1.load_state_dict(q1_state)
+
+            q2_state = {}
+            for key, value in model_tensors.items():
+                if key.startswith("q2.") and not key.startswith("q2_target."):
+                    q2_state[key.replace("q2.", "")] = value
+            self.q2.load_state_dict(q2_state)
+
+            # Q targets
+            q1_target_state = {}
+            for key, value in model_tensors.items():
+                if key.startswith("q1_target."):
+                    q1_target_state[key.replace("q1_target.", "")] = value
+            self.q1_target.load_state_dict(q1_target_state)
+
+            q2_target_state = {}
+            for key, value in model_tensors.items():
+                if key.startswith("q2_target."):
+                    q2_target_state[key.replace("q2_target.", "")] = value
+            self.q2_target.load_state_dict(q2_target_state)
+
+            self.logger.info(f"SafeTensors 모델 로드 완료: {load_path}")
+
+        else:
+            # 기존 .pt 형식 로드 (호환성)
+            checkpoint = torch.load(path, map_location=self.device, weights_only=False)
+            self.actor.load_state_dict(checkpoint['actor'])
+            self.value.load_state_dict(checkpoint['value'])
+            self.q1.load_state_dict(checkpoint['q1'])
+            self.q2.load_state_dict(checkpoint['q2'])
+            self.q1_target.load_state_dict(checkpoint['q1_target'])
+            self.q2_target.load_state_dict(checkpoint['q2_target'])
+            self.training_steps = checkpoint['training_steps']
+            self.logger.info(f"레거시 모델 로드: {path}")
