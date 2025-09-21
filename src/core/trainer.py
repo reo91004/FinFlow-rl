@@ -62,6 +62,7 @@ class TrainingConfig:
     offline_training_epochs: int = 50
     offline_steps_per_epoch: int = 1000
     offline_batch_size: int = 512
+    force_recollect_offline: bool = False  # 기존 오프라인 데이터 재사용 설정
     iql_expectile: float = 0.7
     iql_temperature: float = 3.0
 
@@ -559,29 +560,54 @@ class FinFlowTrainer:
 
     def _pretrain_iql(self):
         """IQL 오프라인 사전학습"""
-        self.logger.info("오프라인 데이터 수집 중...")
 
-        # Collect offline dataset
-        offline_dataset = OfflineDataset()
-
-        # Config에서 직접 가져오기 (하드코딩 제거)
-        n_episodes = self.config.offline_episodes
-        self.logger.info(f"{n_episodes} 에피소드 수집 시작")
-
-        offline_dataset.collect_from_env(
-            env=self.env,
-            n_episodes=n_episodes,
-            diversity_bonus=True,
-            verbose=True
-        )
-
-        self.logger.info(f"오프라인 데이터셋 크기: {len(offline_dataset)}")
-
-        # 데이터 저장 (누락된 부분 추가)
+        # 데이터셋 경로 먼저 정의
         dataset_path = Path(self.config.data_path) / 'offline_data.npz'
         dataset_path.parent.mkdir(parents=True, exist_ok=True)
-        offline_dataset.save(dataset_path)
-        self.logger.info(f"오프라인 데이터 저장: {dataset_path}")
+
+        # 강제 재수집 옵션 확인 (기본값: False)
+        force_recollect = getattr(self.config, 'force_recollect_offline', False)
+
+        # 기존 데이터 로드 시도
+        if not force_recollect and dataset_path.exists():
+            self.logger.info(f"기존 오프라인 데이터 로드 시도: {dataset_path}")
+            offline_dataset = OfflineDataset(data_path=dataset_path)
+
+            if len(offline_dataset) > 0:
+                self.logger.info(f"오프라인 데이터 로드 성공: {len(offline_dataset)} 샘플")
+            else:
+                self.logger.warning("오프라인 데이터 로드 실패, 새로 수집합니다.")
+                offline_dataset = None
+        else:
+            if force_recollect:
+                self.logger.info("force_recollect_offline=True, 새로 수집합니다.")
+            else:
+                self.logger.info("오프라인 데이터 파일이 없습니다. 새로 수집합니다.")
+            offline_dataset = None
+
+        # 데이터가 없으면 새로 수집
+        if offline_dataset is None or len(offline_dataset) == 0:
+            self.logger.info("오프라인 데이터 수집 중...")
+
+            # 빈 데이터셋 생성
+            offline_dataset = OfflineDataset()
+
+            # Config에서 직접 가져오기 (하드코딩 제거)
+            n_episodes = self.config.offline_episodes
+            self.logger.info(f"{n_episodes} 에피소드 수집 시작")
+
+            offline_dataset.collect_from_env(
+                env=self.env,
+                n_episodes=n_episodes,
+                diversity_bonus=True,
+                verbose=True
+            )
+
+            self.logger.info(f"오프라인 데이터셋 크기: {len(offline_dataset)}")
+
+            # 데이터 저장
+            offline_dataset.save(dataset_path)
+            self.logger.info(f"오프라인 데이터 저장: {dataset_path}")
 
         # Initialize IQL agent
         iql_agent = IQLAgent(

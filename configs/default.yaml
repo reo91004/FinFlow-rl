@@ -154,6 +154,7 @@ train:
   offline_training_epochs: 50  # IQL 학습 에폭 수
   offline_steps_per_epoch: 1000  # 에폭당 스텝 수
   offline_batch_size: 512
+  force_recollect_offline: false  # 기존 오프라인 데이터 재사용 (true면 재수집)
 
   # 온라인 학습
   online_episodes: 1000  # SAC 학습 에피소드 수

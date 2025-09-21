@@ -81,6 +81,7 @@ def main():
             offline_training_epochs=config['train'].get('offline_training_epochs', 50),
             offline_steps_per_epoch=config['train'].get('offline_steps_per_epoch', 1000),
             offline_batch_size=config['train']['offline_batch_size'],
+            force_recollect_offline=config['train'].get('force_recollect_offline', False),
             iql_expectile=config['bcell']['iql_expectile'],
             iql_temperature=config['bcell']['iql_temperature'],
             # 온라인 학습

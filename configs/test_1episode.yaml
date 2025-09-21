@@ -27,6 +27,7 @@ train:
   offline_training_epochs: 2  # 2 에폭만 학습
   offline_steps_per_epoch: 100  # 에폭당 100 스텝
   offline_batch_size: 512
+  force_recollect_offline: false  # 기존 오프라인 데이터 재사용
 
   # 온라인 학습 - 1 에피소드만
   online_episodes: 1  # 1 에피소드만
