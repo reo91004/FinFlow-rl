@@ -44,37 +44,37 @@ def main():
     parser.add_argument('--no-cache', action='store_true',
                        help='Force re-download data')
     
-    # Training parameters
-    parser.add_argument('--iql-epochs', type=int, default=100,
-                       help='Number of IQL pretraining epochs')
-    parser.add_argument('--sac-episodes', type=int, default=1000,
-                       help='Number of SAC fine-tuning episodes')
-    parser.add_argument('--batch-size', type=int, default=256,
-                       help='Batch size for training')
-    parser.add_argument('--lr', type=float, default=3e-4,
-                       help='Learning rate')
+    # Training parameters (None = use config file values)
+    parser.add_argument('--iql-epochs', type=int, default=None,
+                       help='Number of IQL pretraining epochs (overrides config)')
+    parser.add_argument('--sac-episodes', type=int, default=None,
+                       help='Number of SAC fine-tuning episodes (overrides config)')
+    parser.add_argument('--batch-size', type=int, default=None,
+                       help='Batch size for training (overrides config)')
+    parser.add_argument('--lr', type=float, default=None,
+                       help='Learning rate (overrides config)')
     
-    # Model parameters
-    parser.add_argument('--hidden-dim', type=int, default=256,
-                       help='Hidden dimension for networks')
-    parser.add_argument('--num-quantiles', type=int, default=32,
-                       help='Number of quantiles for distributional RL')
-    parser.add_argument('--memory-capacity', type=int, default=50000,
-                       help='Memory cell capacity')
+    # Model parameters (None = use config file values)
+    parser.add_argument('--hidden-dim', type=int, default=None,
+                       help='Hidden dimension for networks (overrides config)')
+    parser.add_argument('--num-quantiles', type=int, default=None,
+                       help='Number of quantiles for distributional RL (overrides config)')
+    parser.add_argument('--memory-capacity', type=int, default=None,
+                       help='Memory cell capacity (overrides config)')
     
-    # Environment parameters
-    parser.add_argument('--initial-balance', type=float, default=1000000,
-                       help='Initial portfolio balance')
-    parser.add_argument('--transaction-cost', type=float, default=0.001,
-                       help='Transaction cost rate')
-    parser.add_argument('--max-weight', type=float, default=0.2,
-                       help='Maximum weight per asset')
+    # Environment parameters (None = use config file values)
+    parser.add_argument('--initial-balance', type=float, default=None,
+                       help='Initial portfolio balance (overrides config)')
+    parser.add_argument('--transaction-cost', type=float, default=None,
+                       help='Transaction cost rate (overrides config)')
+    parser.add_argument('--max-weight', type=float, default=None,
+                       help='Maximum weight per asset (overrides config)')
     
-    # Target metrics
-    parser.add_argument('--target-sharpe', type=float, default=1.5,
-                       help='Target Sharpe ratio')
-    parser.add_argument('--target-cvar', type=float, default=-0.02,
-                       help='Target CVaR (5%)')
+    # Target metrics (None = use config file values)
+    parser.add_argument('--target-sharpe', type=float, default=None,
+                       help='Target Sharpe ratio (overrides config)')
+    parser.add_argument('--target-cvar', type=float, default=None,
+                       help='Target CVaR (5%) (overrides config)')
     
     # System parameters
     parser.add_argument('--device', type=str, default='auto',
@@ -165,7 +165,8 @@ def main():
             if 'env_config' not in overrides:
                 overrides['env_config'] = {}
             overrides['env_config']['transaction_cost'] = args.transaction_cost
-        if seed != 42:  # 기본값이 아니면 오버라이드
+        # seed는 명시적으로 지정된 경우만
+        if args.seed != 42:  # 기본값이 아니면 오버라이드
             overrides['seed'] = seed
         
         # 티커 오버라이드 처리
