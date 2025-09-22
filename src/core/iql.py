@@ -204,9 +204,11 @@ class IQLAgent:
             value = self.value(states)
             advantage = q - value
             
-            # Advantage weighting
-            weights = torch.exp(advantage / self.temperature)
-            weights = torch.clamp(weights, max=100.0)  # Prevent overflow
+            # Advantage weighting with improved numerical stability
+            # Clamp advantage before exponential to prevent overflow
+            clamped_advantage = torch.clamp(advantage, min=-10.0, max=10.0)
+            weights = torch.exp(clamped_advantage / self.temperature)
+            weights = torch.clamp(weights, min=1e-8, max=100.0)  # Prevent overflow and underflow
         
         # Get log probabilities from actor
         action_dist = self.actor.get_distribution(states)
@@ -215,15 +217,27 @@ class IQLAgent:
         # Clamp log probabilities to prevent extreme values
         log_probs = torch.clamp(log_probs, min=-100, max=0)
         
-        # Weighted regression loss
+        # Weighted regression loss with NaN check
         actor_loss = -(weights * log_probs).mean()
-        
+
+        # Check for NaN and skip update if detected
+        if torch.isnan(actor_loss) or torch.isinf(actor_loss):
+            self.logger.warning(f"Actor loss is NaN/Inf: {actor_loss.item()}, skipping update")
+            return 0.0  # Return 0 to indicate no update
+
         # Optimize
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 1.0)
+
+        # Check for NaN gradients before step
+        grad_norm = torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 1.0)
+        if torch.isnan(grad_norm) or torch.isinf(grad_norm):
+            self.logger.warning(f"Actor gradient is NaN/Inf: {grad_norm.item()}, skipping update")
+            self.actor_optimizer.zero_grad()  # Clear gradients
+            return 0.0
+
         self.actor_optimizer.step()
-        
+
         return actor_loss.item()
     
     def _soft_update(self, target: nn.Module, source: nn.Module):

@@ -16,11 +16,11 @@ class DirichletActor(nn.Module):
     """
     
     def __init__(self, state_dim: int, action_dim: int, hidden_dims: list = [256, 256],
-                 min_concentration: float = 0.05, max_concentration: float = 50.0):  # 연구 검증값
+                 min_concentration: float = 0.1, max_concentration: float = 50.0):  # 0.05 → 0.1로 증가
         super().__init__()
-        
+
         self.action_dim = action_dim
-        self.min_concentration = min_concentration
+        self.min_concentration = min_concentration  # 더 안정적인 하한값
         self.max_concentration = max_concentration
         
         # Build network
@@ -111,11 +111,12 @@ class DirichletActor(nn.Module):
             # Sample from distribution with stability
             action = dist.rsample()  # Reparameterized sampling
 
-            # 추가 안정화: 엡실론 클램핑 및 재정규화
-            action = torch.clamp(action, min=1e-8, max=1.0)
+            # 강화된 안정화: 더 큰 엡실론으로 클램핑 및 재정규화
+            action = torch.clamp(action, min=1e-6, max=1.0-1e-6)  # 경계값 회피
             action = action / action.sum(dim=-1, keepdim=True)
 
-            log_prob = dist.log_prob(action)
+            # log_prob 계산 시 추가 안정화
+            log_prob = dist.log_prob(action + 1e-8)  # 작은 엡실론 추가
         
         return action, log_prob
     

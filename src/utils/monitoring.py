@@ -126,10 +126,10 @@ class StabilityMonitor:
         self.last_checkpoint = None
         self.steps_since_intervention = 0
         
-        # 임계값 설정
+        # 임계값 설정 (포트폴리오 환경에 맞게 조정)
         self.thresholds = {
-            'q_value_max': config.get('q_value_max', 100.0),
-            'q_value_min': config.get('q_value_min', -100.0),
+            'q_value_max': config.get('q_value_max', 10.0),    # 100.0 → 10.0 (더 타이트한 범위)
+            'q_value_min': config.get('q_value_min', -10.0),   # -100.0 → -10.0 (더 타이트한 범위)
             'entropy_min': config.get('entropy_min', 0.1),
             'gradient_max': config.get('gradient_max', 10.0),
             'concentration_max': config.get('concentration_max', 0.5),

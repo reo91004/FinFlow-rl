@@ -213,11 +213,17 @@ class OfflineDataset:
                 action = action / (action.sum() + 1e-8)
             
             next_state, reward, done, truncated, info = env.step(action)
-            
+
+            # 보상 스케일링 (온라인 학습과 일치시키기 위해)
+            # 원시 보상은 일일 수익률 (-0.05 ~ 0.05 범위)
+            # 100배 증폭하여 학습 가능한 범위로 조정
+            scaled_reward = reward * 100.0
+            scaled_reward = np.clip(scaled_reward, -5.0, 5.0)  # 극단값 제거
+
             transitions.append({
                 'state': state,
                 'action': action,
-                'reward': reward,
+                'reward': scaled_reward,  # 스케일된 보상 사용
                 'next_state': next_state,
                 'done': done or truncated
             })
@@ -229,7 +235,9 @@ class OfflineDataset:
     def _get_strategy(self, name: str, n_assets: int):
         """전략별 정책 함수 반환"""
         if name == 'random':
-            return lambda s: np.random.dirichlet(np.ones(n_assets))
+            # concentration parameter를 2.0으로 증가시켜 더 안정적인 분포 생성
+            # 1.0일 때는 너무 uniform에 가까워 극단값이 자주 발생
+            return lambda s: np.random.dirichlet(np.ones(n_assets) * 2.0)
         
         elif name == 'momentum':
             def momentum_strategy(state):

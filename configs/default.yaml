@@ -83,7 +83,7 @@ bcell:
   # 오프라인 사전학습
   offline_algo: "iql"
   iql_expectile: 0.7 # IQL 원논문 기본값 (Kostrikov et al., 2022)
-  iql_temperature: 3.0 # IQL 원논문 기본값
+  iql_temperature: 1.0 # 3.0 → 1.0 (더 안정적인 advantage weighting)
 
   # 온라인 학습
   online_algo: "dist_sac_cql"
@@ -106,9 +106,9 @@ bcell:
   alpha_max: 0.5  # 0.2 → 0.5 (범위 확대)
   target_entropy_ratio: 0.5  # 0.98 → 0.5 (표준 권장값)
 
-  # CQL 설정 (500배 상향 - 연구 검증값)
-  cql_alpha_start: 5.0  # 0.01 → 5.0
-  cql_alpha_end: 10.0  # 0.05 → 10.0
+  # CQL 설정 (완화된 정규화)
+  cql_alpha_start: 1.0  # 5.0 → 1.0 (과도한 보수성 방지)
+  cql_alpha_end: 2.0   # 10.0 → 2.0 (점진적 증가)
   cql_num_samples: 8
 
   # Gradient clipping
@@ -220,7 +220,7 @@ monitoring:
 
   # 안정성 체크
   q_value_check: true
-  q_value_threshold: 100.0
+  q_value_threshold: 10.0  # 100.0 → 10.0 (포트폴리오 환경에 적합)
   entropy_check: true
   entropy_min: 0.1
 
