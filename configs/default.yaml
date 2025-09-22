@@ -83,7 +83,7 @@ bcell:
   # 오프라인 사전학습
   offline_algo: "iql"
   iql_expectile: 0.7 # IQL 원논문 기본값 (Kostrikov et al., 2022)
-  iql_temperature: 1.0 # 3.0 → 1.0 (더 안정적인 advantage weighting)
+  iql_temperature: 3.0 # 1.0 → 3.0 (큰 advantage에서 weight 폭발 방지)
 
   # 온라인 학습
   online_algo: "dist_sac_cql"
@@ -146,7 +146,7 @@ dirichlet:
   dynamic_concentration: true # crisis level에 따른 동적 조정
   crisis_scaling: 0.5 # crisis 시 concentration 감소 비율
   base_concentration: 2.0 # 기본 concentration
-  min_concentration: 0.1
+  min_concentration: 0.5 # 포트폴리오 다양성과 안정성의 균형
   max_concentration: 50.0
   action_smoothing: true # EMA 기반 action smoothing
   smoothing_alpha: 0.95

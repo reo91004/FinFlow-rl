@@ -16,14 +16,14 @@ class DirichletActor(nn.Module):
     """
     
     def __init__(self, state_dim: int, action_dim: int, hidden_dims: list = [256, 256],
-                 min_concentration: float = 0.1, max_concentration: float = 50.0,  # 0.05 → 0.1로 증가
+                 min_concentration: float = 0.5, max_concentration: float = 50.0,  # 포트폴리오 다양성과 안정성 균형
                  dynamic_concentration: bool = False, crisis_scaling: float = 0.5,
                  base_concentration: float = 2.0, action_smoothing: bool = False,
                  smoothing_alpha: float = 0.95):
         super().__init__()
 
         self.action_dim = action_dim
-        self.min_concentration = min_concentration  # 더 안정적인 하한값
+        self.min_concentration = min_concentration  # 안정적인 하한값 (0.5)
         self.max_concentration = max_concentration
         self.base_concentration = base_concentration
 

@@ -304,6 +304,9 @@ class OfflineDataset:
             noisy_action = t['action'] + np.random.randn(*t['action'].shape) * 0.05
             noisy_action = np.maximum(noisy_action, 0)
             noisy_action = noisy_action / (noisy_action.sum() + 1e-8)
+            # 극단값 방지
+            noisy_action = np.clip(noisy_action, 1e-6, 1.0 - 1e-6)
+            noisy_action = noisy_action / noisy_action.sum()
             
             augmented.append({
                 'state': noisy_state,

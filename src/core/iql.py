@@ -228,12 +228,25 @@ class IQLAgent:
         # Get log probabilities from actor
         action_dist = self.actor.get_distribution(states)
         log_probs = action_dist.log_prob(actions)
-        
+
+        # NaN 필터링 추가 - NaN이나 Inf가 있는 샘플 제외
+        valid_mask = ~(torch.isnan(log_probs) | torch.isinf(log_probs))
+
+        if valid_mask.sum() == 0:
+            # 모든 샘플이 invalid하면 업데이트 스킵
+            self.logger.warning(f"All log_probs are NaN/Inf, skipping update")
+            return 0.0
+
+        # 유효한 샘플만 사용
+        valid_log_probs = log_probs[valid_mask]
+        valid_weights = weights[valid_mask]
+
         # Clamp log probabilities to prevent extreme values
-        log_probs = torch.clamp(log_probs, min=-100, max=0)
-        
-        # Weighted regression loss with NaN check
-        actor_loss = -(weights * log_probs).mean()
+        # 30차원 Dirichlet의 정상 범위: 40-80, 여유있게 설정
+        valid_log_probs = torch.clamp(valid_log_probs, min=-200, max=100)
+
+        # Weighted regression loss with valid samples only
+        actor_loss = -(valid_weights * valid_log_probs).mean()
 
         # Check for NaN and skip update if detected
         if torch.isnan(actor_loss) or torch.isinf(actor_loss):
