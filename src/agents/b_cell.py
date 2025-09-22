@@ -9,7 +9,10 @@ from typing import Dict, Optional, Tuple, List
 from collections import deque
 
 from src.core.networks import DirichletActor
-from src.core.distributional import DistributionalCritic, QuantileHuberLoss, extract_cvar_from_quantiles
+from src.core.distributional import (
+    DistributionalCritic, QuantileHuberLoss, extract_cvar_from_quantiles,
+    compute_risk_sensitive_td_loss, get_quantile_statistics
+)
 from src.core.replay import PrioritizedReplayBuffer, Transition
 from src.utils.logger import FinFlowLogger
 from src.utils.optimizer_utils import polyak_update, cql_penalty, clip_gradients
@@ -64,16 +67,25 @@ class BCell:
         self.cql_num_samples = config.get('cql_num_samples', 8)
         self.enable_cql = config.get('enable_cql', True)
         
-        # Networks
+        # Networks with enhanced Dirichlet settings
         self.actor = DirichletActor(
             state_dim, action_dim,
-            hidden_dims=config.get('actor_hidden', [256, 256])
+            hidden_dims=config.get('actor_hidden', [256, 256]),
+            dynamic_concentration=config.get('dynamic_concentration', False),
+            crisis_scaling=config.get('crisis_scaling', 0.5),
+            base_concentration=config.get('base_concentration', 2.0),
+            action_smoothing=config.get('action_smoothing', False),
+            smoothing_alpha=config.get('smoothing_alpha', 0.95)
         ).to(device)
         
+        # Distributional critic with enhanced quantiles
+        n_quantiles = config.get('n_quantiles', 64)  # 32 → 64
+        quantile_embedding_dim = config.get('quantile_embedding_dim', 64)
         self.critic = DistributionalCritic(
             state_dim, action_dim,
             hidden_dim=config.get('critic_hidden', [256, 256])[0],
-            n_quantiles=config.get('n_quantiles', 32)
+            n_quantiles=n_quantiles,
+            quantile_embedding_dim=quantile_embedding_dim
         ).to(device)
         
         # Temperature parameter (learnable)
@@ -97,8 +109,13 @@ class BCell:
             lr=config.get('alpha_lr', 3e-4)
         )
         
-        # Loss functions
-        self.quantile_loss = QuantileHuberLoss(kappa=config.get('quantile_kappa', 1.0))
+        # Loss functions with dynamic kappa
+        self.quantile_loss = QuantileHuberLoss(
+            kappa=config.get('quantile_kappa', 1.0),
+            kappa_min=config.get('huber_kappa_min', 0.5),
+            kappa_max=config.get('huber_kappa_max', 2.0),
+            dynamic_kappa=config.get('quantile_kappa_dynamic', True)
+        )
 
         # Experience replay
         self.replay_buffer = PrioritizedReplayBuffer(
@@ -114,8 +131,13 @@ class BCell:
         
         # CQL alpha scheduling
         self.cql_alpha = self.cql_alpha_start
-        
-        self.logger.info(f"B-Cell [{specialization}] 초기화 완료")
+
+        # Risk-sensitive settings
+        self.risk_measure = config.get('risk_measure', 'cvar')
+        self.risk_sensitivity = config.get('risk_sensitivity', 0.05)
+        self.risk_sensitive_update = config.get('risk_sensitive_update', True)
+
+        self.logger.info(f"B-Cell [{specialization}] 초기화 완료 (n_quantiles={n_quantiles})")
     
     def get_specialization_score(self, crisis_info: Dict[str, float]) -> float:
         """
@@ -162,21 +184,23 @@ class BCell:
         
         return np.clip(score, 0, 1)
     
-    def get_action(self, state: np.ndarray, deterministic: bool = False) -> Tuple[np.ndarray, Dict]:
+    def get_action(self, state: np.ndarray, deterministic: bool = False,
+                   crisis_level: Optional[float] = None) -> Tuple[np.ndarray, Dict]:
         """
         정책에서 액션 샘플링
-        
+
         Args:
             state: 상태 배열
             deterministic: 결정적 액션 여부
-            
+            crisis_level: 위기 수준 (dynamic concentration을 위해)
+
         Returns:
             action: 포트폴리오 가중치
             info: 추가 정보
         """
         with torch.no_grad():
             state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
-            action, log_prob = self.actor.get_action(state_tensor, deterministic)
+            action, log_prob = self.actor.get_action(state_tensor, deterministic, crisis_level)
             
             # Get Q-value for logging
             q1, q2 = self.critic(state_tensor, action)
@@ -256,24 +280,25 @@ class BCell:
             'td_error': td_errors.mean().item()
         }
     
-    def select_action(self, state_tensor: torch.Tensor, bcell_type: str = None, 
-                     deterministic: bool = False) -> np.ndarray:
+    def select_action(self, state_tensor: torch.Tensor, bcell_type: str = None,
+                     deterministic: bool = False, crisis_level: Optional[float] = None) -> np.ndarray:
         """
         액션 선택 (Trainer 호환)
-        
+
         Args:
             state_tensor: 상태 텐서
             bcell_type: B-Cell 유형 (미사용, 호환성용)
             deterministic: 결정적 액션 여부
-            
+            crisis_level: 위기 수준 (dynamic concentration을 위해)
+
         Returns:
             action: 포트폴리오 가중치
         """
         with torch.no_grad():
             if state_tensor.dim() == 1:
                 state_tensor = state_tensor.unsqueeze(0)
-            
-            action, _ = self.actor.get_action(state_tensor, deterministic)
+
+            action, _ = self.actor.get_action(state_tensor, deterministic, crisis_level)
             return action.cpu().numpy().squeeze()
     
     def state_dict(self) -> Dict:

@@ -26,7 +26,9 @@ class IQLAgent:
                  discount: float = 0.99,
                  tau: float = 0.005,
                  learning_rate: float = 3e-4,
-                 device: torch.device = torch.device("cpu")):
+                 device: torch.device = torch.device("cpu"),
+                 warmup_steps: int = 0,
+                 value_regularization: float = 0.0):
         """
         Args:
             state_dim: Dimension of state space
@@ -46,6 +48,11 @@ class IQLAgent:
         self.discount = discount
         self.tau = tau
         self.device = device
+
+        # Learning rate warmup and regularization
+        self.warmup_steps = warmup_steps
+        self.base_lr = learning_rate
+        self.value_regularization = value_regularization
         
         # Networks
         self.actor = DirichletActor(state_dim, action_dim, [hidden_dim, hidden_dim]).to(device)
@@ -112,7 +119,11 @@ class IQLAgent:
         # Soft update target networks
         self._soft_update(self.q1_target, self.q1)
         self._soft_update(self.q2_target, self.q2)
-        
+
+        # Update learning rate if in warmup phase
+        if self.training_steps < self.warmup_steps:
+            self._adjust_learning_rate()
+
         self.training_steps += 1
         
         # Track losses for statistics
@@ -145,6 +156,10 @@ class IQLAgent:
         diff = q - value
         weight = torch.where(diff > 0, self.expectile, 1 - self.expectile)
         value_loss = (weight * diff.pow(2)).mean()
+
+        # Add value regularization if specified
+        if self.value_regularization > 0:
+            value_loss = value_loss + self.value_regularization * value.pow(2).mean()
         
         # Optimize
         self.value_optimizer.zero_grad()
@@ -262,6 +277,20 @@ class IQLAgent:
             state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
             action, _ = self.actor.get_action(state_tensor, deterministic)
             return action.cpu().numpy().squeeze()
+
+    def _adjust_learning_rate(self):
+        """
+        Adjust learning rate during warmup phase
+        """
+        progress = self.training_steps / max(1, self.warmup_steps)
+        lr = self.base_lr * min(1.0, progress)
+
+        for param_group in self.actor_optimizer.param_groups:
+            param_group['lr'] = lr
+        for param_group in self.value_optimizer.param_groups:
+            param_group['lr'] = lr
+        for param_group in self.q_optimizer.param_groups:
+            param_group['lr'] = lr
     
     def save(self, path: str):
         """Save model with SafeTensors"""

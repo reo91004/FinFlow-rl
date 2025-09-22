@@ -16,12 +16,25 @@ class DirichletActor(nn.Module):
     """
     
     def __init__(self, state_dim: int, action_dim: int, hidden_dims: list = [256, 256],
-                 min_concentration: float = 0.1, max_concentration: float = 50.0):  # 0.05 → 0.1로 증가
+                 min_concentration: float = 0.1, max_concentration: float = 50.0,  # 0.05 → 0.1로 증가
+                 dynamic_concentration: bool = False, crisis_scaling: float = 0.5,
+                 base_concentration: float = 2.0, action_smoothing: bool = False,
+                 smoothing_alpha: float = 0.95):
         super().__init__()
 
         self.action_dim = action_dim
         self.min_concentration = min_concentration  # 더 안정적인 하한값
         self.max_concentration = max_concentration
+        self.base_concentration = base_concentration
+
+        # Dynamic concentration settings
+        self.dynamic_concentration = dynamic_concentration
+        self.crisis_scaling = crisis_scaling
+
+        # Action smoothing
+        self.action_smoothing = action_smoothing
+        self.smoothing_alpha = smoothing_alpha
+        self.prev_action = None
         
         # Build network
         layers = []
@@ -49,52 +62,67 @@ class DirichletActor(nn.Module):
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
     
-    def forward(self, state: torch.Tensor) -> torch.Tensor:
+    def forward(self, state: torch.Tensor, crisis_level: Optional[float] = None) -> torch.Tensor:
         """
-        Forward pass to get concentration parameters
-        
+        Forward pass to get concentration parameters with optional crisis adjustment
+
         Args:
             state: [batch_size, state_dim]
-            
+            crisis_level: Optional crisis level [0, 1] for dynamic adjustment
+
         Returns:
             concentration: [batch_size, action_dim]
         """
         features = self.net(state)
-        
+
         # Softplus to ensure positive concentrations
         concentration = F.softplus(self.concentration_layer(features)) + self.min_concentration
-        
+
+        # Dynamic concentration adjustment based on crisis level
+        if self.dynamic_concentration and crisis_level is not None:
+            # Higher crisis -> lower concentration (more exploration)
+            # Lower crisis -> higher concentration (more exploitation)
+            adjustment_factor = 1.0 - (crisis_level * self.crisis_scaling)
+            adjustment_factor = torch.clamp(torch.tensor(adjustment_factor), 0.5, 2.0)
+            concentration = concentration * adjustment_factor
+        elif self.dynamic_concentration:
+            # Use base concentration when no crisis level provided
+            concentration = concentration * (self.base_concentration / concentration.mean())
+
         # Clamp to max value for stability
         concentration = torch.clamp(concentration, self.min_concentration, self.max_concentration)
-        
+
         return concentration
     
-    def get_distribution(self, state: torch.Tensor) -> Dirichlet:
+    def get_distribution(self, state: torch.Tensor, crisis_level: Optional[float] = None) -> Dirichlet:
         """
         Get Dirichlet distribution for the given state
-        
+
         Args:
             state: [batch_size, state_dim]
-            
+            crisis_level: Optional crisis level for dynamic adjustment
+
         Returns:
             dist: Dirichlet distribution
         """
-        concentration = self.forward(state)
+        concentration = self.forward(state, crisis_level)
         return Dirichlet(concentration)
     
-    def get_action(self, state: torch.Tensor, deterministic: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
+    def get_action(self, state: torch.Tensor, deterministic: bool = False,
+                   crisis_level: Optional[float] = None) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Sample action from Dirichlet distribution
-        
+        Sample action from Dirichlet distribution with optional smoothing
+
         Args:
             state: [batch_size, state_dim]
             deterministic: If True, return mode instead of sample
-            
+            crisis_level: Optional crisis level for dynamic adjustment
+
         Returns:
             action: [batch_size, action_dim] - portfolio weights
             log_prob: [batch_size] - log probability
         """
-        concentration = self.forward(state)
+        concentration = self.forward(state, crisis_level)
         
         # Create Dirichlet distribution
         dist = Dirichlet(concentration)
@@ -117,37 +145,54 @@ class DirichletActor(nn.Module):
 
             # log_prob 계산 시 추가 안정화
             log_prob = dist.log_prob(action + 1e-8)  # 작은 엡실론 추가
-        
+
+        # Apply action smoothing (EMA)
+        if self.action_smoothing and not deterministic:
+            if self.prev_action is not None and self.prev_action.shape == action.shape:
+                action = self.smoothing_alpha * action + (1 - self.smoothing_alpha) * self.prev_action
+                # Re-normalize to ensure simplex constraint
+                action = action / action.sum(dim=-1, keepdim=True)
+            self.prev_action = action.clone().detach()
+
         return action, log_prob
     
-    def get_log_prob(self, state: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
+    def get_log_prob(self, state: torch.Tensor, action: torch.Tensor,
+                     crisis_level: Optional[float] = None) -> torch.Tensor:
         """
         Compute log probability of action
-        
+
         Args:
             state: [batch_size, state_dim]
             action: [batch_size, action_dim]
-            
+            crisis_level: Optional crisis level for dynamic adjustment
+
         Returns:
             log_prob: [batch_size]
         """
-        concentration = self.forward(state)
+        concentration = self.forward(state, crisis_level)
         dist = Dirichlet(concentration)
         return dist.log_prob(action + 1e-8)  # Add small epsilon for numerical stability
     
-    def entropy(self, state: torch.Tensor) -> torch.Tensor:
+    def entropy(self, state: torch.Tensor, crisis_level: Optional[float] = None) -> torch.Tensor:
         """
         Compute entropy of the policy
-        
+
         Args:
             state: [batch_size, state_dim]
-            
+            crisis_level: Optional crisis level for dynamic adjustment
+
         Returns:
             entropy: [batch_size]
         """
-        concentration = self.forward(state)
+        concentration = self.forward(state, crisis_level)
         dist = Dirichlet(concentration)
         return dist.entropy()
+
+    def reset_smoothing(self):
+        """
+        Reset action smoothing state
+        """
+        self.prev_action = None
 
 class ValueNetwork(nn.Module):
     """

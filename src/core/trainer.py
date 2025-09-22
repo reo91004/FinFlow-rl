@@ -212,6 +212,13 @@ class TrainingConfig:
                 self.sac_alpha = bcell['alpha_init']
             if 'cql_alpha_start' in bcell:
                 self.sac_cql_weight = bcell['cql_alpha_start']
+            # 새로운 파라미터들 추가
+            if 'n_quantiles' in bcell:
+                self.bcell_n_quantiles = bcell['n_quantiles']
+            if 'warmup_steps' in bcell:
+                self.warmup_steps = bcell['warmup_steps']
+            if 'value_regularization' in bcell:
+                self.value_regularization = bcell['value_regularization']
 
         # Memory config
         if 'memory' in config_dict:
@@ -244,6 +251,40 @@ class TrainingConfig:
         # Data validation config
         if 'data_validation' in config_dict:
             self.data_validation_config = config_dict['data_validation']
+
+        # Distributional config
+        if 'distributional' in config_dict:
+            dist = config_dict['distributional']
+            if 'n_quantiles' in dist:
+                self.bcell_n_quantiles = dist['n_quantiles']  # Override bcell setting
+            if 'quantile_embedding_dim' in dist:
+                self.quantile_embedding_dim = dist['quantile_embedding_dim']
+            if 'quantile_kappa_dynamic' in dist:
+                self.quantile_kappa_dynamic = dist['quantile_kappa_dynamic']
+            if 'huber_kappa_min' in dist:
+                self.huber_kappa_min = dist['huber_kappa_min']
+            if 'huber_kappa_max' in dist:
+                self.huber_kappa_max = dist['huber_kappa_max']
+            if 'risk_measure' in dist:
+                self.risk_measure = dist['risk_measure']
+            if 'risk_sensitivity' in dist:
+                self.risk_sensitivity = dist['risk_sensitivity']
+            if 'risk_sensitive_update' in dist:
+                self.risk_sensitive_update = dist['risk_sensitive_update']
+
+        # Dirichlet config
+        if 'dirichlet' in config_dict:
+            dirichlet = config_dict['dirichlet']
+            if 'dynamic_concentration' in dirichlet:
+                self.dynamic_concentration = dirichlet['dynamic_concentration']
+            if 'crisis_scaling' in dirichlet:
+                self.crisis_scaling = dirichlet['crisis_scaling']
+            if 'base_concentration' in dirichlet:
+                self.base_concentration = dirichlet['base_concentration']
+            if 'action_smoothing' in dirichlet:
+                self.action_smoothing = dirichlet['action_smoothing']
+            if 'smoothing_alpha' in dirichlet:
+                self.smoothing_alpha = dirichlet['smoothing_alpha']
 
         # System config
         if 'device' in config_dict:
@@ -494,7 +535,7 @@ class FinFlowTrainer:
             feature_config=feature_config
         )
 
-        # B-Cell configuration
+        # B-Cell configuration with enhanced settings
         bcell_config = {
             'gamma': self.config.sac_gamma,
             'tau': self.config.sac_tau,
@@ -502,10 +543,24 @@ class FinFlowTrainer:
             'cql_alpha_start': self.config.sac_cql_weight,
             'actor_hidden': [256, 256],
             'critic_hidden': [256, 256],
-            'n_quantiles': 32,
+            'n_quantiles': getattr(self.config, 'bcell_n_quantiles', 64),  # 32 → 64
             'actor_lr': 3e-4,
             'critic_lr': 3e-4,
-            'alpha_lr': 3e-4
+            'alpha_lr': 3e-4,
+            # Distributional settings
+            'quantile_embedding_dim': getattr(self.config, 'quantile_embedding_dim', 64),
+            'quantile_kappa_dynamic': getattr(self.config, 'quantile_kappa_dynamic', True),
+            'huber_kappa_min': getattr(self.config, 'huber_kappa_min', 0.5),
+            'huber_kappa_max': getattr(self.config, 'huber_kappa_max', 2.0),
+            'risk_measure': getattr(self.config, 'risk_measure', 'cvar'),
+            'risk_sensitivity': getattr(self.config, 'risk_sensitivity', 0.05),
+            'risk_sensitive_update': getattr(self.config, 'risk_sensitive_update', True),
+            # Dirichlet settings
+            'dynamic_concentration': getattr(self.config, 'dynamic_concentration', True),
+            'crisis_scaling': getattr(self.config, 'crisis_scaling', 0.5),
+            'base_concentration': getattr(self.config, 'base_concentration', 2.0),
+            'action_smoothing': getattr(self.config, 'action_smoothing', True),
+            'smoothing_alpha': getattr(self.config, 'smoothing_alpha', 0.95)
         }
 
         # Main B-Cell
@@ -624,7 +679,7 @@ class FinFlowTrainer:
             offline_dataset.save(dataset_path)
             self.logger.info(f"오프라인 데이터 저장: {dataset_path}")
 
-        # Initialize IQL agent
+        # Initialize IQL agent with enhanced config
         iql_agent = IQLAgent(
             state_dim=self.state_dim,
             action_dim=self.action_dim,
@@ -634,7 +689,9 @@ class FinFlowTrainer:
             discount=self.config.sac_gamma,
             tau=self.config.sac_tau,
             learning_rate=self.config.bcell_actor_lr,  # 하드코딩 제거
-            device=self.device
+            device=self.device,
+            warmup_steps=getattr(self.config, 'warmup_steps', 1000),
+            value_regularization=getattr(self.config, 'value_regularization', 0.01)
         )
 
         # Train IQL
@@ -717,8 +774,11 @@ class FinFlowTrainer:
                 )
                 selected_bcell = gating_decision.selected_bcell
 
-                # Get action from selected B-Cell
-                action, action_info = self.b_cells[selected_bcell].get_action(state)
+                # Get action from selected B-Cell with crisis level for dynamic concentration
+                action, action_info = self.b_cells[selected_bcell].get_action(
+                    state,
+                    crisis_level=crisis_info['overall_crisis']
+                )
 
                 # Environment step
                 next_state, reward, terminated, truncated, info = self.env.step(action)
@@ -1140,8 +1200,12 @@ class FinFlowTrainer:
             )
             selected_bcell = gating_decision.selected_bcell
 
-            # Get action (deterministic)
-            action, _ = self.b_cells[selected_bcell].get_action(state, deterministic=True)
+            # Get action (deterministic) with crisis level for dynamic concentration
+            action, _ = self.b_cells[selected_bcell].get_action(
+                state,
+                deterministic=True,
+                crisis_level=crisis_info['overall_crisis']
+            )
 
             # Step
             next_state, reward, terminated, truncated, info = self.test_env.step(action)

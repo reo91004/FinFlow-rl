@@ -91,7 +91,7 @@ bcell:
   # 네트워크 구조
   actor_hidden: [256, 256]
   critic_hidden: [256, 256]
-  n_quantiles: 32
+  n_quantiles: 64  # 32 → 64 (더 정밀한 분포 추정)
 
   # 학습률
   actor_lr: 3.0e-4 # 원논문 기본값 유지
@@ -114,6 +114,11 @@ bcell:
   # Gradient clipping
   grad_clip: 1.0
 
+  # Gradient accumulation (IQL 안정성)
+  gradient_accumulation_steps: 4
+  warmup_steps: 1000
+  value_regularization: 0.01
+
 # Memory Cell 설정
 memory:
   capacity: 50000  # 500 → 50000 (통일)
@@ -126,6 +131,25 @@ gating:
   hidden_dim: 128
   temperature: 1.0
   min_dwell_steps: 5
+
+# Distributional RL 설정 (신규)
+distributional:
+  n_quantiles: 64  # 더 정밀한 분포 추정
+  risk_measure: "cvar"  # cvar, var, mean
+  risk_sensitivity: 0.05  # risk measure를 위한 percentile
+  huber_kappa_min: 0.5
+  huber_kappa_max: 2.0
+  quantile_embedding_dim: 64
+
+# Dirichlet Policy 설정 (신규)
+dirichlet:
+  dynamic_concentration: true  # crisis level에 따른 동적 조정
+  crisis_scaling: 0.5  # crisis 시 concentration 감소 비율
+  base_concentration: 2.0  # 기본 concentration
+  min_concentration: 0.1
+  max_concentration: 50.0
+  action_smoothing: true  # EMA 기반 action smoothing
+  smoothing_alpha: 0.95
 
 # 목적함수 설정
 objectives:
@@ -170,6 +194,8 @@ train:
   # B-Cell specific
   recent_rewards_maxlen: 100  # deque maxlen for recent rewards tracking
   quantile_kappa: 1.0  # Quantile Huber loss kappa parameter
+  quantile_kappa_dynamic: true  # 동적 kappa 조정
+  risk_sensitive_update: true  # risk-sensitive gradient weighting
 
   # 평가 및 저장
   eval_interval: 50  # 에피소드 단위
@@ -195,7 +221,7 @@ train:
   # B-Cell network configs (for evaluation compatibility)
   bcell_actor_hidden: [256, 256]
   bcell_critic_hidden: [256, 256]
-  bcell_n_quantiles: 32
+  bcell_n_quantiles: 64  # 32 → 64 (더 정밀한 분포 추정)
   bcell_actor_lr: 3e-4
   bcell_critic_lr: 3e-4
   tcell_contamination: 0.1
