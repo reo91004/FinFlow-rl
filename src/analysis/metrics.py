@@ -1,5 +1,22 @@
 # src/analysis/metrics.py
 
+"""
+성과 지표: 포트폴리오 성과 측정 도구
+
+목적: 포트폴리오 성과의 정량적 평가
+의존: scipy.stats
+사용처: PortfolioEnv, monitor.py, backtest.py
+역할: 일관된 성과 측정 제공
+
+구현 내용:
+- Sharpe Ratio (위험 조정 수익률)
+- Maximum Drawdown (최대 낙폭)
+- Calmar Ratio (낙폭 대비 수익률)
+- Sortino Ratio (하방 위험 조정)
+- CVaR/VaR (리스크 측정)
+- 회전율 및 거래 비용 분석
+"""
+
 import numpy as np
 import pandas as pd
 from typing import Union, Optional, Tuple, List, Dict

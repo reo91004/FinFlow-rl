@@ -1,5 +1,21 @@
 # src/utils/seed.py
 
+"""
+시드 및 디바이스 관리: 재현성 및 하드웨어 설정
+
+목적: 실험 재현성 보장 및 디바이스 관리
+의존: torch, numpy
+사용처: main.py, 모든 학습 스크립트
+역할: 랜덤 시드 고정 및 GPU/CPU 자동 선택
+
+구현 내용:
+- 전역 시드 설정 (random, numpy, torch)
+- CUDA deterministic 모드 설정
+- GPU/CPU 자동 감지 및 선택
+- 디바이스 정보 로깅
+- 텐서/배열 변환 유틸리티
+"""
+
 import numpy as np
 import torch
 import random

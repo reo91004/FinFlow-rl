@@ -1,9 +1,24 @@
 # main.py
 
 """
-FinFlow: Biologically-Inspired Portfolio Defense 2.0
+메인 실행 파일: FinFlow 시스템 진입점
 
-IQL → Distributional SAC 파이프라인 기반 포트폴리오 최적화 시스템
+목적: FinFlow 학습/평가 시스템 실행
+의존: trainer.py, 모든 core/agents/data 모듈
+사용처: 직접 실행 (python main.py)
+역할: CLI 인터페이스 제공 및 파이프라인 시작
+
+파이프라인:
+1. 설정 로드 (YAML 또는 CLI 인자)
+2. 데이터 로드 (다우존스 30 기본값)
+3. Phase 1: IQL 오프라인 사전학습
+4. Phase 2: REDQ 온라인 미세조정
+5. 평가 및 결과 저장
+
+주요 모드:
+- train: 전체 학습 파이프라인 실행
+- evaluate: 학습된 모델 평가
+- demo: 실시간 거래 데모 (미구현)
 """
 
 import argparse

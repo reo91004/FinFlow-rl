@@ -1,5 +1,22 @@
 # src/data/validator.py
 
+"""
+데이터 검증기: 시장 데이터 무결성 검증 및 정제
+
+목적: 다운로드된 시장 데이터의 품질 보장
+의존: logger.py
+사용처: DataLoader.download_data() (자동 검증)
+역할: 결측치, 이상치, 중복 등 데이터 문제 해결
+
+구현 내용:
+- 최소 252일(1년) 데이터 확보
+- 결측치 처리 (ffill→bfill→interpolate)
+- IQR 5배 이상 이상치 제거
+- 일일 ±50% 이상 극단 수익률 보정
+- 상관관계 99% 이상 중복 종목 제거
+- 검증 보고서 생성 및 저장
+"""
+
 import pandas as pd
 import numpy as np
 from typing import Dict, Optional, List, Any

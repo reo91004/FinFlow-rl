@@ -1,5 +1,20 @@
 # src/core/objectives.py
 
+"""
+포트폴리오 목적함수 (보상 설계)
+
+목적: Differential Sharpe + CVaR 제약 + 페널티 계산
+의존: PyTorch만 사용
+사용처: BCell (온라인 학습), FinFlowTrainer (평가)
+역할: 강화학습 보상 신호 생성 및 위험 관리
+
+구현 내용:
+- DifferentialSharpe: 미분 가능한 Sharpe 비율 근사
+- CVaRConstraint: Conditional Value at Risk 제약
+- PortfolioObjective: 통합 목적함수 (수익률 + 보너스 - 페널티)
+- 페널티: 회전율, 드로다운, CVaR 위반
+"""
+
 import torch
 import torch.nn as nn
 import numpy as np

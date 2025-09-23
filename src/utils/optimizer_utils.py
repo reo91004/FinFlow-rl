@@ -1,5 +1,21 @@
 # src/utils/optimizer_utils.py
 
+"""
+최적화 유틸: 학습 최적화 도구 모음
+
+목적: 강화학습 최적화 공통 기능 제공
+의존: torch
+사용처: BCell, IQL, TD3BC (모든 학습 에이전트)
+역할: 그래디언트 처리, 타겟 네트워크 업데이트
+
+구현 내용:
+- Polyak averaging (타겟 네트워크 소프트 업데이트)
+- SAC 온도 자동 조정
+- 그래디언트 클리핑 (폭발 방지)
+- 그래디언트 정규화
+- 학습률 스케줄링 도구
+"""
+
 import torch
 import torch.nn as nn
 import numpy as np

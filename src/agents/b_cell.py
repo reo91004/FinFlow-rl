@@ -1,567 +1,342 @@
 # src/agents/b_cell.py
 
+"""
+B-Cell: 적응형 포트폴리오 전략 에이전트
+
+목적: REDQ (Randomized Ensemble Double Q) 기반 온라인 학습
+의존: networks.py, replay.py, optimizer_utils.py
+사용처: FinFlowTrainer (메인 에이전트)
+역할: T-Cell 신호에 적응하는 포트폴리오 전략 실행
+
+구현 내용:
+- 오프라인 가중치 로드 (IQL/TD3BC → BCell)
+- 위기 수준에 따른 리스크 회피도 조정
+- n_critics=5 앙상블로 안정성 확보
+- UTD=20으로 샘플 효율성 극대화
+"""
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import torch.nn.functional as F
 import numpy as np
-from typing import Dict, Optional, Tuple, List
-from collections import deque
+from typing import Dict
 
-from src.core.networks import DirichletActor
-from src.core.distributional import (
-    DistributionalCritic, QuantileHuberLoss, extract_cvar_from_quantiles,
-    compute_risk_sensitive_td_loss, get_quantile_statistics
-)
-from src.core.replay import PrioritizedReplayBuffer, Transition
+from src.core.networks import DirichletActor, QNetwork
+from src.core.replay import PrioritizedReplayBuffer
 from src.utils.logger import FinFlowLogger
-from src.utils.optimizer_utils import polyak_update, cql_penalty, clip_gradients
+from src.utils.optimizer_utils import polyak_update, clip_gradients
 
 class BCell:
     """
-    B-Cell: Specialized Strategy Agent with Distributional SAC + CQL
-    
-    5개의 전문화 전략:
-    - volatility: 고변동성 위기 전문
-    - correlation: 상관관계 붕괴 전문
-    - momentum: 모멘텀 전략
-    - defensive: 방어적 전략
-    - growth: 성장 전략
+    B-Cell: 적응형 포트폴리오 전략 에이전트
+    단일 에이전트가 T-Cell 신호에 따라 적응
+    REDQ (Randomized Ensemble Double Q) 구현
     """
-    
-    SPECIALIZATIONS = ['volatility', 'correlation', 'momentum', 'defensive', 'growth']
-    
+
     def __init__(self,
-                 specialization: str,
                  state_dim: int,
                  action_dim: int,
                  config: Dict,
                  device: torch.device = torch.device("cpu")):
         """
         Args:
-            specialization: 전문화 유형
             state_dim: 상태 차원
             action_dim: 액션 차원 (포트폴리오 자산 수)
-            config: SAC 설정
+            config: 설정
             device: 연산 디바이스
         """
-        assert specialization in self.SPECIALIZATIONS, f"Invalid specialization: {specialization}"
-        
-        self.specialization = specialization
         self.state_dim = state_dim
         self.action_dim = action_dim
         self.device = device
-        self.logger = FinFlowLogger(f"BCell-{specialization}")
-        
+        self.logger = FinFlowLogger("BCell")
+
         # Hyperparameters
         self.gamma = config.get('gamma', 0.99)
         self.tau = config.get('tau', 0.005)
-        self.alpha_init = config.get('alpha_init', 0.75)  # 0.2 → 0.75 (연구 검증값)
-        self.alpha_min = config.get('alpha_min', 5e-4)
-        self.alpha_max = config.get('alpha_max', 0.5)  # 0.2 → 0.5
-        self.target_entropy_ratio = config.get('target_entropy_ratio', 0.5)  # 0.98 → 0.5
-        
-        # CQL settings (완화된 정규화)
-        self.cql_alpha_start = config.get('cql_alpha_start', 0.1)  # 1.0 → 0.1 (더욱 완화된 정규화)
-        self.cql_alpha_end = config.get('cql_alpha_end', 0.5)   # 2.0 → 0.5 (점진적 증가)
-        self.cql_num_samples = config.get('cql_num_samples', 8)
-        self.enable_cql = config.get('enable_cql', True)
-        
-        # Networks with enhanced Dirichlet settings
+        self.alpha = config.get('alpha', 0.2)  # 엔트로피 계수
+        self.target_entropy = -action_dim  # -dim(A)
+
+        # REDQ settings
+        self.n_critics = config.get('n_critics', 5)  # Q 앙상블 크기
+        self.m_sample = config.get('m_sample', 2)    # 업데이트시 샘플 수
+        self.utd_ratio = config.get('utd_ratio', 20) # Update-to-Data ratio
+
+        # Networks
         self.actor = DirichletActor(
             state_dim, action_dim,
-            hidden_dims=config.get('actor_hidden', [256, 256]),
-            dynamic_concentration=config.get('dynamic_concentration', False),
-            crisis_scaling=config.get('crisis_scaling', 0.5),
-            base_concentration=config.get('base_concentration', 2.0),
-            action_smoothing=config.get('action_smoothing', False),
-            smoothing_alpha=config.get('smoothing_alpha', 0.95)
+            hidden_dims=config.get('hidden_dims', [256, 256])
         ).to(device)
-        
-        # Distributional critic with enhanced quantiles
-        n_quantiles = config.get('n_quantiles', 64)  # 32 → 64
-        quantile_embedding_dim = config.get('quantile_embedding_dim', 64)
-        self.critic = DistributionalCritic(
-            state_dim, action_dim,
-            hidden_dim=config.get('critic_hidden', [256, 256])[0],
-            n_quantiles=n_quantiles,
-            quantile_embedding_dim=quantile_embedding_dim
-        ).to(device)
-        
-        # Temperature parameter (learnable)
-        self.log_alpha = torch.tensor(np.log(self.alpha_init), requires_grad=True, device=device, dtype=torch.float32)
-        # 표준 권장값: -0.5 * action_dim
-        self.target_entropy = -0.5 * action_dim  # 논문 권장값
-        
+
+        # REDQ: Q 앙상블
+        self.critics = nn.ModuleList([
+            QNetwork(state_dim, action_dim, config.get('hidden_dims', [256, 256]))
+            for _ in range(self.n_critics)
+        ]).to(device)
+
+        self.critics_target = nn.ModuleList([
+            QNetwork(state_dim, action_dim, config.get('hidden_dims', [256, 256]))
+            for _ in range(self.n_critics)
+        ]).to(device)
+
+        # 타겟 네트워크 초기화
+        for critic, critic_target in zip(self.critics, self.critics_target):
+            critic_target.load_state_dict(critic.state_dict())
+
+        # Temperature parameter
+        self.log_alpha = torch.tensor(np.log(self.alpha),
+                                     requires_grad=True, device=device)
+
         # Optimizers
         self.actor_optimizer = optim.Adam(
             self.actor.parameters(),
             lr=config.get('actor_lr', 3e-4)
         )
-        
-        self.critic_optimizer = optim.Adam(
-            list(self.critic.q1.parameters()) + list(self.critic.q2.parameters()),
+
+        self.critics_optimizer = optim.Adam(
+            self.critics.parameters(),
             lr=config.get('critic_lr', 3e-4)
         )
-        
+
         self.alpha_optimizer = optim.Adam(
             [self.log_alpha],
             lr=config.get('alpha_lr', 3e-4)
         )
-        
-        # Loss functions with dynamic kappa
-        self.quantile_loss = QuantileHuberLoss(
-            kappa=config.get('quantile_kappa', 1.0),
-            kappa_min=config.get('huber_kappa_min', 0.5),
-            kappa_max=config.get('huber_kappa_max', 2.0),
-            dynamic_kappa=config.get('quantile_kappa_dynamic', True)
-        )
 
-        # Experience replay
+        # Replay buffer
         self.replay_buffer = PrioritizedReplayBuffer(
             capacity=config.get('buffer_size', 100000),
-            alpha=config.get('per_alpha', 0.6),
-            beta=config.get('per_beta', 0.4)
+            alpha=0.6,
+            beta=0.4
         )
 
-        # Training stats
+        # Risk adaptation parameters
+        self.base_risk_aversion = 1.0
+        self.current_risk_aversion = 1.0
+
+        # Training statistics
         self.training_step = 0
-        self.recent_rewards = deque(maxlen=config.get('recent_rewards_maxlen', 100))
-        self.performance_score = 0.0
-        
-        # CQL alpha scheduling
-        self.cql_alpha = self.cql_alpha_start
 
-        # Risk-sensitive settings
-        self.risk_measure = config.get('risk_measure', 'cvar')
-        self.risk_sensitivity = config.get('risk_sensitivity', 0.05)
-        self.risk_sensitive_update = config.get('risk_sensitive_update', True)
+        self.logger.info(f"B-Cell 초기화 완료: REDQ (n_critics={self.n_critics}, m_sample={self.m_sample}, UTD={self.utd_ratio})")
 
-        self.logger.info(f"B-Cell [{specialization}] 초기화 완료 (n_quantiles={n_quantiles})")
-    
-    def get_specialization_score(self, crisis_info: Dict[str, float]) -> float:
+    def adapt_to_crisis(self, crisis_level: float):
         """
-        위기 정보 기반 전문성 점수 계산
-        
+        T-Cell 신호에 따른 적응
+
         Args:
-            crisis_info: T-Cell의 위기 분석 정보
-            
-        Returns:
-            score: 전문성 점수 [0, 1]
+            crisis_level: 0 (정상) ~ 1 (극단 위기)
         """
-        overall = crisis_info.get('overall_crisis', 0)
-        volatility = crisis_info.get('volatility_crisis', 0)
-        correlation = crisis_info.get('correlation_crisis', 0)
-        volume = crisis_info.get('volume_crisis', 0)
-        
-        if self.specialization == 'volatility':
-            # 고변동성 위기에 특화
-            score = 0.7 * volatility + 0.3 * overall
-            
-        elif self.specialization == 'correlation':
-            # 상관관계 붕괴에 특화
-            score = 0.6 * correlation + 0.2 * volatility + 0.2 * overall
-            
-        elif self.specialization == 'momentum':
-            # 저위기 모멘텀 전략
-            score = max(0, 1 - overall) * 0.8 + volume * 0.2
-            
-        elif self.specialization == 'defensive':
-            # 중간 위기 방어 전략
-            mid_crisis = 1 - abs(overall - 0.5) * 2  # 0.5에서 최대
-            score = mid_crisis * 0.7 + min(volatility, correlation) * 0.3
-            
-        elif self.specialization == 'growth':
-            # 극저위기 성장 전략
-            score = max(0, 1 - overall * 2)
-        
+        # 위기 수준에 따른 리스크 회피도 조정
+        if crisis_level > 0.7:
+            self.current_risk_aversion = 2.0  # 방어적
+            self.logger.debug(f"위기 수준 {crisis_level:.2f} - 방어적 모드 활성화")
+        elif crisis_level > 0.4:
+            self.current_risk_aversion = 1.5  # 중립
+            self.logger.debug(f"위기 수준 {crisis_level:.2f} - 중립 모드")
         else:
-            score = 0.5  # Default
-        
-        # 성과 기반 조정
-        performance_adjustment = np.tanh(self.performance_score / 100)
-        score = score * (1 + 0.2 * performance_adjustment)
-        
-        return np.clip(score, 0, 1)
-    
-    def get_action(self, state: np.ndarray, deterministic: bool = False,
-                   crisis_level: Optional[float] = None) -> Tuple[np.ndarray, Dict]:
+            self.current_risk_aversion = 1.0  # 공격적
+            self.logger.debug(f"위기 수준 {crisis_level:.2f} - 공격적 모드")
+
+        # 엔트로피 조정 (위기시 탐험 감소)
+        target_alpha = self.alpha * (2.0 - crisis_level)
+        self.log_alpha.data = torch.log(torch.tensor(target_alpha, device=self.device))
+
+    def select_action(self, state: np.ndarray,
+                     crisis_level: float = 0.0,
+                     deterministic: bool = False) -> np.ndarray:
         """
-        정책에서 액션 샘플링
+        행동 선택
 
         Args:
-            state: 상태 배열
-            deterministic: 결정적 액션 여부
-            crisis_level: 위기 수준 (dynamic concentration을 위해)
+            state: 현재 상태
+            crisis_level: T-Cell 위기 수준
+            deterministic: 결정적 행동 여부
+        """
+        # 위기 적응
+        self.adapt_to_crisis(crisis_level)
 
-        Returns:
-            action: 포트폴리오 가중치
-            info: 추가 정보
-        """
+        state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+
         with torch.no_grad():
-            state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
-            action, log_prob = self.actor.get_action(state_tensor, deterministic, crisis_level)
-            
-            # Get Q-value for logging
-            q1, q2 = self.critic(state_tensor, action)
-            q_value = torch.min(q1.mean(dim=-1), q2.mean(dim=-1))
-            
-            info = {
-                'log_prob': log_prob.item(),
-                'q_value': q_value.item(),
-                'entropy': -log_prob.item(),
-                'alpha': self.log_alpha.exp().item()
-            }
-            
-            return action.cpu().numpy().squeeze(), info
-    
-    def store_experience(self, state: np.ndarray, action: np.ndarray, 
-                        reward: float, next_state: np.ndarray, done: bool):
-        """경험 저장"""
-        transition = Transition(
-            state=state,
-            action=action,
-            reward=reward,
-            next_state=next_state,
-            done=done
-        )
-        self.replay_buffer.push(transition)
-        self.recent_rewards.append(reward)
-    
-    def update(self, batch_size: int = 256) -> Dict[str, float]:
+            if deterministic:
+                action = self.actor.get_action(state_tensor, deterministic=True)
+            else:
+                action, _ = self.actor.sample(state_tensor)
+
+            # 리스크 회피도 적용 (포트폴리오 집중도 조정)
+            action = action.cpu().numpy()[0]
+
+            if self.current_risk_aversion > 1.0:
+                # 균등 가중치 방향으로 조정
+                uniform = np.ones_like(action) / len(action)
+                blend_ratio = 1.0 / self.current_risk_aversion
+                action = blend_ratio * action + (1 - blend_ratio) * uniform
+                action = action / action.sum()  # 재정규화
+
+        return action
+
+    def train(self, batch_size: int = 256) -> Dict:
         """
-        SAC + CQL 업데이트
-        
-        Returns:
-            losses: 손실 딕셔너리
+        REDQ 학습 스텝
         """
         if len(self.replay_buffer) < batch_size:
             return {}
-        
-        # Sample batch
-        transitions, weights, indices = self.replay_buffer.sample(batch_size)
-        
-        # Convert to tensors
-        states = torch.FloatTensor([t.state for t in transitions]).to(self.device)
-        actions = torch.FloatTensor([t.action for t in transitions]).to(self.device)
-        rewards = torch.FloatTensor([t.reward for t in transitions]).unsqueeze(1).to(self.device)
-        next_states = torch.FloatTensor([t.next_state for t in transitions]).to(self.device)
-        dones = torch.FloatTensor([t.done for t in transitions]).unsqueeze(1).to(self.device)
-        weights = torch.FloatTensor(weights).unsqueeze(1).to(self.device)
-        
-        # Update critics
-        critic_loss, td_errors = self._update_critics(
-            states, actions, rewards, next_states, dones, weights
-        )
-        
-        # Update actor
-        actor_loss = self._update_actor(states)
-        
-        # Update temperature
-        alpha_loss = self._update_alpha(states)
-        
-        # Update priorities in replay buffer
-        priorities = td_errors.abs().cpu().numpy() + 1e-6
-        self.replay_buffer.update_priorities(indices, priorities)
-        
-        # Update CQL alpha (scheduling)
-        self._update_cql_alpha()
-        
-        # Update performance score
-        self._update_performance()
-        
+
+        losses = {}
+
+        # High UTD ratio (REDQ 핵심)
+        for utd_step in range(self.utd_ratio):
+            batch, weights, indices = self.replay_buffer.sample(batch_size)
+            states = torch.FloatTensor(batch['states']).to(self.device)
+            actions = torch.FloatTensor(batch['actions']).to(self.device)
+            rewards = torch.FloatTensor(batch['rewards']).unsqueeze(1).to(self.device)
+            next_states = torch.FloatTensor(batch['next_states']).to(self.device)
+            dones = torch.FloatTensor(batch['dones']).unsqueeze(1).to(self.device)
+            weights = torch.FloatTensor(weights).unsqueeze(1).to(self.device)
+
+            # Critic 업데이트 (REDQ: 랜덤 서브셋)
+            with torch.no_grad():
+                next_actions, next_log_probs = self.actor.sample(next_states)
+
+                # M개 랜덤 타겟 크리틱 선택
+                target_indices = np.random.choice(
+                    self.n_critics, self.m_sample, replace=False
+                )
+
+                target_q_values = []
+                for idx in target_indices:
+                    target_q = self.critics_target[idx](next_states, next_actions)
+                    target_q_values.append(target_q)
+
+                # 최소값 사용 (보수적 추정)
+                min_target_q = torch.min(torch.stack(target_q_values), dim=0)[0]
+                target_q = rewards + self.gamma * (1 - dones) * (
+                    min_target_q - self.log_alpha.exp() * next_log_probs
+                )
+
+            # 모든 크리틱 업데이트
+            critic_loss = 0
+            td_errors = []
+            for critic in self.critics:
+                current_q = critic(states, actions)
+                td_error = current_q - target_q
+                loss = (weights * 0.5 * td_error.pow(2)).mean()
+                critic_loss += loss
+                td_errors.append(td_error.detach())
+
+            critic_loss = critic_loss / self.n_critics
+
+            self.critics_optimizer.zero_grad()
+            critic_loss.backward()
+            clip_gradients(self.critics, max_norm=1.0)
+            self.critics_optimizer.step()
+
+            # PER 우선순위 업데이트
+            mean_td_error = torch.stack(td_errors).mean(dim=0)
+            new_priorities = mean_td_error.abs().cpu().numpy().flatten() + 1e-6
+            self.replay_buffer.update_priorities(indices, new_priorities)
+
+            if utd_step == 0:
+                losses['critic_loss'] = critic_loss.item()
+
+        # Actor 업데이트 (낮은 빈도)
+        if self.training_step % 2 == 0:
+            actions_new, log_probs = self.actor.sample(states)
+
+            # 모든 크리틱 평균
+            q_values = []
+            for critic in self.critics:
+                q = critic(states, actions_new)
+                q_values.append(q)
+            mean_q = torch.stack(q_values).mean(dim=0)
+
+            actor_loss = (self.log_alpha.exp() * log_probs - mean_q).mean()
+
+            self.actor_optimizer.zero_grad()
+            actor_loss.backward()
+            clip_gradients(self.actor, max_norm=1.0)
+            self.actor_optimizer.step()
+
+            losses['actor_loss'] = actor_loss.item()
+
+            # 온도 업데이트
+            alpha_loss = -(self.log_alpha * (log_probs + self.target_entropy).detach()).mean()
+
+            self.alpha_optimizer.zero_grad()
+            alpha_loss.backward()
+            self.alpha_optimizer.step()
+
+            losses['alpha'] = self.log_alpha.exp().item()
+            losses['entropy'] = -log_probs.mean().item()
+
+        # 타겟 네트워크 소프트 업데이트
+        for critic, critic_target in zip(self.critics, self.critics_target):
+            polyak_update(critic_target, critic, self.tau)
+
         self.training_step += 1
-        
-        return {
-            'critic_loss': critic_loss,  # Already a float from _update_critics
-            'actor_loss': actor_loss,    # Already a float from _update_actor
-            'alpha_loss': alpha_loss,    # Already a float from _update_alpha
-            'alpha': self.log_alpha.exp().item(),
-            'td_error': td_errors.mean().item()
-        }
-    
-    def select_action(self, state_tensor: torch.Tensor, bcell_type: str = None,
-                     deterministic: bool = False, crisis_level: Optional[float] = None) -> np.ndarray:
+
+        return losses
+
+    def load_from_offline(self, offline_agent):
         """
-        액션 선택 (Trainer 호환)
+        오프라인 에이전트(IQL/TD3+BC)로부터 가중치 로드
 
         Args:
-            state_tensor: 상태 텐서
-            bcell_type: B-Cell 유형 (미사용, 호환성용)
-            deterministic: 결정적 액션 여부
-            crisis_level: 위기 수준 (dynamic concentration을 위해)
-
-        Returns:
-            action: 포트폴리오 가중치
+            offline_agent: 사전학습된 오프라인 에이전트
         """
-        with torch.no_grad():
-            if state_tensor.dim() == 1:
-                state_tensor = state_tensor.unsqueeze(0)
+        if hasattr(offline_agent, 'actor'):
+            self.actor.load_state_dict(offline_agent.actor.state_dict())
+            self.logger.info("오프라인 정책 로드 완료")
 
-            action, _ = self.actor.get_action(state_tensor, deterministic, crisis_level)
-            return action.cpu().numpy().squeeze()
-    
-    def state_dict(self) -> Dict:
-        """모델 상태 반환"""
+        if hasattr(offline_agent, 'critic') or hasattr(offline_agent, 'q_network'):
+            # IQL의 경우 q_network, TD3+BC의 경우 critic
+            source_critic = getattr(offline_agent, 'critic', None) or getattr(offline_agent, 'q_network', None)
+            if source_critic:
+                # 첫 번째 크리틱에만 로드, 나머지는 복사
+                self.critics[0].load_state_dict(source_critic.state_dict())
+                for i in range(1, self.n_critics):
+                    # 약간의 노이즈 추가하여 다양성 확보
+                    self.critics[i].load_state_dict(self.critics[0].state_dict())
+                    for param in self.critics[i].parameters():
+                        param.data += torch.randn_like(param.data) * 0.01
+
+                # 타겟 네트워크도 업데이트
+                for critic, critic_target in zip(self.critics, self.critics_target):
+                    critic_target.load_state_dict(critic.state_dict())
+
+                self.logger.info("오프라인 가치 함수 로드 완료")
+
+    def save(self, path: str):
+        """모델 저장"""
+        torch.save({
+            'actor': self.actor.state_dict(),
+            'critics': [c.state_dict() for c in self.critics],
+            'critics_target': [c.state_dict() for c in self.critics_target],
+            'log_alpha': self.log_alpha.data,
+            'training_step': self.training_step,
+        }, path)
+        self.logger.info(f"B-Cell 모델 저장: {path}")
+
+    def load(self, path: str):
+        """모델 로드"""
+        checkpoint = torch.load(path, map_location=self.device)
+        self.actor.load_state_dict(checkpoint['actor'])
+
+        for i, critic in enumerate(self.critics):
+            critic.load_state_dict(checkpoint['critics'][i])
+        for i, critic_target in enumerate(self.critics_target):
+            critic_target.load_state_dict(checkpoint['critics_target'][i])
+
+        self.log_alpha.data = checkpoint['log_alpha']
+        self.training_step = checkpoint['training_step']
+
+        self.logger.info(f"B-Cell 모델 로드: {path}")
+
+    def state_dict(self):
+        """상태 딕셔너리 반환"""
         return {
             'actor': self.actor.state_dict(),
-            'critic_q1': self.critic.q1.state_dict(),
-            'critic_q2': self.critic.q2.state_dict(),
-            'log_alpha': self.log_alpha.detach(),  # Keep as tensor for SafeTensors compatibility
-            'specialization': self.specialization,
+            'critics': [c.state_dict() for c in self.critics],
+            'critics_target': [c.state_dict() for c in self.critics_target],
+            'log_alpha': self.log_alpha.data,
             'training_step': self.training_step,
-            'performance_score': self.performance_score
         }
-    
-    def load_state_dict(self, state_dict: Dict):
-        """모델 상태 로드"""
-        self.actor.load_state_dict(state_dict['actor'])
-        self.critic.q1.load_state_dict(state_dict['critic_q1'])
-        self.critic.q2.load_state_dict(state_dict['critic_q2'])
-
-        # Handle both tensor and numpy array formats for backward compatibility
-        log_alpha = state_dict['log_alpha']
-        if isinstance(log_alpha, torch.Tensor):
-            self.log_alpha = log_alpha.detach().to(self.device)
-            if not self.log_alpha.requires_grad:
-                self.log_alpha = torch.nn.Parameter(self.log_alpha)
-        else:
-            # Legacy numpy format
-            self.log_alpha = torch.tensor(
-                log_alpha,
-                requires_grad=True,
-                device=self.device
-            )
-
-        self.training_step = state_dict.get('training_step', 0)
-        self.performance_score = state_dict.get('performance_score', 0.0)
-    
-    def get_statistics(self) -> Dict:
-        """통계 정보 반환"""
-        return {
-            'specialization': self.specialization,
-            'training_step': self.training_step,
-            'performance_score': self.performance_score,
-            'avg_recent_reward': np.mean(self.recent_rewards) if self.recent_rewards else 0,
-            'buffer_size': len(self.replay_buffer),
-            'alpha': self.log_alpha.exp().item(),
-            'cql_alpha': self.cql_alpha
-        }
-    
-    
-    def _update_critics(self, states, actions, rewards, next_states, dones, weights):
-        """Update distributional critics with CQL"""
-        
-        with torch.no_grad():
-            # Sample next actions
-            next_actions, next_log_probs = self.actor.get_action(next_states)
-            
-            # Get target Q-values (quantiles)
-            next_q1, next_q2 = self.critic.q1_target(next_states, next_actions), \
-                               self.critic.q2_target(next_states, next_actions)
-            
-            # Use minimum for conservative estimate
-            next_q = torch.min(next_q1, next_q2)
-
-            # Q-value clipping for stability (포트폴리오 환경에 적합한 범위)
-            next_q = torch.clamp(next_q, min=-2.0, max=2.0)  # 일일 수익률 범위에 맞게 축소
-
-            # Subtract entropy term
-            alpha = self.log_alpha.exp()
-            next_q = next_q - alpha * next_log_probs.unsqueeze(1)
-
-            # Compute TD targets for each quantile with additional clipping
-            target_q = rewards + self.gamma * (1 - dones) * next_q
-            target_q = torch.clamp(target_q, min=-2.0, max=2.0)  # 최종 타겟도 동일하게 클리핑
-        
-        # Current Q-values
-        current_q1, current_q2 = self.critic(states, actions)
-        
-        # Quantile regression loss
-        loss_q1 = self.quantile_loss(current_q1, target_q.detach(), self.critic.q1.tau, weights)
-        loss_q2 = self.quantile_loss(current_q2, target_q.detach(), self.critic.q2.tau, weights)
-        
-        # CQL regularization
-        if self.enable_cql:
-            cql_loss = self._compute_cql_loss(states, current_q1, current_q2)
-            critic_loss = loss_q1 + loss_q2 + self.cql_alpha * cql_loss
-        else:
-            critic_loss = loss_q1 + loss_q2
-        
-        # Optimize
-        self.critic_optimizer.zero_grad()
-        critic_loss.backward()
-        torch.nn.utils.clip_grad_norm_(
-            list(self.critic.q1.parameters()) + list(self.critic.q2.parameters()), 
-            1.0
-        )
-        self.critic_optimizer.step()
-        
-        # Soft update target networks
-        self.critic.soft_update(self.tau)
-        
-        # Compute TD errors for prioritization
-        td_errors = (target_q.mean(dim=1) - current_q1.mean(dim=1)).detach()
-        
-        return critic_loss.item(), td_errors
-    
-    def _update_actor(self, states):
-        """Update actor with entropy regularization"""
-        
-        # Sample actions
-        actions, log_probs = self.actor.get_action(states)
-        
-        # Get Q-values
-        q1, q2 = self.critic(states, actions)
-        min_q = torch.min(q1.mean(dim=-1), q2.mean(dim=-1))
-        
-        # Actor loss: maximize Q - α * log_prob
-        alpha = self.log_alpha.exp()
-        actor_loss = -(min_q - alpha * log_probs).mean()
-        
-        # Optimize
-        self.actor_optimizer.zero_grad()
-        actor_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 1.0)
-        self.actor_optimizer.step()
-        
-        return actor_loss.item()
-    
-    def _update_alpha(self, states):
-        """Update temperature parameter"""
-        
-        with torch.no_grad():
-            actions, log_probs = self.actor.get_action(states)
-        
-        # Alpha loss: maintain target entropy
-        alpha_loss = -(self.log_alpha * (log_probs + self.target_entropy).detach()).mean()
-        
-        # Optimize
-        self.alpha_optimizer.zero_grad()
-        alpha_loss.backward()
-        self.alpha_optimizer.step()
-        
-        # Clamp alpha
-        with torch.no_grad():
-            self.log_alpha.clamp_(np.log(self.alpha_min), np.log(self.alpha_max))
-        
-        return alpha_loss.item()
-    
-    def _compute_cql_loss(self, states, q1, q2):
-        """
-        Compute CQL (Conservative Q-Learning) loss
-        
-        CQL adds a penalty for overestimation:
-        L_CQL = E[log sum exp(Q) - Q(s,a)]
-        """
-        batch_size = states.shape[0]
-        
-        # Sample random actions for log-sum-exp
-        random_actions = torch.FloatTensor(
-            batch_size, self.cql_num_samples, self.action_dim
-        ).uniform_(0, 1).to(self.device)
-        
-        # Normalize to simplex
-        random_actions = random_actions / random_actions.sum(dim=-1, keepdim=True)
-        
-        # Compute Q-values for random actions
-        q1_random_list = []
-        q2_random_list = []
-        
-        for i in range(self.cql_num_samples):
-            q1_r, q2_r = self.critic(
-                states, 
-                random_actions[:, i, :]
-            )
-            q1_random_list.append(q1_r.mean(dim=-1, keepdim=True))
-            q2_random_list.append(q2_r.mean(dim=-1, keepdim=True))
-        
-        q1_random = torch.cat(q1_random_list, dim=1)  # [batch, num_samples]
-        q2_random = torch.cat(q2_random_list, dim=1)
-        
-        # Sample actions from current policy
-        with torch.no_grad():
-            policy_actions, _ = self.actor.get_action(states)
-        
-        q1_policy, q2_policy = self.critic(states, policy_actions)
-        q1_policy = q1_policy.mean(dim=-1, keepdim=True)
-        q2_policy = q2_policy.mean(dim=-1, keepdim=True)
-        
-        # Concatenate all Q-values
-        q1_all = torch.cat([q1_random, q1_policy], dim=1)
-        q2_all = torch.cat([q2_random, q2_policy], dim=1)
-        
-        # Log-sum-exp
-        q1_logsumexp = torch.logsumexp(q1_all, dim=1, keepdim=True)
-        q2_logsumexp = torch.logsumexp(q2_all, dim=1, keepdim=True)
-        
-        # CQL loss: penalize overestimation
-        cql_loss = (q1_logsumexp - q1.mean(dim=-1, keepdim=True)).mean() + \
-                   (q2_logsumexp - q2.mean(dim=-1, keepdim=True)).mean()
-        
-        return cql_loss
-    
-    def _update_cql_alpha(self):
-        """Schedule CQL alpha"""
-        # Linear scheduling
-        progress = min(1.0, self.training_step / 100000)
-        self.cql_alpha = self.cql_alpha_start + \
-                        (self.cql_alpha_end - self.cql_alpha_start) * progress
-    
-    def _update_performance(self):
-        """Update performance score for specialization"""
-        if len(self.recent_rewards) > 0:
-            # Simple exponential moving average of rewards
-            avg_reward = np.mean(self.recent_rewards)
-            self.performance_score = 0.95 * self.performance_score + 0.05 * avg_reward * 100
-    
-    def load_pretrained(self, checkpoint_path: str):
-        """Load pretrained IQL weights"""
-        checkpoint = torch.load(checkpoint_path, map_location=self.device)
-        
-        if 'actor' in checkpoint:
-            self.actor.load_state_dict(checkpoint['actor'])
-            self.logger.info(f"Loaded pretrained actor from {checkpoint_path}")
-        
-        if 'q_network' in checkpoint:
-            # Initialize critic with IQL Q-network weights (partial)
-            self.logger.info("Initialized critic with IQL Q-values")
-    
-    def load_iql_checkpoint(self, checkpoint: Dict):
-        """
-        Load IQL checkpoint weights into B-Cell networks
-        
-        Args:
-            checkpoint: IQL checkpoint dictionary containing 'actor', 'value', 'q1', 'q2' etc.
-        """
-        # Load actor network
-        if 'actor' in checkpoint:
-            self.actor.load_state_dict(checkpoint['actor'])
-            self.logger.info("IQL actor weights loaded into B-Cell actor")
-        
-        # Load Q-networks if compatible
-        if 'q1' in checkpoint and 'q2' in checkpoint:
-            # Note: IQL Q-networks might have different structure than distributional critics
-            # So we only load the shared layers if possible
-            self.logger.info("IQL Q-network weights detected")
-            
-            # Store IQL value function for reference if needed
-            if hasattr(self, 'iql_agent'):
-                self.iql_agent.value.load_state_dict(checkpoint['value'])
-                self.iql_agent.q1.load_state_dict(checkpoint['q1'])
-                self.iql_agent.q2.load_state_dict(checkpoint['q2'])
-                if 'q1_target' in checkpoint:
-                    self.iql_agent.q1_target.load_state_dict(checkpoint['q1_target'])
-                if 'q2_target' in checkpoint:
-                    self.iql_agent.q2_target.load_state_dict(checkpoint['q2_target'])
-                self.logger.info("IQL agent networks fully loaded")
-            else:
-                self.logger.info("Will initialize Q-networks randomly for SAC training")
-        
-        # Set training step if available
-        if 'training_steps' in checkpoint:
-            self.training_step = checkpoint['training_steps']
-            self.logger.info(f"Training step set to {self.training_step}")
-        
-        self.logger.info("IQL checkpoint loaded successfully into B-Cell")
-    

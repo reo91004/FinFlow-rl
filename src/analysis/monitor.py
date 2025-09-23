@@ -1,5 +1,22 @@
 # src/analysis/monitor.py
 
+"""
+성과 모니터: 실시간 포트폴리오 성과 추적 시스템
+
+목적: 학습/평가 과정의 포트폴리오 성과 실시간 모니터링
+의존: metrics.py, logger.py, sklearn (IsolationForest)
+사용처: FinFlowTrainer (학습 중 모니터링)
+역할: 성과 지표 추적, 이상치 탐지, 알림 생성
+
+구현 내용:
+- 포트폴리오 수익률, Sharpe, 최대낙폭 추적
+- 거래 비용 및 회전율 분석
+- IsolationForest 기반 성과 이상치 탐지
+- 4단계 알림 시스템 (info/warning/critical/emergency)
+- TensorBoard/WandB 연동 지원
+- 실시간 대시보드 백엔드 (선택적)
+"""
+
 import numpy as np
 import pandas as pd
 from typing import Dict, List, Optional, Any, Callable

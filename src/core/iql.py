@@ -1,5 +1,20 @@
 # src/core/iql.py
 
+"""
+IQL (Implicit Q-Learning) 오프라인 학습
+
+목적: Expectile 회귀 기반 오프라인 사전학습
+의존: networks.py (신경망), logger.py
+사용처: OfflineTrainer → BCell 가중치 전이
+역할: 과거 데이터로부터 안전한 정책 학습
+
+구현 내용:
+- Expectile=0.7로 보수적 가치 추정
+- Temperature=3.0으로 탐험 제어
+- Importance sampling 없이 오프라인 학습 가능
+- 가치 함수와 Q 함수 분리 학습
+"""
+
 import torch
 import torch.nn as nn
 import torch.optim as optim

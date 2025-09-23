@@ -1,417 +1,273 @@
 # src/agents/memory.py
 
+"""
+Memory Cell: 위기별 성공 전략 기억 시스템
+
+목적: k-NN 기반 경험 검색으로 위기 대응 전략 재사용
+의존: sklearn (NearestNeighbors), logger.py
+사용처: FinFlowTrainer._train_episode() (위기시 메모리 활용)
+역할: 성공적인 위기 대응 경험 저장 및 유사 상황시 검색
+
+구현 내용:
+- 상위 30% 보상 경험만 선별 저장
+- k-NN으로 유사 상태 검색 (default k=5)
+- 위기 수준 유사도 필터링 (tolerance=0.2)
+- 보상 가중 평균으로 추천 행동 생성
+- 위기시 B-Cell 행동과 50:50 블렌딩
+"""
+
 import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
+from typing import Dict, Optional, List
 from collections import deque
-from typing import Dict, List, Tuple, Optional
-import pickle
+from sklearn.neighbors import NearestNeighbors
 from src.utils.logger import FinFlowLogger
 
 class MemoryCell:
     """
-    Memory Cell: k-NN 기반 경험 저장 및 검색
-    
-    과거 유사 상황을 찾아 의사결정 가이드 제공
-    위기 수준별 계층화 및 시간적 다양성 고려
+    Memory Cell: 위기별 성공 전략 기억
+    단순한 k-NN 기반 검색
     """
-    
-    def __init__(self,
-                 capacity: int = 50000,  # 500 → 50000 통일
-                 embedding_dim: int = 32,
-                 k_neighbors: int = 5,
-                 similarity_threshold: float = 0.7):
+
+    def __init__(self, capacity: int = 1000, k_neighbors: int = 5):
         """
         Args:
-            capacity: 메모리 용량
-            embedding_dim: 임베딩 차원
+            capacity: 메모리 크기
             k_neighbors: 검색할 이웃 수
-            similarity_threshold: 유사도 임계값
         """
         self.capacity = capacity
-        self.embedding_dim = embedding_dim
         self.k_neighbors = k_neighbors
-        self.similarity_threshold = similarity_threshold
-        
-        # Memory storage
+        self.logger = FinFlowLogger("MemoryCell")
+
+        # 위기 상황별 메모리
         self.memories = deque(maxlen=capacity)
-        self.embeddings = []
-        
-        # Crisis-stratified storage
-        self.stratified_memories = {
-            'low': deque(maxlen=capacity // 3),     # crisis < 0.3
-            'medium': deque(maxlen=capacity // 3),  # 0.3 <= crisis < 0.7
-            'high': deque(maxlen=capacity // 3)     # crisis >= 0.7
-        }
-        
-        # Performance tracking
+
+        # k-NN 검색기
+        self.knn = NearestNeighbors(n_neighbors=k_neighbors, metric='euclidean')
+        self.fitted = False
+
+        # 메모리 통계
         self.memory_stats = {
             'total_stored': 0,
             'total_recalled': 0,
             'successful_recalls': 0,
-            'avg_similarity': 0.0
+            'average_reward': 0.0,
         }
-        
-        # Temporal diversity
-        self.temporal_weights = np.exp(-np.linspace(0, 2, capacity))
-        
-        self.logger = FinFlowLogger("MemoryCell")
-        self.logger.info(f"Memory Cell 초기화 - capacity={capacity}, k={k_neighbors}")
-    
-    def store(self, 
+
+        self.logger.info(f"Memory Cell 초기화 완료 (capacity={capacity}, k_neighbors={k_neighbors})")
+
+    def store(self,
               state: np.ndarray,
               action: np.ndarray,
               reward: float,
-              crisis_level: float,
-              bcell_type: str,
-              additional_info: Optional[Dict] = None):
+              crisis_level: float):
         """
-        경험 저장
-        
+        성공적인 경험 저장
+
         Args:
-            state: 상태 벡터
-            action: 포트폴리오 가중치
+            state: 상태
+            action: 행동 (포트폴리오)
             reward: 보상
             crisis_level: 위기 수준
-            bcell_type: 사용된 B-Cell 유형
-            additional_info: 추가 정보
         """
-        # Create embedding
-        embedding = self._create_embedding(state, crisis_level)
-        
-        # Create memory object
-        memory = {
-            'state': state.copy(),
-            'action': action.copy(),
-            'reward': reward,
-            'crisis_level': crisis_level,
-            'bcell_type': bcell_type,
-            'embedding': embedding,
-            'timestamp': self.memory_stats['total_stored'],
-            'info': additional_info or {}
-        }
-        
-        # Store in main memory
-        self.memories.append(memory)
-        
-        # Store in stratified memory
-        if crisis_level < 0.3:
-            self.stratified_memories['low'].append(memory)
-        elif crisis_level < 0.7:
-            self.stratified_memories['medium'].append(memory)
+        # 보상 임계값 계산 (동적)
+        if len(self.memories) > 0:
+            rewards = [m['reward'] for m in self.memories]
+            threshold = np.percentile(rewards, 70)  # 상위 30%
         else:
-            self.stratified_memories['high'].append(memory)
-        
-        self.memory_stats['total_stored'] += 1
-        
-        # Update embeddings cache
-        self._update_embeddings_cache()
-        
-        if self.memory_stats['total_stored'] % 100 == 0:
-            self.logger.debug(f"메모리 저장: {len(self.memories)} / {self.capacity}")
-    
-    def recall(self, 
-               current_state: np.ndarray,
-               current_crisis: float,
-               k: Optional[int] = None,
-               use_stratified: bool = True) -> List[Dict]:
+            threshold = 0.0
+
+        # 성공적인 경험만 저장
+        if reward > threshold:
+            self.memories.append({
+                'state': state.copy(),
+                'action': action.copy(),
+                'reward': reward,
+                'crisis_level': crisis_level
+            })
+
+            self.memory_stats['total_stored'] += 1
+            self._update_average_reward()
+
+            # k-NN 재학습
+            if len(self.memories) >= self.k_neighbors:
+                states = np.array([m['state'] for m in self.memories])
+                self.knn.fit(states)
+                self.fitted = True
+
+            self.logger.debug(f"경험 저장: reward={reward:.4f}, crisis={crisis_level:.2f}")
+
+    def recall(self, state: np.ndarray, crisis_level: float) -> Optional[np.ndarray]:
         """
-        유사 경험 검색
-        
-        Args:
-            current_state: 현재 상태
-            current_crisis: 현재 위기 수준
-            k: 검색할 메모리 수
-            use_stratified: 계층적 검색 사용 여부
-            
-        Returns:
-            similar_memories: 유사 경험 리스트
-        """
-        if len(self.memories) == 0:
-            return []
-        
-        k = k or self.k_neighbors
-        self.memory_stats['total_recalled'] += 1
-        
-        # Create query embedding
-        query_embedding = self._create_embedding(current_state, current_crisis)
-        
-        if use_stratified:
-            # Stratified sampling based on crisis level
-            memories_to_search = self._get_stratified_candidates(current_crisis)
-        else:
-            memories_to_search = list(self.memories)
-        
-        if len(memories_to_search) == 0:
-            return []
-        
-        # Compute similarities
-        similarities = []
-        for memory in memories_to_search:
-            sim = self._compute_similarity(query_embedding, memory['embedding'])
-            
-            # Apply temporal diversity weight
-            time_diff = self.memory_stats['total_stored'] - memory['timestamp']
-            temporal_weight = np.exp(-time_diff / self.capacity)
-            
-            # Combine similarity with temporal weight
-            weighted_sim = sim * (0.7 + 0.3 * temporal_weight)
-            
-            similarities.append((weighted_sim, memory))
-        
-        # Sort by similarity
-        similarities.sort(key=lambda x: x[0], reverse=True)
-        
-        # Filter by threshold and get top-k
-        similar_memories = []
-        total_sim = 0
-        
-        for sim, memory in similarities[:k]:
-            if sim >= self.similarity_threshold:
-                memory_copy = memory.copy()
-                memory_copy['similarity'] = sim
-                similar_memories.append(memory_copy)
-                total_sim += sim
-        
-        # Update stats
-        if len(similar_memories) > 0:
-            self.memory_stats['successful_recalls'] += 1
-            self.memory_stats['avg_similarity'] = \
-                0.9 * self.memory_stats['avg_similarity'] + 0.1 * (total_sim / len(similar_memories))
-        
-        return similar_memories
-    
-    def get_memory_guidance(self, 
-                           current_state: np.ndarray,
-                           current_crisis: float) -> Dict:
-        """
-        메모리 기반 의사결정 가이드
-        
-        Args:
-            current_state: 현재 상태
-            current_crisis: 현재 위기 수준
-            
-        Returns:
-            guidance: 의사결정 가이드 정보
-        """
-        similar_memories = self.recall(current_state, current_crisis)
-        
-        if len(similar_memories) == 0:
-            return {
-                'has_guidance': False,
-                'confidence': 0.0,
-                'recommended_action': None,
-                'expected_reward': 0.0,
-                'similar_count': 0
-            }
-        
-        # Aggregate information from similar experiences
-        total_weight = sum(m['similarity'] for m in similar_memories)
-        
-        # Weighted average of actions
-        weighted_action = np.zeros_like(similar_memories[0]['action'])
-        weighted_reward = 0
-        bcell_votes = {}
-        
-        for memory in similar_memories:
-            weight = memory['similarity'] / total_weight
-            weighted_action += weight * memory['action']
-            weighted_reward += weight * memory['reward']
-            
-            # Vote for B-Cell type
-            bcell = memory['bcell_type']
-            bcell_votes[bcell] = bcell_votes.get(bcell, 0) + weight
-        
-        # Normalize action to simplex
-        weighted_action = weighted_action / weighted_action.sum()
-        
-        # Most voted B-Cell
-        recommended_bcell = max(bcell_votes.items(), key=lambda x: x[1])[0]
-        
-        # Confidence based on similarity and count
-        confidence = min(1.0, total_weight / len(similar_memories) * len(similar_memories) / self.k_neighbors)
-        
-        guidance = {
-            'has_guidance': True,
-            'confidence': confidence,
-            'recommended_action': weighted_action,
-            'recommended_bcell': recommended_bcell,
-            'expected_reward': weighted_reward,
-            'similar_count': len(similar_memories),
-            'avg_similarity': total_weight / len(similar_memories),
-            'bcell_distribution': bcell_votes
-        }
-        
-        return guidance
-    
-    def _create_embedding(self, state: np.ndarray, crisis_level: float) -> np.ndarray:
-        """
-        상태와 위기 수준으로 임베딩 생성
-        
-        Simple linear projection for now
-        """
-        # Concatenate state and crisis
-        full_state = np.concatenate([state, [crisis_level]])
-        
-        # Random projection (fixed for consistency)
-        if not hasattr(self, '_projection_matrix'):
-            np.random.seed(42)
-            self._projection_matrix = np.random.randn(len(full_state), self.embedding_dim)
-            self._projection_matrix /= np.linalg.norm(self._projection_matrix, axis=0)
-        
-        # Project to embedding space
-        embedding = np.dot(full_state, self._projection_matrix)
-        
-        # L2 normalize
-        embedding = embedding / (np.linalg.norm(embedding) + 1e-8)
-        
-        return embedding
-    
-    def _compute_similarity(self, embedding1: np.ndarray, embedding2: np.ndarray) -> float:
-        """코사인 유사도 계산"""
-        return float(cosine_similarity(
-            embedding1.reshape(1, -1),
-            embedding2.reshape(1, -1)
-        )[0, 0])
-    
-    def _get_stratified_candidates(self, crisis_level: float) -> List[Dict]:
-        """
-        위기 수준에 따른 계층적 후보 선택
-        """
-        candidates = []
-        
-        # Primary stratum (same crisis level)
-        if crisis_level < 0.3:
-            primary = list(self.stratified_memories['low'])
-            secondary = list(self.stratified_memories['medium'])
-        elif crisis_level < 0.7:
-            primary = list(self.stratified_memories['medium'])
-            secondary = list(self.stratified_memories['low']) + \
-                       list(self.stratified_memories['high'])
-        else:
-            primary = list(self.stratified_memories['high'])
-            secondary = list(self.stratified_memories['medium'])
-        
-        # 70% from primary, 30% from secondary
-        n_primary = int(0.7 * self.k_neighbors * 3)
-        n_secondary = int(0.3 * self.k_neighbors * 3)
-        
-        candidates.extend(primary[-n_primary:] if len(primary) > n_primary else primary)
-        candidates.extend(secondary[-n_secondary:] if len(secondary) > n_secondary else secondary)
-        
-        return candidates
-    
-    def _update_embeddings_cache(self):
-        """임베딩 캐시 업데이트"""
-        self.embeddings = [m['embedding'] for m in self.memories]
-    
-    def get_statistics(self) -> Dict:
-        """메모리 통계 반환"""
-        stats = self.memory_stats.copy()
-        stats['memory_usage'] = len(self.memories) / self.capacity
-        stats['stratified_counts'] = {
-            k: len(v) for k, v in self.stratified_memories.items()
-        }
-        
-        if stats['total_recalled'] > 0:
-            stats['recall_success_rate'] = stats['successful_recalls'] / stats['total_recalled']
-        else:
-            stats['recall_success_rate'] = 0.0
-        
-        return stats
-    
-    def save(self, path: str):
-        """메모리 저장"""
-        with open(path, 'wb') as f:
-            pickle.dump({
-                'memories': list(self.memories),
-                'stratified_memories': {
-                    k: list(v) for k, v in self.stratified_memories.items()
-                },
-                'memory_stats': self.memory_stats,
-                'projection_matrix': getattr(self, '_projection_matrix', None)
-            }, f)
-        self.logger.info(f"메모리 저장: {path}")
-    
-    def load(self, path: str):
-        """메모리 로드"""
-        with open(path, 'rb') as f:
-            data = pickle.load(f)
-        
-        self.memories = deque(data['memories'], maxlen=self.capacity)
-        
-        for k, v in data['stratified_memories'].items():
-            self.stratified_memories[k] = deque(v, maxlen=self.capacity // 3)
-        
-        self.memory_stats = data['memory_stats']
-        
-        if data['projection_matrix'] is not None:
-            self._projection_matrix = data['projection_matrix']
-        
-        self._update_embeddings_cache()
-        
-        self.logger.info(f"메모리 로드: {path}")
-    
-    def get_memory_guidance(self, state: np.ndarray, crisis_level: float) -> Dict:
-        """
-        메모리 가이던스 생성 (Trainer 호환)
-        
+        유사한 과거 성공 전략 검색
+
         Args:
             state: 현재 상태
             crisis_level: 현재 위기 수준
-            
+
         Returns:
-            guidance: 메모리 기반 가이던스
+            추천 행동 또는 None
         """
-        # Recall similar memories
-        similar_memories = self.recall(state, crisis_level)
-        
-        # Create guidance (inline to avoid missing method)
-        if similar_memories:
-            # 유사 경험들의 가중 평균 액션
-            weights = np.array([m['similarity'] for m in similar_memories])
-            weights = weights / weights.sum()
-            
-            actions = np.array([m['action'] for m in similar_memories])
-            recommended_action = np.average(actions, axis=0, weights=weights)
-            
-            # 평균 보상
-            avg_reward = np.mean([m['reward'] for m in similar_memories])
-            
-            guidance = {
-                'has_guidance': True,
-                'recommended_action': recommended_action,
-                'confidence': float(np.mean(weights)),
-                'num_memories': len(similar_memories),
-                'avg_reward': avg_reward
-            }
-        else:
-            guidance = {
-                'has_guidance': False,
-                'recommended_action': None,
-                'confidence': 0.0,
-                'num_memories': 0,
-                'avg_reward': 0.0
-            }
-        
-        # Add tensor format for Trainer
-        import torch
-        if guidance['has_guidance']:
-            guidance['tensor'] = torch.FloatTensor(guidance['recommended_action'])
-        else:
-            guidance['tensor'] = None
-        
-        return guidance
-    
+        if not self.fitted or len(self.memories) < self.k_neighbors:
+            return None
+
+        self.memory_stats['total_recalled'] += 1
+
+        # 유사한 상태 검색
+        distances, indices = self.knn.kneighbors(state.reshape(1, -1))
+
+        # 위기 수준이 비슷한 경험 필터링
+        similar_memories = []
+        crisis_tolerance = 0.2
+
+        for idx in indices[0]:
+            memory = self.memories[idx]
+            if abs(memory['crisis_level'] - crisis_level) < crisis_tolerance:
+                similar_memories.append(memory)
+
+        if not similar_memories:
+            # 위기 수준 조건 완화
+            crisis_tolerance = 0.5
+            for idx in indices[0]:
+                memory = self.memories[idx]
+                if abs(memory['crisis_level'] - crisis_level) < crisis_tolerance:
+                    similar_memories.append(memory)
+
+        if not similar_memories:
+            return None
+
+        # 보상 기반 가중 평균 행동
+        rewards = np.array([m['reward'] for m in similar_memories])
+
+        # 보상 정규화 (softmax)
+        rewards_normalized = np.exp(rewards - np.max(rewards))
+        weights = rewards_normalized / rewards_normalized.sum()
+
+        recommended_action = np.average(
+            [m['action'] for m in similar_memories],
+            weights=weights,
+            axis=0
+        )
+
+        self.memory_stats['successful_recalls'] += 1
+        self.logger.debug(f"메모리 검색 성공: {len(similar_memories)}개 유사 경험 발견")
+
+        return recommended_action
+
+    def get_best_action_for_crisis(self, crisis_level: float) -> Optional[np.ndarray]:
+        """
+        특정 위기 수준에서 최고 성과 행동 반환
+
+        Args:
+            crisis_level: 위기 수준
+
+        Returns:
+            최고 성과 행동 또는 None
+        """
+        if not self.memories:
+            return None
+
+        # 해당 위기 수준의 경험 필터링
+        crisis_tolerance = 0.3
+        relevant_memories = [
+            m for m in self.memories
+            if abs(m['crisis_level'] - crisis_level) < crisis_tolerance
+        ]
+
+        if not relevant_memories:
+            return None
+
+        # 최고 보상 경험 찾기
+        best_memory = max(relevant_memories, key=lambda x: x['reward'])
+        return best_memory['action'].copy()
+
     def clear(self):
         """메모리 초기화"""
         self.memories.clear()
-        for v in self.stratified_memories.values():
-            v.clear()
-        self.embeddings = []
+        self.fitted = False
         self.memory_stats = {
             'total_stored': 0,
             'total_recalled': 0,
             'successful_recalls': 0,
-            'avg_similarity': 0.0
+            'average_reward': 0.0,
         }
-        self.logger.info("메모리 초기화 완료")
+        self.logger.info("Memory Cell 초기화")
+
+    def get_stats(self) -> Dict:
+        """메모리 통계 반환"""
+        stats = self.memory_stats.copy()
+
+        if len(self.memories) > 0:
+            rewards = [m['reward'] for m in self.memories]
+            crisis_levels = [m['crisis_level'] for m in self.memories]
+
+            stats.update({
+                'memory_size': len(self.memories),
+                'max_reward': max(rewards),
+                'min_reward': min(rewards),
+                'std_reward': np.std(rewards),
+                'avg_crisis_level': np.mean(crisis_levels),
+                'recall_success_rate': (
+                    stats['successful_recalls'] / max(stats['total_recalled'], 1)
+                ),
+            })
+
+        return stats
+
+    def _update_average_reward(self):
+        """평균 보상 업데이트"""
+        if self.memories:
+            rewards = [m['reward'] for m in self.memories]
+            self.memory_stats['average_reward'] = np.mean(rewards)
+
+    def get_crisis_distribution(self) -> Dict[str, int]:
+        """저장된 경험의 위기 수준 분포"""
+        distribution = {
+            'low': 0,     # crisis < 0.3
+            'medium': 0,  # 0.3 <= crisis < 0.7
+            'high': 0     # crisis >= 0.7
+        }
+
+        for memory in self.memories:
+            crisis = memory['crisis_level']
+            if crisis < 0.3:
+                distribution['low'] += 1
+            elif crisis < 0.7:
+                distribution['medium'] += 1
+            else:
+                distribution['high'] += 1
+
+        return distribution
+
+    def save(self, path: str):
+        """메모리 저장"""
+        import pickle
+        save_dict = {
+            'memories': list(self.memories),
+            'memory_stats': self.memory_stats,
+            'capacity': self.capacity,
+            'k_neighbors': self.k_neighbors,
+        }
+
+        with open(path, 'wb') as f:
+            pickle.dump(save_dict, f)
+
+        self.logger.info(f"Memory Cell 저장: {path}")
+
+    def load(self, path: str):
+        """메모리 로드"""
+        import pickle
+        with open(path, 'rb') as f:
+            save_dict = pickle.load(f)
+
+        self.memories = deque(save_dict['memories'], maxlen=self.capacity)
+        self.memory_stats = save_dict['memory_stats']
+        self.capacity = save_dict['capacity']
+        self.k_neighbors = save_dict['k_neighbors']
+
+        # k-NN 재학습
+        if len(self.memories) >= self.k_neighbors:
+            states = np.array([m['state'] for m in self.memories])
+            self.knn.fit(states)
+            self.fitted = True
+
+        self.logger.info(f"Memory Cell 로드: {path}, {len(self.memories)}개 메모리")

@@ -1,5 +1,20 @@
 # src/core/env.py
 
+"""
+포트폴리오 거래 환경 (T+1 결제)
+
+목적: Gymnasium 호환 포트폴리오 최적화 환경 구현
+의존: FeatureExtractor (특성 추출), FinFlowLogger (로깅)
+사용처: FinFlowTrainer (메인 학습), OfflineDataset (데이터 수집), 평가 스크립트
+역할: 오프라인 데이터 수집과 온라인 학습의 핵심 환경
+
+구현 내용:
+- T+1 결제 규칙 (시간 t 행동 → t 종가 실행 → t+1 수익률 적용)
+- 거래 비용 및 슬리피지 모델링
+- 상태공간: 시장특성(12D) + 포트폴리오 가중치(30D) + 위기레벨(1D)
+- 행동공간: 심플렉스 위 포트폴리오 가중치
+"""
+
 import numpy as np
 import pandas as pd
 from typing import Tuple, Dict, Any, Optional

@@ -21,7 +21,8 @@ def test_imports():
         # Core modules
         from src.core.env import PortfolioEnv
         from src.core.objectives import DifferentialSharpe, CVaRConstraint
-        from src.core.replay import PrioritizedReplayBuffer, ReplayOfflineDataset
+        from src.core.replay import PrioritizedReplayBuffer
+        from src.core.offline_dataset import OfflineDataset
 
         # Agents
         from src.agents.t_cell import TCell

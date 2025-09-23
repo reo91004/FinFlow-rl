@@ -1,5 +1,21 @@
 # src/data/loader.py
 
+"""
+데이터 로더: yfinance 기반 시장 데이터 수집
+
+목적: 주식 시장 데이터 다운로드 및 캐싱
+의존: yfinance, validator.py
+사용처: FinFlowTrainer._load_data(), 모든 학습/평가 스크립트
+역할: 일관된 데이터 파이프라인 제공
+
+구현 내용:
+- yfinance로 다우존스 30 또는 사용자 정의 종목 다운로드
+- pickle 캐싱으로 반복 다운로드 방지
+- DataValidator 연계로 데이터 품질 검증
+- 결측치 처리 (ffill→bfill)
+- 학습/검증/테스트 자동 분할
+"""
+
 import yfinance as yf
 import pandas as pd
 import numpy as np

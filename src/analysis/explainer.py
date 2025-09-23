@@ -1,5 +1,22 @@
 # src/analysis/explainer.py
 
+"""
+XAI 설명기: 포트폴리오 의사결정 설명 가능 AI
+
+목적: B-Cell 정책의 투자 결정 해석 및 설명 생성
+의존: SHAP, logger.py
+사용처: FinFlowTrainer (선택적 XAI 활성화 시)
+역할: 투자 의사결정 투명성 제공
+
+구현 내용:
+- 3가지 전략: SHAP/Integrated Gradients/LIME
+- 특성 중요도 분석 (어떤 시장 지표가 결정에 영향?)
+- 반사실 분석 (어떤 조건이면 다른 결정?)
+- 위기별 의사결정 패턴 분석
+- 포트폴리오 가중치 변화 설명
+- 리스크 평가 근거 제시
+"""
+
 import numpy as np
 import pandas as pd
 import torch

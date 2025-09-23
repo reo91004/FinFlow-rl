@@ -1,5 +1,22 @@
 # src/analysis/backtest.py
 
+"""
+백테스터: 현실적인 백테스트 시뮬레이션
+
+목적: 학습된 정책의 과거 데이터 검증
+의존: env.py, metrics.py, logger.py
+사용처: 평가 스크립트, 하이퍼파라미터 최적화
+역할: 실제 거래 환경 시뮬레이션
+
+구현 내용:
+- 거래 비용 모델링 (고정+비례+시장충격)
+- 슬리피지 시뮬레이션
+- T+1 결제 주기 반영
+- 세금 및 차입 비용 고려
+- Walk-forward 분석
+- 다중 시나리오 테스트
+"""
+
 import numpy as np
 import pandas as pd
 from typing import Dict, List, Optional, Tuple, Any

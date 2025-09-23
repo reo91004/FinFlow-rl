@@ -1,5 +1,22 @@
 # src/analysis/visualization.py
 
+"""
+시각화: 포트폴리오 성과 및 분석 시각화
+
+목적: 학습/평가 결과의 시각적 표현
+의존: matplotlib, seaborn
+사용처: 분석 스크립트, 보고서 생성
+역할: 직관적인 성과 시각화 제공
+
+구현 내용:
+- 포트폴리오 가중치 변화 (bar/pie chart)
+- 누적 수익률 곡선
+- 낙폭 차트
+- 리스크-수익 산점도
+- 히트맵 (상관관계, 특성 중요도)
+- 학습 곡선 (에피소드별 보상)
+"""
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt

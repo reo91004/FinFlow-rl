@@ -1,5 +1,21 @@
 # src/utils/logger.py
 
+"""
+로거: FinFlow 통합 로깅 시스템
+
+목적: 일관된 로깅 및 메트릭 추적
+의존: tqdm (진행바 호환)
+사용처: 모든 모듈 (전역 로거)
+역할: 세션별 로그 관리 및 메트릭 저장
+
+구현 내용:
+- 세션별 로그 디렉토리 자동 생성 (YYYYMMDD_HHMMSS)
+- tqdm 진행바와 충돌 없는 로깅
+- 콘솔 (INFO) + 파일 (DEBUG) 이중 로깅
+- metrics.jsonl로 학습 메트릭 추적
+- BIPDLogger 별칭으로 하위 호환성 유지
+"""
+
 import logging
 import os
 import datetime

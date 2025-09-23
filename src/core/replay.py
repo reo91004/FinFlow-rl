@@ -1,5 +1,20 @@
 # src/core/replay.py
 
+"""
+경험 재생 버퍼 (온라인 학습)
+
+목적: 우선순위/하이브리드 재생 버퍼 구현
+의존: numpy, torch
+사용처: BCell (온라인 학습)
+역할: 실시간 경험 저장 및 효율적 샘플링
+
+구현 내용:
+- PrioritizedReplayBuffer: TD 오차 기반 우선순위
+- ReservoirBuffer: 균등 샘플링 (다양성 유지)
+- HybridReplayBuffer: 우선순위 + 균등 샘플링
+- Importance sampling 보정
+"""
+
 import numpy as np
 import torch
 from typing import Tuple, Optional, Dict, Any
@@ -256,119 +271,3 @@ class HybridReplayBuffer:
         # 전체 유니크 경험 수 (중복 제거는 복잡하므로 최대값 사용)
         return max(len(self.prioritized_buffer), len(self.reservoir_buffer))
 
-class ReplayOfflineDataset:
-    """
-    오프라인 IQL 학습용 데이터셋 (Replay 버전)
-
-    과거 경험을 저장하고 배치 단위로 제공
-    환경에서 직접 데이터를 수집하는 기능 포함
-
-    Note: src/core/offline_dataset.py의 OfflineDataset과 구분
-    """
-
-    def __init__(self, capacity: int = 100000):
-        self.transitions = []
-        self.capacity = capacity
-
-    def add_trajectory(self, trajectory: list):
-        """전체 에피소드 추가"""
-        for transition in trajectory:
-            if len(self.transitions) >= self.capacity:
-                # FIFO로 오래된 데이터 제거
-                self.transitions.pop(0)
-            self.transitions.append(transition)
-
-    def add_from_env(self, env, policy=None, n_episodes: int = 100):
-        """
-        환경에서 데이터 수집
-
-        Args:
-            env: 환경
-            policy: 정책 (None이면 랜덤)
-            n_episodes: 수집할 에피소드 수
-        """
-        from src.utils.logger import FinFlowLogger
-        logger = FinFlowLogger("ReplayOfflineDataset")
-        
-        for episode in range(n_episodes):
-            state, info = env.reset()
-            trajectory = []
-            done = False
-            truncated = False
-            
-            while not done and not truncated:
-                if policy is None:
-                    # 랜덤 정책
-                    action = np.random.dirichlet(np.ones(env.n_assets))
-                else:
-                    action = policy(state)
-                
-                next_state, reward, done, truncated, info = env.step(action)
-                
-                trajectory.append(Transition(
-                    state=state,
-                    action=action,
-                    reward=reward,
-                    next_state=next_state,
-                    done=done or truncated,
-                    info=info
-                ))
-                
-                state = next_state
-            
-            self.add_trajectory(trajectory)
-            
-            if (episode + 1) % 10 == 0:
-                logger.info(f"수집 진행: {episode + 1}/{n_episodes} 에피소드")
-        
-        logger.info(f"데이터 수집 완료: {len(self.transitions)} transitions")
-    
-    def get_batch(self, batch_size: int, device: torch.device = None) -> Dict[str, torch.Tensor]:
-        """
-        배치 샘플링 (텐서 변환 포함)
-        
-        Args:
-            batch_size: 배치 크기
-            device: 텐서를 올릴 디바이스
-            
-        Returns:
-            dict with 'states', 'actions', 'rewards', 'next_states', 'dones'
-        """
-        if len(self.transitions) == 0:
-            return None
-        
-        batch = random.sample(self.transitions, min(batch_size, len(self.transitions)))
-        
-        # numpy array로 먼저 변환하여 속도 개선
-        states = torch.FloatTensor(np.array([t.state for t in batch]))
-        actions = torch.FloatTensor(np.array([t.action for t in batch]))
-        rewards = torch.FloatTensor(np.array([t.reward for t in batch])).unsqueeze(1)
-        next_states = torch.FloatTensor(np.array([t.next_state for t in batch]))
-        dones = torch.FloatTensor(np.array([t.done for t in batch])).unsqueeze(1)
-        
-        # device가 지정되면 해당 device로 이동
-        if device is not None:
-            states = states.to(device)
-            actions = actions.to(device)
-            rewards = rewards.to(device)
-            next_states = next_states.to(device)
-            dones = dones.to(device)
-        
-        return {
-            'states': states,
-            'actions': actions,
-            'rewards': rewards,
-            'next_states': next_states,
-            'dones': dones
-        }
-    
-    def save(self, path: str):
-        """데이터셋 저장"""
-        torch.save(self.transitions, path)
-    
-    def load(self, path: str):
-        """데이터셋 로드"""
-        self.transitions = torch.load(path)
-    
-    def __len__(self):
-        return len(self.transitions)

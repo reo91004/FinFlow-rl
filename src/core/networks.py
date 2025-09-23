@@ -1,5 +1,20 @@
 # src/core/networks.py
 
+"""
+신경망 아키텍처 (Actor-Critic 네트워크)
+
+목적: Dirichlet 정책, Q-네트워크, 가치 네트워크 구현
+의존: PyTorch, Dirichlet 분포
+사용처: IQLAgent (오프라인), BCell (온라인), TD3BC
+역할: 포트폴리오 가중치 생성 및 가치 추정
+
+구현 내용:
+- DirichletActor: 유효한 포트폴리오 가중치 생성 (합=1)
+- QNetwork: 상태-행동 Q값 추정
+- ValueNetwork: 상태 가치 추정
+- EnsembleQNetwork: Q-네트워크 앙상블 (불확실성 추정)
+"""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -107,7 +122,30 @@ class DirichletActor(nn.Module):
         """
         concentration = self.forward(state, crisis_level)
         return Dirichlet(concentration)
-    
+
+    def sample(self, state: torch.Tensor, crisis_level: Optional[float] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Sample action and compute log probability (for SAC/TD3BC compatibility)
+
+        Args:
+            state: [batch_size, state_dim]
+            crisis_level: Optional crisis level for adjustment
+
+        Returns:
+            action: [batch_size, action_dim] - sampled portfolio weights
+            log_prob: [batch_size, 1] - log probability of the action
+        """
+        dist = self.get_distribution(state, crisis_level)
+        action = dist.rsample()  # Reparameterized sampling for backprop
+
+        # Normalize to ensure sum = 1
+        action = action / action.sum(dim=-1, keepdim=True)
+
+        # Compute log probability
+        log_prob = dist.log_prob(action).unsqueeze(-1)
+
+        return action, log_prob
+
     def get_action(self, state: torch.Tensor, deterministic: bool = False,
                    crisis_level: Optional[float] = None) -> Tuple[torch.Tensor, torch.Tensor]:
         """

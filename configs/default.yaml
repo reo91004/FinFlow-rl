@@ -1,349 +1,102 @@
 # configs/default.yaml
-# BIPD 2.0 기본 설정 파일
+# FinFlow-RL 리팩토링된 기본 설정
 
 seed: 42
 device: auto # cpu|cuda|auto
 
 # 데이터 설정
 data:
-  symbols: [
-      "GS",
-      "MSFT",
-      "CAT",
-      "HD",
-      "SHW",
-      "V",
-      "AXP",
-      "UNH",
-      "JPM",
-      "MCD",
-      "AMGN",
-      "TRV",
-      "IBM",
-      "CRM",
-      "AAPL",
-      "AMZN",
-      "BA",
-      "HON",
-      "NVDA",
-      "JNJ",
-      "MMM",
-      "CVX",
-      "PG",
-      "DIS",
-      "WMT",
-      "MRK",
-      "NKE",
-      "CSCO",
-      "KO",
-      "VZ",
-    ] # 시가총액 상위 30
-  start: "2008-01-01"
-  end: "2020-12-31"
-  test_start: "2021-01-01"
-  test_end: "2024-12-31"
-  interval: "1d"
-  cache_dir: "data/cache"
-
-# 특성 추출 설정
-features:
-  window: 20
-  # 동적 feature 설정
-  dimensions:
-    returns: 3 # 최근 수익률, 평균 수익률, 변동성
-    technical: 4 # RSI, MACD, Bollinger, Volume
-    structure: 3 # 상관관계, 베타, 최대 낙폭
-    momentum: 2 # 단기, 장기 모멘텀
-  total_dim: 12 # 총 feature 차원 (sum of above)
-  indicators: ["returns", "vol_ema", "momentum", "rsi", "macd", "bollinger", "correlation"]
-  normalize: true
+  symbols: ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META']
+  period: '5y'
+  interval: '1d'
+  cache: true
 
 # 환경 설정
 env:
-  initial_capital: 1000000
-  turnover_cost: 0.001 # 10 bps
-  slip_coeff: 0.0005 # 슬리피지
-  no_trade_band: 0.001 # 0.1% 이하 변화 무시 (더 완화)
-  max_leverage: 1.0 # 레버리지 제한
-  max_turnover: 0.9 # 일일 최대 턴오버 (완화)
+  initial_balance: 1000000
+  transaction_cost: 0.001
+  max_leverage: 1.0
+  window_size: 20
 
-# T-Cell 설정 (위기 감지)
-tcell:
-  method: "iforest" # iforest|bocpd|hmm
-  contamination: 0.1
-  n_estimators: 100
-  ema_beta: 0.9
-  shap_topk: 5
-  crisis_thresholds:
-    high: 0.7
-    medium: 0.4
+# 특성 추출
+feature_dim: 12
 
-# B-Cell 설정 (강화학습)
+# 오프라인 학습
+offline:
+  method: 'iql'  # 'iql' or 'td3bc'
+  epochs: 50
+  batch_size: 256
+
+  # IQL 전용
+  expectile: 0.7
+  temperature: 3.0
+
+  # TD3+BC 전용
+  bc_weight: 2.5
+  policy_delay: 2
+  normalize_q: true
+
+# B-Cell (REDQ)
 bcell:
-  # 오프라인 사전학습
-  offline_algo: "iql"
-  iql_expectile: 0.7 # IQL 원논문 기본값 (Kostrikov et al., 2022)
-  iql_temperature: 1.0 # 3.0 → 1.0 (안정성 강화)
+  # 네트워크
+  hidden_dims: [256, 256]
 
-  # 온라인 학습
-  online_algo: "dist_sac_cql"
+  # REDQ 설정
+  n_critics: 5
+  m_sample: 2
+  utd_ratio: 20
 
-  # 네트워크 구조
-  actor_hidden: [256, 256]
-  critic_hidden: [256, 256]
-  n_quantiles: 64 # 32 → 64 (더 정밀한 분포 추정)
+  # 학습
+  actor_lr: 3e-4
+  critic_lr: 3e-4
+  alpha_lr: 3e-4
 
-  # 학습률
-  actor_lr: 3.0e-4 # 원논문 기본값 유지
-  critic_lr: 3.0e-4
-  alpha_lr: 3.0e-4
-
-  # SAC 파라미터
+  # RL
   gamma: 0.99
   tau: 0.005
-  alpha_init: 0.75 # 0.2 → 0.75 (연구 검증값, 중요!)
-  alpha_min: 5.0e-4
-  alpha_max: 0.5 # 0.2 → 0.5 (범위 확대)
-  target_entropy_ratio: 0.5 # 0.98 → 0.5 (표준 권장값)
+  alpha: 0.2
 
-  # CQL 설정 (완화된 정규화)
-  cql_alpha_start: 0.1 # 1.0 → 0.1 (더욱 완화된 정규화)
-  cql_alpha_end: 0.5 # 2.0 → 0.5 (점진적 증가)
-  cql_num_samples: 8
+  # 버퍼
+  buffer_size: 100000
 
-  # Gradient clipping
-  grad_clip: 1.0
+# T-Cell
+tcell:
+  contamination: 0.1
+  n_estimators: 100
+  window_size: 100
 
-  # Gradient accumulation (IQL 안정성)
-  gradient_accumulation_steps: 4
-  warmup_steps: 1000
-  value_regularization: 0.01
-
-# Memory Cell 설정
+# Memory Cell
 memory:
-  capacity: 50000 # 500 → 50000 (통일)
-  embedding_dim: 32
-  similarity_threshold: 0.7
+  capacity: 1000
   k_neighbors: 5
 
-# Gating Network 설정
-gating:
-  hidden_dim: 128
-  temperature: 1.0
-  min_dwell_steps: 5
-
-# Distributional RL 설정 (신규)
-distributional:
-  n_quantiles: 64 # 더 정밀한 분포 추정
-  risk_measure: "cvar" # cvar, var, mean
-  risk_sensitivity: 0.05 # risk measure를 위한 percentile
-  huber_kappa_min: 0.5
-  huber_kappa_max: 2.0
-  quantile_embedding_dim: 64
-
-# Dirichlet Policy 설정 (신규)
-dirichlet:
-  dynamic_concentration: true # crisis level에 따른 동적 조정
-  crisis_scaling: 0.5 # crisis 시 concentration 감소 비율
-  base_concentration: 1.5 # 2.0 → 1.5 (탐색 증가) # 기본 concentration
-  min_concentration: 1.0 # 0.5 → 1.0 (안정성 강화)
-  max_concentration: 50.0
-  action_smoothing: true # EMA 기반 action smoothing
-  smoothing_alpha: 0.95
-
-# 목적함수 설정
-objectives:
-  # Differential Sharpe
-  sharpe_beta: 1.0
-  sharpe_ema_alpha: 0.99
-  sharpe_epsilon: 1.0e-8
-
-  # CVaR 제약
-  cvar_alpha: 0.05 # 5% CVaR
-  cvar_target: -0.01 # -2% → -1% (완화)
-  lambda_cvar: 5.0 # 1.0 → 5.0 (강화)
-
-  # 추가 페널티
-  lambda_turn: 0.1 # 턴오버 페널티
-  lambda_dd: 0.0 # 낙폭 페널티
-
-  # 보상 정규화
-  r_clip: 5.0
-  reward_ema_alpha: 0.99
-
 # 학습 설정
-train:
-  # 오프라인 사전학습
-  offline_episodes: 500 # 데이터 수집 에피소드 수
-  offline_training_epochs: 200 # IQL 학습 에폭 수
-  offline_steps_per_epoch: 1000 # 에폭당 스텝 수
-  offline_batch_size: 512
-  force_recollect_offline: false # 기존 오프라인 데이터 재사용 (true면 재수집)
+online_episodes: 200
+skip_offline: false
+early_stopping_patience: 20
 
-  # 온라인 학습
-  online_episodes: 1000 # SAC 학습 에피소드 수
-  online_batch_size: 512
+# Ablation study
+ablation:
+  use_tcell: true
+  use_memory: true
+  use_xai: true
+  offline_method: 'iql'
 
-  # Experience replay
-  buffer_size: 100000
-  min_buffer_size: 256 # 1000 → 256 (빠른 학습 시작)
-  prioritized_replay: true
-  per_alpha: 0.6
-  per_beta: 0.4
+# 기타
+log_level: 'INFO'
+save_freq: 10  # 체크포인트 저장 빈도
 
-  # B-Cell specific
-  recent_rewards_maxlen: 100 # deque maxlen for recent rewards tracking
-  quantile_kappa: 1.0 # Quantile Huber loss kappa parameter
-  quantile_kappa_dynamic: true # 동적 kappa 조정
-  risk_sensitive_update: true # risk-sensitive gradient weighting
+# 목표 메트릭
+targets:
+  sharpe_ratio: 1.5
+  max_drawdown: 0.25
+  cvar_95: -0.02
 
-  # 평가 및 저장
-  eval_interval: 50 # 에피소드 단위
-  save_interval: 200 # 에피소드 단위
-  log_interval: 1 # 에피소드 단위
-  checkpoint_interval: 100 # 체크포인트 저장 간격
-
-  # Feature extraction
-  feature_window: 20 # FeatureExtractor window
-  momentum_lookback: 20 # Momentum strategy lookback
-  rsi_window: 14 # RSI indicator window
-  bollinger_window: 20 # Bollinger Bands window
-  macd_fast: 12 # MACD fast period
-  macd_slow: 26 # MACD slow period
-  macd_signal: 9 # MACD signal period
-
-  # Gating Network
-  gating_hidden_dim: 128
-  gating_temperature: 1.0
-  n_experts: 5
-  gating_performance_maxlen: 100 # deque maxlen for performance history
-
-  # B-Cell network configs (for evaluation compatibility)
-  bcell_actor_hidden: [256, 256]
-  bcell_critic_hidden: [256, 256]
-  bcell_n_quantiles: 64 # 32 → 64 (더 정밀한 분포 추정)
-  bcell_actor_lr: 3e-4
-  bcell_critic_lr: 3e-4
-  tcell_contamination: 0.1
-  tcell_n_estimators: 100
-
-  # 조기 종료
-  early_stop_patience: 50000
-  early_stop_min_delta: 0.001
-
-# 평가 설정
-eval:
-  episodes: 10
-  benchmark: "equal_weight" # equal_weight|buy_hold|60_40
-  metrics: ["sharpe", "cvar", "mdd", "turnover", "returns"]
-
-# 모니터링 설정
-monitoring:
-  use_wandb: false # 로컬 실험용
-  use_tensorboard: true # 기본 활성화
-  wandb_project: "finflow-rl"
-  wandb_entity: null
-
-  # 안정성 체크
-  q_value_check: true
-  q_value_threshold: 10.0 # 100.0 → 10.0 (포트폴리오 환경에 적합)
-  entropy_check: true
-  entropy_min: 0.1
-
-  # StabilityMonitor 설정
-  stability:
+# 베이스라인 설정
+baselines:
+  equal_weight:
     enabled: true
-    window_size: 100 # 히스토리 윈도우 크기
-    n_sigma: 3.0 # 이상치 판정 시그마
-    max_weight_change: 0.2 # 포트폴리오 가중치 최대 변화 (20%)
-    min_effective_assets: 3 # 최소 유효 자산 수
-    log_interval: 100 # 로그 요약 출력 간격
-    verbose: false # 상세 디버그 로그
-
-  # 자동 개입
-  auto_intervention: true
-  intervention_threshold: 3.0 # 3-sigma
-  rollback_on_divergence: true
-
-# XAI 설정
-xai:
-  enable_shap: true
-  enable_counterfactual: true
-  enable_regime_analysis: true
-  report_frequency: 10 # 매 10 에피소드마다 리포트
-
-# 데이터 검증 설정
-data_validation:
-  min_samples: 252 # 최소 1년 데이터
-  max_nan_ratio: 0.2 # 최대 20% 결측치
-  outlier_iqr_factor: 5 # IQR 5배 이상 이상치
-  extreme_return_threshold: 0.5 # 일일 ±50% 이상
-  min_variance_threshold: 1.0e-8 # 최소 분산
-  max_correlation_threshold: 0.99 # 최대 상관관계
-  max_time_gap_days: 5 # 최대 날짜 간격
-  forward_fill_limit: 5 # forward fill 최대 제한
-  backward_fill_limit: 5 # backward fill 최대 제한
-  interpolate_limit: 10 # 보간 최대 제한
-
-# 백테스트 설정
-backtest:
-  # 거래 비용 모델
-  cost_model:
-    fixed_cost: 5.0 # 고정 수수료 (달러)
-    proportional_cost: 0.001 # 비례 수수료 (0.1%)
-    min_cost: 1.0 # 최소 수수료
-
-  # 슬리피지 모델
-  slippage_model:
-    base_slippage: 0.0005 # 기본 슬리피지 (0.05%)
-    volume_factor: 0.1 # 거래량 영향 계수
-    volatility_factor: 0.2 # 변동성 영향 계수
-    model_type: "square_root" # linear, square_root, exponential
-
-  # 시장 충격 모델
-  market_impact_model:
-    temporary_impact: 0.1 # 일시적 충격
-    permanent_impact: 0.05 # 영구적 충격
-    decay_rate: 0.5 # 충격 감소율
-
-  # 차입 비용
-  borrowing_cost:
-    rate: 0.03 # 연 3% 차입 비용
-    margin_requirement: 0.5 # 50% 증거금 요구
-
-  # 제약 조건
-  constraints:
-    max_position_size: 0.3 # 최대 포지션 크기 (완화)
-    min_trade_size: 0 # 최소 거래 금액 제거
-    max_leverage: 2.0 # 최대 레버리지
-    min_liquidity: 1000000 # 최소 유동성 요구
-
-# 실거래 시스템 설정
-live_trading:
-  broker: "alpaca" # alpaca, interactive_brokers, binance
-  mode: "paper" # paper or live
-  symbols: ["AAPL", "GOOGL", "MSFT", "AMZN", "META"]
-  rebalance_frequency: "daily" # minute, hourly, daily
-  initial_capital: 100000
-
-  # 위험 관리
-  risk:
-    max_drawdown: 0.25
-    position_limit: 0.2
-    daily_loss_limit: 0.05
-    var_limit: 0.02
-    stop_loss: 0.1
-    take_profit: 0.5
-
-  # 주문 실행
-  execution:
-    order_type: "market" # market, limit
-    slippage_buffer: 0.001
-    timeout: 30
-    retry_count: 3
-
-  # 데이터 설정
-  data:
-    lookback_period: 30
-    update_frequency: 1 # seconds
-    data_source: "yfinance" # yfinance, alpaca, polygon
+  standard_sac:
+    enabled: true
+    n_episodes: 100
+    hidden_dims: [256, 256]

@@ -1,5 +1,21 @@
 # src/data/features.py
 
+"""
+특성 추출기: 동적 차원 시장 특성 생성
+
+목적: 가격 데이터에서 12차원 시장 특성 추출
+의존: ta (technical analysis), logger.py
+사용처: PortfolioEnv (상태 생성), T-Cell (위기 감지 입력)
+역할: 원시 가격 데이터를 학습 가능한 특성으로 변환
+
+구현 내용:
+- 수익률 특성: 최근/평균/변동성 (3차원)
+- 기술적 지표: RSI, MACD, 볼린저밴드, 거래량비율 (4차원)
+- 시장 구조: 상관관계, 베타, 최대낙폭 (3차원)
+- 모멘텀: 단기(5일), 장기(20일) (2차원)
+- 총 12차원 특성 벡터 생성
+"""
+
 import pandas as pd
 import numpy as np
 import ta
