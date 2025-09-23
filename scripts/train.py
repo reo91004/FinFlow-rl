@@ -41,8 +41,8 @@ def main():
                        help='Path to checkpoint to resume from')
     parser.add_argument('--debug', action='store_true',
                        help='Debug mode with verbose output')
-    parser.add_argument('--mode', type=str, default='full', choices=['full', 'iql', 'sac'],
-                       help='Training mode: full (IQL+SAC), iql (only), or sac (only)')
+    parser.add_argument('--mode', type=str, default='full', choices=['full', 'offline', 'online'],
+                       help='Training mode: full (Offline+Online), offline (IQL/TD3BC), or online (REDQ/TQC)')
     parser.add_argument('--use-trainer', action='store_true', default=True,
                        help='Use integrated trainer (default: True)')
     args = parser.parse_args()
@@ -69,11 +69,11 @@ def main():
         
         # 학습 실행
         if args.mode == 'full':
-            trainer.train()  # IQL + SAC
-        elif args.mode == 'iql':
-            trainer._offline_pretrain()  # IQL만
-        elif args.mode == 'sac':
-            trainer._online_finetune()  # SAC만
+            trainer.train()  # IQL + Online (REDQ/TQC)
+        elif args.mode == 'offline':
+            trainer._offline_pretrain()  # 오프라인 학습만 (IQL/TD3BC)
+        elif args.mode == 'online':
+            trainer._online_finetune()  # Online 학습만 (REDQ/TQC)
         
         logger.info("\n🎉 FinFlow-RL 학습이 완료되었습니다!")
         return
@@ -86,8 +86,8 @@ def main():
     logger.error("=" * 80)
     logger.info("\n사용법:")
     logger.info("  python scripts/train.py --use-trainer --mode full")
-    logger.info("  python scripts/train.py --use-trainer --mode iql  # IQL만")
-    logger.info("  python scripts/train.py --use-trainer --mode sac  # SAC만")
+    logger.info("  python scripts/train.py --use-trainer --mode offline  # 오프라인 학습 (IQL/TD3BC)")
+    logger.info("  python scripts/train.py --use-trainer --mode online  # Online (REDQ/TQC)")
     return
     
     # 더 이상 랜덤 정책 테스트를 지원하지 않음

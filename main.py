@@ -54,8 +54,6 @@ def main():
     # Data parameters (override config if provided)
     parser.add_argument('--tickers', type=str, nargs='+', default=None,
                        help='Stock tickers to use (overrides config)')
-    parser.add_argument('--data-period', type=str, default=None,
-                       help='Data period (1y, 2y, 5y, etc.)')
     parser.add_argument('--no-cache', action='store_true',
                        help='Force re-download data')
     
@@ -114,18 +112,12 @@ def main():
         if 'data' not in config_dict:
             config_dict['data'] = {}
         config_dict['data']['symbols'] = args.tickers
-    
-    if args.data_period:
-        if 'data' not in config_dict:
-            config_dict['data'] = {}
-        config_dict['data']['period'] = args.data_period
-    
+
     # Get values from config or use defaults
     # Support both 'tickers' and 'symbols' field names
     tickers = config_dict.get('data', {}).get('tickers') or \
-              config_dict.get('data', {}).get('symbols', 
+              config_dict.get('data', {}).get('symbols',
                                              ['AAPL', 'GOOGL', 'MSFT', 'AMZN', 'META'])
-    data_period = config_dict.get('data', {}).get('period', '2y')
     
     # Set seed
     seed = args.seed or config_dict.get('system', {}).get('seed', 42)
@@ -256,7 +248,11 @@ def main():
         demo_config = {
             'data': {
                 'symbols': ['AAPL', 'GOOGL', 'MSFT'],  # 데모용 3개 심볼
-                'period': '2y'
+                'start': '2023-01-01',
+                'end': '2024-06-30',
+                'test_start': '2024-07-01',
+                'test_end': '2024-12-31',
+                'val_ratio': 0.2
             },
             'offline': {
                 'epochs': 10,  # Reduced for demo

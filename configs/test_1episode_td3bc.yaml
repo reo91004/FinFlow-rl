@@ -7,7 +7,13 @@ device: cpu  # 빠른 테스트를 위해 CPU 사용
 # 데이터 설정
 data:
   symbols: ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META']
-  period: '2y'  # 적당한 기간
+
+  # 날짜 기반 설정
+  start: "2023-01-01"      # 전체 데이터 시작
+  end: "2024-06-30"        # train+val 종료
+  test_start: "2024-07-01" # 테스트 시작
+  test_end: "2024-12-31"   # 테스트 종료
+  val_ratio: 0.2           # train에서 val 분리 비율
   interval: '1d'
   cache: true
 

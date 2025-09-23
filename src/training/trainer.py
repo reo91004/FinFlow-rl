@@ -344,8 +344,17 @@ class FinFlowTrainer:
         # 컴포넌트 초기화
         self._initialize_components()
 
-        # 모니터링
-        self.monitor = PerformanceMonitor()
+        # 모니터링 설정
+        monitoring_config = self.config.get('monitoring', {})
+        self.monitor = PerformanceMonitor(
+            use_tensorboard=monitoring_config.get('use_tensorboard', True),
+            use_wandb=monitoring_config.get('use_wandb', False),
+            wandb_config={
+                'wandb_project': monitoring_config.get('wandb_project', 'finflow-rl'),
+                'wandb_entity': monitoring_config.get('wandb_entity'),
+                'config': self.config  # 전체 config 로깅
+            }
+        )
 
     def _load_data(self):
         """데이터 로드 및 분할"""
@@ -354,14 +363,37 @@ class FinFlowTrainer:
         loader = DataLoader(self.config.get('data', {}))
         self.price_data = loader.load()
 
-        # 학습/검증/테스트 분할
-        n = len(self.price_data)
-        train_end = int(n * 0.6)
-        val_end = int(n * 0.8)
+        # 데이터 분할
+        data_config = self.config.get('data', {})
+        val_ratio = data_config.get('val_ratio', 0.2)  # train에서 val 비율
 
-        self.train_data = self.price_data[:train_end]
-        self.val_data = self.price_data[train_end:val_end]
-        self.test_data = self.price_data[val_end:]
+        # 날짜 기반 분할
+        test_start = data_config.get('test_start')
+        dates = self.price_data.index
+
+        if test_start:
+            # 명시적 날짜 분할
+            end = data_config.get('end')
+            if end:
+                train_full_mask = dates <= end
+                train_full_data = self.price_data[train_full_mask]
+            else:
+                train_full_mask = dates < test_start
+                train_full_data = self.price_data[train_full_mask]
+
+            # 테스트 데이터
+            test_mask = dates >= test_start
+            self.test_data = self.price_data[test_mask]
+        else:
+            # 기본 80:20 분할
+            split_idx = int(len(self.price_data) * 0.8)
+            train_full_data = self.price_data[:split_idx]
+            self.test_data = self.price_data[split_idx:]
+
+        # train에서 val 분리
+        val_split = int(len(train_full_data) * (1 - val_ratio))
+        self.train_data = train_full_data[:val_split]
+        self.val_data = train_full_data[val_split:]
 
         # 특성 추출기
         self.feature_extractor = FeatureExtractor()
@@ -383,12 +415,17 @@ class FinFlowTrainer:
 
         # 환경 초기화 (config 풀어서 전달)
         env_config = self.config.get('env', {})
+        objective_config = self.config.get('objectives')  # 목적함수 설정
+        use_advanced_reward = objective_config is not None  # objectives 설정이 있으면 고급 보상 사용
+
         self.train_env = PortfolioEnv(
             price_data=self.train_data,
             feature_extractor=self.feature_extractor,
             initial_capital=env_config.get('initial_balance', 1000000),
             transaction_cost=env_config.get('transaction_cost', 0.001),
-            max_leverage=env_config.get('max_leverage', 1.0)
+            max_leverage=env_config.get('max_leverage', 1.0),
+            objective_config=objective_config,
+            use_advanced_reward=use_advanced_reward
         )
 
         self.val_env = PortfolioEnv(
@@ -396,7 +433,9 @@ class FinFlowTrainer:
             feature_extractor=self.feature_extractor,
             initial_capital=env_config.get('initial_balance', 1000000),
             transaction_cost=env_config.get('transaction_cost', 0.001),
-            max_leverage=env_config.get('max_leverage', 1.0)
+            max_leverage=env_config.get('max_leverage', 1.0),
+            objective_config=objective_config,
+            use_advanced_reward=use_advanced_reward
         )
 
         # T-Cell (조건부)
@@ -649,12 +688,17 @@ class FinFlowTrainer:
     def _evaluate(self, data: pd.DataFrame, phase: str, max_episodes: int = 10) -> Dict:
         """정책 평가"""
         env_config = self.config.get('env', {})
+        objective_config = self.config.get('objectives')
+        use_advanced_reward = objective_config is not None
+
         env = PortfolioEnv(
             price_data=data,
             feature_extractor=self.feature_extractor,
             initial_capital=env_config.get('initial_balance', 1000000),
             transaction_cost=env_config.get('transaction_cost', 0.001),
-            max_leverage=env_config.get('max_leverage', 1.0)
+            max_leverage=env_config.get('max_leverage', 1.0),
+            objective_config=objective_config,
+            use_advanced_reward=use_advanced_reward
         )
 
         episode_returns = []

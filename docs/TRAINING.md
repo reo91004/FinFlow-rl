@@ -453,8 +453,8 @@ python -m memory_profiler main.py --mode train
 # Step 1: 작은 데이터로 테스트
 python main.py --mode demo
 
-# Step 2: IQL만 먼저
-python scripts/train.py --mode iql
+# Step 2: 오프라인 학습만 (IQL/TD3BC)
+python scripts/train.py --mode offline
 
 # Step 3: 전체 파이프라인
 python scripts/train.py --mode full

@@ -38,7 +38,13 @@ data:
       "WBA", # Walgreens Boots Alliance
       "WMT", # Walmart
     ] # 다우존스 30 종목
-  period: "5y"
+
+  # 날짜 기반 데이터 설정
+  start: "2008-01-01" # 전체 데이터 시작
+  end: "2020-12-31" # train+val 종료
+  test_start: "2021-01-01" # 테스트 시작
+  test_end: "2024-12-31" # 테스트 종료
+  val_ratio: 0.2 # train에서 val 분리 비율
   interval: "1d"
   cache: true
 
@@ -46,8 +52,12 @@ data:
 env:
   initial_balance: 1000000
   transaction_cost: 0.001
+  slippage: 0.0005
+  no_trade_band: 0.002
   max_leverage: 1.0
+  max_turnover: 0.5
   window_size: 20
+  use_advanced_reward: false # PortfolioObjective 사용 여부
 
 # 특성 추출
 feature_dim: 12
@@ -103,6 +113,13 @@ bcell:
   # 버퍼
   buffer_size: 100000
 
+  # Dirichlet 정책 설정 (포트폴리오 가중치 생성)
+  dirichlet:
+    concentration_init: 1.0 # 초기 concentration 매개변수 (낮을수록 더 집중된 분포)
+    concentration_min: 0.1 # 최소값
+    concentration_max: 10.0 # 최대값
+    epsilon: 1e-6 # 수치 안정성
+
 # T-Cell
 tcell:
   contamination: 0.1
@@ -126,9 +143,52 @@ ablation:
   use_xai: true
   offline_method: "iql"
 
+# 모니터링 설정
+monitoring:
+  use_tensorboard: true
+  use_wandb: false
+  wandb_project: "finflow-rl"
+  wandb_entity: null
+  log_frequency: 10 # 로깅 주기 (스텝)
+
+  # 안정성 체크
+  stability_check:
+    enabled: true
+    q_value_threshold: 1000.0
+    gradient_clip: 1.0
+    check_frequency: 100
+
+# 분포적 RL 설정 (TQC용)
+distributional:
+  n_quantiles: 32 # 분위수 개수
+  kappa: 1.0 # Huber loss kappa
+  risk_measure: "neutral" # neutral, cvar, wang
+  risk_param: 0.1 # risk measure 매개변수
+  quantile_embedding_dim: 64
+
 # 기타
 log_level: "INFO"
-save_freq: 10 # 체크포인트 저장 빈도
+save_freq: 100 # 체크포인트 저장 빈도 (스텝 단위)
+
+# 목적함수 설정 (PortfolioObjective)
+objectives:
+  # Differential Sharpe
+  sharpe_beta: 1.0 # Sharpe 보너스 가중치
+  sharpe_ema_alpha: 0.99 # EMA 평활 계수
+  sharpe_epsilon: 1.0e-8
+
+  # CVaR 제약
+  cvar_alpha: 0.05 # 5% CVaR
+  cvar_target: -0.02 # 목표 CVaR (최대 -2% 손실)
+  lambda_cvar: 1.0 # CVaR 페널티 가중치
+
+  # 추가 페널티
+  lambda_turn: 0.1 # 턴오버 페널티
+  lambda_dd: 0.0 # 드로다운 페널티
+
+  # 보상 정규화
+  r_clip: 5.0 # 보상 클리핑
+  reward_ema_alpha: 0.99 # 보상 EMA
 
 # 목표 메트릭
 targets:

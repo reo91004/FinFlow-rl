@@ -1,6 +1,5 @@
-# 체크포인트 저장 테스트용 설정
+# 고급 보상 함수 테스트용 설정
 
-# 시스템 설정
 seed: 42
 device: cpu
 
@@ -24,7 +23,27 @@ env:
   max_leverage: 1.0
   window_size: 20
 
-# 오프라인 사전학습
+# 목적함수 설정 (PortfolioObjective) - 고급 보상 함수 활성화
+objectives:
+  # Differential Sharpe
+  sharpe_beta: 1.0
+  sharpe_ema_alpha: 0.99
+  sharpe_epsilon: 1.0e-8
+
+  # CVaR 제약
+  cvar_alpha: 0.05
+  cvar_target: -0.02
+  lambda_cvar: 1.0
+
+  # 추가 페널티
+  lambda_turn: 0.1
+  lambda_dd: 0.0
+
+  # 보상 정규화
+  r_clip: 5.0
+  reward_ema_alpha: 0.99
+
+# 오프라인 학습
 offline:
   method: 'td3bc'
   epochs: 1
@@ -35,7 +54,7 @@ offline:
   policy_delay: 2
   normalize_q: true
 
-# B-Cell 설정 (REDQ)
+# B-Cell 설정
 bcell:
   algorithm: 'REDQ'
   hidden_dims: [256, 256]
@@ -63,34 +82,21 @@ memory:
   capacity: 1000
   k_neighbors: 5
 
-# 온라인 학습 - 짧게 설정해서 100스텝 테스트
-online_episodes: 3  # 3 에피소드만 실행 (약 200-300 스텝)
+# 온라인 학습
+online_episodes: 2  # 빠른 테스트
 skip_offline: false
 early_stopping_patience: 20
 
 # 평가 설정
-validation_freq: 2  # 2 에피소드마다 검증
-save_freq: 100  # 100스텝마다 저장
+validation_freq: 1
+save_freq: 100
 
 # Ablation 설정
 ablation:
   use_tcell: true
   use_memory: true
-  use_xai: true
+  use_xai: false
   offline_method: 'td3bc'
 
 # 로깅
 log_level: 'INFO'
-
-# 목표 메트릭
-targets:
-  sharpe_ratio: 1.5
-  max_drawdown: 0.25
-  cvar_95: -0.02
-
-# 베이스라인 비교
-baselines:
-  equal_weight:
-    enabled: true
-  standard_sac:
-    enabled: false

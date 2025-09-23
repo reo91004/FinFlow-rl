@@ -50,7 +50,7 @@ python main.py --mode demo --resume checkpoints/episode_100.pt
 
 ### 데이터 파라미터
 - `--tickers TICKER1 TICKER2 ...`: 사용할 주식 심볼 (설정 파일 오버라이드)
-- `--data-period PERIOD`: 데이터 기간 (1y, 2y, 5y 등)
+- `--data-path PATH`: 데이터 경로 (설정 오버라이드)
 - `--no-cache`: 데이터 강제 재다운로드
 
 ### 학습 파라미터
@@ -92,7 +92,7 @@ python main.py --config configs/test_1episode_iql.yaml
 ### 예시 2: 커스텀 종목으로 학습
 ```bash
 # FAANG 종목으로 학습
-python main.py --tickers AAPL MSFT GOOGL AMZN META --data-period 2y
+python main.py --tickers AAPL MSFT GOOGL AMZN META
 
 # 다우존스 30 종목으로 학습
 python main.py --config configs/dow30.yaml
@@ -175,8 +175,8 @@ python main.py --device cpu
 # 캐시 무시하고 재다운로드
 python main.py --no-cache
 
-# 다른 기간 시도
-python main.py --data-period 1y
+# 더 낮은 학습률로 재시도
+python main.py --lr 1e-5
 ```
 
 ### 학습 불안정

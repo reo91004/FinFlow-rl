@@ -68,11 +68,14 @@ class BCell:
 
         # Algorithm-specific settings
         if self.algorithm_type == 'TQC':
-            # TQC settings
+            # TQC settings - config에서 distributional 설정 가져오기
+            dist_config = config.get('distributional', {})
             self.n_critics = config.get('n_critics', 2)  # TQC usually uses fewer critics
-            self.n_quantiles = config.get('n_quantiles', 25)
+            self.n_quantiles = dist_config.get('n_quantiles', config.get('n_quantiles', 25))
             self.top_quantiles_to_drop = config.get('top_quantiles_to_drop_per_net', 2)
-            self.quantile_embedding_dim = config.get('quantile_embedding_dim', 64)
+            self.quantile_embedding_dim = dist_config.get('quantile_embedding_dim', 64)
+            self.risk_measure = dist_config.get('risk_measure', 'cvar')
+            self.risk_sensitivity = dist_config.get('risk_sensitivity', 0.05)
             self.utd_ratio = config.get('utd_ratio', 1)  # TQC uses standard update frequency
         else:
             # REDQ settings
@@ -81,9 +84,18 @@ class BCell:
             self.utd_ratio = config.get('utd_ratio', 20) # Update-to-Data ratio
 
         # Networks
+        # Dirichlet 설정 가져오기
+        dirichlet_config = config.get('dirichlet', {})
         self.actor = DirichletActor(
             state_dim, action_dim,
-            hidden_dims=config.get('hidden_dims', [256, 256])
+            hidden_dims=config.get('hidden_dims', [256, 256]),
+            min_concentration=dirichlet_config.get('min_concentration', 1.0),
+            max_concentration=dirichlet_config.get('max_concentration', 50.0),
+            base_concentration=dirichlet_config.get('base_concentration', 1.5),
+            dynamic_concentration=dirichlet_config.get('dynamic_concentration', True),
+            crisis_scaling=dirichlet_config.get('crisis_scaling', 0.5),
+            action_smoothing=dirichlet_config.get('action_smoothing', True),
+            smoothing_alpha=dirichlet_config.get('smoothing_alpha', 0.95)
         ).to(device)
 
         # Critic networks based on algorithm

@@ -1,0 +1,147 @@
+# 완전 테스트용 설정 (모든 기능 확인)
+
+seed: 42
+device: 'cpu'
+
+# 데이터 설정
+data:
+  symbols: ['AAPL', 'MSFT', 'GOOGL']
+
+  # 날짜 기반 설정
+  start: "2023-01-01"      # 전체 데이터 시작
+  end: "2024-06-30"        # train+val 종료
+  test_start: "2024-07-01" # 테스트 시작
+  test_end: "2024-12-31"   # 테스트 종료
+  val_ratio: 0.2           # train에서 val 분리 비율
+  interval: '1d'
+  cache: true
+
+# 환경 설정
+env:
+  initial_balance: 1000000
+  transaction_cost: 0.001
+  slippage: 0.0005
+  no_trade_band: 0.002
+  max_leverage: 1.0
+  max_turnover: 0.5
+  window_size: 20
+  use_advanced_reward: true  # 고급 보상 함수 활성화
+
+# 특성 추출
+feature_dim: 12
+
+# 목적함수 설정 (PortfolioObjective)
+objectives:
+  # Differential Sharpe
+  sharpe_beta: 1.0
+  sharpe_ema_alpha: 0.99
+  sharpe_epsilon: 1.0e-8
+
+  # CVaR 제약
+  cvar_alpha: 0.05
+  cvar_target: -0.02
+  lambda_cvar: 1.0
+
+  # 추가 페널티
+  lambda_turn: 0.1
+  lambda_dd: 0.0
+
+  # 보상 정규화
+  r_clip: 5.0
+  reward_ema_alpha: 0.99
+
+# 오프라인 사전학습
+offline:
+  method: 'iql'
+  epochs: 2  # 빠른 테스트
+  batch_size: 64
+  expectile: 0.7
+  temperature: 3.0
+  beta: 10.0
+  normalize_q: true
+
+# B-Cell 설정
+bcell:
+  algorithm: 'TQC'  # TQC 테스트
+  hidden_dims: [128, 128]
+
+  # TQC 설정
+  n_critics: 2
+  n_quantiles: 25
+  top_quantiles_to_drop_per_net: 2
+  quantile_embedding_dim: 64
+
+  # Dirichlet 정책 설정
+  dirichlet:
+    concentration_init: 1.0
+    concentration_min: 0.1
+    concentration_max: 10.0
+    epsilon: 1e-6
+
+  # 학습률
+  actor_lr: 3e-4
+  critic_lr: 3e-4
+  alpha_lr: 3e-4
+  batch_size: 64
+
+  # RL 설정
+  gamma: 0.99
+  tau: 0.005
+  alpha: 0.2
+  crisis_threshold: 0.7
+  buffer_size: 10000
+
+# T-Cell 설정
+tcell:
+  contamination: 0.1
+  n_estimators: 50
+  window_size: 50
+
+# Memory Cell 설정
+memory:
+  capacity: 500
+  k_neighbors: 3
+
+# 분포적 RL 설정
+distributional:
+  n_quantiles: 16
+  kappa: 1.0
+  risk_measure: 'cvar'
+  risk_param: 0.05
+
+# 모니터링 설정
+monitoring:
+  use_tensorboard: true
+  use_wandb: false
+  wandb_project: 'finflow-test'
+  wandb_entity: null
+  log_frequency: 10
+
+  stability_check:
+    enabled: true
+    q_value_threshold: 100.0
+    gradient_clip: 1.0
+    check_frequency: 50
+
+# 학습 설정
+online_episodes: 3  # 빠른 테스트
+skip_offline: true  # 오프라인 데이터 차원 불일치로 건너뛰기
+early_stopping_patience: 10
+save_freq: 50
+
+# Ablation study
+ablation:
+  use_tcell: true
+  use_memory: true
+  use_xai: true
+  offline_method: 'iql'
+
+# 기타
+log_level: 'DEBUG'
+validation_freq: 1
+
+# 목표 메트릭
+targets:
+  sharpe_ratio: 1.0
+  max_drawdown: 0.3
+  cvar_95: -0.03

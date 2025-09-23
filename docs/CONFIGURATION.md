@@ -77,15 +77,14 @@ data:
 data:
   # 학습 데이터
   start: "2015-01-01"      # 시작일
-  end: "2020-12-31"        # 종료일
+  end: "2020-12-31"        # 종료일 (train+val)
 
   # 테스트 데이터
   test_start: "2021-01-01"
   test_end: "2024-12-31"
 
-  # 또는 상대적 기간
-  period: "5y"              # 1y, 2y, 5y, 10y, max
-  test_period: "1y"
+  # 검증 데이터
+  val_ratio: 0.2           # train 데이터에서 val 비율 (0.2 = 20%)
 ```
 
 ### 데이터 전처리

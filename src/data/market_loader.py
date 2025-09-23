@@ -170,30 +170,20 @@ class DataLoader:
         """
         # config에서 파라미터 추출
         symbols = self.config.get('symbols', ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META'])
-        period = self.config.get('period', '5y')
         interval = self.config.get('interval', '1d')
         use_cache = self.config.get('cache', True)
 
-        # period를 start_date, end_date로 변환
-        import datetime
-        end_date = datetime.datetime.now()
+        # 날짜 설정 (필수)
+        start_str = self.config.get('start')
+        end_str = self.config.get('end')
+        test_end_str = self.config.get('test_end')
 
-        if period.endswith('y'):
-            years = int(period[:-1])
-            start_date = end_date - datetime.timedelta(days=365 * years)
-        elif period.endswith('mo'):
-            months = int(period[:-2])
-            start_date = end_date - datetime.timedelta(days=30 * months)
-        elif period.endswith('d'):
-            days = int(period[:-1])
-            start_date = end_date - datetime.timedelta(days=days)
-        else:
-            # 기본값 5년
-            start_date = end_date - datetime.timedelta(days=365 * 5)
+        if not start_str or not end_str:
+            raise ValueError("data.start와 data.end는 필수 설정입니다")
 
-        # 날짜 포맷
-        start_str = start_date.strftime('%Y-%m-%d')
-        end_str = end_date.strftime('%Y-%m-%d')
+        # test_end가 있으면 전체 데이터 끝까지 로드
+        if test_end_str:
+            end_str = test_end_str
 
         self.logger.info(f"데이터 로드: {symbols} ({start_str} ~ {end_str})")
 

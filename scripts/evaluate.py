@@ -713,12 +713,12 @@ class FinFlowEvaluator:
 
                 # Select action
                 action = self.b_cell.select_action(
-                    state.squeeze() if state.ndim > 1 else state,  # \uc2a4\ud0ec\uce58\ub41c numpy \ubc30\uc5f4 \uc804\ub2ec
+                    state.squeeze() if state.ndim > 1 else state,  # \uc2a4\ud0ec\uce58\ub41c numpy 배열 전달
                     crisis_level=crisis_level,
                     deterministic=True
                 )
 
-                # \uc561\uc158 \ucc28\uc6d0 \ud655\uc778 \ubc0f \uc870\uc815
+                # 액션 차원 확인 및 조정
                 if len(action.shape) == 0:
                     action = np.array([action])
                 elif action.shape[0] == 1:
@@ -1109,7 +1109,7 @@ class FinFlowEvaluator:
             
             # Get action
             action = self.b_cell.select_action(
-                state.squeeze() if state.ndim > 1 else state,  # numpy array \uc804\ub2ec
+                state.squeeze() if state.ndim > 1 else state,  # numpy array 전달
                 deterministic=True
             )
             

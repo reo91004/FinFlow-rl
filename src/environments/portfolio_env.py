@@ -21,9 +21,11 @@ from typing import Tuple, Dict, Any, Optional
 from dataclasses import dataclass
 import gymnasium as gym
 from gymnasium import spaces
+import torch
 
 from src.utils.logger import FinFlowLogger
 from src.data.feature_extractor import FeatureExtractor
+from src.environments.reward_functions import PortfolioObjective, RewardNormalizer
 
 @dataclass
 class PortfolioState:
@@ -51,7 +53,7 @@ class PortfolioEnv(gym.Env):
     Gymnasium API 준수
     """
     
-    def __init__(self, 
+    def __init__(self,
                  price_data: pd.DataFrame,
                  feature_extractor: Optional[FeatureExtractor] = None,
                  initial_capital: float = 1000000,
@@ -60,7 +62,9 @@ class PortfolioEnv(gym.Env):
                  no_trade_band: float = 0.002,
                  max_leverage: float = 1.0,
                  max_turnover: float = 0.5,
-                 max_steps: Optional[int] = None):
+                 max_steps: Optional[int] = None,
+                 objective_config: Optional[Dict] = None,
+                 use_advanced_reward: bool = False):
         """
         Args:
             price_data: 가격 데이터 (DataFrame)
@@ -93,7 +97,16 @@ class PortfolioEnv(gym.Env):
         
         # 로거
         self.logger = FinFlowLogger("PortfolioEnv")
-        
+
+        # 고급 보상 함수 초기화
+        self.use_advanced_reward = use_advanced_reward
+        if use_advanced_reward and objective_config:
+            self.objective = PortfolioObjective(objective_config)
+            self.reward_normalizer = RewardNormalizer()
+        else:
+            self.objective = None
+            self.reward_normalizer = None
+
         # 수익률 계산 (T+1 체결용)
         self.returns = price_data.pct_change().fillna(0).values
         
@@ -117,6 +130,7 @@ class PortfolioEnv(gym.Env):
         self.portfolio_value = initial_capital
         self.cash = initial_capital
         self.weights = np.zeros(self.n_assets)
+        self.prev_weights = np.zeros(self.n_assets)  # 이전 가중치 추적
         self.crisis_level = 0.0
         self.market_data_cache = None
     
@@ -128,6 +142,7 @@ class PortfolioEnv(gym.Env):
         self.portfolio_value = self.initial_capital
         # 균등 배분으로 시작 (무거래 루프 방지)
         self.weights = np.ones(self.n_assets) / self.n_assets
+        self.prev_weights = np.ones(self.n_assets) / self.n_assets  # 이전 가중치도 초기화
         self.cash = 0  # 현금 0으로 시작 (모두 투자)
         self.crisis_level = 0.0
 
@@ -205,6 +220,7 @@ class PortfolioEnv(gym.Env):
         
         # 포트폴리오 가치 업데이트
         self.portfolio_value *= (1 + portfolio_return - total_cost)
+        self.prev_weights = self.weights.copy()  # 이전 가중치 저장
         self.weights = action.copy()
         
         # 기록
@@ -252,11 +268,28 @@ class PortfolioEnv(gym.Env):
     
     def _calculate_reward(self, portfolio_return: float, cost: float, turnover: float) -> float:
         """
-        보상 계산 (단순 버전 - objectives.py에서 고도화)
-        
-        여기서는 기본 수익률만 반환
+        보상 계산
+
+        고급 보상 함수가 활성화되면 PortfolioObjective 사용,
+        그렇지 않으면 기본 수익률 반환
         """
-        return portfolio_return - cost
+        if self.objective and self.use_advanced_reward:
+            # 고급 보상 함수 사용
+            returns_tensor = torch.tensor([portfolio_return], dtype=torch.float32)
+            weights_tensor = torch.tensor([self.weights], dtype=torch.float32)
+            prev_weights_tensor = torch.tensor([self.prev_weights], dtype=torch.float32)
+
+            objective_value, metrics = self.objective(returns_tensor, weights_tensor, prev_weights_tensor)
+            reward = objective_value.item()
+
+            # 정규화 적용
+            if self.reward_normalizer:
+                reward = self.reward_normalizer.normalize(reward)
+
+            return reward
+        else:
+            # 기본 보상 (수익률 - 비용)
+            return portfolio_return - cost
     
     def _normalize_weights(self, weights: np.ndarray) -> np.ndarray:
         """가중치를 심플렉스로 정규화"""
