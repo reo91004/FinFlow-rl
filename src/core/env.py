@@ -167,7 +167,7 @@ class PortfolioEnv(gym.Env):
         actual_weight_change = np.abs(action - self.weights).sum()
         if actual_weight_change < 1e-6:
             self.no_trade_counter += 1
-            if self.no_trade_counter > 50:
+            if self.no_trade_counter > 20:  # 50 → 20으로 조기 경고
                 self.logger.warning(f"무거래 {self.no_trade_counter}회 연속 감지 - 포트폴리오 고착")
                 # 강제로 작은 거래라도 실행하게 함
                 if self.no_trade_counter > 100:

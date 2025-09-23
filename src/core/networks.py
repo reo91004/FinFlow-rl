@@ -16,7 +16,7 @@ class DirichletActor(nn.Module):
     """
     
     def __init__(self, state_dim: int, action_dim: int, hidden_dims: list = [256, 256],
-                 min_concentration: float = 0.5, max_concentration: float = 50.0,  # 포트폴리오 다양성과 안정성 균형
+                 min_concentration: float = 1.0, max_concentration: float = 50.0,  # 안정성 강화를 위해 하한 상향
                  dynamic_concentration: bool = False, crisis_scaling: float = 0.5,
                  base_concentration: float = 2.0, action_smoothing: bool = False,
                  smoothing_alpha: float = 0.95):
@@ -140,11 +140,12 @@ class DirichletActor(nn.Module):
             action = dist.rsample()  # Reparameterized sampling
 
             # 강화된 안정화: 더 큰 엡실론으로 클램핑 및 재정규화
-            action = torch.clamp(action, min=1e-6, max=1.0-1e-6)  # 경계값 회피
+            action = torch.clamp(action, min=1e-5, max=1.0-1e-5)  # 더 큰 경계값 회피
             action = action / action.sum(dim=-1, keepdim=True)
 
             # log_prob 계산 시 추가 안정화
-            log_prob = dist.log_prob(action + 1e-8)  # 작은 엡실론 추가
+            # Simplex constraint를 만족하도록 action을 보정
+            log_prob = dist.log_prob(action)  # epsilon 없이 정규화된 action 사용
 
         # Apply action smoothing (EMA)
         if self.action_smoothing and not deterministic:
@@ -171,7 +172,10 @@ class DirichletActor(nn.Module):
         """
         concentration = self.forward(state, crisis_level)
         dist = Dirichlet(concentration)
-        return dist.log_prob(action + 1e-8)  # Add small epsilon for numerical stability
+        # Simplex constraint 보장
+        action = torch.clamp(action, min=1e-5, max=1.0-1e-5)
+        action = action / action.sum(dim=-1, keepdim=True)
+        return dist.log_prob(action)  # 정규화된 action 사용
     
     def entropy(self, state: torch.Tensor, crisis_level: Optional[float] = None) -> torch.Tensor:
         """

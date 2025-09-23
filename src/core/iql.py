@@ -221,9 +221,9 @@ class IQLAgent:
             
             # Advantage weighting with improved numerical stability
             # Clamp advantage before exponential to prevent overflow
-            clamped_advantage = torch.clamp(advantage, min=-10.0, max=10.0)
+            clamped_advantage = torch.clamp(advantage, min=-5.0, max=5.0)  # 더 보수적인 범위
             weights = torch.exp(clamped_advantage / self.temperature)
-            weights = torch.clamp(weights, min=1e-8, max=100.0)  # Prevent overflow and underflow
+            weights = torch.clamp(weights, min=1e-6, max=10.0)  # 더 엄격한 weight 제한
         
         # Get log probabilities from actor
         action_dist = self.actor.get_distribution(states)

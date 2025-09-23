@@ -62,8 +62,8 @@ class BCell:
         self.target_entropy_ratio = config.get('target_entropy_ratio', 0.5)  # 0.98 → 0.5
         
         # CQL settings (완화된 정규화)
-        self.cql_alpha_start = config.get('cql_alpha_start', 1.0)  # 5.0 → 1.0 (과도한 보수성 방지)
-        self.cql_alpha_end = config.get('cql_alpha_end', 2.0)   # 10.0 → 2.0 (점진적 증가)
+        self.cql_alpha_start = config.get('cql_alpha_start', 0.1)  # 1.0 → 0.1 (더욱 완화된 정규화)
+        self.cql_alpha_end = config.get('cql_alpha_end', 0.5)   # 2.0 → 0.5 (점진적 증가)
         self.cql_num_samples = config.get('cql_num_samples', 8)
         self.enable_cql = config.get('enable_cql', True)
         
@@ -364,7 +364,7 @@ class BCell:
             next_q = torch.min(next_q1, next_q2)
 
             # Q-value clipping for stability (포트폴리오 환경에 적합한 범위)
-            next_q = torch.clamp(next_q, min=-10.0, max=10.0)
+            next_q = torch.clamp(next_q, min=-2.0, max=2.0)  # 일일 수익률 범위에 맞게 축소
 
             # Subtract entropy term
             alpha = self.log_alpha.exp()
@@ -372,7 +372,7 @@ class BCell:
 
             # Compute TD targets for each quantile with additional clipping
             target_q = rewards + self.gamma * (1 - dones) * next_q
-            target_q = torch.clamp(target_q, min=-10.0, max=10.0)  # 최종 타겟도 클리핑
+            target_q = torch.clamp(target_q, min=-2.0, max=2.0)  # 최종 타겟도 동일하게 클리핑
         
         # Current Q-values
         current_q1, current_q2 = self.critic(states, actions)
