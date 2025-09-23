@@ -1,5 +1,21 @@
 # src/baselines/standard_sac.py
 
+"""
+표준 SAC (Soft Actor-Critic) 베이스라인
+
+목적: FinFlow-RL 성능 비교를 위한 표준 SAC 구현
+의존: PyTorch, networks.py, replay_buffer.py
+사용처: 절제 연구 및 성능 벤치마킹
+역할: 생물학적 컴포넌트 없는 기본 SAC 알고리즘 제공
+
+구현 내용:
+- 표준 SAC 알고리즘 (엔트로피 정규화 포함)
+- Twin Q-networks로 overestimation bias 완화
+- 자동 온도 조절 (alpha tuning)
+- FinFlow와 동일한 Dirichlet 정책 사용
+- 성능 비교를 위한 동일한 하이퍼파라미터 세팅
+"""
+
 import torch
 import torch.nn as nn
 import torch.optim as optim

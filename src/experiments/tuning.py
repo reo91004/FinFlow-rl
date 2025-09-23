@@ -1,7 +1,22 @@
-# src/analysis/tuning.py
+# src/experiments/tuning.py
 
-# 연구용 코드 - 필요한 라이브러리는 직접 설치
-# pip install optuna
+"""
+하이퍼파라미터 튜닝 모듈
+
+목적: Optuna 기반 자동 하이퍼파라미터 최적화
+의존: optuna, trainer.py, portfolio_env.py
+사용처: 최적 하이퍼파라미터 탐색 및 성능 개선
+역할: 베이지안 최적화를 통한 체계적 파라미터 탐색
+
+구현 내용:
+- Optuna Study 설정 및 실행
+- 파라미터 공간 정의 (학습률, 네트워크 크기, 정규화 등)
+- 병렬 최적화 지원 (n_jobs)
+- 중간 결과 저장 및 시각화
+- 최적 파라미터 추출 및 저장
+
+Note: 연구용 코드 - 필요시 pip install optuna 설치
+"""
 
 import optuna
 import numpy as np

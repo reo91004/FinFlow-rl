@@ -41,21 +41,34 @@ def get_global_timestamp():
         _GLOBAL_TIMESTAMP = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     return _GLOBAL_TIMESTAMP
 
-def get_session_directory(base_dir: str = "logs"):
-    """세션별 로그 디렉토리 생성 및 반환"""
+def set_session_directory(directory: str):
+    """세션 디렉토리를 명시적으로 설정 (evaluate 모드용)"""
+    global _GLOBAL_SESSION_DIR
+    _GLOBAL_SESSION_DIR = directory
+    # 하위 디렉토리는 생성하지 않음 (evaluate 모드에서는 이미 존재)
+
+def get_session_directory(base_dir: str = "logs", create_new: bool = True):
+    """세션별 로그 디렉토리 생성 및 반환
+
+    Args:
+        base_dir: 기본 로그 디렉토리
+        create_new: True일 때만 새 디렉토리 생성 (train 모드)
+    """
     global _GLOBAL_SESSION_DIR
     if _GLOBAL_SESSION_DIR is None:
+        if not create_new:
+            # evaluate 모드에서 새 디렉토리 생성 방지
+            raise ValueError("Session directory not set. Use set_session_directory() for evaluate mode.")
+
         timestamp = get_global_timestamp()
         _GLOBAL_SESSION_DIR = os.path.join(base_dir, timestamp)
         os.makedirs(_GLOBAL_SESSION_DIR, exist_ok=True)
 
-        # 하위 디렉토리 생성
+        # 하위 디렉토리 생성 (중복 제거)
         os.makedirs(os.path.join(_GLOBAL_SESSION_DIR, "visualizations"), exist_ok=True)
-        os.makedirs(os.path.join(_GLOBAL_SESSION_DIR, "models"), exist_ok=True)
-        os.makedirs(os.path.join(_GLOBAL_SESSION_DIR, "reports"), exist_ok=True)
-        os.makedirs(os.path.join(_GLOBAL_SESSION_DIR, "results"), exist_ok=True)
+        os.makedirs(os.path.join(_GLOBAL_SESSION_DIR, "checkpoints"), exist_ok=True)  # 모델 체크포인트
+        os.makedirs(os.path.join(_GLOBAL_SESSION_DIR, "results"), exist_ok=True)      # 최종 결과 및 보고서
         os.makedirs(os.path.join(_GLOBAL_SESSION_DIR, "tensorboard"), exist_ok=True)
-        os.makedirs(os.path.join(_GLOBAL_SESSION_DIR, "checkpoints"), exist_ok=True)
 
     return _GLOBAL_SESSION_DIR
 

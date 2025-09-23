@@ -27,7 +27,7 @@ import yaml
 import torch
 from pathlib import Path
 from src.training.trainer import FinFlowTrainer
-from src.utils.logger import FinFlowLogger
+from src.utils.logger import FinFlowLogger, set_session_directory
 from src.utils.device_manager import set_seed, get_device_info
 
 def main():
@@ -130,9 +130,16 @@ def main():
     # Set seed
     seed = args.seed or config_dict.get('system', {}).get('seed', 42)
     set_seed(seed)
-    
+
+    # For evaluate mode, set session directory before creating logger
+    if args.mode == 'evaluate':
+        if args.resume:
+            # Set session directory to checkpoint's parent for evaluate mode
+            checkpoint_parent = Path(args.resume).parent.parent
+            set_session_directory(str(checkpoint_parent))
+
     # Initialize logger
-    logger = FinFlowLogger("Main")
+    logger = FinFlowLogger("Main", use_file=(args.mode != 'evaluate'))
     
     # Print header
     print("=" * 60)

@@ -1,5 +1,21 @@
 # src/baselines/equal_weight.py
 
+"""
+균등 가중치 (Equal Weight) 베이스라인
+
+목적: 단순 1/N 포트폴리오 전략 구현
+의존: numpy, pandas, market_loader.py
+사용처: 최소 성능 기준선 제공
+역할: 모든 자산에 동일한 가중치를 배분하는 나이브 전략
+
+구현 내용:
+- 1/N 균등 배분 전략
+- 리밸런싱 주기 설정 가능
+- 거래 비용 고려
+- FinFlow 환경과 호환되는 인터페이스
+- 놀랍게도 많은 경우 경쟁력 있는 성능 제공
+"""
+
 import numpy as np
 import pandas as pd
 from typing import Dict, Optional

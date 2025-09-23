@@ -315,6 +315,8 @@ class FinFlowTrainer:
         """
         self.config = config
         self.logger = FinFlowLogger("Trainer")
+        self.global_step = 0  # 전체 스텝 카운터
+        self.checkpoint_interval = config.get('save_freq', 100)  # 설정 가능한 저장 빈도
 
         # Device 처리 (auto 지원)
         device_str = config.get('device', 'auto')
@@ -523,12 +525,21 @@ class FinFlowTrainer:
         best_model = None
         patience_counter = 0
         patience = self.config.get('early_stopping_patience', 20)
+        last_checkpoint_step = 0  # 마지막 체크포인트 스텝
 
         n_episodes = self.config.get('online_episodes', 200)
 
         for episode in tqdm(range(n_episodes), desc="온라인 학습"):
             # 학습
             train_metrics = self._train_episode(episode)
+            episode_steps = train_metrics.get('episode_length', 0)
+            self.global_step += episode_steps
+
+            # 100스텝마다 체크포인트 저장
+            if self.global_step - last_checkpoint_step >= self.checkpoint_interval:
+                self._save_checkpoint(step=self.global_step, is_best=False)
+                last_checkpoint_step = self.global_step
+                self.logger.info(f"Step {self.global_step}: 체크포인트 저장")
 
             # 주기적 검증
             if episode % 10 == 0:
@@ -537,9 +548,9 @@ class FinFlowTrainer:
                 # 최고 성능 갱신
                 if val_metrics['sharpe'] > best_sharpe:
                     best_sharpe = val_metrics['sharpe']
-                    best_model = self._save_checkpoint(episode)
+                    best_model = self._save_checkpoint(step=self.global_step, is_best=True)
                     patience_counter = 0
-                    self.logger.info(f"최고 성능 갱신: Sharpe={best_sharpe:.3f}")
+                    self.logger.info(f"최고 성능 갱신: Sharpe={best_sharpe:.3f}, Step={self.global_step}")
                 else:
                     patience_counter += 1
 
@@ -549,11 +560,23 @@ class FinFlowTrainer:
                     break
 
                 # 로깅
+                crisis_info = ""
+                if 'crisis_mode' in train_metrics:
+                    crisis_info = f", 위기모드={train_metrics['crisis_mode']}"
+                    if 'mode_changes' in train_metrics:
+                        crisis_info += f" (변경 {train_metrics['mode_changes']}회)"
+
                 self.logger.info(
                     f"Episode {episode}: "
                     f"Train Return={train_metrics['episode_return']:.4f}, "
                     f"Val Sharpe={val_metrics['sharpe']:.3f}"
+                    f"{crisis_info}"
                 )
+
+        # 마지막 체크포인트 저장 (학습 종료시)
+        if self.global_step > 0:
+            self._save_checkpoint(step=self.global_step, is_best=False)
+            self.logger.info(f"최종 체크포인트 저장: Step {self.global_step}")
 
         return best_model or self.b_cell
 
@@ -684,21 +707,46 @@ class FinFlowTrainer:
 
         return metrics
 
-    def _save_checkpoint(self, episode: int) -> BCell:
-        """체크포인트 저장"""
+    def _save_checkpoint(self, step: int = None, is_best: bool = False) -> BCell:
+        """체크포인트 저장
+
+        Args:
+            step: 스텝 번호 (None이면 global_step 사용)
+            is_best: best 모델 여부
+        """
         # 세션 디렉토리 내 checkpoints 폴더 사용
         session_dir = get_session_directory()
         checkpoint_dir = Path(session_dir) / 'checkpoints'
         checkpoint_dir.mkdir(exist_ok=True)
 
-        checkpoint_path = checkpoint_dir / f'episode_{episode}.pt'
-        self.b_cell.save(str(checkpoint_path))
+        if step is None:
+            step = self.global_step
+
+        # 파일명 결정
+        if is_best:
+            # best 모델은 별도 저장
+            b_cell_path = checkpoint_dir / 'best.pt'
+            t_cell_path = checkpoint_dir / 'best_t_cell.pkl'
+            memory_path = checkpoint_dir / 'best_memory.pkl'
+            self.logger.info(f"Best 체크포인트 저장 (Step {step})")
+        else:
+            # 일반 체크포인트는 스텝 번호로
+            b_cell_path = checkpoint_dir / f'step_{step}.pt'
+            t_cell_path = checkpoint_dir / f'step_{step}_t_cell.pkl'
+            memory_path = checkpoint_dir / f'step_{step}_memory.pkl'
+
+        # B-Cell 저장
+        self.b_cell.save(str(b_cell_path))
 
         # T-Cell, Memory 저장
         if self.t_cell:
-            self.t_cell.save(str(checkpoint_dir / f't_cell_{episode}.pkl'))
+            self.t_cell.save(str(t_cell_path))
         if self.memory_cell:
-            self.memory_cell.save(str(checkpoint_dir / f'memory_{episode}.pkl'))
+            self.memory_cell.save(str(memory_path))
+
+        # 오래된 체크포인트 삭제 (최대 5개만 유지, best 제외)
+        if not is_best:
+            self._cleanup_old_checkpoints(checkpoint_dir, keep_last=5)
 
         return self.b_cell
 
@@ -721,3 +769,28 @@ class FinFlowTrainer:
             json.dump(results, f, indent=2)
 
         self.logger.info(f"결과 저장 완료: {results_dir / 'final_results.json'}")
+
+    def _cleanup_old_checkpoints(self, checkpoint_dir: Path, keep_last: int = 5):
+        """오래된 체크포인트 정리
+
+        Args:
+            checkpoint_dir: 체크포인트 디렉토리
+            keep_last: 유지할 최근 체크포인트 개수
+        """
+        # step_*.pt 파일들 찾기 (best 제외)
+        step_files = sorted(
+            checkpoint_dir.glob('step_*.pt'),
+            key=lambda x: int(x.stem.split('_')[1]),
+            reverse=True  # 최신 순
+        )
+
+        # 최근 keep_last개만 남기고 삭제
+        for old_file in step_files[keep_last:]:
+            step_num = old_file.stem.split('_')[1]
+
+            # 관련 파일들 삭제
+            old_file.unlink(missing_ok=True)
+            (checkpoint_dir / f'step_{step_num}_t_cell.pkl').unlink(missing_ok=True)
+            (checkpoint_dir / f'step_{step_num}_memory.pkl').unlink(missing_ok=True)
+
+            self.logger.debug(f"오래된 체크포인트 삭제: step_{step_num}")

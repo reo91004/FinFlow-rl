@@ -1,5 +1,20 @@
 # src/experiments/ablation.py
 
+"""
+절제 연구 (Ablation Study) 실행 모듈
+
+목적: FinFlow-RL 시스템의 각 컴포넌트 기여도 측정
+의존: trainer.py, logger.py
+사용처: 연구 및 논문 작성시 컴포넌트별 성능 비교
+역할: T-Cell, Memory Cell, XAI 등 각 모듈의 영향력 분석
+
+구현 내용:
+- 전체 시스템 vs 개별 컴포넌트 제거 실험
+- IQL vs TD3+BC 오프라인 방법 비교
+- 성능 메트릭 수집 및 비교표 생성
+- 통계적 유의성 검증
+"""
+
 import numpy as np
 from typing import Dict, List, Optional
 import json

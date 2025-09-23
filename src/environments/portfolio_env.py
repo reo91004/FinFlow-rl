@@ -38,8 +38,8 @@ class PortfolioState:
     def to_array(self) -> np.ndarray:
         """상태를 단일 배열로 변환 (동적 차원)"""
         return np.concatenate([
-            self.features,
-            self.weights,
+            self.features.flatten() if self.features.ndim > 1 else self.features,
+            self.weights.flatten() if self.weights.ndim > 1 else self.weights,
             [self.crisis_level]
         ])
 

@@ -21,7 +21,7 @@ import torch.optim as optim
 import numpy as np
 from typing import Dict
 
-from src.models.networks import DirichletActor, QNetwork
+from src.models.networks import DirichletActor, QNetwork, QuantileNetwork
 from src.data.replay_buffer import PrioritizedReplayBuffer
 from src.utils.logger import FinFlowLogger
 from src.utils.training_utils import polyak_update, clip_gradients
@@ -30,7 +30,13 @@ class BCell:
     """
     B-Cell: 적응형 포트폴리오 전략 에이전트
     단일 에이전트가 T-Cell 신호에 따라 적응
-    REDQ (Randomized Ensemble Double Q) 구현
+
+    현재 구현:
+    - REDQ (Randomized Ensemble Double Q) 알고리즘
+
+    향후 확장 가능:
+    - TQC (Truncated Quantile Critics) 알고리즘
+    - config에서 'algorithm': 'REDQ' 또는 'TQC' 선택 가능
     """
 
     def __init__(self,
@@ -51,16 +57,28 @@ class BCell:
         self.device = device
         self.logger = FinFlowLogger("BCell")
 
+        # Algorithm selection
+        self.algorithm_type = config.get('algorithm', 'REDQ')  # 'REDQ' or 'TQC'
+
         # Hyperparameters
         self.gamma = config.get('gamma', 0.99)
         self.tau = config.get('tau', 0.005)
         self.alpha = config.get('alpha', 0.2)  # 엔트로피 계수
         self.target_entropy = -action_dim  # -dim(A)
 
-        # REDQ settings
-        self.n_critics = config.get('n_critics', 5)  # Q 앙상블 크기
-        self.m_sample = config.get('m_sample', 2)    # 업데이트시 샘플 수
-        self.utd_ratio = config.get('utd_ratio', 20) # Update-to-Data ratio
+        # Algorithm-specific settings
+        if self.algorithm_type == 'TQC':
+            # TQC settings
+            self.n_critics = config.get('n_critics', 2)  # TQC usually uses fewer critics
+            self.n_quantiles = config.get('n_quantiles', 25)
+            self.top_quantiles_to_drop = config.get('top_quantiles_to_drop_per_net', 2)
+            self.quantile_embedding_dim = config.get('quantile_embedding_dim', 64)
+            self.utd_ratio = config.get('utd_ratio', 1)  # TQC uses standard update frequency
+        else:
+            # REDQ settings
+            self.n_critics = config.get('n_critics', 5)  # Q 앙상블 크기
+            self.m_sample = config.get('m_sample', 2)    # 업데이트시 샘플 수
+            self.utd_ratio = config.get('utd_ratio', 20) # Update-to-Data ratio
 
         # Networks
         self.actor = DirichletActor(
@@ -68,16 +86,39 @@ class BCell:
             hidden_dims=config.get('hidden_dims', [256, 256])
         ).to(device)
 
-        # REDQ: Q 앙상블
-        self.critics = nn.ModuleList([
-            QNetwork(state_dim, action_dim, config.get('hidden_dims', [256, 256]))
-            for _ in range(self.n_critics)
-        ]).to(device)
+        # Critic networks based on algorithm
+        if self.algorithm_type == 'TQC':
+            # TQC: Quantile critics
+            self.critics = nn.ModuleList([
+                QuantileNetwork(
+                    state_dim, action_dim,
+                    n_quantiles=self.n_quantiles,
+                    hidden_dims=config.get('hidden_dims', [256, 256]),
+                    quantile_embedding_dim=self.quantile_embedding_dim
+                )
+                for _ in range(self.n_critics)
+            ]).to(device)
 
-        self.critics_target = nn.ModuleList([
-            QNetwork(state_dim, action_dim, config.get('hidden_dims', [256, 256]))
-            for _ in range(self.n_critics)
-        ]).to(device)
+            self.critics_target = nn.ModuleList([
+                QuantileNetwork(
+                    state_dim, action_dim,
+                    n_quantiles=self.n_quantiles,
+                    hidden_dims=config.get('hidden_dims', [256, 256]),
+                    quantile_embedding_dim=self.quantile_embedding_dim
+                )
+                for _ in range(self.n_critics)
+            ]).to(device)
+        else:
+            # REDQ: Standard Q networks
+            self.critics = nn.ModuleList([
+                QNetwork(state_dim, action_dim, config.get('hidden_dims', [256, 256]))
+                for _ in range(self.n_critics)
+            ]).to(device)
+
+            self.critics_target = nn.ModuleList([
+                QNetwork(state_dim, action_dim, config.get('hidden_dims', [256, 256]))
+                for _ in range(self.n_critics)
+            ]).to(device)
 
         # 타겟 네트워크 초기화
         for critic, critic_target in zip(self.critics, self.critics_target):
@@ -118,7 +159,59 @@ class BCell:
         # Training statistics
         self.training_step = 0
 
-        self.logger.info(f"B-Cell 초기화 완료: REDQ (n_critics={self.n_critics}, m_sample={self.m_sample}, UTD={self.utd_ratio})")
+        # 위기 수준 로깅 통계
+        self.crisis_stats = {
+            'count': 0,
+            'sum': 0.0,
+            'min': 1.0,
+            'max': 0.0,
+            'last_logged_step': 0,
+            'log_interval': 100,  # 100스텝마다 통계 로그
+            'mode_changes': 0,
+            'current_mode': None,  # '공격적', '중립', '방어적'
+            'mode_history': []  # (step, mode) 튜플 리스트
+        }
+
+        if self.algorithm_type == 'TQC':
+            self.logger.info(f"B-Cell 초기화 완료: TQC (n_critics={self.n_critics}, n_quantiles={self.n_quantiles}, top_drop={self.top_quantiles_to_drop})")
+        else:
+            self.logger.info(f"B-Cell 초기화 완료: REDQ (n_critics={self.n_critics}, m_sample={self.m_sample}, UTD={self.utd_ratio})")
+
+    def _log_crisis_statistics(self):
+        """위기 수준 통계 로그 출력"""
+        if self.crisis_stats['count'] > 0:
+            avg_crisis = self.crisis_stats['sum'] / self.crisis_stats['count']
+            self.logger.info(
+                f"위기 수준 통계 (최근 {self.crisis_stats['log_interval']}스텝): "
+                f"평균={avg_crisis:.3f}, 최소={self.crisis_stats['min']:.3f}, "
+                f"최대={self.crisis_stats['max']:.3f}, 현재 모드={self.crisis_stats['current_mode']}, "
+                f"모드 변경 횟수={self.crisis_stats['mode_changes']}"
+            )
+            # 통계 리셋 (모드 정보는 유지)
+            self.crisis_stats['min'] = 1.0
+            self.crisis_stats['max'] = 0.0
+
+    def get_crisis_summary(self) -> Dict:
+        """위기 대응 요약 정보 반환"""
+        if self.crisis_stats['count'] == 0:
+            return {}
+
+        avg_crisis = self.crisis_stats['sum'] / self.crisis_stats['count']
+        mode_distribution = {}
+
+        # 모드 히스토리에서 분포 계산
+        if len(self.crisis_stats['mode_history']) > 1:
+            for i in range(len(self.crisis_stats['mode_history']) - 1):
+                mode = self.crisis_stats['mode_history'][i][1]
+                duration = self.crisis_stats['mode_history'][i+1][0] - self.crisis_stats['mode_history'][i][0]
+                mode_distribution[mode] = mode_distribution.get(mode, 0) + duration
+
+        return {
+            '평균_위기수준': avg_crisis,
+            '현재_모드': self.crisis_stats['current_mode'],
+            '모드_변경횟수': self.crisis_stats['mode_changes'],
+            '모드_분포': mode_distribution
+        }
 
     def adapt_to_crisis(self, crisis_level: float):
         """
@@ -127,16 +220,36 @@ class BCell:
         Args:
             crisis_level: 0 (정상) ~ 1 (극단 위기)
         """
-        # 위기 수준에 따른 리스크 회피도 조정
+        # 통계 수집
+        self.crisis_stats['count'] += 1
+        self.crisis_stats['sum'] += crisis_level
+        self.crisis_stats['min'] = min(self.crisis_stats['min'], crisis_level)
+        self.crisis_stats['max'] = max(self.crisis_stats['max'], crisis_level)
+
+        # 위기 수준에 따른 리스크 회피도 조정 및 모드 결정
+        prev_mode = self.crisis_stats['current_mode']
+
         if crisis_level > self.crisis_threshold:
             self.current_risk_aversion = 2.0  # 방어적
-            self.logger.debug(f"위기 수준 {crisis_level:.2f} - 방어적 모드 활성화")
+            new_mode = '방어적'
         elif crisis_level > 0.4:
             self.current_risk_aversion = 1.5  # 중립
-            self.logger.debug(f"위기 수준 {crisis_level:.2f} - 중립 모드")
+            new_mode = '중립'
         else:
             self.current_risk_aversion = 1.0  # 공격적
-            self.logger.debug(f"위기 수준 {crisis_level:.2f} - 공격적 모드")
+            new_mode = '공격적'
+
+        # 모드가 변경될 때만 로그
+        if prev_mode != new_mode:
+            self.crisis_stats['current_mode'] = new_mode
+            self.crisis_stats['mode_changes'] += 1
+            self.crisis_stats['mode_history'].append((self.training_step, new_mode))
+            self.logger.info(f"위기 대응 모드 변경: {prev_mode} → {new_mode} (위기 수준: {crisis_level:.3f})")
+
+        # 주기적으로 통계 로그 출력
+        if self.crisis_stats['count'] - self.crisis_stats['last_logged_step'] >= self.crisis_stats['log_interval']:
+            self._log_crisis_statistics()
+            self.crisis_stats['last_logged_step'] = self.crisis_stats['count']
 
         # 엔트로피 조정 (위기시 탐험 감소)
         target_alpha = self.alpha * (2.0 - crisis_level)
@@ -178,7 +291,7 @@ class BCell:
 
     def train(self, batch_size: int = None) -> Dict:
         """
-        REDQ 학습 스텝
+        학습 스텝 (REDQ 또는 TQC)
         Args:
             batch_size: 배치 크기 (None이면 config에서 가져옴)
         """
@@ -186,6 +299,17 @@ class BCell:
             batch_size = self.config.get('batch_size', 256)
         if len(self.replay_buffer) < batch_size:
             return {}
+
+        # Algorithm-specific training
+        if self.algorithm_type == 'TQC':
+            return self._train_tqc(batch_size)
+        else:
+            return self._train_redq(batch_size)
+
+    def _train_redq(self, batch_size: int) -> Dict:
+        """
+        REDQ 학습 스텝
+        """
 
         losses = {}
 
@@ -346,3 +470,168 @@ class BCell:
             'log_alpha': self.log_alpha.data,
             'training_step': self.training_step,
         }
+
+    def _train_tqc(self, batch_size: int) -> Dict:
+        """
+        TQC (Truncated Quantile Critics) 학습 스텝
+        """
+        losses = {}
+
+        # Standard update frequency for TQC (not high UTD like REDQ)
+        for utd_step in range(self.utd_ratio):
+            batch, weights, indices = self.replay_buffer.sample(batch_size)
+            states = torch.FloatTensor(batch['states']).to(self.device)
+            actions = torch.FloatTensor(batch['actions']).to(self.device)
+            rewards = torch.FloatTensor(batch['rewards']).unsqueeze(1).to(self.device)
+            next_states = torch.FloatTensor(batch['next_states']).to(self.device)
+            dones = torch.FloatTensor(batch['dones']).unsqueeze(1).to(self.device)
+            weights = torch.FloatTensor(weights).unsqueeze(1).to(self.device)
+
+            # Critic update with quantile regression
+            with torch.no_grad():
+                next_actions, next_log_probs = self.actor.sample(next_states)
+
+                # Get quantile values from all target critics
+                all_target_quantiles = []
+                for critic_target in self.critics_target:
+                    # Get truncated quantiles (drop top k)
+                    truncated = critic_target.get_truncated_quantiles(
+                        next_states, next_actions,
+                        top_quantiles_to_drop=self.top_quantiles_to_drop
+                    )
+                    all_target_quantiles.append(truncated)
+
+                # Concatenate all truncated quantiles
+                cat_target_quantiles = torch.cat(all_target_quantiles, dim=-1)
+
+                # Take mean across all quantiles as target
+                mean_target_q = cat_target_quantiles.mean(dim=-1, keepdim=True)
+
+                # Compute target with entropy
+                target_value = rewards + self.gamma * (1 - dones) * (
+                    mean_target_q - self.log_alpha.exp() * next_log_probs
+                )
+
+            # Update each critic with quantile loss
+            critic_loss = 0
+            td_errors = []
+
+            for critic in self.critics:
+                # Get current quantile predictions
+                current_quantiles = critic(states, actions)  # [batch_size, n_quantiles]
+
+                # Expand target for all quantiles
+                target_expanded = target_value.expand(-1, self.n_quantiles)
+
+                # Compute quantile Huber loss
+                loss = self.quantile_huber_loss(
+                    current_quantiles,
+                    target_expanded,
+                    weights=weights
+                )
+                critic_loss += loss
+
+                # TD error for prioritized replay
+                with torch.no_grad():
+                    td_error = (current_quantiles.mean(dim=-1, keepdim=True) - target_value).abs()
+                    td_errors.append(td_error)
+
+            # Average critic loss
+            critic_loss = critic_loss / self.n_critics
+
+            # Optimize critics
+            self.critic_optimizer.zero_grad()
+            critic_loss.backward()
+            clip_gradients(self.critics, max_norm=10.0)
+            self.critic_optimizer.step()
+
+            # Update priorities in replay buffer
+            if hasattr(self.replay_buffer, 'update_priorities'):
+                mean_td_error = torch.stack(td_errors).mean(dim=0).squeeze().cpu().numpy()
+                self.replay_buffer.update_priorities(indices, mean_td_error)
+
+            losses['critic_loss'] = critic_loss.item()
+            losses['mean_td_error'] = mean_td_error.mean().item() if 'mean_td_error' in locals() else 0
+
+            # Actor update (same as REDQ)
+            if self.training_step % 2 == 0:  # Less frequent actor update
+                actions_pred, log_probs = self.actor.sample(states)
+
+                # Use minimum quantile values for actor loss
+                min_q_values = []
+                for critic in self.critics:
+                    q_quantiles = critic(states, actions_pred)
+                    min_q = q_quantiles.mean(dim=-1, keepdim=True)  # Mean over quantiles
+                    min_q_values.append(min_q)
+
+                min_q = torch.min(torch.stack(min_q_values), dim=0)[0]
+                actor_loss = (self.log_alpha.exp() * log_probs - min_q).mean()
+
+                self.actor_optimizer.zero_grad()
+                actor_loss.backward()
+                clip_gradients([self.actor], max_norm=10.0)
+                self.actor_optimizer.step()
+
+                losses['actor_loss'] = actor_loss.item()
+
+                # Temperature update
+                alpha_loss = -(self.log_alpha * (log_probs + self.target_entropy).detach()).mean()
+
+                self.alpha_optimizer.zero_grad()
+                alpha_loss.backward()
+                self.alpha_optimizer.step()
+
+                losses['alpha'] = self.log_alpha.exp().item()
+                losses['entropy'] = -log_probs.mean().item()
+
+        # Soft target update
+        for critic, critic_target in zip(self.critics, self.critics_target):
+            polyak_update(critic_target, critic, self.tau)
+
+        self.training_step += 1
+
+        return losses
+
+    def quantile_huber_loss(self, quantiles: torch.Tensor, targets: torch.Tensor,
+                           weights: torch.Tensor = None, kappa: float = 1.0) -> torch.Tensor:
+        """
+        Quantile Huber loss for TQC
+
+        Args:
+            quantiles: Predicted quantiles [batch_size, n_quantiles]
+            targets: Target values [batch_size, n_quantiles]
+            weights: Importance sampling weights [batch_size, 1]
+            kappa: Huber loss threshold
+
+        Returns:
+            loss: Scalar loss value
+        """
+        # Get quantile fractions
+        if self.algorithm_type == 'TQC' and hasattr(self.critics[0], 'quantile_fractions'):
+            tau = self.critics[0].quantile_fractions.unsqueeze(0)  # [1, n_quantiles]
+        else:
+            # Fallback to uniform quantiles
+            n_quantiles = quantiles.shape[-1]
+            tau = torch.linspace(0, 1, n_quantiles + 1, device=self.device)[1:]
+            tau = tau[:-1] + tau.diff() / 2
+            tau = tau.unsqueeze(0)
+
+        # Compute TD errors
+        td_errors = targets - quantiles  # [batch_size, n_quantiles]
+
+        # Huber loss
+        huber_loss = torch.where(
+            td_errors.abs() <= kappa,
+            0.5 * td_errors.pow(2),
+            kappa * (td_errors.abs() - 0.5 * kappa)
+        )
+
+        # Quantile regression loss
+        quantile_loss = torch.abs(tau - (td_errors < 0).float()) * huber_loss
+
+        # Apply importance sampling weights if provided
+        if weights is not None:
+            quantile_loss = weights * quantile_loss.mean(dim=-1, keepdim=True)
+            return quantile_loss.mean()
+        else:
+            return quantile_loss.mean()

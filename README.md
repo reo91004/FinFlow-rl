@@ -22,21 +22,22 @@
 FinFlow-RL (BIPD 2.0)은 IQL(Implicit Q-Learning)에서 Distributional SAC(Soft Actor-Critic)로 이어지는 파이프라인을 통해 안정적이고 설명 가능한 포트폴리오 최적화를 수행하는 강화학습 시스템이다.
 
 ### 핵심 파이프라인
-1. **오프라인 사전학습**: IQL을 통한 안정적인 가치 함수 학습
-2. **온라인 미세조정**: B-Cell (Distributional SAC + CQL 정규화)
+1. **오프라인 사전학습**: IQL 또는 TD3+BC를 통한 안정적인 가치 함수 학습
+2. **온라인 미세조정**: B-Cell (REDQ 또는 TQC 선택 가능)
 3. **목적 함수**: Differential Sharpe 최대화 + CVaR 제약
 
-### 최근 업데이트 (v2.0.0)
-- ✅ `sac.py` 제거 및 B-Cell에 통합 완료
-- ✅ 백테스트 기능 `evaluate.py`에 통합 (`--with-backtest`)
-- ✅ 오프라인 데이터 재사용 기능 수정
-- ✅ SafeTensors 통합으로 안전한 모델 저장
+### 최근 업데이트 (v2.1.0)
+- 🆕 **TQC (Truncated Quantile Critics) 알고리즘 추가**
+- ✅ REDQ와 TQC 선택 가능한 B-Cell 구현
+- ✅ 세션별 로그 디렉토리 구조 개선
+- ✅ 모든 모듈에 상세 docstring 추가
+- 📄 [전체 아키텍처 문서](docs/ARCHITECTURE.md)
 - 📄 [전체 변경사항](docs/CHANGELOG.md)
 
 ## 주요 특징
 
-- 🧬 **생물학적 메타포**: T-Cell(위기 감지), B-Cell(전략 실행), Memory Cell(경험 재활용)
-- 📊 **분포적 강화학습**: Quantile 기반 리스크 인지 의사결정
+- 🧬 **생물학적 메타포**: T-Cell(위기 감지), B-Cell(적응형 전략), Memory Cell(경험 재활용)
+- 📊 **다양한 알고리즘**: REDQ(Q-앙상블), TQC(분위수 기반), IQL, TD3+BC
 - 🔍 **XAI 통합**: SHAP 기반 의사결정 설명 + 반사실적 분석
 - ⚡ **실시간 모니터링**: 성능 추적 및 안정성 모니터링
 - 🎯 **다중 목적 최적화**: Sharpe, CVaR, 회전율 동시 고려
@@ -95,11 +96,18 @@ python main.py --mode evaluate \
 
 #### 기본 학습
 ```bash
+# REDQ 알고리즘 (기본값)
 python main.py --mode train \
     --config configs/default.yaml \
-    --tickers AAPL MSFT GOOGL \
-    --iql-epochs 100 \
-    --sac-episodes 1000
+    --tickers AAPL MSFT GOOGL
+
+# TQC 알고리즘
+python main.py --mode train \
+    --config configs/test_1episode_tqc.yaml
+
+# TD3+BC 오프라인 학습
+python main.py --mode train \
+    --config configs/test_1episode_td3bc.yaml
 ```
 
 #### 평가 모드

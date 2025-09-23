@@ -21,9 +21,9 @@ FinFlow-RL의 주요 클래스와 함수에 대한 API 레퍼런스
 
 ### BCell
 
-**경로**: `src/agents/b_cell.py`
+**경로**: `src/algorithms/online/b_cell.py`
 
-IQL + Distributional SAC를 통합한 핵심 정책 네트워크
+REDQ 또는 TQC 알고리즘을 사용하는 적응형 포트폴리오 전략 에이전트
 
 #### 클래스 정의
 ```python
@@ -32,7 +32,8 @@ class BCell:
         self,
         state_dim: int,          # 상태 공간 차원 (43)
         action_dim: int,         # 행동 공간 차원 (30)
-        config: Dict[str, Any]   # 설정 딕셔너리
+        config: Dict[str, Any],  # 설정 딕셔너리
+        device: torch.device     # 연산 디바이스
     )
 ```
 

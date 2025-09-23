@@ -59,58 +59,8 @@ def main():
         logger.info(f"설정 파일: {args.config}")
         logger.info(f"학습 모드: {args.mode}")
         
-        # TrainingConfig 생성
-        training_config = TrainingConfig(
-            # Environment
-            env_config={
-                'initial_balance': config['env']['initial_capital'],
-                'transaction_cost': config['env']['turnover_cost'],
-                'max_leverage': config['env']['max_leverage'],
-                'window_size': config['features']['window']
-            },
-            # Data
-            data_config={
-                'tickers': config['data']['symbols'],
-                'period': '5y',  # 5년 데이터
-                'interval': '1d',
-                'auto_download': True,
-                'use_cache': True
-            },
-            # 오프라인 학습
-            offline_episodes=config['train'].get('offline_episodes', 500),
-            offline_training_epochs=config['train'].get('offline_training_epochs', 50),
-            offline_steps_per_epoch=config['train'].get('offline_steps_per_epoch', 1000),
-            offline_batch_size=config['train']['offline_batch_size'],
-            force_recollect_offline=config['train'].get('force_recollect_offline', False),
-            iql_expectile=config['bcell']['iql_expectile'],
-            iql_temperature=config['bcell']['iql_temperature'],
-            # 온라인 학습
-            online_episodes=config['train'].get('online_episodes', 1000),
-            online_batch_size=config['train'].get('online_batch_size', 512),
-            sac_gamma=config['bcell']['gamma'],
-            sac_tau=config['bcell']['tau'],
-            sac_alpha=config['bcell']['alpha_init'],
-            sac_cql_weight=config['bcell']['cql_alpha_start'],
-            # Memory
-            memory_capacity=config['train']['buffer_size'],
-            memory_k_neighbors=config['memory']['k_neighbors'],
-            # Monitoring
-            eval_interval=config['train']['eval_interval'],
-            checkpoint_interval=config['train']['save_interval'],
-            log_interval=config['train']['log_interval'],
-            # Target metrics
-            target_sharpe=config['objectives']['sharpe_beta'] * 1.5,
-            target_cvar=config['objectives']['cvar_target'],
-            # Device & Seed
-            device=config['device'],
-            seed=config['seed'],
-            # Paths
-            data_path='data/processed',
-            checkpoint_dir='checkpoints'
-        )
-        
-        # Trainer 생성
-        trainer = FinFlowTrainer(training_config)
+        # Trainer 생성 (config를 직접 전달)
+        trainer = FinFlowTrainer(config)
         
         # 체크포인트 로드 (있을 경우)
         if args.resume:
@@ -121,9 +71,9 @@ def main():
         if args.mode == 'full':
             trainer.train()  # IQL + SAC
         elif args.mode == 'iql':
-            trainer._pretrain_iql()  # IQL만
+            trainer._offline_pretrain()  # IQL만
         elif args.mode == 'sac':
-            trainer._train_sac()  # SAC만
+            trainer._online_finetune()  # SAC만
         
         logger.info("\n🎉 FinFlow-RL 학습이 완료되었습니다!")
         return

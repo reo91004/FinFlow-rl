@@ -381,3 +381,145 @@ class EnsembleQNetwork(nn.Module):
         """
         q_values = self.forward(state, action)
         return q_values.mean(dim=-1, keepdim=True)
+
+
+class QuantileNetwork(nn.Module):
+    """
+    Quantile Network for TQC (Truncated Quantile Critics)
+
+    Implements quantile regression for distributional Q-values.
+    Each critic outputs a distribution over returns using quantile regression.
+    """
+
+    def __init__(self, state_dim: int, action_dim: int, n_quantiles: int = 25,
+                 hidden_dims: list = [256, 256], quantile_embedding_dim: int = 64):
+        """
+        Args:
+            state_dim: Dimension of state space
+            action_dim: Dimension of action space
+            n_quantiles: Number of quantiles to estimate
+            hidden_dims: Hidden layer dimensions
+            quantile_embedding_dim: Dimension of quantile embedding
+        """
+        super().__init__()
+
+        self.state_dim = state_dim
+        self.action_dim = action_dim
+        self.n_quantiles = n_quantiles
+        self.quantile_embedding_dim = quantile_embedding_dim
+
+        # Quantile fractions (τ)
+        quantiles = torch.linspace(0.0, 1.0, n_quantiles + 1)[1:]
+        quantiles = quantiles[:-1] + quantiles.diff() / 2  # Center of each quantile bin
+        self.register_buffer('quantile_fractions', quantiles)
+
+        # Quantile embedding network (cos embedding)
+        self.quantile_embedding = nn.Sequential(
+            nn.Linear(quantile_embedding_dim, hidden_dims[0]),
+            nn.ReLU()
+        )
+
+        # Base network for state-action
+        layers = []
+        input_dim = state_dim + action_dim
+
+        for hidden_dim in hidden_dims:
+            layers.append(nn.Linear(input_dim, hidden_dim))
+            layers.append(nn.ReLU())
+            layers.append(nn.LayerNorm(hidden_dim))
+            input_dim = hidden_dim
+
+        self.base_net = nn.Sequential(*layers)
+
+        # Output layer (combines base features with quantile embedding)
+        self.output_layer = nn.Linear(hidden_dims[-1], 1)
+
+        # Initialize weights
+        self._initialize_weights()
+
+    def _initialize_weights(self):
+        """Xavier initialization"""
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+
+    def get_quantile_embedding(self, batch_size: int) -> torch.Tensor:
+        """
+        Generate cosine embedding for quantiles
+
+        Args:
+            batch_size: Batch size
+
+        Returns:
+            embedding: [batch_size * n_quantiles, quantile_embedding_dim]
+        """
+        # Create cosine features
+        quantiles = self.quantile_fractions.unsqueeze(0).expand(batch_size, -1)
+        quantiles = quantiles.reshape(-1, 1)  # [batch_size * n_quantiles, 1]
+
+        # Cosine embedding
+        i_pi = torch.arange(self.quantile_embedding_dim, device=quantiles.device).float()
+        cos_embedding = torch.cos(quantiles * i_pi * np.pi)  # [batch_size * n_quantiles, embedding_dim]
+
+        return cos_embedding
+
+    def forward(self, state: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass computing quantile Q-values
+
+        Args:
+            state: [batch_size, state_dim]
+            action: [batch_size, action_dim]
+
+        Returns:
+            quantile_q_values: [batch_size, n_quantiles]
+        """
+        batch_size = state.shape[0]
+
+        # Compute base features
+        x = torch.cat([state, action], dim=-1)  # [batch_size, state_dim + action_dim]
+        base_features = self.base_net(x)  # [batch_size, hidden_dim]
+
+        # Expand for quantiles
+        base_features = base_features.unsqueeze(1).expand(-1, self.n_quantiles, -1)
+        base_features = base_features.reshape(batch_size * self.n_quantiles, -1)
+
+        # Get quantile embedding
+        quantile_embedding = self.get_quantile_embedding(batch_size)
+        quantile_features = self.quantile_embedding(quantile_embedding)
+
+        # Combine and output
+        combined = base_features * quantile_features  # Element-wise multiplication
+        quantile_q_values = self.output_layer(combined)  # [batch_size * n_quantiles, 1]
+
+        # Reshape to [batch_size, n_quantiles]
+        quantile_q_values = quantile_q_values.view(batch_size, self.n_quantiles)
+
+        return quantile_q_values
+
+    def get_truncated_quantiles(self, state: torch.Tensor, action: torch.Tensor,
+                               top_quantiles_to_drop: int = 2) -> torch.Tensor:
+        """
+        Get truncated quantiles (drop top-k for conservative estimation)
+
+        Args:
+            state: [batch_size, state_dim]
+            action: [batch_size, action_dim]
+            top_quantiles_to_drop: Number of top quantiles to drop
+
+        Returns:
+            truncated_quantiles: [batch_size, n_quantiles - top_quantiles_to_drop]
+        """
+        quantile_q_values = self.forward(state, action)
+
+        # Sort and drop top quantiles
+        sorted_q, _ = torch.sort(quantile_q_values, dim=-1, descending=False)
+
+        if top_quantiles_to_drop > 0:
+            truncated = sorted_q[:, :-top_quantiles_to_drop]
+        else:
+            truncated = sorted_q
+
+        return truncated

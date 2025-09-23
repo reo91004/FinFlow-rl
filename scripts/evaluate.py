@@ -34,7 +34,7 @@ from src.evaluation.metrics import calculate_sharpe_ratio, calculate_cvar, calcu
 from src.evaluation.visualizer import plot_portfolio_weights, plot_equity_curve, plot_drawdown
 from src.evaluation.backtester import RealisticBacktester  # 백테스터 통합
 from src.utils.device_manager import set_seed
-from src.utils.logger import FinFlowLogger, get_session_directory
+from src.utils.logger import FinFlowLogger, get_session_directory, set_session_directory
 import logging
 
 class FinFlowEvaluator:
@@ -75,7 +75,12 @@ class FinFlowEvaluator:
             self.logger.addHandler(console_handler)
 
         self.logger.info("평가기 초기화")
-        
+
+        # Set session directory to checkpoint's parent directory for evaluate mode
+        # This prevents creating new timestamp directories
+        checkpoint_parent = Path(self.checkpoint_path).parent.parent  # logs/20250923_194512/
+        set_session_directory(str(checkpoint_parent))
+
         # Load configuration - YAML 우선, JSON 폴백
         if config_path is None:
             config_path = 'configs/default.yaml'
@@ -101,8 +106,9 @@ class FinFlowEvaluator:
 
         # Results storage
         self.results = {}
-        # 평가 결과를 checkpoint 폴더 내에 저장
-        self.session_dir = Path(self.checkpoint_path) / "evaluation"
+        # 평가 결과를 checkpoint의 상위 logs 폴더 내에 저장
+        checkpoint_parent = Path(self.checkpoint_path).parent.parent  # logs/20250923_194512/
+        self.session_dir = checkpoint_parent / "evaluation"
         self.session_dir.mkdir(parents=True, exist_ok=True)
         self.run_dir = self.session_dir
         (self.run_dir / "reports").mkdir(parents=True, exist_ok=True)
@@ -147,9 +153,35 @@ class FinFlowEvaluator:
     
     def _load_models(self) -> None:
         """모델과 메모리 셀 로드"""
-        self.logger.info(f"체크포인트 로드: {self.checkpoint_path}")
-
         checkpoint_path = Path(self.checkpoint_path)
+
+        # 체크포인트 경로 결정
+        if checkpoint_path.is_dir():
+            # 디렉토리가 주어지면 best.pt를 우선 확인
+            best_path = checkpoint_path / 'best.pt'
+            if best_path.exists():
+                checkpoint_path = best_path
+                self.logger.info(f"Best 체크포인트 로드: {checkpoint_path}")
+            else:
+                # best가 없으면 가장 최근 step_*.pt 파일
+                step_files = sorted(checkpoint_path.glob('step_*.pt'),
+                                   key=lambda x: int(x.stem.split('_')[1]),
+                                   reverse=True)
+                if step_files:
+                    checkpoint_path = step_files[0]
+                    self.logger.info(f"최근 체크포인트 로드: {checkpoint_path}")
+                else:
+                    # 기존 episode_*.pt 파일 확인 (backward compatibility)
+                    episode_files = sorted(checkpoint_path.glob('episode_*.pt'),
+                                          key=lambda x: int(x.stem.split('_')[1]),
+                                          reverse=True)
+                    if episode_files:
+                        checkpoint_path = episode_files[0]
+                        self.logger.info(f"최근 체크포인트 로드: {checkpoint_path}")
+                    else:
+                        raise FileNotFoundError(f"체크포인트 파일을 찾을 수 없습니다: {checkpoint_path}")
+        else:
+            self.logger.info(f"체크포인트 로드: {checkpoint_path}")
 
         # SafeTensors 형식 체크
         if checkpoint_path.is_dir() and (checkpoint_path / "model.safetensors").exists():
@@ -159,92 +191,81 @@ class FinFlowEvaluator:
             checkpoint = self._load_legacy_checkpoint(self.checkpoint_path)
 
         # 체크포인트 검증
-        required_keys = ['b_cell', 'gating_network', 'device']
+        # 현재 체크포인트는 B-Cell 자체의 state dict
+        required_keys = ['actor', 'critics']  # B-Cell의 필수 구성 요소
         missing_keys = [k for k in required_keys if k not in checkpoint]
         if missing_keys:
-            raise KeyError(f"체크포인트에 필수 키가 없습니다: {missing_keys}")
+            # 이전 형식의 체크포인트일 수 있음
+            if 'b_cell' in checkpoint:
+                checkpoint = checkpoint['b_cell']
+                missing_keys = [k for k in required_keys if k not in checkpoint]
+                if missing_keys:
+                    raise KeyError(f"체크포인트에 필수 키가 없습니다: {missing_keys}")
+            else:
+                raise KeyError(f"체크포인트에 필수 키가 없습니다: {missing_keys}")
 
-        # device 검증
-        checkpoint_device = checkpoint.get('device', 'cpu')
-        if checkpoint_device == 'auto':
-            raise ValueError("체크포인트의 device가 'auto'입니다. Migration 스크립트를 실행하세요.")
+        # 차원 정보를 config에서 가져오기
+        # 체크포인트에는 차원 정보가 없으므로 데이터 설정에서 추론
+        data_config = self.config.get('data', {})
+        symbols = data_config.get('symbols', data_config.get('tickers', []))
 
-        # Get dimensions from checkpoint metadata
-        state_dim = checkpoint.get('state_dim', None)
-        action_dim = checkpoint.get('action_dim', None)
-
-        # Fallback to config if not in top-level metadata
-        if state_dim is None or action_dim is None:
-            if 'config' in checkpoint:
-                config = checkpoint['config']
-                state_dim = config.get('state_dim', None)
-                action_dim = config.get('action_dim', None)
-
-            # If still None, calculate from data
-            if state_dim is None or action_dim is None:
-                self.logger.warning("차원 정보가 체크포인트에 없음 - 데이터에서 추론")
-                # 데이터 설정 가져오기
-                data_config = self.config.get('data', {})
-                symbols = data_config.get('symbols', data_config.get('tickers', []))
-
-                if symbols:
-                    n_assets = len(symbols)
-                    # state_dim = features(12) + weights(n_assets) + crisis(1)
-                    state_dim = 12 + n_assets + 1
-                    action_dim = n_assets
-                    self.logger.info(f"자산 수({n_assets})에서 차원 추론: state_dim={state_dim}, action_dim={action_dim}")
-                else:
-                    # 최종 fallback
-                    state_dim = 43  # 12 + 30 + 1
-                    action_dim = 30
-                    self.logger.warning(f"기본값 사용: state_dim={state_dim}, action_dim={action_dim}")
+        if symbols:
+            n_assets = len(symbols)
+            # state_dim = features(12) + weights(n_assets) + crisis(1)
+            state_dim = 12 + n_assets + 1
+            action_dim = n_assets
+            self.logger.info(f"자산 수({n_assets})에서 차원 추론: state_dim={state_dim}, action_dim={action_dim}")
+        else:
+            # 최종 fallback
+            state_dim = 43  # 12 + 30 + 1
+            action_dim = 30
+            self.logger.warning(f"기본값 사용: state_dim={state_dim}, action_dim={action_dim}")
 
         self.logger.info(f"체크포인트 차원: state_dim={state_dim}, action_dim={action_dim}")
 
         # Store action_dim for later validation
         self.expected_action_dim = action_dim
 
-        # Initialize components with specialization
-        b_cell_data = checkpoint['b_cell']
-        specialization = b_cell_data.get('specialization', 'momentum')  # 기본값
+        # Initialize components
+        # 현재 체크포인트는 B-Cell의 state dict
+        b_cell_data = checkpoint
 
         # BCell 초기화에 필요한 config (YAML config에서 가져오기)
         bcell_config = self.config.get('bcell', {})
 
-        # bcell 섹션에서 config 가져오기 (올바른 키 사용)
-        bcell_config_dict = {
+        # REDQ/TQC 통합 설정
+        bcell_config_final = {
+            'algorithm': bcell_config.get('algorithm', 'REDQ'),
             'gamma': bcell_config.get('gamma', 0.99),
             'tau': bcell_config.get('tau', 0.005),
-            'alpha_init': bcell_config.get('alpha_init', 0.2),
-            'actor_hidden': bcell_config.get('actor_hidden', [256, 256]),
-            'critic_hidden': bcell_config.get('critic_hidden', [256, 256]),
+            'alpha': bcell_config.get('alpha', 0.2),
+            'hidden_dims': bcell_config.get('hidden_dims', [256, 256]),
             'actor_lr': float(bcell_config.get('actor_lr', 3e-4)),
             'critic_lr': float(bcell_config.get('critic_lr', 3e-4)),
-            'n_quantiles': bcell_config.get('n_quantiles', 32)
+            'alpha_lr': float(bcell_config.get('alpha_lr', 3e-4)),
+            'batch_size': bcell_config.get('batch_size', 256),
+            'buffer_size': bcell_config.get('buffer_size', 100000),
+            'n_critics': bcell_config.get('n_critics', 10 if bcell_config.get('algorithm', 'REDQ') == 'REDQ' else 2),
+            'm_sample': bcell_config.get('m_sample', 2),
+            'utd_ratio': bcell_config.get('utd_ratio', 20 if bcell_config.get('algorithm', 'REDQ') == 'REDQ' else 1),
+            'n_quantiles': bcell_config.get('n_quantiles', 25),
+            'quantile_embedding_dim': bcell_config.get('quantile_embedding_dim', 64),
+            'top_quantiles_to_drop_per_net': bcell_config.get('top_quantiles_to_drop_per_net', 2),
+            'crisis_threshold': bcell_config.get('crisis_threshold', 0.7)
         }
-        bcell_config = bcell_config_dict
 
         self.b_cell = BCell(
-            specialization=specialization,
             state_dim=state_dim,
             action_dim=action_dim,
-            config=bcell_config,
+            config=bcell_config_final,
             device=self.device
         )
-        self.b_cell.load_state_dict(b_cell_data)
-        # BCell은 eval() 메서드가 없음 - 내부 네트워크는 자동으로 eval 모드
+        # B-Cell state 로드
+        # B-Cell의 load 메서드를 직접 사용
+        self.b_cell.load(str(self.checkpoint_path))
 
-        # GatingNetwork config from YAML
-        train_config = self.config.get('train', {})
-        self.gating_network = GatingNetwork(
-            state_dim=state_dim,
-            hidden_dim=train_config.get('gating_hidden_dim', 128),
-            num_experts=train_config.get('n_experts', 5),
-            temperature=train_config.get('gating_temperature', 1.0),
-            performance_maxlen=train_config.get('gating_performance_maxlen', 100)
-        ).to(self.device)
-        self.gating_network.load_state_dict(checkpoint['gating_network'])
-        self.gating_network.eval()
+        # GatingNetwork는 더 이상 사용하지 않음
+        self.gating_network = None
 
         self.t_cell = TCell()
         if 't_cell' in checkpoint:
@@ -317,7 +338,6 @@ class FinFlowEvaluator:
 
         self.logger.info(f"모델 로드 완료 (Episode: {self.checkpoint_epoch})")
         self.logger.info(f"메모리 셀 크기: {len(self.memory_cell.memories)}")
-        self.logger.info(f"Device: {checkpoint_device} -> {self.device}")
 
 
     def _load_safetensors_checkpoint(self, checkpoint_path: Path) -> Dict:
@@ -683,24 +703,26 @@ class FinFlowEvaluator:
                 state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
                 
                 # Crisis detection
-                crisis_info = self.t_cell.detect_crisis(env.get_market_data())
-                
-                # Memory guidance
-                memory_guidance = self.memory_cell.get_memory_guidance(
-                    state, crisis_info['overall_crisis']
+                market_data = env.get_market_data()
+                crisis_level, crisis_explanation = self.t_cell.detect_crisis(market_data['features'])
+
+                # Memory recall
+                memory_action = self.memory_cell.recall(
+                    state, crisis_level
                 )
-                
-                # Gating decision
-                gating_decision = self.gating_network(
-                    state_tensor, memory_guidance, crisis_info['overall_crisis']
-                )
-                
+
                 # Select action
                 action = self.b_cell.select_action(
-                    state_tensor,
-                    bcell_type=gating_decision.selected_bcell,
+                    state.squeeze() if state.ndim > 1 else state,  # \uc2a4\ud0ec\uce58\ub41c numpy \ubc30\uc5f4 \uc804\ub2ec
+                    crisis_level=crisis_level,
                     deterministic=True
                 )
+
+                # \uc561\uc158 \ucc28\uc6d0 \ud655\uc778 \ubc0f \uc870\uc815
+                if len(action.shape) == 0:
+                    action = np.array([action])
+                elif action.shape[0] == 1:
+                    action = action.squeeze()
                 
                 # XAI Analysis - 마지막 스텝 또는 100스텝마다
                 if step_count % 100 == 0 or done:
@@ -711,15 +733,19 @@ class FinFlowEvaluator:
                     # SHAP top-k 특성 계산
                     shap_topk_features = list(local_attr.items())[:5]  # 상위 5개 특성
 
-                    # Memory guidance를 similar cases로 변환
+                    # Memory recall를 similar cases로 변환
                     similar_cases = None
-                    if isinstance(memory_guidance, dict) and memory_guidance.get('similar_memories'):
-                        similar_cases = memory_guidance['similar_memories']
-                    elif isinstance(memory_guidance, list):
-                        similar_cases = memory_guidance
+                    if memory_action is not None:
+                        similar_cases = [memory_action]  # 메모리에서 리콜된 액션
+
+                    # 위기 정보 구성
+                    crisis_info_dict = {
+                        'crisis_level': crisis_level,
+                        'explanation': crisis_explanation
+                    }
 
                     reg_report = self.explainer.regime_report(
-                        crisis_info,
+                        crisis_info_dict,
                         shap_topk=shap_topk_features,
                         similar_cases=similar_cases
                     )
@@ -733,7 +759,7 @@ class FinFlowEvaluator:
                         "local_attribution": local_attr,
                         "counterfactual": cf_report,
                         "regime_report": reg_report,
-                        "crisis_info": crisis_info
+                        "crisis_info": crisis_info_dict
                     }
                     
                     # JSON 저장 (numpy 타입 변환)
@@ -852,26 +878,20 @@ class FinFlowEvaluator:
             features = extractor.extract_features(data, current_idx=timestamp)
 
             # 위기 감지
-            crisis_info = self.t_cell.detect_crisis(features)
+            crisis_level, crisis_explanation = self.t_cell.detect_crisis(features)
 
             # 전체 상태 구성
-            state = np.concatenate([features, positions, [crisis_info['overall_crisis']]])
+            state = np.concatenate([features, positions, [crisis_level]])
             state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
 
-            # 메모리 가이던스
-            memory_guidance = self.memory_cell.get_memory_guidance(
-                state, crisis_info['overall_crisis']
-            )
-
-            # Gating decision
-            gating_decision = self.gating_network(
-                state_tensor, memory_guidance, crisis_info['overall_crisis']
+            # 메모리 리콜
+            memory_action = self.memory_cell.recall(
+                state, crisis_level
             )
 
             # Select action
             action = self.b_cell.select_action(
                 state_tensor,
-                bcell_type=gating_decision.selected_bcell,
                 deterministic=True
             )
 
@@ -1088,7 +1108,10 @@ class FinFlowEvaluator:
             state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
             
             # Get action
-            action = self.b_cell.select_action(state_tensor, deterministic=True)
+            action = self.b_cell.select_action(
+                state.squeeze() if state.ndim > 1 else state,  # numpy array \uc804\ub2ec
+                deterministic=True
+            )
             
             sample_states.append(state)
             sample_actions.append(action)
