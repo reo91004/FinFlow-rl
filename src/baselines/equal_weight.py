@@ -3,7 +3,7 @@
 import numpy as np
 import pandas as pd
 from typing import Dict, Optional
-from src.data.loader import DataLoader
+from src.data.market_loader import DataLoader
 from src.utils.logger import FinFlowLogger
 
 

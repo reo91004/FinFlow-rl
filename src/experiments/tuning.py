@@ -7,7 +7,7 @@ import optuna
 import numpy as np
 import torch
 from typing import Dict, Any, Optional, Callable
-from src.core.env import PortfolioEnv
+from src.environments.portfolio_env import PortfolioEnv
 # FinFlowTrainer는 순환 import 방지를 위해 필요시 import
 from src.utils.logger import FinFlowLogger
 import json

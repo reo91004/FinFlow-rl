@@ -24,16 +24,17 @@ import torch.serialization
 # 기본 타입들은 이미 안전하므로, 필요한 경우에만 추가
 # torch.serialization.add_safe_globals([dict, list, tuple])  # 이미 기본으로 허용됨
 
-from src.core.env import PortfolioEnv
-from src.agents.b_cell import BCell
-from src.agents.t_cell import TCell
-from src.agents.memory import MemoryCell
-from src.agents.gating import GatingNetwork
-from src.analysis.explainer import XAIExplainer
-from src.analysis.metrics import calculate_sharpe_ratio, calculate_cvar, calculate_max_drawdown
-from src.analysis.visualization import plot_portfolio_weights, plot_equity_curve, plot_drawdown
-from src.analysis.backtest import RealisticBacktester  # 백테스터 통합
-from src.utils.seed import set_seed
+from src.environments.portfolio_env import PortfolioEnv
+from src.algorithms.online.b_cell import BCell
+from src.algorithms.online.t_cell import TCell
+from src.algorithms.online.memory import MemoryCell
+# from src.agents.gating import GatingNetwork  # Not used anymore
+from src.evaluation.explainer import XAIExplainer
+from src.evaluation.metrics import calculate_sharpe_ratio, calculate_cvar, calculate_max_drawdown
+from src.evaluation.visualizer import plot_portfolio_weights, plot_equity_curve, plot_drawdown
+from src.evaluation.backtester import RealisticBacktester  # 백테스터 통합
+from src.utils.device_manager import set_seed
+from src.utils.logger import FinFlowLogger, get_session_directory
 import logging
 
 class FinFlowEvaluator:
@@ -462,7 +463,7 @@ class FinFlowEvaluator:
 
     def _load_data_dynamically(self):
         """체크포인트 설정을 사용하여 데이터 동적 로드"""
-        from src.data.loader import DataLoader
+        from src.data.market_loader import DataLoader
         import pandas as pd
 
         # YAML 설정에서 심볼과 날짜 정보 가져오기
@@ -506,7 +507,7 @@ class FinFlowEvaluator:
         self.returns = returns.values
 
         # FeatureExtractor를 사용한 적절한 특징 계산
-        from src.data.features import FeatureExtractor
+        from src.data.feature_extractor import FeatureExtractor
         feature_extractor = FeatureExtractor(window=20)
 
         T, N = self.prices.shape
@@ -604,7 +605,7 @@ class FinFlowEvaluator:
         )
 
         # FeatureExtractor 초기화 (config에서 window 가져오기)
-        from src.data.features import FeatureExtractor
+        from src.data.feature_extractor import FeatureExtractor
         train_config = self.config.get('train', {})
         feature_window = train_config.get('feature_window', 20)
         feature_extractor = FeatureExtractor(window=feature_window)
@@ -843,7 +844,7 @@ class FinFlowEvaluator:
                 return np.ones(n_assets) / n_assets
 
             # 상태 구성
-            from src.data.features import FeatureExtractor
+            from src.data.feature_extractor import FeatureExtractor
             extractor = FeatureExtractor(
                 window=self.config.get('features', {}).get('window', 20),
                 feature_config=self.config.get('features', {})
@@ -1061,7 +1062,7 @@ class FinFlowEvaluator:
         )
 
         # FeatureExtractor 초기화 (config에서 window 가져오기)
-        from src.data.features import FeatureExtractor
+        from src.data.feature_extractor import FeatureExtractor
         train_config = self.config.get('train', {})
         feature_window = train_config.get('feature_window', 20)
         feature_extractor = FeatureExtractor(window=feature_window)

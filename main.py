@@ -26,9 +26,9 @@ import json
 import yaml
 import torch
 from pathlib import Path
-from src.core.trainer import FinFlowTrainer, TrainingConfig
+from src.training.trainer import FinFlowTrainer
 from src.utils.logger import FinFlowLogger
-from src.utils.seed import set_seed, get_device_info
+from src.utils.device_manager import set_seed, get_device_info
 
 def main():
     """메인 실행 함수"""
@@ -89,7 +89,7 @@ def main():
     parser.add_argument('--target-sharpe', type=float, default=None,
                        help='Target Sharpe ratio (overrides config)')
     parser.add_argument('--target-cvar', type=float, default=None,
-                       help='Target CVaR (5%) (overrides config)')
+                       help='Target CVaR at 5 percent level - overrides config')
     
     # System parameters
     parser.add_argument('--device', type=str, default='auto',
@@ -191,14 +191,16 @@ def main():
             overrides['data_config']['tickers'] = tickers
             overrides['data_config']['symbols'] = tickers  # 호환성
         
-        # Create training config with YAML and overrides
-        config = TrainingConfig(
-            config_path=args.config,
-            override_params=overrides
-        )
-        
-        # Create trainer
-        trainer = FinFlowTrainer(config)
+        # Apply overrides to config
+        for key, value in overrides.items():
+            if isinstance(value, dict) and key in config_dict:
+                # Merge nested dicts
+                config_dict[key].update(value)
+            else:
+                config_dict[key] = value
+
+        # Create trainer with config dict
+        trainer = FinFlowTrainer(config_dict)
         
         # Resume if checkpoint provided
         if args.resume:
@@ -244,21 +246,30 @@ def main():
         print("3. XAI 설명 생성 및 시각화")
         
         # Quick training with synthetic data
-        config = TrainingConfig(
-            data_config={
+        demo_config = {
+            'data': {
                 'symbols': ['AAPL', 'GOOGL', 'MSFT'],  # 데모용 3개 심볼
-                'start': '2019-01-01',
-                'end': '2020-12-31',
-                'test_start': '2021-01-01',
-                'test_end': '2021-12-31'
+                'period': '2y'
             },
-            offline_training_epochs=10,  # Reduced for demo
-            online_episodes=50,  # Reduced for demo
-            device=args.device,
-            seed=args.seed
-        )
-        
-        trainer = FinFlowTrainer(config)
+            'offline': {
+                'epochs': 10,  # Reduced for demo
+                'batch_size': 256
+            },
+            'online_episodes': 50,  # Reduced for demo
+            'device': args.device,
+            'seed': args.seed
+        }
+
+        # Merge with default config if exists
+        if config_dict:
+            for key, value in demo_config.items():
+                if isinstance(value, dict) and key in config_dict:
+                    config_dict[key].update(value)
+                else:
+                    config_dict[key] = value
+            trainer = FinFlowTrainer(config_dict)
+        else:
+            trainer = FinFlowTrainer(demo_config)
         
         print("\n빠른 학습 시작 (데모용)...")
         trainer.train()

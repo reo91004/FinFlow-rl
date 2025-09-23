@@ -67,35 +67,44 @@ class PrioritizedReplayBuffer:
         self.priorities[self.position] = self.max_priority
         self.position = (self.position + 1) % self.capacity
     
-    def sample(self, batch_size: int) -> Tuple[list, np.ndarray, np.ndarray]:
+    def sample(self, batch_size: int) -> Tuple[Dict, np.ndarray, np.ndarray]:
         """
         우선순위 기반 샘플링
-        
+
         Returns:
-            transitions: 샘플된 경험들
+            batch: Dict 형태의 배치 데이터
             weights: Importance sampling weights
             indices: 샘플 인덱스 (우선순위 업데이트용)
         """
         if len(self.buffer) == 0:
-            return [], np.array([]), np.array([])
-        
+            return {}, np.array([]), np.array([])
+
         # 유효한 우선순위만 사용
         priorities = self.priorities[:len(self.buffer)]
         probabilities = priorities ** self.alpha
         probabilities /= probabilities.sum()
-        
+
         # 샘플링
         indices = np.random.choice(len(self.buffer), batch_size, p=probabilities)
         transitions = [self.buffer[idx] for idx in indices]
-        
+
+        # Dict 형태로 변환
+        batch = {
+            'states': np.array([t.state for t in transitions]),
+            'actions': np.array([t.action for t in transitions]),
+            'rewards': np.array([t.reward for t in transitions]),
+            'next_states': np.array([t.next_state for t in transitions]),
+            'dones': np.array([t.done for t in transitions])
+        }
+
         # Importance sampling weights
         weights = (len(self.buffer) * probabilities[indices]) ** (-self.beta)
         weights /= weights.max()  # 정규화
-        
+
         # Beta 점진적 증가
         self.beta = min(1.0, self.beta + self.beta_increment)
-        
-        return transitions, weights, indices
+
+        return batch, weights, indices
     
     def update_priorities(self, indices: np.ndarray, priorities: np.ndarray):
         """TD 오차 기반 우선순위 업데이트"""

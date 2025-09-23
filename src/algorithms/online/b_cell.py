@@ -21,10 +21,10 @@ import torch.optim as optim
 import numpy as np
 from typing import Dict
 
-from src.core.networks import DirichletActor, QNetwork
-from src.core.replay import PrioritizedReplayBuffer
+from src.models.networks import DirichletActor, QNetwork
+from src.data.replay_buffer import PrioritizedReplayBuffer
 from src.utils.logger import FinFlowLogger
-from src.utils.optimizer_utils import polyak_update, clip_gradients
+from src.utils.training_utils import polyak_update, clip_gradients
 
 class BCell:
     """
@@ -47,6 +47,7 @@ class BCell:
         """
         self.state_dim = state_dim
         self.action_dim = action_dim
+        self.config = config  # config 저장
         self.device = device
         self.logger = FinFlowLogger("BCell")
 
@@ -86,20 +87,20 @@ class BCell:
         self.log_alpha = torch.tensor(np.log(self.alpha),
                                      requires_grad=True, device=device)
 
-        # Optimizers
+        # Optimizers (learning rate를 명시적으로 float 변환)
         self.actor_optimizer = optim.Adam(
             self.actor.parameters(),
-            lr=config.get('actor_lr', 3e-4)
+            lr=float(config.get('actor_lr', 3e-4))
         )
 
         self.critics_optimizer = optim.Adam(
             self.critics.parameters(),
-            lr=config.get('critic_lr', 3e-4)
+            lr=float(config.get('critic_lr', 3e-4))
         )
 
         self.alpha_optimizer = optim.Adam(
             [self.log_alpha],
-            lr=config.get('alpha_lr', 3e-4)
+            lr=float(config.get('alpha_lr', 3e-4))
         )
 
         # Replay buffer
@@ -112,6 +113,7 @@ class BCell:
         # Risk adaptation parameters
         self.base_risk_aversion = 1.0
         self.current_risk_aversion = 1.0
+        self.crisis_threshold = config.get('crisis_threshold', 0.7)  # 위기 수준 임계값
 
         # Training statistics
         self.training_step = 0
@@ -126,7 +128,7 @@ class BCell:
             crisis_level: 0 (정상) ~ 1 (극단 위기)
         """
         # 위기 수준에 따른 리스크 회피도 조정
-        if crisis_level > 0.7:
+        if crisis_level > self.crisis_threshold:
             self.current_risk_aversion = 2.0  # 방어적
             self.logger.debug(f"위기 수준 {crisis_level:.2f} - 방어적 모드 활성화")
         elif crisis_level > 0.4:
@@ -158,7 +160,7 @@ class BCell:
 
         with torch.no_grad():
             if deterministic:
-                action = self.actor.get_action(state_tensor, deterministic=True)
+                action, _ = self.actor.get_action(state_tensor, deterministic=True)
             else:
                 action, _ = self.actor.sample(state_tensor)
 
@@ -174,10 +176,14 @@ class BCell:
 
         return action
 
-    def train(self, batch_size: int = 256) -> Dict:
+    def train(self, batch_size: int = None) -> Dict:
         """
         REDQ 학습 스텝
+        Args:
+            batch_size: 배치 크기 (None이면 config에서 가져옴)
         """
+        if batch_size is None:
+            batch_size = self.config.get('batch_size', 256)
         if len(self.replay_buffer) < batch_size:
             return {}
 

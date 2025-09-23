@@ -9,8 +9,8 @@ from pathlib import Path
 # 프로젝트 루트를 Python 경로에 추가
 sys.path.append(str(Path(__file__).parent.parent))
 
-from src.core.env import PortfolioEnv
-from src.data.features import FeatureExtractor
+from src.environments.portfolio_env import PortfolioEnv
+from src.data.feature_extractor import FeatureExtractor
 
 def create_dummy_price_data(n_assets=5, n_days=100):
     """테스트용 더미 가격 데이터 생성"""

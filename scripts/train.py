@@ -21,12 +21,12 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-from src.utils.seed import set_seed, DeviceManager
+from src.utils.device_manager import set_seed, DeviceManager
 from src.utils.logger import FinFlowLogger, get_session_directory
 from src.data import DataLoader, FeatureExtractor
-from src.core.env import PortfolioEnv
-from src.core.objectives import PortfolioObjective, RewardNormalizer
-from src.core.trainer import FinFlowTrainer, TrainingConfig
+from src.environments.portfolio_env import PortfolioEnv
+from src.environments.reward_functions import PortfolioObjective, RewardNormalizer
+from src.training.trainer import FinFlowTrainer
 
 def load_config(config_path: str) -> dict:
     """설정 파일 로드"""

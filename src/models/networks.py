@@ -158,13 +158,13 @@ class DirichletActor(nn.Module):
 
         Returns:
             action: [batch_size, action_dim] - portfolio weights
-            log_prob: [batch_size] - log probability
+            log_prob: [batch_size, 1] - log probability (consistent shape with sample())
         """
         concentration = self.forward(state, crisis_level)
-        
+
         # Create Dirichlet distribution
         dist = Dirichlet(concentration)
-        
+
         if deterministic:
             # Mode of Dirichlet: (α_i - 1) / (Σα_j - K)
             # Only valid when all α_i > 1
@@ -172,7 +172,7 @@ class DirichletActor(nn.Module):
             action = (safe_conc - 1) / (safe_conc.sum(dim=-1, keepdim=True) - self.action_dim)
             # Normalize to ensure simplex
             action = action / action.sum(dim=-1, keepdim=True)
-            log_prob = dist.log_prob(action)
+            log_prob = dist.log_prob(action).unsqueeze(-1)  # Shape 일치: [batch_size, 1]
         else:
             # Sample from distribution with stability
             action = dist.rsample()  # Reparameterized sampling
@@ -183,7 +183,7 @@ class DirichletActor(nn.Module):
 
             # log_prob 계산 시 추가 안정화
             # Simplex constraint를 만족하도록 action을 보정
-            log_prob = dist.log_prob(action)  # epsilon 없이 정규화된 action 사용
+            log_prob = dist.log_prob(action).unsqueeze(-1)  # Shape 일치: [batch_size, 1]
 
         # Apply action smoothing (EMA)
         if self.action_smoothing and not deterministic:

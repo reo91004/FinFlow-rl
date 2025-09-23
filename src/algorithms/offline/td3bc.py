@@ -21,9 +21,9 @@ import torch.optim as optim
 import torch.nn.functional as F
 import numpy as np
 from typing import Dict, Optional, Tuple
-from src.core.networks import DirichletActor, QNetwork
+from src.models.networks import DirichletActor, QNetwork
 from src.utils.logger import FinFlowLogger
-from src.utils.optimizer_utils import polyak_update, clip_gradients
+from src.utils.training_utils import polyak_update, clip_gradients
 
 class TD3BCAgent:
     """

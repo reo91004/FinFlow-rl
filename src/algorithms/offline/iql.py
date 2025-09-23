@@ -21,7 +21,7 @@ import torch.optim as optim
 import torch.nn.functional as F
 import numpy as np
 from typing import Dict, Tuple, Optional
-from src.core.networks import DirichletActor, ValueNetwork, QNetwork
+from src.models.networks import DirichletActor, ValueNetwork, QNetwork
 from src.utils.logger import FinFlowLogger
 
 class IQLAgent:
@@ -192,12 +192,19 @@ class IQLAgent:
                   dones: torch.Tensor) -> float:
         """
         Update Q-functions
-        
+
         Q(s,a) ← r + γ * V(s')
         """
         with torch.no_grad():
             # Next value (not next Q!)
-            next_value = self.value(next_states)
+            next_value = self.value(next_states)  # shape: [batch_size, 1]
+
+            # Ensure proper tensor shapes for broadcasting
+            if rewards.dim() == 1:
+                rewards = rewards.unsqueeze(-1)  # [batch_size] -> [batch_size, 1]
+            if dones.dim() == 1:
+                dones = dones.unsqueeze(-1)  # [batch_size] -> [batch_size, 1]
+
             target = rewards + self.discount * (1 - dones) * next_value
         
         # Current Q estimates

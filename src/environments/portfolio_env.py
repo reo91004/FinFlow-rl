@@ -23,7 +23,7 @@ import gymnasium as gym
 from gymnasium import spaces
 
 from src.utils.logger import FinFlowLogger
-from src.data.features import FeatureExtractor
+from src.data.feature_extractor import FeatureExtractor
 
 @dataclass
 class PortfolioState:

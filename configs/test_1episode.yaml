@@ -1,152 +1,106 @@
 # configs/test_1episode.yaml
+# 1 episode 테스트용 설정 (default.yaml과 동일하되 에피소드만 1로)
 
-# 기본 설정 상속
-# 1-에피소드 테스트용 설정 (T-Cell 데이터 저장 확인)
-
-# 기본 설정
-device: "cpu"  # CPU 사용 (빠른 테스트)
 seed: 42
+device: cpu  # 빠른 테스트를 위해 CPU 사용
 
 # 데이터 설정
 data:
-  symbols: ["AAPL", "MSFT", "GOOGL", "AMZN", "META"]  # 5개 종목만 (빠른 테스트)
-  train_start: "2019-01-01"
-  train_end: "2021-12-31"
-  test_start: "2022-01-01"
-  test_end: "2023-12-31"
-  interval: "1d"
-  cache_dir: "data/cache"
-  data_validation:
-    enabled: true
-    min_samples: 100  # 테스트용으로 최소값 낮춤
-
-# 학습 설정 (1 에피소드만)
-train:
-  # 오프라인 사전학습 - 테스트용 최소한으로
-  offline_episodes: 10  # 10개 에피소드만 수집
-  offline_training_epochs: 2  # 2 에폭만 학습
-  offline_steps_per_epoch: 100  # 에폭당 100 스텝
-  offline_batch_size: 512
-  force_recollect_offline: false  # 기존 오프라인 데이터 재사용
-
-  # 온라인 학습 - 1 에피소드만
-  online_episodes: 1  # 1 에피소드만
-  online_batch_size: 512
-
-  # Experience replay
-  buffer_size: 10000
-  min_buffer_size: 10  # 빠른 테스트
-  prioritized_replay: false  # 간단하게
-
-  # 평가 및 저장
-  eval_interval: 1  # 매 에피소드
-  save_interval: 1  # 1 에피소드 후 바로 저장
-  log_interval: 1  # 1 에피소드마다 로그
-  checkpoint_interval: 1  # 체크포인트 저장 간격
-
-  # Feature extraction
-  feature_window: 20  # FeatureExtractor window
-  momentum_lookback: 20  # Momentum strategy lookback
-
-  # Gating Network
-  gating_hidden_dim: 128
-  gating_temperature: 1.0
-  n_experts: 5
-
-  # B-Cell network configs (for evaluation compatibility)
-  bcell_actor_hidden: [256, 256]
-  bcell_critic_hidden: [256, 256]
-  bcell_n_quantiles: 32
-  bcell_actor_lr: 3e-4
-  bcell_critic_lr: 3e-4
-
-# B-Cell 설정
-bcell:
-  network: "distributional"  # standard|distributional
-  gamma: 0.99
-  tau: 0.005
-  alpha_init: 0.2
-  iql_expectile: 0.7
-  iql_temperature: 3.0
-  offline_algo: "iql"
-  online_algo: "sac"  # 간단한 SAC만
-  cql_alpha_start: 0.0  # CQL 비활성화
-  n_quantiles: 32
-  actor_hidden: [256, 256]
-  critic_hidden: [256, 256]
-  actor_lr: 3e-4
-  critic_lr: 3e-4
-
-# T-Cell 설정
-tcell:
-  method: "iforest"
-  contamination: 0.1
-  n_estimators: 100
-  ema_beta: 0.9
-  shap_topk: 5
-  crisis_thresholds:
-    high: 0.7
-    medium: 0.4
-
-# 특성 추출 설정
-features:
-  window: 20
-  dimensions:
-    returns: 3
-    technical: 4
-    structure: 3
-    momentum: 2
-  total_dim: 12
-  indicators: ["returns", "vol_ema", "momentum", "rsi", "macd", "bollinger", "correlation"]
-  normalize: true
+  symbols: ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META']
+  period: '2y'  # 적당한 기간
+  interval: '1d'
+  cache: true
 
 # 환경 설정
 env:
-  initial_capital: 1000000
-  turnover_cost: 0.001
-  slip_coeff: 0.0005
-  no_trade_band: 0.0005
+  initial_balance: 1000000
+  transaction_cost: 0.001
   max_leverage: 1.0
-  max_turnover: 0.9
+  window_size: 20
 
-# 목표 함수 설정
-objective:
-  method: "sharpe"
-  risk_free_rate: 0.02
-  sharpe_window: 252
-  cvar_alpha: 0.05
+# 특성 추출
+feature_dim: 12
 
-# 목표 가중치 설정
-objectives:
-  sharpe_beta: 1.0
-  cvar_gamma: 0.5
-  turnover_penalty: 0.1
-  drawdown_penalty: 0.1
-  cvar_target: -0.02
-  sharpe_target: 1.5
-  max_drawdown_threshold: 0.25
+# 오프라인 학습 (최소화)
+offline:
+  method: 'iql'  # 'iql' or 'td3bc'
+  epochs: 1  # 1 epoch만
+  batch_size: 256  # default와 동일
 
-# 메모리 설정
+  # IQL 전용
+  expectile: 0.7
+  temperature: 3.0
+
+  # TD3+BC 전용
+  bc_weight: 2.5
+  policy_delay: 2
+  normalize_q: true
+
+# B-Cell (REDQ) - default와 동일
+bcell:
+  # 네트워크
+  hidden_dims: [256, 256]
+
+  # REDQ 설정 (논문 권장값)
+  n_critics: 10  # 원논문 권장: N=10 (기존 5에서 증가)
+  m_sample: 2
+  utd_ratio: 20
+
+  # 학습
+  actor_lr: 3e-4
+  critic_lr: 3e-4
+  alpha_lr: 3e-4
+  batch_size: 256
+
+  # RL
+  gamma: 0.99
+  tau: 0.005
+  alpha: 0.2
+
+  # 위기 대응
+  crisis_threshold: 0.7
+
+  # 버퍼
+  buffer_size: 100000
+
+# T-Cell - default와 동일
+tcell:
+  contamination: 0.1
+  n_estimators: 100
+  window_size: 100
+
+# Memory Cell - default와 동일
 memory:
-  capacity: 10000
+  capacity: 1000
   k_neighbors: 5
-  similarity_metric: "euclidean"
 
-# 평가 설정
-eval:
-  episodes: 1  # 1회만 평가
-  benchmark: "equal_weight"
-  metrics: ["sharpe", "cvar", "mdd", "turnover", "returns"]
+# 학습 설정
+online_episodes: 1  # ⭐ 핵심 변경 - 1 episode만
+skip_offline: false  # 오프라인도 테스트
+early_stopping_patience: 20
 
-# 모니터링 설정
-monitoring:
-  use_wandb: false
-  use_tensorboard: false  # 테스트용 비활성화
-  stability:
+# Ablation study - default와 동일
+ablation:
+  use_tcell: true
+  use_memory: true
+  use_xai: true
+  offline_method: 'iql'
+
+# 기타 - default와 동일
+log_level: 'INFO'
+save_freq: 10
+
+# 목표 메트릭 - default와 동일
+targets:
+  sharpe_ratio: 1.5
+  max_drawdown: 0.25
+  cvar_95: -0.02
+
+# 베이스라인 설정 - default와 동일
+baselines:
+  equal_weight:
     enabled: true
-    check_interval: 10
-    thresholds:
-      q_value_max: 100.0
-      entropy_min: 0.1
-      kl_divergence_max: 0.5
-      grad_norm_max: 10.0
+  standard_sac:
+    enabled: true
+    n_episodes: 100
+    hidden_dims: [256, 256]

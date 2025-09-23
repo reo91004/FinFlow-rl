@@ -1,13 +1,13 @@
-# configs/default.yaml
-# FinFlow-RL 리팩토링된 기본 설정
+# configs/test_1episode_td3bc.yaml
+# TD3+BC 테스트용 설정 (1 episode)
 
 seed: 42
-device: auto # cpu|cuda|auto
+device: cpu  # 빠른 테스트를 위해 CPU 사용
 
 # 데이터 설정
 data:
   symbols: ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META']
-  period: '5y'
+  period: '2y'  # 적당한 기간
   interval: '1d'
   cache: true
 
@@ -21,13 +21,13 @@ env:
 # 특성 추출
 feature_dim: 12
 
-# 오프라인 학습
+# 오프라인 학습 - TD3BC 사용
 offline:
-  method: 'iql'  # 'iql' or 'td3bc'
-  epochs: 50
+  method: 'td3bc'  # TD3+BC 사용
+  epochs: 1  # 1 epoch만
   batch_size: 256
 
-  # IQL 전용
+  # IQL 전용 (사용 안 함)
   expectile: 0.7
   temperature: 3.0
 
@@ -42,7 +42,7 @@ bcell:
   hidden_dims: [256, 256]
 
   # REDQ 설정 (논문 권장값)
-  n_critics: 10  # 원논문 권장: N=10 (기존 5에서 증가)
+  n_critics: 10  # 원논문 권장: N=10
   m_sample: 2
   utd_ratio: 20
 
@@ -50,7 +50,7 @@ bcell:
   actor_lr: 3e-4
   critic_lr: 3e-4
   alpha_lr: 3e-4
-  batch_size: 256  # 학습 배치 크기
+  batch_size: 256
 
   # RL
   gamma: 0.99
@@ -58,7 +58,7 @@ bcell:
   alpha: 0.2
 
   # 위기 대응
-  crisis_threshold: 0.7  # 위기 수준 임계값
+  crisis_threshold: 0.7
 
   # 버퍼
   buffer_size: 100000
@@ -75,8 +75,8 @@ memory:
   k_neighbors: 5
 
 # 학습 설정
-online_episodes: 200
-skip_offline: false
+online_episodes: 1  # ⭐ 핵심 변경 - 1 episode만
+skip_offline: false  # 오프라인도 테스트
 early_stopping_patience: 20
 
 # Ablation study
@@ -84,11 +84,11 @@ ablation:
   use_tcell: true
   use_memory: true
   use_xai: true
-  offline_method: 'iql'
+  offline_method: 'td3bc'  # TD3BC 명시
 
 # 기타
 log_level: 'INFO'
-save_freq: 10  # 체크포인트 저장 빈도
+save_freq: 10
 
 # 목표 메트릭
 targets:

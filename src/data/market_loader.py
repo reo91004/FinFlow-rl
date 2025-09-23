@@ -23,7 +23,7 @@ import pickle
 import os
 from typing import List, Tuple, Optional, Dict
 from src.utils.logger import FinFlowLogger
-from src.data.validator import DataValidator
+from src.data.data_validator import DataValidator
 
 class DataLoader:
     """
@@ -33,13 +33,29 @@ class DataLoader:
     캐싱 기능을 제공하여 반복 사용 시 효율성 증대
     """
     
-    def __init__(self, cache_dir: str = "data/cache", validate_data: bool = True,
-                 validation_config: Optional[Dict] = None):
-        self.cache_dir = cache_dir
-        os.makedirs(cache_dir, exist_ok=True)
+    def __init__(self, config: Optional[Dict] = None, cache_dir: str = "data/cache",
+                 validate_data: bool = True, validation_config: Optional[Dict] = None):
+        """
+        Args:
+            config: 설정 Dict (optional)
+            cache_dir: 캐시 디렉토리
+            validate_data: 데이터 검증 여부
+            validation_config: 검증 설정
+        """
+        # config Dict가 있으면 우선 사용
+        if config is not None:
+            self.config = config
+            self.cache_dir = config.get('cache_dir', 'data/cache')
+            self.validate_data = config.get('validate', True)
+            validation_config = config.get('validation', None)
+        else:
+            self.config = {}
+            self.cache_dir = cache_dir
+            self.validate_data = validate_data
+
+        os.makedirs(self.cache_dir, exist_ok=True)
         self.logger = FinFlowLogger("DataLoader")
-        self.validate_data = validate_data
-        self.validator = DataValidator(validation_config) if validate_data else None
+        self.validator = DataValidator(validation_config) if self.validate_data else None
         
     def download_data(self, symbols: List[str], start_date: str, end_date: str, 
                      use_cache: bool = True) -> pd.DataFrame:
@@ -71,64 +87,59 @@ class DataLoader:
         
         # 데이터 다운로드
         self.logger.info(f"시장 데이터를 다운로드합니다: {len(symbols)}개 종목 ({start_date} ~ {end_date})")
-        
-        try:
-            # yfinance로 데이터 다운로드
-            raw_data = yf.download(
-                symbols, 
-                start=start_date, 
-                end=end_date,
-                progress=False,
-                threads=True
-            )
-            
-            if raw_data.empty:
-                raise ValueError("다운로드된 데이터가 없습니다.")
-            
-            # 수정 종가 추출
-            if len(symbols) == 1:
-                if 'Adj Close' in raw_data.columns:
-                    price_data = raw_data[['Adj Close']].copy()
-                    price_data.columns = symbols
-                else:
-                    price_data = raw_data[['Close']].copy()
-                    price_data.columns = symbols
-                    self.logger.warning("Adj Close가 없어 Close를 사용합니다.")
+
+        # yfinance로 데이터 다운로드 (연구용: 실패시 즉시 종료)
+        raw_data = yf.download(
+            symbols,
+            start=start_date,
+            end=end_date,
+            progress=False,
+            threads=True
+        )
+
+        if raw_data.empty:
+            raise ValueError("다운로드된 데이터가 없습니다.")
+
+        # 수정 종가 추출
+        if len(symbols) == 1:
+            if 'Adj Close' in raw_data.columns:
+                price_data = raw_data[['Adj Close']].copy()
+                price_data.columns = symbols
             else:
-                if 'Adj Close' in raw_data.columns.levels[0]:
-                    price_data = raw_data['Adj Close'].copy()
-                else:
-                    price_data = raw_data['Close'].copy()
-                    self.logger.warning("Adj Close가 없어 Close를 사용합니다.")
-            
-            # 데이터 정제 및 검증
-            price_data = self._clean_data(price_data)
-            
-            # DataValidator를 사용한 검증
-            if self.validate_data and self.validator:
-                self.logger.info("데이터 검증 시작...")
-                price_data = self.validator.validate_and_clean(price_data)
-                self.logger.info("데이터 검증 완료")
-            
-            # 캐시 저장
-            if use_cache:
-                try:
-                    with open(cache_path, 'wb') as f:
-                        pickle.dump(price_data, f)
-                    self.logger.info(f"데이터를 캐시에 저장했습니다: {cache_filename}")
-                except Exception as e:
-                    self.logger.warning(f"캐시 저장 실패: {e}")
-            
-            self.logger.info(
-                f"데이터 다운로드 완료: {len(price_data)} 거래일, "
-                f"{len(price_data.columns)} 종목"
-            )
-            
-            return price_data
-            
-        except Exception as e:
-            self.logger.error(f"데이터 다운로드 실패: {e}")
-            raise
+                price_data = raw_data[['Close']].copy()
+                price_data.columns = symbols
+                self.logger.warning("Adj Close가 없어 Close를 사용합니다.")
+        else:
+            if 'Adj Close' in raw_data.columns.levels[0]:
+                price_data = raw_data['Adj Close'].copy()
+            else:
+                price_data = raw_data['Close'].copy()
+                self.logger.warning("Adj Close가 없어 Close를 사용합니다.")
+
+        # 데이터 정제 및 검증
+        price_data = self._clean_data(price_data)
+
+        # DataValidator를 사용한 검증
+        if self.validate_data and self.validator:
+            self.logger.info("데이터 검증 시작...")
+            price_data = self.validator.validate_and_clean(price_data)
+            self.logger.info("데이터 검증 완료")
+
+        # 캐시 저장 (실패해도 계속 진행)
+        if use_cache:
+            try:
+                with open(cache_path, 'wb') as f:
+                    pickle.dump(price_data, f)
+                self.logger.info(f"데이터를 캐시에 저장했습니다: {cache_filename}")
+            except Exception as e:
+                self.logger.warning(f"캐시 저장 실패: {e}")
+
+        self.logger.info(
+            f"데이터 다운로드 완료: {len(price_data)} 거래일, "
+            f"{len(price_data.columns)} 종목"
+        )
+
+        return price_data
     
     def _clean_data(self, data: pd.DataFrame) -> pd.DataFrame:
         """데이터 정제"""
@@ -150,6 +161,45 @@ class DataLoader:
         
         return data
     
+    def load(self) -> pd.DataFrame:
+        """
+        Config 기반 데이터 로드 (trainer.py 호환용)
+
+        Returns:
+            price_data: 종가 데이터
+        """
+        # config에서 파라미터 추출
+        symbols = self.config.get('symbols', ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META'])
+        period = self.config.get('period', '5y')
+        interval = self.config.get('interval', '1d')
+        use_cache = self.config.get('cache', True)
+
+        # period를 start_date, end_date로 변환
+        import datetime
+        end_date = datetime.datetime.now()
+
+        if period.endswith('y'):
+            years = int(period[:-1])
+            start_date = end_date - datetime.timedelta(days=365 * years)
+        elif period.endswith('mo'):
+            months = int(period[:-2])
+            start_date = end_date - datetime.timedelta(days=30 * months)
+        elif period.endswith('d'):
+            days = int(period[:-1])
+            start_date = end_date - datetime.timedelta(days=days)
+        else:
+            # 기본값 5년
+            start_date = end_date - datetime.timedelta(days=365 * 5)
+
+        # 날짜 포맷
+        start_str = start_date.strftime('%Y-%m-%d')
+        end_str = end_date.strftime('%Y-%m-%d')
+
+        self.logger.info(f"데이터 로드: {symbols} ({start_str} ~ {end_str})")
+
+        # 데이터 다운로드
+        return self.download_data(symbols, start_str, end_str, use_cache)
+
     def get_market_data(self, symbols: List[str], 
                        train_start: str, train_end: str,
                        test_start: str, test_end: str,

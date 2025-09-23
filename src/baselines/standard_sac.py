@@ -8,13 +8,13 @@ import numpy as np
 from typing import Dict, Optional
 from tqdm import tqdm
 
-from src.core.env import PortfolioEnv
-from src.core.networks import DirichletActor, QNetwork
-from src.core.replay import PrioritizedReplayBuffer, Transition
-from src.data.loader import DataLoader
-from src.data.features import FeatureExtractor
+from src.environments.portfolio_env import PortfolioEnv
+from src.models.networks import DirichletActor, QNetwork
+from src.data.replay_buffer import PrioritizedReplayBuffer, Transition
+from src.data.market_loader import DataLoader
+from src.data.feature_extractor import FeatureExtractor
 from src.utils.logger import FinFlowLogger
-from src.utils.optimizer_utils import polyak_update, clip_gradients
+from src.utils.training_utils import polyak_update, clip_gradients
 
 
 class StandardSAC:

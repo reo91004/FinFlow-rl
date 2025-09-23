@@ -26,57 +26,92 @@ def calculate_sharpe_ratio(returns: Union[np.ndarray, pd.Series],
                          risk_free_rate: float = 0.02,
                          periods_per_year: int = 252) -> float:
     """
-    Calculate Sharpe ratio
-    
+    Calculate Sharpe ratio with numerical stability
+
     Args:
         returns: Return series
         risk_free_rate: Annual risk-free rate
         periods_per_year: Number of periods per year (252 for daily)
-        
+
     Returns:
         sharpe_ratio: Annualized Sharpe ratio
     """
     if len(returns) == 0:
         return 0.0
-    
-    excess_returns = returns - risk_free_rate / periods_per_year
-    
-    if np.std(excess_returns) == 0:
+
+    # 극단값 처리
+    if len(returns) == 1:
+        # 단일 데이터 포인트의 경우 Sharpe ratio 계산 불가
         return 0.0
-    
-    sharpe = np.mean(excess_returns) / np.std(excess_returns)
-    return float(sharpe * np.sqrt(periods_per_year))
+
+    excess_returns = returns - risk_free_rate / periods_per_year
+
+    # Epsilon for numerical stability
+    eps = 1e-8
+    std_returns = np.std(excess_returns)
+
+    # 표준편차가 극도로 작을 때 처리
+    if std_returns < eps:
+        # 변동성이 거의 없는 경우
+        mean_excess = np.mean(excess_returns)
+        if abs(mean_excess) < eps:
+            return 0.0  # 수익률도 0에 가까운 경우
+        else:
+            # 수익률은 있지만 변동성이 없는 경우 (이론적 최댓값으로 제한)
+            return np.sign(mean_excess) * 10.0  # 최대 Sharpe ratio를 10으로 제한
+
+    sharpe = np.mean(excess_returns) / std_returns
+    annualized_sharpe = sharpe * np.sqrt(periods_per_year)
+
+    # 극단값 클리핑 (현실적인 범위: -5 ~ 5)
+    return float(np.clip(annualized_sharpe, -5.0, 5.0))
 
 def calculate_sortino_ratio(returns: Union[np.ndarray, pd.Series],
                           target_return: float = 0.0,
                           periods_per_year: int = 252) -> float:
     """
-    Calculate Sortino ratio (downside risk-adjusted return)
-    
+    Calculate Sortino ratio (downside risk-adjusted return) with numerical stability
+
     Args:
         returns: Return series
         target_return: Target return threshold
         periods_per_year: Number of periods per year
-        
+
     Returns:
         sortino_ratio: Annualized Sortino ratio
     """
     if len(returns) == 0:
         return 0.0
-    
+
+    if len(returns) == 1:
+        # 단일 데이터 포인트의 경우 Sortino ratio 계산 불가
+        return 0.0
+
     excess_returns = returns - target_return / periods_per_year
     downside_returns = excess_returns[excess_returns < 0]
-    
+
     if len(downside_returns) == 0:
-        return float('inf')
-    
+        # 손실이 없는 경우 (매우 좋은 성과)
+        return 10.0  # 최대값으로 제한
+
+    # Epsilon for numerical stability
+    eps = 1e-8
     downside_std = np.std(downside_returns)
-    
-    if downside_std == 0:
-        return float('inf')
-    
+
+    if downside_std < eps:
+        # Downside 변동성이 거의 없는 경우
+        mean_excess = np.mean(excess_returns)
+        if abs(mean_excess) < eps:
+            return 0.0  # 수익률도 0에 가까운 경우
+        else:
+            # 수익률은 있지만 downside 변동성이 없는 경우
+            return np.sign(mean_excess) * 10.0  # 최대값으로 제한
+
     sortino = np.mean(excess_returns) / downside_std
-    return float(sortino * np.sqrt(periods_per_year))
+    annualized_sortino = sortino * np.sqrt(periods_per_year)
+
+    # 극단값 클리핑 (현실적인 범위: -5 ~ 10, Sortino는 일반적으로 Sharpe보다 높음)
+    return float(np.clip(annualized_sortino, -5.0, 10.0))
 
 def calculate_calmar_ratio(returns: Union[np.ndarray, pd.Series],
                          periods_per_year: int = 252) -> float:

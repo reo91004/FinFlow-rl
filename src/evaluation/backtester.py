@@ -24,7 +24,7 @@ from pathlib import Path
 from tqdm import tqdm
 import json
 from src.utils.logger import FinFlowLogger
-from src.core.env import PortfolioEnv
+from src.environments.portfolio_env import PortfolioEnv
 
 class RealisticBacktester:
     """

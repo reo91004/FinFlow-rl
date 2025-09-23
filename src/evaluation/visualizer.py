@@ -141,7 +141,7 @@ def plot_equity_curve(values: Union[np.ndarray, pd.Series],
     ax.grid(True, alpha=0.3)
     
     # Add statistics box
-    from src.analysis.metrics import calculate_sharpe_ratio, calculate_max_drawdown
+    from src.evaluation.metrics import calculate_sharpe_ratio, calculate_max_drawdown
     
     returns = values.pct_change().dropna()
     sharpe = calculate_sharpe_ratio(returns)
@@ -267,7 +267,7 @@ def plot_returns_distribution(returns: Union[np.ndarray, pd.Series],
     ax2.grid(True, alpha=0.3)
     
     # Add statistics text
-    from src.analysis.metrics import calculate_var, calculate_cvar
+    from src.evaluation.metrics import calculate_var, calculate_cvar
     
     skew = stats.skew(returns)
     kurt = stats.kurtosis(returns)
@@ -367,7 +367,7 @@ def plot_rolling_metrics(returns: pd.Series,
     Returns:
         fig: Matplotlib figure
     """
-    from src.analysis.metrics import calculate_sharpe_ratio
+    from src.evaluation.metrics import calculate_sharpe_ratio
     
     n_metrics = len(metrics)
     fig, axes = plt.subplots(n_metrics, 1, figsize=figsize, sharex=True)

@@ -48,12 +48,15 @@ def get_session_directory(base_dir: str = "logs"):
         timestamp = get_global_timestamp()
         _GLOBAL_SESSION_DIR = os.path.join(base_dir, timestamp)
         os.makedirs(_GLOBAL_SESSION_DIR, exist_ok=True)
-        
+
         # 하위 디렉토리 생성
         os.makedirs(os.path.join(_GLOBAL_SESSION_DIR, "visualizations"), exist_ok=True)
         os.makedirs(os.path.join(_GLOBAL_SESSION_DIR, "models"), exist_ok=True)
         os.makedirs(os.path.join(_GLOBAL_SESSION_DIR, "reports"), exist_ok=True)
-        
+        os.makedirs(os.path.join(_GLOBAL_SESSION_DIR, "results"), exist_ok=True)
+        os.makedirs(os.path.join(_GLOBAL_SESSION_DIR, "tensorboard"), exist_ok=True)
+        os.makedirs(os.path.join(_GLOBAL_SESSION_DIR, "checkpoints"), exist_ok=True)
+
     return _GLOBAL_SESSION_DIR
 
 class FinFlowLogger:

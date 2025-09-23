@@ -25,11 +25,12 @@ import json
 import datetime
 import threading
 import time
+import os
 from collections import deque
 from pathlib import Path
 
-from src.utils.logger import FinFlowLogger
-from src.analysis.metrics import MetricsCalculator
+from src.utils.logger import FinFlowLogger, get_session_directory
+from src.evaluation.metrics import MetricsCalculator
 from sklearn.ensemble import IsolationForest
 import torch
 import torch.nn as nn
@@ -104,8 +105,11 @@ class PerformanceMonitor:
         
         if self.use_tensorboard:
             from tensorboardX import SummaryWriter
-            self.writer = SummaryWriter(log_dir)
-            self.logger.info(f"TensorBoard 초기화 완료: {log_dir}")
+            # 세션 디렉토리 내 tensorboard 폴더 사용
+            session_dir = get_session_directory()
+            tensorboard_dir = os.path.join(session_dir, 'tensorboard')
+            self.writer = SummaryWriter(tensorboard_dir)
+            self.logger.info(f"TensorBoard 초기화 완료: {tensorboard_dir}")
         
         # 알림 임계값 (4단계)
         self.alert_thresholds = alert_thresholds or {

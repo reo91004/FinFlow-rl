@@ -8,7 +8,7 @@ import pandas as pd
 from tqdm import tqdm
 import copy
 
-from src.core.trainer import FinFlowTrainer
+from src.training.trainer import FinFlowTrainer
 from src.utils.logger import FinFlowLogger
 
 

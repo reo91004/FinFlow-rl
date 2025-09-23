@@ -19,21 +19,20 @@ def test_imports():
     print("1. Import 테스트...")
     try:
         # Core modules
-        from src.core.env import PortfolioEnv
-        from src.core.objectives import DifferentialSharpe, CVaRConstraint
-        from src.core.replay import PrioritizedReplayBuffer
-        from src.core.offline_dataset import OfflineDataset
+        from src.environments.portfolio_env import PortfolioEnv
+        from src.environments.reward_functions import DifferentialSharpe, CVaRConstraint
+        from src.data.replay_buffer import PrioritizedReplayBuffer
+        from src.data.offline_dataset import OfflineDataset
 
         # Agents
-        from src.agents.t_cell import TCell
-        from src.agents.b_cell import BCell
-        from src.agents.memory import MemoryCell
-        from src.agents.gating import GatingNetwork
-        from src.core.iql import IQLAgent
+        from src.algorithms.online.t_cell import TCell
+        from src.algorithms.online.b_cell import BCell
+        from src.algorithms.online.memory import MemoryCell
+        from src.algorithms.offline.iql import IQLAgent
 
         # Data
-        from src.data.loader import DataLoader
-        from src.data.features import FeatureExtractor
+        from src.data.market_loader import DataLoader
+        from src.data.feature_extractor import FeatureExtractor
 
         # Utils
         from src.utils.logger import FinFlowLogger
@@ -52,7 +51,7 @@ def test_environment():
     try:
         import numpy as np
         import pandas as pd
-        from src.core.env import PortfolioEnv
+        from src.environments.portfolio_env import PortfolioEnv
 
         # Create dummy price data
         prices = pd.DataFrame(
@@ -87,11 +86,10 @@ def test_agents():
     try:
         import torch
         import numpy as np
-        from src.agents.t_cell import TCell
-        from src.agents.b_cell import BCell
-        from src.agents.memory import MemoryCell
-        from src.agents.gating import GatingNetwork
-        from src.core.iql import IQLAgent
+        from src.algorithms.online.t_cell import TCell
+        from src.algorithms.online.b_cell import BCell
+        from src.algorithms.online.memory import MemoryCell
+        from src.algorithms.offline.iql import IQLAgent
 
         device = torch.device("cpu")
         state_dim = 43
@@ -103,7 +101,6 @@ def test_agents():
 
         # B-Cell
         b_cell = BCell(
-            specialization="momentum",
             state_dim=state_dim,
             action_dim=action_dim,
             config={"gamma": 0.99},
@@ -115,9 +112,9 @@ def test_agents():
         memory_cell = MemoryCell(capacity=100)
         print("  - Memory Cell 생성 완료")
 
-        # Gating Network
-        gating = GatingNetwork(state_dim=state_dim, num_experts=5)
-        print("  - Gating Network 생성 완료")
+        # Gating Network - 아직 구현되지 않음
+        # gating = GatingNetwork(state_dim=state_dim, num_experts=5)
+        # print("  - Gating Network 생성 완료")
 
         # IQL Agent
         iql = IQLAgent(state_dim=state_dim, action_dim=action_dim, device=device)
@@ -128,9 +125,9 @@ def test_agents():
         dummy_crisis = 0.3
         dummy_guidance = {"has_guidance": False}
 
-        # Gating decision
-        decision = gating(dummy_state, dummy_guidance, dummy_crisis)
-        print(f"  - 선택된 B-Cell: {decision.selected_bcell}")
+        # Gating decision - 아직 구현되지 않음
+        # decision = gating(dummy_state, dummy_guidance, dummy_crisis)
+        # print(f"  - 선택된 B-Cell: {decision.selected_bcell}")
 
         # B-Cell action
         action = b_cell.select_action(dummy_state, deterministic=True)
@@ -151,8 +148,8 @@ def test_mini_training():
         import torch
         import numpy as np
         import pandas as pd
-        from src.core.env import PortfolioEnv
-        from src.core.iql import IQLAgent
+        from src.environments.portfolio_env import PortfolioEnv
+        from src.algorithms.offline.iql import IQLAgent
 
         # Setup
         device = torch.device("cpu")
