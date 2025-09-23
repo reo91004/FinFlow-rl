@@ -6,9 +6,40 @@ device: auto # cpu|cuda|auto
 
 # 데이터 설정
 data:
-  symbols: ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META']
-  period: '5y'
-  interval: '1d'
+  symbols: [
+      "AAPL", # Apple
+      "AMGN", # Amgen
+      "AXP", # American Express
+      "BA", # Boeing
+      "CAT", # Caterpillar
+      "CRM", # Salesforce
+      "CSCO", # Cisco Systems
+      "CVX", # Chevron
+      "DIS", # Disney
+      "DOW", # Dow Inc.
+      "GS", # Goldman Sachs
+      "HD", # Home Depot
+      "HON", # Honeywell
+      "IBM", # IBM
+      "INTC", # Intel
+      "JNJ", # Johnson & Johnson
+      "JPM", # JPMorgan Chase
+      "KO", # Coca-Cola
+      "MCD", # McDonald's
+      "MMM", # 3M
+      "MRK", # Merck
+      "MSFT", # Microsoft
+      "NKE", # Nike
+      "PG", # Procter & Gamble
+      "TRV", # Travelers
+      "UNH", # UnitedHealth
+      "V", # Visa
+      "VZ", # Verizon
+      "WBA", # Walgreens Boots Alliance
+      "WMT", # Walmart
+    ] # 다우존스 30 종목
+  period: "5y"
+  interval: "1d"
   cache: true
 
 # 환경 설정
@@ -23,7 +54,7 @@ feature_dim: 12
 
 # 오프라인 학습
 offline:
-  method: 'iql'  # 'iql' or 'td3bc'
+  method: "iql" # 'iql' or 'td3bc'
   epochs: 50
   batch_size: 256
 
@@ -39,27 +70,27 @@ offline:
 # B-Cell (REDQ/TQC)
 bcell:
   # 알고리즘 선택: 'REDQ' 또는 'TQC'
-  algorithm: 'REDQ'  # 기본값은 REDQ
+  algorithm: "REDQ" # 기본값은 REDQ
 
   # 네트워크
   hidden_dims: [256, 256]
 
   # REDQ 설정 (algorithm: 'REDQ'일 때)
-  n_critics: 10  # 원논문 권장: N=10 (기존 5에서 증가)
+  n_critics: 10 # 원논문 권장: N=10 (기존 5에서 증가)
   m_sample: 2
   utd_ratio: 20
 
   # TQC 설정 (algorithm: 'TQC'일 때)
   # n_critics: 2  # TQC는 적은 수의 critics 사용
-  n_quantiles: 25  # 분위수 개수
-  top_quantiles_to_drop_per_net: 2  # 상위 분위수 제거 개수
-  quantile_embedding_dim: 64  # 분위수 임베딩 차원
+  n_quantiles: 25 # 분위수 개수
+  top_quantiles_to_drop_per_net: 2 # 상위 분위수 제거 개수
+  quantile_embedding_dim: 64 # 분위수 임베딩 차원
 
   # 학습
   actor_lr: 3e-4
   critic_lr: 3e-4
   alpha_lr: 3e-4
-  batch_size: 256  # 학습 배치 크기
+  batch_size: 256 # 학습 배치 크기
 
   # RL
   gamma: 0.99
@@ -67,7 +98,7 @@ bcell:
   alpha: 0.2
 
   # 위기 대응
-  crisis_threshold: 0.7  # 위기 수준 임계값
+  crisis_threshold: 0.7 # 위기 수준 임계값
 
   # 버퍼
   buffer_size: 100000
@@ -93,11 +124,11 @@ ablation:
   use_tcell: true
   use_memory: true
   use_xai: true
-  offline_method: 'iql'
+  offline_method: "iql"
 
 # 기타
-log_level: 'INFO'
-save_freq: 10  # 체크포인트 저장 빈도
+log_level: "INFO"
+save_freq: 10 # 체크포인트 저장 빈도
 
 # 목표 메트릭
 targets:
