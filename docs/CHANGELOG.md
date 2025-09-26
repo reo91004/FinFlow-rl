@@ -41,7 +41,10 @@
 - **gradient_clip**: 1.0 → 0.5 (안정성 개선)
 
 ### 🐛 Fixed
-- **TQC tensor size mismatch**: QuantileNetwork 차원 불일치 수정
+- **TQC tensor size mismatch**: QuantileNetwork quantile_fractions 생성 버그 수정
+  - 문제: quantile centers 계산 시 24개만 생성되어 6144 vs 6400 불일치
+  - 해결: torch.linspace 후 올바른 center 계산으로 정확히 25개 생성
+- **TQC quantile_embedding 차원 불일치**: hidden_dims[-1]로 수정
 - **TD3BC TypeError**: float() 변환 누락 수정
 - **정책 붕괴 문제**: 3.3% 균등 가중치 현상 해결
 - **과도한 무거래**: 100+ 연속 무거래 문제 해결
