@@ -90,15 +90,20 @@ class TD3BCAgent:
         ).to(device)
         self.critic_2_target.load_state_dict(self.critic_2.state_dict())
 
-        # Optimizers
+        # Optimizers with L2 regularization and beta adjustment for policy collapse prevention
+        # Research shows beta1=beta2 helps prevent policy collapse (2025)
         self.actor_optimizer = optim.Adam(
             self.actor.parameters(),
-            lr=config.get('actor_lr', 3e-4)
+            lr=float(config.get('actor_lr', 3e-4)),  # float 변환 추가
+            betas=(0.9, 0.9),  # Equal betas for stability
+            weight_decay=1e-4   # L2 regularization
         )
 
         self.critic_optimizer = optim.Adam(
             list(self.critic_1.parameters()) + list(self.critic_2.parameters()),
-            lr=config.get('critic_lr', 3e-4)
+            lr=float(config.get('critic_lr', 3e-4)),  # float 변환 추가
+            betas=(0.9, 0.9),  # Equal betas for stability
+            weight_decay=1e-4   # L2 regularization
         )
 
         # Training statistics

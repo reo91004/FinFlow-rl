@@ -415,7 +415,7 @@ class QuantileNetwork(nn.Module):
 
         # Quantile embedding network (cos embedding)
         self.quantile_embedding = nn.Sequential(
-            nn.Linear(quantile_embedding_dim, hidden_dims[0]),
+            nn.Linear(quantile_embedding_dim, hidden_dims[-1]),  # Match base_net output dim
             nn.ReLU()
         )
 

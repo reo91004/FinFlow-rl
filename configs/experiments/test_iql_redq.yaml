@@ -1,28 +1,30 @@
-# configs/test_quick.yaml
-# 빠른 테스트용 설정 (10 에피소드)
+# configs/experiments/test_iql_redq.yaml
+# 조합 1: IQL (오프라인) + REDQ (온라인) - 기본 조합
 
 seed: 42
 device: auto
 
-# 데이터 설정 (축소)
+# 데이터 설정
 data:
   symbols: [
-      "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA"  # 5개 종목만
-    ]
-  start: "2018-01-01"  # 더 짧은 기간
-  end: "2019-12-31"
-  test_start: "2020-01-01"
-  test_end: "2020-12-31"
+      "AAPL", "AMGN", "AXP", "BA", "CAT", "CRM", "CSCO", "CVX", "DIS", "DOW",
+      "GS", "HD", "HON", "IBM", "INTC", "JNJ", "JPM", "KO", "MCD", "MMM",
+      "MRK", "MSFT", "NKE", "PG", "TRV", "UNH", "V", "VZ", "WBA", "WMT"
+    ] # 다우존스 30 종목
+  start: "2008-01-01"
+  end: "2020-12-31"
+  test_start: "2021-01-01"
+  test_end: "2024-12-31"
   val_ratio: 0.2
   interval: "1d"
   cache: true
 
-# 환경 설정 (수정된 값)
+# 환경 설정
 env:
   initial_balance: 1000000
   transaction_cost: 0.001
   slippage: 0.0005
-  no_trade_band: 0.01  # 수정됨: 0.002 → 0.01
+  no_trade_band: 0.01
   max_leverage: 1.0
   max_turnover: 0.5
   window_size: 20
@@ -30,40 +32,36 @@ env:
 
 feature_dim: 12
 
-# 오프라인 학습 (축소)
+# 오프라인 학습 - IQL
 offline:
   method: "iql"
-  epochs: 5  # 50 → 5
+  epochs: 50
   batch_size: 256
   expectile: 0.7
-  temperature: 1.0  # 수정됨: 3.0 → 1.0
+  temperature: 1.0
   bc_weight: 2.5
   policy_delay: 2
   normalize_q: true
 
-# B-Cell (수정된 값)
+# B-Cell - REDQ
 bcell:
   algorithm: "REDQ"
-  hidden_dims: [256, 256]  # 원래 크기 유지 (오프라인과 일치)
-  n_critics: 5  # 10 → 5
+  hidden_dims: [256, 256]
+  n_critics: 10
   m_sample: 2
-  utd_ratio: 10  # 수정됨: 20 → 10
+  utd_ratio: 10
   n_quantiles: 25
   top_quantiles_to_drop_per_net: 2
   quantile_embedding_dim: 64
-
   actor_lr: 3e-4
   critic_lr: 3e-4
   alpha_lr: 3e-4
   batch_size: 256
-
   gamma: 0.99
   tau: 0.005
-  alpha: 0.1  # 수정됨: 0.2 → 0.1
-
+  alpha: 0.1
   crisis_threshold: 0.7
-  buffer_size: 10000  # 100000 → 10000
-
+  buffer_size: 100000
   dirichlet:
     concentration_init: 1.0
     concentration_min: 0.1
@@ -73,18 +71,18 @@ bcell:
 # T-Cell
 tcell:
   contamination: 0.1
-  n_estimators: 50  # 100 → 50
-  window_size: 50  # 100 → 50
+  n_estimators: 100
+  window_size: 100
 
 # Memory Cell
 memory:
-  capacity: 100  # 1000 → 100
-  k_neighbors: 3  # 5 → 3
+  capacity: 1000
+  k_neighbors: 5
 
-# 학습 설정 (축소)
-online_episodes: 10  # 200 → 10
+# 학습 설정
+online_episodes: 200
 skip_offline: false
-early_stopping_patience: 5  # 20 → 5
+early_stopping_patience: 20
 
 # Ablation study
 ablation:
@@ -95,29 +93,32 @@ ablation:
 
 # 모니터링 설정
 monitoring:
-  use_tensorboard: false  # 빠른 테스트를 위해 비활성화
+  use_tensorboard: true
   use_wandb: false
-  wandb_project: "finflow-rl-test"
+  wandb_project: "finflow-rl"
   wandb_entity: null
-  log_frequency: 1  # 10 → 1
-
+  log_frequency: 10
   stability_check:
     enabled: true
     q_value_threshold: 1000.0
-    gradient_clip: 0.5  # 수정됨: 1.0 → 0.5
-    check_frequency: 10  # 100 → 10
+    gradient_clip: 0.5
+    check_frequency: 100
+    l2_lambda: 1e-4
+  optimizer:
+    betas: [0.9, 0.9]
+    weight_decay: 1e-4
 
 # 분포적 RL 설정
 distributional:
-  n_quantiles: 16  # 32 → 16
+  n_quantiles: 32
   kappa: 1.0
   risk_measure: "neutral"
   risk_param: 0.1
-  quantile_embedding_dim: 32  # 64 → 32
+  quantile_embedding_dim: 64
 
 # 기타
 log_level: "INFO"
-save_freq: 10  # 100 → 10
+save_freq: 100
 
 # 목적함수 설정
 objectives:
@@ -141,8 +142,8 @@ targets:
 # 베이스라인 설정
 baselines:
   equal_weight:
-    enabled: false  # 빠른 테스트를 위해 비활성화
+    enabled: true
   standard_sac:
-    enabled: false  # 빠른 테스트를 위해 비활성화
-    n_episodes: 10
+    enabled: true
+    n_episodes: 100
     hidden_dims: [256, 256]

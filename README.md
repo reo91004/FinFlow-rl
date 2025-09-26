@@ -26,13 +26,14 @@ FinFlow-RL (BIPD 2.0)은 IQL(Implicit Q-Learning)에서 Distributional SAC(Soft 
 2. **온라인 미세조정**: B-Cell (REDQ 또는 TQC 선택 가능)
 3. **목적 함수**: Differential Sharpe 최대화 + CVaR 제약
 
-### 최근 업데이트 (v2.1.0)
-- 🆕 **TQC (Truncated Quantile Critics) 알고리즘 추가**
-- ✅ REDQ와 TQC 선택 가능한 B-Cell 구현
-- ✅ 세션별 로그 디렉토리 구조 개선
-- ✅ 모든 모듈에 상세 docstring 추가
-- 📄 [전체 아키텍처 문서](docs/ARCHITECTURE.md)
-- 📄 [전체 변경사항](docs/CHANGELOG.md)
+### 최근 업데이트 (v2.2.0)
+- 🆕 **TD3BC (TD3 + Behavior Cloning) 오프라인 학습 추가**
+- 🆕 **4가지 오프라인/온라인 조합 지원**: IQL/TD3BC × REDQ/TQC
+- ✅ 정책 붕괴 방지 메커니즘 (L2 정규화, optimizer betas 조정)
+- ✅ 무거래 문제 해결 (no_trade_band 1%, 강제 거래 트리거)
+- 🔧 TQC tensor mismatch 버그 수정
+- 📁 configs 구조 개선 (experiments/, archive/)
+- 📄 문서 통합 정리 (7개 핵심 문서로 간소화)
 
 ## 주요 특징
 
@@ -69,8 +70,17 @@ pip install -e ".[dev]"
 ### 🚀 3분 데모 (최소 설정)
 
 ```bash
-# 데모 모드: 빠른 테스트용 축소 설정
-python main.py --mode demo
+# 1. 빠른 테스트 (1 에피소드, 5종목)
+python main.py --config configs/experiments/quick_test.yaml
+
+# 2. 결과 확인
+ls logs/*/results/
+cat logs/*/metrics.jsonl | tail -5
+
+# 3. 학습된 모델로 평가
+python main.py --mode evaluate \
+    --config configs/experiments/quick_test.yaml \
+    --resume logs/*/checkpoints/best.pt
 ```
 
 ### 📊 전체 파이프라인 실행
@@ -96,24 +106,51 @@ python main.py --mode evaluate \
 
 #### 기본 학습
 ```bash
-# REDQ 알고리즘 (기본값)
+# 4가지 오프라인/온라인 조합
+# 1. IQL + REDQ (기본 조합)
 python main.py --mode train \
-    --config configs/default.yaml \
-    --tickers AAPL MSFT GOOGL
+    --config configs/experiments/test_iql_redq.yaml
 
-# TQC 알고리즘
+# 2. IQL + TQC
 python main.py --mode train \
-    --config configs/test_1episode_tqc.yaml
+    --config configs/experiments/test_iql_tqc.yaml
 
-# TD3+BC 오프라인 학습
+# 3. TD3BC + REDQ
 python main.py --mode train \
-    --config configs/test_1episode_td3bc.yaml
+    --config configs/experiments/test_td3bc_redq.yaml
+
+# 4. TD3BC + TQC
+python main.py --mode train \
+    --config configs/experiments/test_td3bc_tqc.yaml
+
+# 빠른 테스트
+python main.py --mode train \
+    --config configs/experiments/quick_test.yaml
 ```
 
 #### 평가 모드
 ```bash
+# 1. 기본 평가
 python main.py --mode evaluate \
     --resume logs/20250122_120000/models/checkpoint_best.pt
+
+# 2. 특정 설정으로 평가 (yaml 사용)
+python main.py --mode evaluate \
+    --config configs/experiments/test_iql_redq.yaml \
+    --resume logs/*/checkpoints/best.pt
+
+# 3. 빠른 테스트 후 바로 평가
+python main.py --mode train \
+    --config configs/experiments/quick_test.yaml
+python main.py --mode evaluate \
+    --config configs/experiments/quick_test.yaml \
+    --resume logs/latest/checkpoints/best.pt
+
+# 4. 다른 데이터로 평가 (일반화 성능 테스트)
+python main.py --mode evaluate \
+    --config configs/experiments/test_td3bc_tqc.yaml \
+    --resume logs/*/checkpoints/best.pt \
+    --tickers NVDA AMD TSM  # 다른 종목으로 평가
 ```
 
 #### 주요 옵션
@@ -121,10 +158,14 @@ python main.py --mode evaluate \
 |------|------|--------|
 | `--mode` | train, evaluate, demo | train |
 | `--config` | 설정 파일 경로 | configs/default.yaml |
+| `--resume` | 체크포인트 경로 | None |
 | `--tickers` | 주식 심볼 리스트 | config 파일 참조 |
-| `--iql-epochs` | IQL 사전학습 에포크 | 100 |
-| `--sac-episodes` | SAC 미세조정 에피소드 | 1000 |
+| `--no-cache` | 데이터 재다운로드 | False |
+| `--iql-epochs` | IQL 사전학습 에포크 | config 파일 |
+| `--sac-episodes` | SAC 미세조정 에피소드 | config 파일 |
+| `--batch-size` | 배치 크기 | config 파일 |
 | `--device` | auto, cuda, mps, cpu | auto |
+| `--verbose` | 상세 출력 | False |
 
 > 📖 전체 옵션은 [docs/CONFIGURATION.md](docs/CONFIGURATION.md) 참조
 
@@ -185,7 +226,13 @@ python src/core/tuning.py \
 FinFlow-rl/
 ├── main.py                 # 메인 엔트리포인트
 ├── configs/
-│   └── default.yaml        # 기본 설정
+│   ├── default.yaml        # 기본 설정
+│   ├── experiments/        # 실험 설정
+│   │   ├── test_iql_redq.yaml
+│   │   ├── test_iql_tqc.yaml
+│   │   ├── test_td3bc_redq.yaml
+│   │   └── test_td3bc_tqc.yaml
+│   └── archive/           # 이전 설정 보관
 ├── docs/                   # 📚 상세 문서
 │   ├── API.md             # API 레퍼런스
 │   ├── TRAINING.md        # 학습 가이드
@@ -199,13 +246,18 @@ FinFlow-rl/
 │   └── pretrain_iql.py    # IQL 사전학습
 ├── src/
 │   ├── agents/            # 강화학습 에이전트
-│   │   ├── b_cell.py      # IQL + Distributional SAC
+│   │   ├── b_cell.py      # REDQ + TQC 온라인 학습
 │   │   ├── t_cell.py      # 위기 감지
 │   │   ├── memory.py      # 경험 재활용
 │   │   └── meta.py        # 메타 학습
+│   ├── algorithms/
+│   │   ├── offline/       # 오프라인 학습
+│   │   │   ├── iql.py     # IQL 구현
+│   │   │   └── td3bc.py   # TD3+BC 구현
+│   │   └── online/        # 온라인 학습
+│   │       └── b_cell.py  # REDQ/TQC 구현
 │   ├── core/              # 핵심 모듈
 │   │   ├── env.py         # 거래 환경
-│   │   ├── iql.py         # IQL 구현
 │   │   ├── trainer.py     # 학습 파이프라인
 │   │   └── networks.py    # 신경망
 │   ├── analysis/          # 분석 도구
@@ -225,13 +277,13 @@ FinFlow-rl/
 ## 문서
 
 ### 📚 상세 문서
-- [API 레퍼런스](docs/API.md) - 주요 클래스와 함수
-- [학습 가이드](docs/TRAINING.md) - IQL과 B-Cell 학습 상세
+- [학습 가이드](docs/TRAINING.md) - 오프라인/온라인 학습, 알고리즘 비교
+- [설정 가이드](docs/CONFIGURATION.md) - 파라미터 튜닝 및 문제 해결
 - [평가 가이드](docs/EVALUATION.md) - 백테스팅과 메트릭
+- [아키텍처](docs/ARCHITECTURE.md) - 시스템 구조, 알고리즘 조합
+- [API 레퍼런스](docs/API.md) - 주요 클래스와 함수
 - [XAI 문서](docs/XAI.md) - 설명 가능한 AI 기능
-- [설정 가이드](docs/CONFIGURATION.md) - 파라미터 튜닝
 - [변경 이력](docs/CHANGELOG.md) - 버전별 업데이트
-- [아키텍처](ARCHITECTURE.md) - 전체 시스템 구조
 
 ### 📊 학습 결과
 
@@ -326,4 +378,4 @@ MIT License - [LICENSE](LICENSE) 파일 참조
 
 ---
 
-*Last Updated: 2025-01-22 | Version: 2.0.0 (BIPD)*
+*Last Updated: 2025-01-27 | Version: 2.2.0 (BIPD)*

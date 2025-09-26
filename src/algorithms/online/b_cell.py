@@ -140,20 +140,26 @@ class BCell:
         self.log_alpha = torch.tensor(np.log(self.alpha),
                                      requires_grad=True, device=device)
 
-        # Optimizers (learning rate를 명시적으로 float 변환)
+        # Optimizers with L2 regularization and beta adjustment for policy collapse prevention
+        # Research shows beta1=beta2 helps prevent policy collapse (2025)
         self.actor_optimizer = optim.Adam(
             self.actor.parameters(),
-            lr=float(config.get('actor_lr', 3e-4))
+            lr=float(config.get('actor_lr', 3e-4)),
+            betas=(0.9, 0.9),  # Equal betas for stability
+            weight_decay=1e-4   # L2 regularization
         )
 
         self.critics_optimizer = optim.Adam(
             self.critics.parameters(),
-            lr=float(config.get('critic_lr', 3e-4))
+            lr=float(config.get('critic_lr', 3e-4)),
+            betas=(0.9, 0.9),  # Equal betas for stability
+            weight_decay=1e-4   # L2 regularization
         )
 
         self.alpha_optimizer = optim.Adam(
             [self.log_alpha],
-            lr=float(config.get('alpha_lr', 3e-4))
+            lr=float(config.get('alpha_lr', 3e-4)),
+            betas=(0.9, 0.9),  # Equal betas for stability (no weight_decay for scalar param)
         )
 
         # Replay buffer
@@ -552,10 +558,10 @@ class BCell:
             critic_loss = critic_loss / self.n_critics
 
             # Optimize critics
-            self.critic_optimizer.zero_grad()
+            self.critics_optimizer.zero_grad()
             critic_loss.backward()
-            clip_gradients(self.critics, max_norm=10.0)
-            self.critic_optimizer.step()
+            clip_gradients(self.critics, max_norm=1.0)  # 10.0 → 1.0 더 안정적
+            self.critics_optimizer.step()
 
             # Update priorities in replay buffer
             if hasattr(self.replay_buffer, 'update_priorities'):
@@ -581,7 +587,7 @@ class BCell:
 
                 self.actor_optimizer.zero_grad()
                 actor_loss.backward()
-                clip_gradients([self.actor], max_norm=10.0)
+                clip_gradients([self.actor], max_norm=1.0)  # 10.0 → 1.0 더 안정적
                 self.actor_optimizer.step()
 
                 losses['actor_loss'] = actor_loss.item()

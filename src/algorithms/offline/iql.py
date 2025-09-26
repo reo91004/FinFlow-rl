@@ -84,12 +84,25 @@ class IQLAgent:
         self.q1_target.load_state_dict(self.q1.state_dict())
         self.q2_target.load_state_dict(self.q2.state_dict())
         
-        # Optimizers
-        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=learning_rate)
-        self.value_optimizer = optim.Adam(self.value.parameters(), lr=learning_rate)
+        # Optimizers with L2 regularization and beta adjustment for policy collapse prevention
+        # Research shows beta1=beta2 helps prevent policy collapse (2025)
+        self.actor_optimizer = optim.Adam(
+            self.actor.parameters(),
+            lr=learning_rate,
+            betas=(0.9, 0.9),  # Equal betas for stability
+            weight_decay=1e-4   # L2 regularization
+        )
+        self.value_optimizer = optim.Adam(
+            self.value.parameters(),
+            lr=learning_rate,
+            betas=(0.9, 0.9),  # Equal betas for stability
+            weight_decay=1e-4   # L2 regularization
+        )
         self.q_optimizer = optim.Adam(
             list(self.q1.parameters()) + list(self.q2.parameters()),
-            lr=learning_rate
+            lr=learning_rate,
+            betas=(0.9, 0.9),  # Equal betas for stability
+            weight_decay=1e-4   # L2 regularization
         )
         
         # Statistics

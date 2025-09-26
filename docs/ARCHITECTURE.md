@@ -196,6 +196,52 @@ logs/20250923_170000/
 - `test_1episode_*.yaml`: 빠른 테스트용
 - 사용자 정의 YAML 지원
 
+## 알고리즘 조합 매트릭스
+
+### 오프라인/온라인 조합
+
+시스템은 4가지 오프라인/온라인 알고리즘 조합을 지원한다:
+
+```
+                 온라인 학습
+                ┌─────────────┬─────────────┐
+                │    REDQ     │     TQC     │
+    ┌───────────┼─────────────┼─────────────┤
+오  │    IQL    │  IQL+REDQ   │  IQL+TQC    │
+프  │           │  (안정성)   │  (리스크)   │
+라  ├───────────┼─────────────┼─────────────┤
+인  │   TD3BC   │ TD3BC+REDQ  │ TD3BC+TQC   │
+    │           │  (성능)     │  (속도)     │
+    └───────────┴─────────────┴─────────────┘
+```
+
+### 알고리즘 구조
+
+```
+src/algorithms/
+├── offline/              # 오프라인 사전학습
+│   ├── iql.py           # IQLAgent 클래스
+│   └── td3bc.py         # TD3BCAgent 클래스
+│
+└── online/              # 온라인 미세조정
+    └── b_cell.py        # BCell 클래스 (REDQ/TQC)
+```
+
+### 알고리즘 선택 플로우
+
+```python
+# trainer.py에서의 알고리즘 선택
+if config['offline']['method'] == 'iql':
+    offline_agent = IQLAgent(...)
+elif config['offline']['method'] == 'td3bc':
+    offline_agent = TD3BCAgent(...)
+
+if config['bcell']['algorithm'] == 'REDQ':
+    online_agent = BCell(..., use_redq=True)
+elif config['bcell']['algorithm'] == 'TQC':
+    online_agent = BCell(..., use_tqc=True)
+```
+
 ## 확장 포인트
 
 ### 새 알고리즘 추가

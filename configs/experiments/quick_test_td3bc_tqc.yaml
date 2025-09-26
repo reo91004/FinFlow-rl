@@ -1,0 +1,141 @@
+# configs/experiments/quick_test.yaml
+# 빠른 테스트용 설정 (모든 조합 검증)
+
+seed: 42
+device: auto
+
+# 데이터 설정 (축소)
+data:
+  symbols: ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA"]  # 5개 종목만
+  start: "2018-01-01"
+  end: "2019-12-31"
+  test_start: "2020-01-01"
+  test_end: "2020-12-31"
+  val_ratio: 0.2
+  interval: "1d"
+  cache: true
+
+# 환경 설정
+env:
+  initial_balance: 1000000
+  transaction_cost: 0.001
+  slippage: 0.0005
+  no_trade_band: 0.01
+  max_leverage: 1.0
+  max_turnover: 0.5
+  window_size: 20
+  use_advanced_reward: false
+
+feature_dim: 12
+
+# 오프라인 학습 (빠른 테스트)
+offline:
+  method: "td3bc"  # iql 또는 td3bc로 변경
+  epochs: 1  # 매우 빠른 테스트
+  batch_size: 256
+  expectile: 0.7
+  temperature: 1.0
+  bc_weight: 2.5
+  policy_delay: 2
+  normalize_q: true
+
+# B-Cell (빠른 테스트)
+bcell:
+  algorithm: "TQC"  # REDQ 또는 TQC로 변경
+  hidden_dims: [256, 256]
+  n_critics: 2  # REDQ는 10, TQC는 2로 변경
+  m_sample: 2
+  utd_ratio: 10
+  n_quantiles: 25
+  top_quantiles_to_drop_per_net: 2
+  quantile_embedding_dim: 64
+  actor_lr: 3e-4
+  critic_lr: 3e-4
+  alpha_lr: 3e-4
+  batch_size: 256
+  gamma: 0.99
+  tau: 0.005
+  alpha: 0.1
+  crisis_threshold: 0.7
+  buffer_size: 10000
+  dirichlet:
+    concentration_init: 1.0
+    concentration_min: 0.1
+    concentration_max: 10.0
+    epsilon: 1e-6
+
+# T-Cell
+tcell:
+  contamination: 0.1
+  n_estimators: 50
+  window_size: 50
+
+# Memory Cell
+memory:
+  capacity: 100
+  k_neighbors: 3
+
+# 학습 설정 (빠른 테스트)
+online_episodes: 1  # 매우 짧은 테스트
+skip_offline: false
+early_stopping_patience: 5
+
+# Ablation study
+ablation:
+  use_tcell: true
+  use_memory: true
+  use_xai: false
+  offline_method: "td3bc"
+
+# 모니터링 설정
+monitoring:
+  use_tensorboard: false
+  use_wandb: false
+  log_frequency: 1
+  stability_check:
+    enabled: true
+    q_value_threshold: 1000.0
+    gradient_clip: 0.5
+    check_frequency: 10
+    l2_lambda: 1e-4
+  optimizer:
+    betas: [0.9, 0.9]
+    weight_decay: 1e-4
+
+# 분포적 RL 설정
+distributional:
+  n_quantiles: 32
+  kappa: 1.0
+  risk_measure: "neutral"
+  risk_param: 0.1
+  quantile_embedding_dim: 64
+
+# 기타
+log_level: "INFO"
+save_freq: 10
+
+# 목적함수 설정
+objectives:
+  sharpe_beta: 1.0
+  sharpe_ema_alpha: 0.99
+  sharpe_epsilon: 1.0e-8
+  cvar_alpha: 0.05
+  cvar_target: -0.02
+  lambda_cvar: 1.0
+  lambda_turn: 0.1
+  lambda_dd: 0.0
+  r_clip: 5.0
+  reward_ema_alpha: 0.99
+
+# 목표 메트릭
+targets:
+  sharpe_ratio: 1.5
+  max_drawdown: 0.25
+  cvar_95: -0.02
+
+# 베이스라인 설정
+baselines:
+  equal_weight:
+    enabled: false
+  standard_sac:
+    enabled: false

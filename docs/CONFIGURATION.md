@@ -151,33 +151,78 @@ bcell:
   dropout: 0.1
 ```
 
-### IQL 파라미터
+### 오프라인 학습 파라미터
+
+#### IQL (Implicit Q-Learning)
 
 ```yaml
-bcell:
-  # IQL 오프라인 학습
-  offline_algo: "iql"
-  iql_expectile: 0.7          # 0.5-0.9, 클수록 보수적
-  iql_temperature: 3.0        # 1.0-10.0, 클수록 다양한 행동
-  iql_clip_score: 100.0       # 그래디언트 클리핑
+offline:
+  method: "iql"
+  expectile: 0.7              # 0.5-0.9, 클수록 보수적
+  temperature: 1.0            # 1.0-10.0, 낮을수록 sharp
+
+  # 학습 설정
+  epochs: 50
+  batch_size: 256
+  actor_lr: 3e-4
+  critic_lr: 3e-4
+  value_lr: 3e-4
 ```
 
-### SAC 파라미터
+#### TD3BC (TD3 + Behavior Cloning)
+
+```yaml
+offline:
+  method: "td3bc"
+  bc_weight: 2.5              # BC 정규화 강도
+  policy_delay: 2             # 정책 업데이트 지연
+  normalize_q: true           # Q 정규화 여부
+
+  # 학습 설정
+  epochs: 50
+  batch_size: 256
+  actor_lr: 3e-4
+  critic_lr: 3e-4
+```
+
+### 온라인 학습 파라미터
+
+#### REDQ (Randomized Ensembled Double Q)
 
 ```yaml
 bcell:
-  # SAC 온라인 학습
-  online_algo: "dist_sac_cql"
+  algorithm: "REDQ"
+
+  # 앙상블 설정
+  n_critics: 10               # Q 네트워크 수
+  m_sample: 2                 # 랜덤 샘플 수
+  utd_ratio: 10               # 업데이트-데이터 비율
 
   # 엔트로피 정규화
-  alpha_init: 0.75            # 초기 엔트로피 계수
-  alpha_min: 5.0e-4          # 최소값
-  alpha_max: 0.5             # 최대값
-  target_entropy_ratio: 0.5   # 목표 엔트로피 비율
+  alpha: 0.1                  # 엔트로피 계수
+  alpha_lr: 3e-4              # 알파 학습률
 
   # 타겟 네트워크
-  tau: 0.005                 # Polyak 평균 계수
-  update_frequency: 1        # 업데이트 빈도
+  tau: 0.005                  # Polyak 평균 계수
+  gamma: 0.99                 # 할인율
+```
+
+#### TQC (Truncated Quantile Critics)
+
+```yaml
+bcell:
+  algorithm: "TQC"
+
+  # 분위수 설정
+  n_critics: 2                # Critics 수
+  n_quantiles: 25             # 분위수 개수
+  top_quantiles_to_drop_per_net: 2  # 제거할 상위 분위수
+  quantile_embedding_dim: 64  # 분위수 임베딩 차원
+
+  # 공통 설정
+  alpha: 0.1
+  tau: 0.005
+  gamma: 0.99
 ```
 
 ### CQL 설정
@@ -656,8 +701,104 @@ t_stat, p_value = stats.ttest_ind(
 
 ---
 
+## 문제 해결 (Troubleshooting)
+
+### 정책 붕괴 (Policy Collapse)
+
+#### 증상
+- 모든 자산에 균등 가중치 (3.3% × 30자산)
+- 행동 다양성 감소
+- 보상 평탄화
+
+#### 해결법
+```yaml
+# 1. L2 정규화 추가
+monitoring:
+  optimizer:
+    betas: [0.9, 0.9]  # beta1 = beta2
+    weight_decay: 1e-4  # L2 정규화
+
+# 2. 엔트로피 증가
+bcell:
+  alpha: 0.2  # 0.1 → 0.2
+
+# 3. Temperature 조정
+offline:
+  temperature: 3.0  # 1.0 → 3.0
+```
+
+### 과도한 무거래 (Excessive No-Trading)
+
+#### 증상
+- 100+ 연속 무거래
+- 포트폴리오 고착
+
+#### 해결법
+```yaml
+# 1. 거래 임계값 완화
+env:
+  no_trade_band: 0.01  # 0.002 → 0.01 (1%)
+
+# 2. 강제 거래 트리거 (코드 수정)
+if no_trade_counter >= 30:
+    # 강제 거래 활성화
+```
+
+### Q값 폭발 (Q-Value Explosion)
+
+#### 증상
+- Q값이 1000+ 도달
+- 학습 불안정
+
+#### 해결법
+```yaml
+# 1. Gradient clipping
+monitoring:
+  stability_check:
+    gradient_clip: 0.5  # 1.0 → 0.5
+
+# 2. Q값 정규화
+offline:
+  normalize_q: true  # TD3BC용
+```
+
+### 느린 수렴 (Slow Convergence)
+
+#### 증상
+- 학습 진행 없음
+- 메트릭 개선 없음
+
+#### 해결법
+```yaml
+# 1. TD3BC로 변경
+offline:
+  method: "td3bc"  # IQL → TD3BC
+
+# 2. UTD ratio 증가
+bcell:
+  utd_ratio: 20  # 10 → 20
+```
+
+### CUDA 메모리 부족
+
+#### 증상
+- OOM 에러
+
+#### 해결법
+```yaml
+# 1. 배치 크기 감소
+offline:
+  batch_size: 128  # 256 → 128
+
+# 2. Critics 수 감소
+bcell:
+  n_critics: 5  # 10 → 5
+```
+
+---
+
 *더 자세한 내용은 [TRAINING.md](TRAINING.md) 참조*
 
 ---
 
-*Last Updated: 2025-01-22*
+*Last Updated: 2025-01-27*

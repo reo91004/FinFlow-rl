@@ -157,6 +157,12 @@ monitoring:
     q_value_threshold: 1000.0
     gradient_clip: 0.5  # 1.0 → 0.5 (더 안정적인 학습)
     check_frequency: 100
+    l2_lambda: 1e-4  # L2 regularization (policy collapse 방지)
+
+  # Optimizer 설정 (policy collapse 방지용)
+  optimizer:
+    betas: [0.9, 0.9]  # beta1=beta2 for stability (2025 연구)
+    weight_decay: 1e-4  # L2 regularization
 
 # 분포적 RL 설정 (TQC용)
 distributional:

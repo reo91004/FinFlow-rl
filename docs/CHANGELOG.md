@@ -16,6 +16,41 @@
 
 ---
 
+## [2.2.0] - 2025-01-27
+
+### ✨ Added
+- **TD3BC 오프라인 학습**: Twin Delayed DDPG + Behavior Cloning 알고리즘
+- **4가지 오프라인/온라인 조합 지원**:
+  - IQL + REDQ (기본)
+  - IQL + TQC
+  - TD3BC + REDQ
+  - TD3BC + TQC
+- **정책 붕괴 방지 메커니즘**:
+  - L2 정규화 (weight_decay=1e-4)
+  - Optimizer betas=(0.9, 0.9) 설정
+- **configs/experiments/**: 조합별 테스트 설정 파일
+- **docs/ALGORITHMS.md**: 각 알고리즘 상세 설명
+- **docs/TROUBLESHOOTING.md**: 문제 해결 가이드
+
+### 🔄 Changed
+- **no_trade_band**: 0.002 → 0.01 (1% 임계값)
+- **강제 거래 트리거**: 30회 무거래 시 활성화
+- **configs 구조 개선**:
+  - experiments/: 새로운 실험 설정
+  - archive/: 이전 설정 보관
+- **gradient_clip**: 1.0 → 0.5 (안정성 개선)
+
+### 🐛 Fixed
+- **TQC tensor size mismatch**: QuantileNetwork 차원 불일치 수정
+- **TD3BC TypeError**: float() 변환 누락 수정
+- **정책 붕괴 문제**: 3.3% 균등 가중치 현상 해결
+- **과도한 무거래**: 100+ 연속 무거래 문제 해결
+
+### 🗑️ Removed
+- **균등 가중치 전략**: 오프라인 데이터셋에서 제거 (정책 붕괴 원인)
+
+---
+
 ## [2.0.0] - 2025-01-22
 
 ### 🎉 Major Release: BIPD (Biologically-Inspired Portfolio Defense) 2.0
@@ -226,5 +261,5 @@ MIT License - 자세한 내용은 [LICENSE](../LICENSE) 파일 참조
 
 ---
 
-*Last Updated: 2025-01-22*
-*Version: 2.0.0 (BIPD)*
+*Last Updated: 2025-01-27*
+*Version: 2.2.0 (BIPD)*
