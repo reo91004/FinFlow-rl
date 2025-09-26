@@ -280,7 +280,7 @@ class IQLAgent:
         actor_loss.backward()
 
         # Check for NaN gradients before step
-        grad_norm = torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 1.0)
+        grad_norm = torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 0.5)  # 1.0 → 0.5 더 안정적
         if torch.isnan(grad_norm) or torch.isinf(grad_norm):
             self.logger.warning(f"Actor gradient is NaN/Inf: {grad_norm.item()}, skipping update")
             self.actor_optimizer.zero_grad()  # Clear gradients

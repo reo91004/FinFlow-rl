@@ -186,12 +186,12 @@ class OfflineDataset:
             verbose: 진행 상황 출력 여부
         """
         strategies = {
-            'random': 0.2,           # 20% - 탐색용
-            'momentum': 0.2,         # 20% - 모멘텀 전략
-            'mean_reversion': 0.2,   # 20% - 평균회귀
-            'equal_weight': 0.15,    # 15% - 균등가중
-            'risk_parity': 0.15,     # 15% - 위험균등
-            'min_variance': 0.1      # 10% - 최소분산
+            'random': 0.15,          # 15% - 탐색용 (감소)
+            'momentum': 0.25,        # 25% - 모멘텀 전략 (증가)
+            'mean_reversion': 0.25,  # 25% - 평균회귀 (증가)
+            # 'equal_weight': 제거 - 문제의 원인
+            'risk_parity': 0.2,      # 20% - 위험균등 (증가)
+            'min_variance': 0.15     # 15% - 최소분산 (증가)
         }
 
         all_transitions = []

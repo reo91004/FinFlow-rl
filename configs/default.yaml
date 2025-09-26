@@ -53,7 +53,7 @@ env:
   initial_balance: 1000000
   transaction_cost: 0.001
   slippage: 0.0005
-  no_trade_band: 0.002
+  no_trade_band: 0.01  # 0.002 → 0.01로 완화 (1%)
   max_leverage: 1.0
   max_turnover: 0.5
   window_size: 20
@@ -70,7 +70,7 @@ offline:
 
   # IQL 전용
   expectile: 0.7
-  temperature: 3.0
+  temperature: 1.0  # 3.0 → 1.0 (더 sharp한 policy)
 
   # TD3+BC 전용
   bc_weight: 2.5
@@ -88,7 +88,7 @@ bcell:
   # REDQ 설정 (algorithm: 'REDQ'일 때)
   n_critics: 10 # 원논문 권장: N=10 (기존 5에서 증가)
   m_sample: 2
-  utd_ratio: 20
+  utd_ratio: 10  # 20 → 10 (안정성 우선)
 
   # TQC 설정 (algorithm: 'TQC'일 때)
   # n_critics: 2  # TQC는 적은 수의 critics 사용
@@ -105,7 +105,7 @@ bcell:
   # RL
   gamma: 0.99
   tau: 0.005
-  alpha: 0.2
+  alpha: 0.1  # 0.2 → 0.1 (entropy 감소)
 
   # 위기 대응
   crisis_threshold: 0.7 # 위기 수준 임계값
@@ -155,7 +155,7 @@ monitoring:
   stability_check:
     enabled: true
     q_value_threshold: 1000.0
-    gradient_clip: 1.0
+    gradient_clip: 0.5  # 1.0 → 0.5 (더 안정적인 학습)
     check_frequency: 100
 
 # 분포적 RL 설정 (TQC용)

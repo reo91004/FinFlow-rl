@@ -197,12 +197,21 @@ class PortfolioEnv(gym.Env):
         actual_weight_change = np.abs(action - self.weights).sum()
         if actual_weight_change < 1e-6:
             self.no_trade_counter += 1
-            if self.no_trade_counter > 20:  # 50 → 20으로 조기 경고
+            if self.no_trade_counter > 20:  # 20회부터 경고
                 self.logger.warning(f"무거래 {self.no_trade_counter}회 연속 감지 - 포트폴리오 고착")
-                # 강제로 작은 거래라도 실행하게 함
-                if self.no_trade_counter > 100:
-                    self.logger.error("무거래 100회 초과 - 에피소드 종료")
-                    # terminated 플래그는 나중에 설정
+
+            # 30회 이상 무거래시 강제 거래 트리거
+            if self.no_trade_counter >= 30:
+                # 작은 랜덤 노이즈를 추가하여 거래 유도
+                noise = np.random.randn(self.n_assets) * 0.005
+                action = action + noise
+                action = np.maximum(action, 0)
+                action = action / (action.sum() + 1e-8)
+                self.logger.info("무거래 30회 - 강제 거래 트리거 활성화")
+
+            if self.no_trade_counter > 50:  # 100 → 50으로 단축
+                self.logger.error("무거래 50회 초과 - 에피소드 종료")
+                # terminated 플래그는 나중에 설정
         else:
             self.no_trade_counter = 0
         
@@ -239,7 +248,7 @@ class PortfolioEnv(gym.Env):
         # 종료 조건
         terminated = (
             self.portfolio_value <= self.initial_capital * 0.5 or  # 50% 손실
-            self.no_trade_counter > 100  # 무거래 100회 초과
+            self.no_trade_counter > 50  # 무거래 50회 초과 (100 → 50)
         )
         truncated = self.current_step >= min(self.max_steps, len(self.price_data) - 2)
         
