@@ -408,10 +408,10 @@ class QuantileNetwork(nn.Module):
         self.n_quantiles = n_quantiles
         self.quantile_embedding_dim = quantile_embedding_dim
 
-        # Quantile fractions (τ)
-        quantiles = torch.linspace(0.0, 1.0, n_quantiles + 1)[1:]
-        quantiles = quantiles[:-1] + quantiles.diff() / 2  # Center of each quantile bin
-        self.register_buffer('quantile_fractions', quantiles)
+        # Quantile fractions (τ) - centers of quantile bins
+        quantiles = torch.linspace(0.0, 1.0, n_quantiles + 1)
+        centers = (quantiles[:-1] + quantiles[1:]) / 2  # Center of each quantile bin
+        self.register_buffer('quantile_fractions', centers)
 
         # Quantile embedding network (cos embedding)
         self.quantile_embedding = nn.Sequential(
