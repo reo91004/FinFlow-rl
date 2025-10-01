@@ -30,6 +30,7 @@ import random
 from pathlib import Path
 from src.training.trainer_irt import TrainerIRT
 from src.utils.logger import FinFlowLogger, set_session_directory
+from src.utils.training_utils import resolve_device
 
 def set_seed(seed: int):
     """재현성을 위한 시드 설정"""
@@ -40,9 +41,19 @@ def set_seed(seed: int):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-def get_device_info():
-    """디바이스 정보 반환"""
-    if torch.cuda.is_available():
+def get_device_info(device_str: str = 'auto'):
+    """
+    디바이스 정보 반환
+
+    Args:
+        device_str: 디바이스 문자열 ('auto', 'cuda', 'cpu')
+
+    Returns:
+        디바이스 정보 문자열
+    """
+    device = resolve_device(device_str)
+
+    if device.type == 'cuda':
         return f"cuda ({torch.cuda.get_device_name(0)})"
     else:
         return "cpu"
@@ -151,13 +162,14 @@ def main():
     logger = FinFlowLogger("Main", use_file=(args.mode != 'evaluate'))
     
     # Print header
+    device_str = args.device if args.device else config_dict.get('device', 'auto')
     print("=" * 60)
     print("FinFlow: Biologically-Inspired Portfolio Defense 2.0")
     print("=" * 60)
     print(f"Mode: {args.mode}")
     print(f"Config: {args.config}")
     print(f"Tickers: {tickers}")
-    print(f"Device: {get_device_info()}")
+    print(f"Device: {get_device_info(device_str)}")
     print(f"Seed: {seed}")
     print("=" * 60)
     

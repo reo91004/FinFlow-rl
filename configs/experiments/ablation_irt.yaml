@@ -42,9 +42,17 @@ irt:
   M_proto: 8
   alpha: 0.3  # 실험마다 변경: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 1.0]
   eps: 0.05
+  max_iters: 10
+  tol: 0.001
   gamma: 0.5
   lambda_tol: 2.0
   rho: 0.3
+  eta_0: 0.05
+  eta_1: 0.10
+  kappa: 1.0
+  eps_tol: 0.1
+  n_self_sigs: 4
+  ema_beta: 0.9
 
 # REDQ
 redq:
@@ -52,8 +60,8 @@ redq:
   m_sample: 2
   utd_ratio: 5  # 빠른 실험
   hidden_dims: [256, 256]
-  actor_lr: 3e-4
-  critic_lr: 3e-4
+  actor_lr: 0.0003
+  critic_lr: 0.0003
   gamma: 0.99
   tau: 0.005
   buffer_size: 50000
@@ -61,6 +69,11 @@ redq:
 # 학습
 online_episodes: 100  # 빠른 실험
 skip_offline: false
+
+# Replay Buffer
+replay_buffer:
+  alpha: 0.6
+  beta: 0.4
 
 # 목적함수
 objectives:

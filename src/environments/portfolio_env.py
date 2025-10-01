@@ -1,4 +1,4 @@
-# src/core/env.py
+# src/environments/portfolio_env.py
 
 """
 포트폴리오 거래 환경 (T+1 결제)

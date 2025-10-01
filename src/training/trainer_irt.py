@@ -29,13 +29,14 @@ import json
 from src.agents.bcell_irt import BCellIRTActor
 from src.algorithms.critics.redq import REDQCritic
 from src.algorithms.offline.iql import IQLAgent
+from src.immune.irt import IRT
 from src.environments.portfolio_env import PortfolioEnv
 from src.data.market_loader import DataLoader
 from src.data.feature_extractor import FeatureExtractor
 from src.data.offline_dataset import OfflineDataset
 from src.data.replay_buffer import PrioritizedReplayBuffer, Transition
 from src.utils.logger import FinFlowLogger, get_session_directory
-from src.utils.training_utils import polyak_update
+from src.utils.training_utils import polyak_update, resolve_device
 from src.evaluation.metrics import MetricsCalculator
 
 class TrainerIRT:
@@ -47,9 +48,9 @@ class TrainerIRT:
             config: YAML 설정 파일 로드된 딕셔너리
         """
         self.config = config
-        self.device = torch.device(
-            config.get('device', 'cuda' if torch.cuda.is_available() else 'cpu')
-        )
+        # Device 설정: 'auto' 문자열 자동 처리
+        device_str = config.get('device', 'auto')
+        self.device = resolve_device(device_str)
 
         self.logger = FinFlowLogger("TrainerIRT")
         self.metrics_calc = MetricsCalculator()
@@ -105,7 +106,8 @@ class TrainerIRT:
         self.action_dim = n_assets
 
         # 특성 추출기
-        self.feature_extractor = FeatureExtractor(window=20)
+        window_size = self.config['env'].get('window_size', 20)
+        self.feature_extractor = FeatureExtractor(window=window_size)
 
         # 환경
         env_config = self.config['env']
@@ -139,8 +141,29 @@ class TrainerIRT:
             emb_dim=irt_config.get('emb_dim', 128),
             m_tokens=irt_config.get('m_tokens', 6),
             M_proto=irt_config.get('M_proto', 8),
-            alpha=irt_config.get('alpha', 0.3)
+            alpha=irt_config.get('alpha', 0.3),
+            ema_beta=irt_config.get('ema_beta', 0.9),
+            market_feature_dim=feature_dim
         ).to(self.device)
+
+        # IRT Operator 내부 파라미터 설정
+        self.actor.irt = IRT(
+            emb_dim=irt_config.get('emb_dim', 128),
+            m_tokens=irt_config.get('m_tokens', 6),
+            M_proto=irt_config.get('M_proto', 8),
+            eps=irt_config.get('eps', 0.05),
+            alpha=irt_config.get('alpha', 0.3),
+            gamma=irt_config.get('gamma', 0.5),
+            lambda_tol=irt_config.get('lambda_tol', 2.0),
+            rho=irt_config.get('rho', 0.3),
+            eta_0=irt_config.get('eta_0', 0.05),
+            eta_1=irt_config.get('eta_1', 0.10),
+            kappa=irt_config.get('kappa', 1.0),
+            eps_tol=irt_config.get('eps_tol', 0.1),
+            n_self_sigs=irt_config.get('n_self_sigs', 4),
+            max_iters=irt_config.get('max_iters', 10),
+            tol=irt_config.get('tol', 0.001)
+        )
 
         # REDQ Critics
         redq_config = self.config.get('redq', {})
@@ -174,10 +197,11 @@ class TrainerIRT:
         )
 
         # Replay Buffer
+        replay_config = self.config.get('replay_buffer', {})
         self.replay_buffer = PrioritizedReplayBuffer(
             capacity=redq_config.get('buffer_size', 100000),
-            alpha=0.6,
-            beta=0.4
+            alpha=replay_config.get('alpha', 0.6),
+            beta=replay_config.get('beta', 0.4)
         )
 
         # Hyperparameters
@@ -232,12 +256,17 @@ class TrainerIRT:
 
         dataset = OfflineDataset(data_path=offline_data_path)
 
-        # IQL 에이전트
+        # IQL 에이전트 파라미터 추출 (IQLAgent가 받는 것만)
+        iql_params = {
+            'expectile': offline_config.get('expectile', 0.7),
+            'temperature': offline_config.get('temperature', 1.0),
+        }
+
         iql_agent = IQLAgent(
             state_dim=self.state_dim,
             action_dim=self.action_dim,
             device=self.device,
-            **offline_config
+            **iql_params
         )
 
         # IQL 학습
@@ -245,7 +274,7 @@ class TrainerIRT:
         batch_size = offline_config.get('batch_size', 256)
 
         for epoch in tqdm(range(n_epochs), desc="IQL Training"):
-            batch = dataset.sample(batch_size)
+            batch = dataset.sample_batch(batch_size)
 
             states = torch.FloatTensor(batch['states']).to(self.device)
             actions = torch.FloatTensor(batch['actions']).to(self.device)
@@ -256,7 +285,10 @@ class TrainerIRT:
             losses = iql_agent.update(states, actions, rewards, next_states, dones)
 
             if epoch % 10 == 0:
-                self.logger.info(f"Epoch {epoch}: V_loss={losses['v_loss']:.4f}, Q_loss={losses['q_loss']:.4f}")
+                self.logger.info(
+                    f"Epoch {epoch}: V={losses['value_loss']:.4f}, "
+                    f"Q={losses['q_loss']:.4f}, Actor={losses['actor_loss']:.4f}"
+                )
 
         # Actor에 IQL 정책 가중치 로드 (프로토타입 디코더로)
         self.logger.info("IQL 정책을 IRT Actor로 전이 중...")

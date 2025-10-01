@@ -30,7 +30,9 @@ class BCellIRTActor(nn.Module):
                  emb_dim: int = 128,
                  m_tokens: int = 6,
                  M_proto: int = 8,
-                 alpha: float = 0.3):
+                 alpha: float = 0.3,
+                 ema_beta: float = 0.9,
+                 market_feature_dim: int = 12):
         """
         Args:
             state_dim: 상태 차원 (예: 43)
@@ -39,6 +41,8 @@ class BCellIRTActor(nn.Module):
             m_tokens: 에피토프 토큰 수
             M_proto: 프로토타입 수
             alpha: OT-Replicator 결합 비율
+            ema_beta: EMA 메모리 계수
+            market_feature_dim: 시장 특성 차원 (FeatureExtractor 출력)
         """
         super().__init__()
 
@@ -47,6 +51,7 @@ class BCellIRTActor(nn.Module):
         self.emb_dim = emb_dim
         self.m = m_tokens
         self.M = M_proto
+        self.ema_beta = ema_beta
 
         # ===== 에피토프 인코더 =====
         self.epitope_encoder = nn.Sequential(
@@ -85,7 +90,6 @@ class BCellIRTActor(nn.Module):
         )
 
         # ===== T-Cell 통합 =====
-        market_feature_dim = 12  # FeatureExtractor 출력
         self.t_cell = TCellMinimal(
             in_dim=market_feature_dim,
             emb_dim=emb_dim
@@ -93,7 +97,6 @@ class BCellIRTActor(nn.Module):
 
         # ===== 이전 가중치 (EMA) =====
         self.register_buffer('w_prev', torch.full((1, M_proto), 1.0/M_proto))
-        self.ema_beta = 0.9
 
     def _compute_fitness(self,
                         state: torch.Tensor,

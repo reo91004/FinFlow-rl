@@ -120,3 +120,4 @@ temp/
 CLAUDE.md
 data/processed/offline_data.npz
 data/offline_data.npz
+docs/HANDOVER.md

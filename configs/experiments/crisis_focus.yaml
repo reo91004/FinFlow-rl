@@ -45,9 +45,17 @@ irt:
   M_proto: 10        # 더 많은 프로토타입 (다양한 전략)
   alpha: 0.4         # OT 비중 증가 (빠른 적응)
   eps: 0.03          # 낮은 엔트로피 (더 선명한 매칭)
+  max_iters: 15      # 더 많은 반복 (정확한 수렴)
+  tol: 0.0005        # 엄격한 수렴 조건
   gamma: 0.7         # 높은 공자극 가중치 (위기 신호 중시)
   lambda_tol: 3.0    # 높은 내성 (과거 실패 회피)
   rho: 0.5           # 높은 체크포인트 (과신 억제)
+  eta_0: 0.03        # 낮은 기본 학습률 (안정성)
+  eta_1: 0.15        # 높은 위기 가열 (빠른 적응)
+  kappa: 1.5         # 높은 내성 게인
+  eps_tol: 0.05      # 엄격한 내성 임계값
+  n_self_sigs: 6     # 더 많은 자기-내성 서명
+  ema_beta: 0.95     # 더 많은 메모리 (안정성)
 
 # REDQ - 안정성 강화
 redq:
@@ -55,8 +63,8 @@ redq:
   m_sample: 3        # 더 보수적 타겟
   utd_ratio: 15      # 더 많은 업데이트 (빠른 학습)
   hidden_dims: [256, 256]
-  actor_lr: 1e-4     # 낮은 학습률 (안정성)
-  critic_lr: 1e-4
+  actor_lr: 0.0001   # 낮은 학습률 (안정성)
+  critic_lr: 0.0001
   gamma: 0.95        # 낮은 할인 (단기 중시)
   tau: 0.001         # 느린 타겟 업데이트 (안정성)
   buffer_size: 100000
@@ -64,6 +72,11 @@ redq:
 # 학습
 online_episodes: 300  # 더 많은 에피소드
 skip_offline: false
+
+# Replay Buffer
+replay_buffer:
+  alpha: 0.7  # 높은 우선순위 지수 (위기 경험 중시)
+  beta: 0.5   # 중요도 샘플링
 
 # 목적함수 - 위기 중심
 objectives:

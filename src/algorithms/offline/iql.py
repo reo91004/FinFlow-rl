@@ -83,6 +83,11 @@ class SimpleActor(nn.Module):
         dist = torch.distributions.Dirichlet(conc)
         return dist.sample()
 
+    def get_distribution(self, state: torch.Tensor) -> torch.distributions.Dirichlet:
+        """분포 객체 반환 (IQL 학습용)"""
+        conc = self.network(state) + 1.0
+        return torch.distributions.Dirichlet(conc)
+
 class IQLAgent:
     """
     Implicit Q-Learning (IQL) Agent for offline pretraining

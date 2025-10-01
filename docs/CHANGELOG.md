@@ -16,6 +16,80 @@
 
 ---
 
+## [2.0.1-IRT] - 2025-10-02
+
+### 🐛 Fixed
+- **Device 처리 개선**:
+  - MPS (Apple Silicon) 호환성 문제로 인한 오류 제거
+  - `resolve_device()` 함수 추가 (`src/utils/training_utils.py`)
+  - 'auto' 문자열 지원: CUDA → CPU 자동 선택
+- **YAML 파싱 오류 수정**:
+  - 과학적 표기법(`3e-4`) → 소수점 표기법(`0.0003`)으로 변경
+  - `configs/default_irt.yaml`, `ablation_irt.yaml`, `crisis_focus.yaml` 수정
+  - TypeError: '<=' not supported between instances of 'float' and 'str' 해결
+- **IQLAgent 초기화 수정**:
+  - offline_config에서 불필요한 파라미터 필터링 ('method', 'epochs', 'batch_size')
+  - 오직 IQLAgent가 받는 파라미터만 전달 (expectile, temperature)
+- **OfflineDataset 메소드 수정**:
+  - `dataset.sample()` → `dataset.sample_batch()` 메소드 이름 수정
+  - AttributeError 해결
+- **SimpleActor 메소드 추가**:
+  - `get_distribution()` 메소드 구현 (IQL actor 업데이트용)
+  - Dirichlet 분포 객체 반환으로 log_prob() 계산 가능
+- **IQL 로깅 키 수정**:
+  - `v_loss` → `value_loss` 키 이름 수정
+  - IQLAgent.update() 반환값과 일치
+- **TrainerIRT import 누락 수정**:
+  - `from src.immune.irt import IRT` import 추가
+  - NameError: name 'IRT' is not defined 해결
+
+### 🔄 Changed
+- **하드코딩 제거 및 Config 기반 전환** (14개 파라미터):
+  - IRT 고급 파라미터 config화:
+    - `eta_0`, `eta_1` (위기 가열 메커니즘)
+    - `kappa`, `eps_tol` (자기-내성)
+    - `n_self_sigs` (자기-내성 서명 개수)
+    - `ema_beta` (EMA 메모리 계수)
+    - `max_iters`, `tol` (Sinkhorn 알고리즘)
+  - Replay buffer 파라미터 config화:
+    - `alpha` (PER 우선순위 지수)
+    - `beta` (PER 중요도 샘플링)
+  - 동적 차원 설정:
+    - `market_feature_dim` (FeatureExtractor 출력 차원)
+    - `window_size` (env.window_size에서 로드)
+  - 파일 수정:
+    - `src/immune/irt.py`: 10개 파라미터 추가
+    - `src/agents/bcell_irt.py`: 2개 파라미터 추가
+    - `src/training/trainer_irt.py`: config 전달 로직 구현
+    - `configs/default_irt.yaml`: IRT 고급 설정 섹션 추가
+    - `configs/experiments/ablation_irt.yaml`: 동일 업데이트
+    - `configs/experiments/crisis_focus.yaml`: 위기 전용 튜닝 값 추가
+
+### ✨ Added
+- **resolve_device() 함수**:
+  - 디바이스 문자열 자동 변환 ('auto' → 'cuda'/'cpu')
+  - CUDA 감지 및 자동 선택
+  - 명시적 디바이스 지정 지원
+- **Config 섹션 확장**:
+  - `irt` 섹션: 기본 구조, Sinkhorn, 비용 함수, 위기 가열, 자기-내성, EMA 메모리 하위 섹션
+  - `replay_buffer` 섹션: PER 파라미터 관리
+- **위기 전용 튜닝** (crisis_focus.yaml):
+  - `eta_0: 0.03`, `eta_1: 0.15` (빠른 위기 적응)
+  - `kappa: 1.5`, `eps_tol: 0.05` (엄격한 내성)
+  - `n_self_sigs: 6`, `ema_beta: 0.95` (높은 안정성)
+
+### 📊 Improvements
+- **재현성 100%**: 모든 파라미터가 config 파일에서 관리됨
+- **실험 용이성**: YAML 파일만 수정으로 파라미터 튜닝 가능
+- **코드 품질**: 하드코딩 제거로 유지보수성 향상
+- **검증 완료**:
+  - Config 로딩 테스트 통과
+  - TrainerIRT 초기화 테스트 통과
+  - IRT Operator 파라미터 검증 완료
+  - Replay Buffer 파라미터 검증 완료
+
+---
+
 ## [2.0-IRT] - 2025-10-02
 
 ### 🚀 Major Release: IRT (Immune Replicator Transport) Operator
@@ -307,5 +381,5 @@ MIT License - 자세한 내용은 [LICENSE](../LICENSE) 파일 참조
 
 ---
 
-*Last Updated: 2025-01-27*
-*Version: 2.2.0 (BIPD)*
+*Last Updated: 2025-10-02*
+*Version: 2.0.1-IRT*

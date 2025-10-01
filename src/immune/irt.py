@@ -101,7 +101,14 @@ class IRT(nn.Module):
                  alpha: float = 0.3,
                  gamma: float = 0.5,
                  lambda_tol: float = 2.0,
-                 rho: float = 0.3):
+                 rho: float = 0.3,
+                 eta_0: float = 0.05,
+                 eta_1: float = 0.10,
+                 kappa: float = 1.0,
+                 eps_tol: float = 0.1,
+                 n_self_sigs: int = 4,
+                 max_iters: int = 10,
+                 tol: float = 1e-3):
         super().__init__()
 
         self.emb_dim = emb_dim
@@ -109,22 +116,26 @@ class IRT(nn.Module):
         self.M = M_proto
         self.alpha = alpha
 
-        # 하이퍼파라미터
+        # 비용 함수 가중치
         self.gamma = gamma          # 공자극 가중치
         self.lambda_tol = lambda_tol  # 내성 가중치
         self.rho = rho              # 체크포인트 가중치
-        self.kappa = 1.0            # 내성 게인
-        self.eps_tol = 0.1          # 내성 임계값
+        self.kappa = kappa          # 내성 게인
+        self.eps_tol = eps_tol      # 내성 임계값
+
+        # 위기 가열 메커니즘
+        self.eta_0 = eta_0          # 기본 학습률
+        self.eta_1 = eta_1          # 위기 시 증가량
 
         # 학습 가능한 마할라노비스 메트릭
         # M = L^T L (positive definite 보장)
         self.metric_L = nn.Parameter(torch.eye(emb_dim))
 
         # 자기-내성 서명 (학습 가능)
-        self.self_sigs = nn.Parameter(torch.randn(4, emb_dim) * 0.1)
+        self.self_sigs = nn.Parameter(torch.randn(n_self_sigs, emb_dim) * 0.1)
 
         # Sinkhorn 알고리즘
-        self.sinkhorn = Sinkhorn(max_iters=10, eps=eps)
+        self.sinkhorn = Sinkhorn(max_iters=max_iters, eps=eps, tol=tol)
 
     def _mahalanobis_distance(self, E: torch.Tensor, K: torch.Tensor) -> torch.Tensor:
         """
@@ -234,8 +245,7 @@ class IRT(nn.Module):
 
         # ===== Step 2: Replicator 업데이트 =====
         # 위기 가열: η(c) = η_0 + η_1·c
-        eta_0, eta_1 = 0.05, 0.10
-        eta = eta_0 + eta_1 * crisis_level  # [B, 1]
+        eta = self.eta_0 + self.eta_1 * crisis_level  # [B, 1]
 
         # Advantage 계산
         baseline = (w_prev * fitness).sum(dim=-1, keepdim=True)  # [B, 1]
@@ -246,6 +256,7 @@ class IRT(nn.Module):
         sig_norm = F.normalize(self.self_sigs, dim=-1)  # [S, D]
 
         proto_self_sim = (K_norm @ sig_norm.T).max(dim=-1)[0]  # [B, M]
+        # r_penalty 계수도 config화 가능하지만 실험적 파라미터이므로 0.5 유지
         r_penalty = 0.5 * proto_self_sim
 
         # Replicator 방정식 (log-space)

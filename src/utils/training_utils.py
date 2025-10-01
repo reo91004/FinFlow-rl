@@ -33,6 +33,36 @@ import time
 from src.utils.logger import FinFlowLogger
 
 # ============================================================================
+# 디바이스 및 시스템 유틸리티 (Device and System Utilities)
+# ============================================================================
+
+def resolve_device(device_str: str) -> torch.device:
+    """
+    디바이스 문자열을 torch.device로 변환
+
+    'auto' 문자열을 처리하여 사용 가능한 디바이스를 자동 선택한다.
+
+    Args:
+        device_str: 디바이스 문자열 ('cuda', 'cpu', 'auto')
+
+    Returns:
+        torch.device 객체
+
+    Examples:
+        >>> resolve_device('auto')  # cuda가 있으면 'cuda:0', 없으면 'cpu'
+        >>> resolve_device('cuda')  # 'cuda:0'
+        >>> resolve_device('cpu')   # 'cpu'
+    """
+    if device_str == 'auto':
+        if torch.cuda.is_available():
+            return torch.device('cuda')
+        else:
+            return torch.device('cpu')
+    else:
+        return torch.device(device_str)
+
+
+# ============================================================================
 # 최적화 도구 (Optimization Utilities)
 # ============================================================================
 
