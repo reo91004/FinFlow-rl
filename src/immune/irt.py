@@ -244,8 +244,9 @@ class IRT(nn.Module):
         p_mass = P.sum(dim=1)  # [B, M]
 
         # ===== Step 2: Replicator 업데이트 =====
-        # 위기 가열: η(c) = η_0 + η_1·c
-        eta = self.eta_0 + self.eta_1 * crisis_level  # [B, 1]
+        # 위기 가열: η(c) = η_0 + η_1·c (NaN 방어)
+        crisis_level_safe = torch.nan_to_num(crisis_level, nan=0.0)
+        eta = self.eta_0 + self.eta_1 * crisis_level_safe  # [B, 1]
 
         # Advantage 계산
         baseline = (w_prev * fitness).sum(dim=-1, keepdim=True)  # [B, 1]
@@ -268,8 +269,10 @@ class IRT(nn.Module):
         # ===== Step 3: 이중 결합 (OT ∘ Replicator) =====
         w = (1 - self.alpha) * tilde_w + self.alpha * p_mass
 
-        # 정규화 (수치 안정성)
+        # 정규화 (수치 안정성, NaN 방어)
+        w = torch.nan_to_num(w, nan=1.0/self.M)  # NaN 시 균등 분포
         w = w / (w.sum(dim=-1, keepdim=True) + 1e-8)
         w = torch.clamp(w, min=1e-6, max=1.0)
+        w = w / w.sum(dim=-1, keepdim=True)  # 재정규화 (합=1)
 
         return w, P

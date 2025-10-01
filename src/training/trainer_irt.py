@@ -436,7 +436,7 @@ class TrainerIRT:
         self.actor_optim.step()
 
         # ===== Target Update =====
-        polyak_update(self.critic.parameters(), self.critic_target.parameters(), self.tau)
+        polyak_update(self.critic_target, self.critic, self.tau)
 
         # TD error 업데이트 (PER)
         with torch.no_grad():

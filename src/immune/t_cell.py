@@ -78,8 +78,8 @@ class TCellMinimal(nn.Module):
         z = h[:, :self.n_types]      # [B, K]
         d = h[:, self.n_types:]      # [B, D]
 
-        # 온라인 정규화 (학습 시)
-        if update_stats and self.training:
+        # 온라인 정규화 (학습 시, batch > 1)
+        if update_stats and self.training and z.size(0) > 1:
             with torch.no_grad():
                 batch_mu = z.mean(dim=0)
                 batch_sigma = z.std(dim=0) + 1e-6
