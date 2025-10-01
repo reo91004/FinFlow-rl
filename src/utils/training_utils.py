@@ -5,7 +5,7 @@
 
 목적: 강화학습 최적화 및 학습 안정성 도구 제공
 의존: torch, numpy
-사용처: BCell, IQL, TD3BC 등 모든 학습 모듈
+사용처: BCellIRTActor, IQL, REDQ 등 IRT 학습 모듈
 역할: 그래디언트 처리, 네트워크 업데이트, 안정성 모니터링
 
 구현 내용:

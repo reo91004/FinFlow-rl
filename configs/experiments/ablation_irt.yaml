@@ -1,0 +1,77 @@
+# configs/experiments/ablation_irt.yaml
+# IRT Ablation Study 설정
+
+seed: 42
+device: auto
+
+# 간소화된 데이터 (빠른 실험용)
+data:
+  symbols: ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "JPM", "V", "UNH"]
+  start: "2019-01-01"
+  end: "2021-12-31"
+  test_start: "2022-01-01"
+  test_end: "2023-12-31"
+  val_ratio: 0.2
+  interval: "1d"
+  cache: true
+
+# 환경
+env:
+  initial_balance: 1000000
+  transaction_cost: 0.001
+  max_leverage: 1.0
+  window_size: 20
+
+feature_dim: 12
+
+# 오프라인 학습
+offline:
+  method: "iql"
+  epochs: 20  # 빠른 실험
+  batch_size: 256
+  expectile: 0.7
+  temperature: 1.0
+
+# IRT Ablation 설정
+# α=0: 순수 Replicator
+# α=0.3: 균형 (기본)
+# α=1: 순수 OT
+irt:
+  emb_dim: 128
+  m_tokens: 6
+  M_proto: 8
+  alpha: 0.3  # 실험마다 변경: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 1.0]
+  eps: 0.05
+  gamma: 0.5
+  lambda_tol: 2.0
+  rho: 0.3
+
+# REDQ
+redq:
+  n_critics: 5  # 경량화
+  m_sample: 2
+  utd_ratio: 5  # 빠른 실험
+  hidden_dims: [256, 256]
+  actor_lr: 3e-4
+  critic_lr: 3e-4
+  gamma: 0.99
+  tau: 0.005
+  buffer_size: 50000
+
+# 학습
+online_episodes: 100  # 빠른 실험
+skip_offline: false
+
+# 목적함수
+objectives:
+  sharpe_beta: 1.0
+  sharpe_ema_alpha: 0.99
+  cvar_alpha: 0.05
+  cvar_target: -0.02
+  lambda_cvar: 1.0
+  lambda_turn: 0.1
+  lambda_dd: 0.0
+  r_clip: 5.0
+
+# 로깅
+log_level: "DEBUG"  # 상세 로깅

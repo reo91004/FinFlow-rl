@@ -1,0 +1,116 @@
+# configs/default_irt.yaml
+# IRT 기본 설정
+
+seed: 42
+device: auto # cpu|cuda|auto
+
+# 데이터 설정
+data:
+  #
+  symbols:
+    [
+      "AAPL",
+      "MSFT",
+      "JPM",
+      "GS",
+      "BA",
+      "CAT",
+      "MMM",
+      "HON",
+      "IBM",
+      "NVDA",
+      "KO",
+      "MCD",
+      "MRK",
+      "MS",
+      "NKE",
+      "PG",
+      "TRV",
+      "UNH",
+      "V",
+      "VZ",
+      "WMT",
+      "CVX",
+      "XOM",
+      "AMGN",
+      "AXP",
+      "CRM",
+      "CSCO",
+      "DIS",
+      "HD",
+      "JNJ",
+    ]
+  start: "2008-01-01"
+  end: "2020-12-31"
+  test_start: "2021-01-01"
+  test_end: "2024-12-31"
+  val_ratio: 0.2
+  interval: "1d"
+  cache: true
+
+# 환경 설정
+env:
+  initial_balance: 1000000
+  transaction_cost: 0.001
+  slippage: 0.0005
+  max_leverage: 1.0
+  window_size: 20
+
+# 특성 추출
+feature_dim: 12
+
+# 오프라인 학습 (IQL)
+offline:
+  method: "iql"
+  epochs: 50
+  batch_size: 256
+  expectile: 0.7
+  temperature: 1.0
+
+# IRT 설정
+irt:
+  emb_dim: 128 # 임베딩 차원
+  m_tokens: 6 # 에피토프 토큰 수
+  M_proto: 8 # 프로토타입 수
+  alpha: 0.3 # OT-Replicator 결합 비율 (0=Replicator, 1=OT)
+  eps: 0.05 # Sinkhorn 엔트로피
+  gamma: 0.5 # 공자극 가중치
+  lambda_tol: 2.0 # 내성 가중치
+  rho: 0.3 # 체크포인트 가중치
+
+# REDQ 설정
+redq:
+  n_critics: 10 # 앙상블 크기
+  m_sample: 2 # 서브셋 크기
+  utd_ratio: 10 # Update-to-Data ratio
+  hidden_dims: [256, 256]
+  actor_lr: 3e-4
+  critic_lr: 3e-4
+  batch_size: 256
+  gamma: 0.99
+  tau: 0.005
+  buffer_size: 100000
+
+# 학습 설정
+online_episodes: 200
+skip_offline: false
+
+# 목적함수 설정 (PortfolioObjective)
+objectives:
+  sharpe_beta: 1.0
+  sharpe_ema_alpha: 0.99
+  cvar_alpha: 0.05
+  cvar_target: -0.02
+  lambda_cvar: 1.0
+  lambda_turn: 0.1
+  lambda_dd: 0.0
+  r_clip: 5.0
+
+# 목표 메트릭
+targets:
+  sharpe_ratio: 1.5
+  max_drawdown: 0.25
+  cvar_95: -0.02
+
+# 로깅
+log_level: "INFO"

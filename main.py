@@ -1,10 +1,10 @@
 # main.py
 
 """
-메인 실행 파일: FinFlow 시스템 진입점
+메인 실행 파일: FinFlow IRT 시스템 진입점
 
-목적: FinFlow 학습/평가 시스템 실행
-의존: trainer.py, 모든 core/agents/data 모듈
+목적: FinFlow IRT 학습/평가 시스템 실행
+의존: trainer_irt.py, 모든 immune/agents/data 모듈
 사용처: 직접 실행 (python main.py)
 역할: CLI 인터페이스 제공 및 파이프라인 시작
 
@@ -12,23 +12,40 @@
 1. 설정 로드 (YAML 또는 CLI 인자)
 2. 데이터 로드 (다우존스 30 기본값)
 3. Phase 1: IQL 오프라인 사전학습
-4. Phase 2: REDQ 온라인 미세조정
+4. Phase 2: IRT 온라인 미세조정
 5. 평가 및 결과 저장
 
 주요 모드:
 - train: 전체 학습 파이프라인 실행
 - evaluate: 학습된 모델 평가
-- demo: 실시간 거래 데모 (미구현)
+- demo: 빠른 테스트 실행
 """
 
 import argparse
 import json
 import yaml
 import torch
+import numpy as np
+import random
 from pathlib import Path
-from src.training.trainer import FinFlowTrainer
+from src.training.trainer_irt import TrainerIRT
 from src.utils.logger import FinFlowLogger, set_session_directory
-from src.utils.device_manager import set_seed, get_device_info
+
+def set_seed(seed: int):
+    """재현성을 위한 시드 설정"""
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+def get_device_info():
+    """디바이스 정보 반환"""
+    if torch.cuda.is_available():
+        return f"cuda ({torch.cuda.get_device_name(0)})"
+    else:
+        return "cpu"
 
 def main():
     """메인 실행 함수"""
@@ -38,9 +55,9 @@ def main():
     parser.add_argument('--mode', type=str, default='train',
                        choices=['train', 'evaluate', 'demo'],
                        help='Execution mode')
-    
+
     # Config file
-    parser.add_argument('--config', type=str, default='configs/default.yaml',
+    parser.add_argument('--config', type=str, default='configs/default_irt.yaml',
                        help='Path to config file')
     
     # Paths
@@ -199,41 +216,29 @@ def main():
                 config_dict[key] = value
 
         # Create trainer with config dict
-        trainer = FinFlowTrainer(config_dict)
-        
-        # Resume if checkpoint provided
-        if args.resume:
-            logger.info(f"체크포인트에서 재개: {args.resume}")
-            trainer.load_checkpoint(args.resume)
-        
+        trainer = TrainerIRT(config_dict)
+
         # Train
         trainer.train()
         
     elif args.mode == 'evaluate':
         # Import evaluation module
-        from scripts.evaluate import FinFlowEvaluator
+        from scripts.evaluate_irt import IRTEvaluator
 
         if not args.resume:
             print("평가 모드는 --resume 체크포인트가 필요합니다")
             return
 
-        # device='auto'를 실제 디바이스로 변환
-        if args.device == 'auto':
-            if torch.cuda.is_available():
-                device = 'cuda'
-            else:
-                device = 'cpu'
-        else:
-            device = args.device
+        # Load config
+        with open(args.config, 'r') as f:
+            eval_config = yaml.safe_load(f)
 
         # Create evaluator
-        evaluator = FinFlowEvaluator(
-            checkpoint_path=args.resume,
-            data_path=args.data_path,
-            config_path=args.config,  # Pass the config file
-            device=device
+        evaluator = IRTEvaluator(
+            config=eval_config,
+            checkpoint_path=args.resume
         )
-        
+
         # Run evaluation
         evaluator.evaluate()
         
@@ -270,9 +275,9 @@ def main():
                     config_dict[key].update(value)
                 else:
                     config_dict[key] = value
-            trainer = FinFlowTrainer(config_dict)
+            trainer = TrainerIRT(config_dict)
         else:
-            trainer = FinFlowTrainer(demo_config)
+            trainer = TrainerIRT(demo_config)
         
         print("\n빠른 학습 시작 (데모용)...")
         trainer.train()

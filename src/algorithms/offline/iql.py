@@ -1,18 +1,18 @@
-# src/core/iql.py
+# src/algorithms/offline/iql.py
 
 """
-IQL (Implicit Q-Learning) 오프라인 학습
+IQL (Implicit Q-Learning) 오프라인 학습 - 간소화 버전
 
 목적: Expectile 회귀 기반 오프라인 사전학습
-의존: networks.py (신경망), logger.py
-사용처: OfflineTrainer → BCell 가중치 전이
+의존: torch, logger.py
+사용처: TrainerIRT → BCellIRTActor 가중치 전이
 역할: 과거 데이터로부터 안전한 정책 학습
 
 구현 내용:
 - Expectile=0.7로 보수적 가치 추정
-- Temperature=3.0으로 탐험 제어
-- Importance sampling 없이 오프라인 학습 가능
+- Temperature=1.0으로 탐험 제어
 - 가치 함수와 Q 함수 분리 학습
+- IRT 호환성을 위한 간소화
 """
 
 import torch
@@ -20,9 +20,68 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 import numpy as np
-from typing import Dict, Tuple, Optional
-from src.models.networks import DirichletActor, ValueNetwork, QNetwork
+from typing import Dict, Tuple, Optional, List
 from src.utils.logger import FinFlowLogger
+
+# 간소화된 네트워크 정의
+class ValueNetwork(nn.Module):
+    """가치 함수 네트워크"""
+    def __init__(self, state_dim: int, hidden_dims: List[int] = [256, 256]):
+        super().__init__()
+        layers = []
+        in_dim = state_dim
+        for hidden_dim in hidden_dims:
+            layers.extend([
+                nn.Linear(in_dim, hidden_dim),
+                nn.ReLU()
+            ])
+            in_dim = hidden_dim
+        layers.append(nn.Linear(in_dim, 1))
+        self.network = nn.Sequential(*layers)
+
+    def forward(self, state: torch.Tensor) -> torch.Tensor:
+        return self.network(state)
+
+class QNetwork(nn.Module):
+    """Q 함수 네트워크"""
+    def __init__(self, state_dim: int, action_dim: int, hidden_dims: List[int] = [256, 256]):
+        super().__init__()
+        layers = []
+        in_dim = state_dim + action_dim
+        for hidden_dim in hidden_dims:
+            layers.extend([
+                nn.Linear(in_dim, hidden_dim),
+                nn.ReLU()
+            ])
+            in_dim = hidden_dim
+        layers.append(nn.Linear(in_dim, 1))
+        self.network = nn.Sequential(*layers)
+
+    def forward(self, state: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
+        x = torch.cat([state, action], dim=-1)
+        return self.network(x)
+
+class SimpleActor(nn.Module):
+    """간단한 액터 (Dirichlet policy)"""
+    def __init__(self, state_dim: int, action_dim: int, hidden_dims: List[int] = [256, 256]):
+        super().__init__()
+        layers = []
+        in_dim = state_dim
+        for hidden_dim in hidden_dims:
+            layers.extend([
+                nn.Linear(in_dim, hidden_dim),
+                nn.ReLU()
+            ])
+            in_dim = hidden_dim
+        layers.append(nn.Linear(in_dim, action_dim))
+        layers.append(nn.Softplus())  # 양수 concentration
+        self.network = nn.Sequential(*layers)
+        self.action_dim = action_dim
+
+    def forward(self, state: torch.Tensor) -> torch.Tensor:
+        conc = self.network(state) + 1.0  # concentration parameters
+        dist = torch.distributions.Dirichlet(conc)
+        return dist.sample()
 
 class IQLAgent:
     """
@@ -69,8 +128,8 @@ class IQLAgent:
         self.base_lr = learning_rate
         self.value_regularization = value_regularization
         
-        # Networks
-        self.actor = DirichletActor(state_dim, action_dim, [hidden_dim, hidden_dim]).to(device)
+        # Networks (간소화)
+        self.actor = SimpleActor(state_dim, action_dim, [hidden_dim, hidden_dim]).to(device)
         self.value = ValueNetwork(state_dim, [hidden_dim, hidden_dim]).to(device)
 
         self.q1 = QNetwork(state_dim, action_dim, [hidden_dim, hidden_dim]).to(device)

@@ -5,7 +5,7 @@
 
 목적: 6가지 투자 전략으로 고품질 오프라인 데이터 수집
 의존: PortfolioEnv, logger.py
-사용처: OfflineTrainer (IQL/TD3BC 학습)
+사용처: TrainerIRT (IQL 사전학습)
 역할: 오프라인 사전학습용 데이터 생성
 
 전략:

@@ -23,7 +23,6 @@ import pickle
 import os
 from typing import List, Tuple, Optional, Dict
 from src.utils.logger import FinFlowLogger
-from src.data.data_validator import DataValidator
 
 class DataLoader:
     """
@@ -55,7 +54,7 @@ class DataLoader:
 
         os.makedirs(self.cache_dir, exist_ok=True)
         self.logger = FinFlowLogger("DataLoader")
-        self.validator = DataValidator(validation_config) if self.validate_data else None
+        self.validator = None  # DataValidator removed in IRT refactoring
         
     def download_data(self, symbols: List[str], start_date: str, end_date: str, 
                      use_cache: bool = True) -> pd.DataFrame:
