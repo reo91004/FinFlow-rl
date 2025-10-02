@@ -78,7 +78,7 @@ irt:
   alpha: 0.3 # OT-Replicator 결합 비율 (0=Replicator, 1=OT)
 
   # Sinkhorn 알고리즘
-  eps: 0.05 # 엔트로피 정규화
+  eps: 0.10 # 엔트로피 정규화 (0.05 → 0.10, OT 다양성 증가)
   max_iters: 10 # 최대 반복 횟수
   tol: 0.001 # 수렴 임계값
 
@@ -89,7 +89,7 @@ irt:
 
   # 위기 가열 메커니즘 (Replicator)
   eta_0: 0.05 # 기본 학습률
-  eta_1: 0.10 # 위기 시 증가량
+  eta_1: 0.15 # 위기 시 증가량 (0.10 → 0.15, 빠른 적응)
 
   # 자기-내성 (Tolerance)
   kappa: 1.0 # 내성 게인
@@ -128,7 +128,7 @@ objectives:
   cvar_alpha: 0.05
   cvar_target: -0.02
   lambda_cvar: 1.0
-  lambda_turn: 0.1
+  lambda_turn: 0.01  # 0.1 → 0.01 (거래 유인 발생)
   lambda_dd: 0.0
   r_clip: 5.0
 

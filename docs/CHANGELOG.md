@@ -7,6 +7,28 @@
 
 ## [Unreleased]
 
+### 🚀 Performance Improvements
+- **무거래 문제 해결 (No-Trade Loop Fix)**:
+  - 근본 원인: Turnover penalty 과다 + IRT exploration 억제
+  - 해결 방법: 환경 설정 + IRT 하이퍼파라미터 조정 (복잡도 증가 없음)
+  - 변경사항:
+    - `lambda_turn: 0.1 → 0.01` (10배 감소) - 거래 유인 발생
+    - `eps: 0.05 → 0.10` (Sinkhorn entropy 2배) - OT 다양성 증가
+    - `eta_1: 0.10 → 0.15` (위기 가열 1.5배) - 빠른 적응
+    - Dirichlet `min: 1.0 → 0.5`, `max: 100 → 50` - exploration 증가
+  - 이론적 근거:
+    - Turnover penalty 스케일: 일일 수익률(±1%)과 정합성 확보
+    - Sinkhorn entropy: Cuturi (2013) 권장 범위 [0.01, 0.1]
+    - Dirichlet α<1: sparse 분포, 높은 엔트로피
+    - REFACTORING.md 철학: 기존 메커니즘 활용, 새 장치 추가 불필요
+  - 예상 효과:
+    - Episode 0에서 Turnover > 0 확인
+    - 프로토타입 가중치 다양화
+    - 위기 구간 빠른 전환
+  - 파일:
+    - `configs/default_irt.yaml`: 3개 파라미터 수정
+    - `src/agents/bcell_irt.py`: Dirichlet clamping 2곳 수정
+
 ### 🐛 Fixed
 - **CUDA/CPU 디바이스 불일치 수정**:
   - `src/training/trainer_irt.py:166`: IRT 재할당 후 `.to(device)` 추가

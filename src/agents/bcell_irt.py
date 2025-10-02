@@ -123,8 +123,8 @@ class BCellIRTActor(nn.Module):
                 # 프로토타입 j의 concentration
                 conc_j = self.decoders[j](K_batch[:, j, :])  # [B, A]
 
-                # Dirichlet 분포에서 샘플
-                conc_j_clamped = torch.clamp(conc_j, min=1.0, max=100.0)
+                # Dirichlet 분포에서 샘플 (exploration 증가: min 1.0→0.5, max 100→50)
+                conc_j_clamped = torch.clamp(conc_j, min=0.5, max=50.0)
                 dist_j = torch.distributions.Dirichlet(conc_j_clamped)
                 action_j = dist_j.sample()  # [B, A]
 
@@ -202,8 +202,8 @@ class BCellIRTActor(nn.Module):
             action = torch.clamp(action, min=0.0)
             action = action / (action.sum(dim=-1, keepdim=True) + 1e-8)
         else:
-            # 확률적: Dirichlet 샘플
-            mixed_conc_clamped = torch.clamp(mixed_conc, min=1.0, max=100.0)
+            # 확률적: Dirichlet 샘플 (exploration 증가: min 1.0→0.5, max 100→50)
+            mixed_conc_clamped = torch.clamp(mixed_conc, min=0.5, max=50.0)
             dist = torch.distributions.Dirichlet(mixed_conc_clamped)
             action = dist.sample()
 
