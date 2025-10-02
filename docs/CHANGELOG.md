@@ -9,8 +9,10 @@
 
 ### 🚀 Performance Improvements
 - **무거래 문제 해결 (No-Trade Loop Fix)**:
-  - 근본 원인: Turnover penalty 과다 + IRT exploration 억제
-  - 해결 방법: 환경 설정 + IRT 하이퍼파라미터 조정 (복잡도 증가 없음)
+  - 근본 원인: Turnover penalty 과다 + IRT exploration 억제 + No-trade band 트랩
+  - 해결 전략: 2단계 접근 (파라미터 조정 + 알고리즘 변경)
+
+  **Phase 1: 파라미터 조정** (기존):
   - 변경사항:
     - `lambda_turn: 0.1 → 0.01` (10배 감소) - 거래 유인 발생
     - `eps: 0.05 → 0.10` (Sinkhorn entropy 2배) - OT 다양성 증가
@@ -20,14 +22,42 @@
     - Turnover penalty 스케일: 일일 수익률(±1%)과 정합성 확보
     - Sinkhorn entropy: Cuturi (2013) 권장 범위 [0.01, 0.1]
     - Dirichlet α<1: sparse 분포, 높은 엔트로피
-    - REFACTORING.md 철학: 기존 메커니즘 활용, 새 장치 추가 불필요
-  - 예상 효과:
-    - Episode 0에서 Turnover > 0 확인
-    - 프로토타입 가중치 다양화
-    - 위기 구간 빠른 전환
   - 파일:
     - `configs/default_irt.yaml`: 3개 파라미터 수정
     - `src/agents/bcell_irt.py`: Dirichlet clamping 2곳 수정
+
+  **Phase 2: 알고리즘 변경** (신규):
+  - **방안 1: Fitness 기대값 계산** (10번 샘플링)
+    - 위치: `src/agents/bcell_irt.py:132-150` (_compute_fitness 메소드)
+    - 변경: `action_j = dist_j.sample()` (1회) → 10회 샘플 후 평균
+    - 효과: Fitness 표준오차 68% 감소 (σ/√10) → Replicator 신호 안정화
+    - 이론: Chen et al. (2021) REDQ - High UTD with sample efficiency
+    - 근거: Dirichlet α=1일 때 표준편차 ≈ 0.089 → 노이즈 10% → 신호 대 잡음비 개선
+
+  - **방안 2: No-trade band 완전 제거**
+    - 위치: `configs/default_irt.yaml:59`, `src/training/trainer_irt.py:122,135,487`
+    - 변경: `no_trade_band: 0.002 → 0.0` (완전 제거)
+    - 효과: 미세 가중치 변화도 거래 인정 → 자기 강화 루프 차단
+    - 근거: RL 학습이 거래 빈도 결정, Turnover penalty가 이미 존재
+    - 위험 관리: lambda_turn=0.01로 과도한 거래 억제
+
+  - **방안 3: Exploration noise** (Dirichlet mixing)
+    - 위치: `src/agents/bcell_irt.py:223-232` (forward 메소드)
+    - 공식: `action = 0.9 * policy_action + 0.1 * dirichlet_noise`
+    - 효과: 매 스텝 ~1% 가중치 변화 보장 → No-trade band 트랩 회피
+    - 이론: Haarnoja et al. (2018) SAC - Maximum entropy RL
+    - 특징: Simplex 제약 자동 보존 (Dirichlet 속성)
+
+  - **예상 효과**:
+    - Episode 0에서 Turnover > 0.01 (거래 발생)
+    - Episode 10에서 Turnover > 0.05 (정상 범위)
+    - 무거래 경고 사라짐
+    - Replicator advantage 신호 안정화
+
+  - **이론적 통합**:
+    - REFACTORING.md 철학: IRT는 이미 exploration 메커니즘 내장 (Sinkhorn ε, Dirichlet α, Replicator η)
+    - 핵심 통찰: 환경 억제 제거 + 기존 파라미터 조정 + 알고리즘 안정화
+    - 복잡도: O(0) 파라미터 조정, O(n_samples × n_critics) 계산 증가 (일일 거래에서 무시 가능)
 
 ### 🐛 Fixed
 - **CUDA/CPU 디바이스 불일치 수정**:

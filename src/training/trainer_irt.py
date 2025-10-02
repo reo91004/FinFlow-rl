@@ -118,7 +118,10 @@ class TrainerIRT:
             feature_extractor=self.feature_extractor,
             initial_capital=env_config.get('initial_balance', 1000000),
             transaction_cost=env_config.get('transaction_cost', 0.001),
+            slippage=env_config.get('slippage', 0.0005),
+            no_trade_band=env_config.get('no_trade_band', 0.002),
             max_leverage=env_config.get('max_leverage', 1.0),
+            max_turnover=env_config.get('max_turnover', 0.5),
             objective_config=objective_config,
             use_advanced_reward=(objective_config is not None)
         )
@@ -128,7 +131,10 @@ class TrainerIRT:
             feature_extractor=self.feature_extractor,
             initial_capital=env_config['initial_balance'],
             transaction_cost=env_config['transaction_cost'],
+            slippage=env_config.get('slippage', 0.0005),
+            no_trade_band=env_config.get('no_trade_band', 0.002),
             max_leverage=env_config['max_leverage'],
+            max_turnover=env_config.get('max_turnover', 0.5),
             objective_config=objective_config,
             use_advanced_reward=(objective_config is not None)
         )
@@ -477,6 +483,10 @@ class TrainerIRT:
             feature_extractor=self.feature_extractor,
             initial_capital=env_config['initial_balance'],
             transaction_cost=env_config['transaction_cost'],
+            slippage=env_config.get('slippage', 0.0005),
+            no_trade_band=env_config.get('no_trade_band', 0.002),
+            max_leverage=env_config.get('max_leverage', 1.0),
+            max_turnover=env_config.get('max_turnover', 0.5),
             objective_config=objective_config,
             use_advanced_reward=(objective_config is not None)
         )

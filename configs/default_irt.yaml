@@ -54,7 +54,9 @@ env:
   transaction_cost: 0.001
   slippage: 0.0005
   max_leverage: 1.0
+  max_turnover: 0.5  # 일일 최대 턴오버
   window_size: 20
+  no_trade_band: 0.0  # 방안 2: 무거래 밴드 완전 제거 (기존 0.002 → 0.0)
 
 # 특성 추출
 feature_dim: 12

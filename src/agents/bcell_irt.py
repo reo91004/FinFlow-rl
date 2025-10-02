@@ -105,6 +105,8 @@ class BCellIRTActor(nn.Module):
         각 프로토타입의 적합도 (fitness) 계산
 
         방법: 각 프로토타입 정책으로 행동 샘플 → Critics로 Q값 평가
+        개선: 10번 샘플링 후 평균하여 기대값 E[Q(s, a~π_j)] 근사
+              → Fitness 표준오차 68% 감소 (σ/√10)
 
         Args:
             state: [B, S]
@@ -126,15 +128,26 @@ class BCellIRTActor(nn.Module):
                 # Dirichlet 분포에서 샘플 (exploration 증가: min 1.0→0.5, max 100→50)
                 conc_j_clamped = torch.clamp(conc_j, min=0.5, max=50.0)
                 dist_j = torch.distributions.Dirichlet(conc_j_clamped)
-                action_j = dist_j.sample()  # [B, A]
 
-                # Critics로 Q값 평가 (앙상블 평균)
-                q_values = []
-                for critic in critics:
-                    q = critic(state, action_j)
-                    q_values.append(q.squeeze(-1))  # [B]
+                # 방안 1: 10번 샘플링 후 평균 (기대값 근사)
+                n_samples = 10
+                q_estimates = []
 
-                fitness[:, j] = torch.stack(q_values).mean(dim=0)
+                for _ in range(n_samples):
+                    action_j = dist_j.sample()  # [B, A]
+
+                    # Critics로 Q값 평가 (앙상블 평균)
+                    q_values = []
+                    for critic in critics:
+                        q = critic(state, action_j)
+                        q_values.append(q.squeeze(-1))  # [B]
+
+                    # Critic 앙상블 평균
+                    q_mean = torch.stack(q_values).mean(dim=0)  # [B]
+                    q_estimates.append(q_mean)
+
+                # 샘플링 평균으로 기대값 근사
+                fitness[:, j] = torch.stack(q_estimates).mean(dim=0)  # [B]
 
         return fitness
 
@@ -206,6 +219,17 @@ class BCellIRTActor(nn.Module):
             mixed_conc_clamped = torch.clamp(mixed_conc, min=0.5, max=50.0)
             dist = torch.distributions.Dirichlet(mixed_conc_clamped)
             action = dist.sample()
+
+            # 방안 3: Exploration noise (학습 중에만)
+            if self.training:
+                # Dirichlet noise (concentration=10: 약한 노이즈)
+                noise_conc = torch.ones_like(action) * 10.0
+                noise_dist = torch.distributions.Dirichlet(noise_conc)
+                noise = noise_dist.sample()
+
+                # 90% 정책 + 10% 랜덤 혼합
+                action = 0.9 * action + 0.1 * noise
+                action = action / (action.sum(dim=-1, keepdim=True) + 1e-8)  # 재정규화
 
         # ===== Step 7: EMA 업데이트 (w_prev) =====
         if self.training:
