@@ -63,6 +63,8 @@ feature_dim: 12
 offline:
   method: "iql"
   epochs: 50
+  steps_per_epoch: auto # 'auto' = len(dataset)//batch_size, 또는 숫자
+  log_interval: 10 # epoch 로깅 간격
   batch_size: 256
   expectile: 0.7
   temperature: 1.0

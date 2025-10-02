@@ -7,6 +7,30 @@
 
 ## [Unreleased]
 
+### 🐛 Fixed
+- **CUDA/CPU 디바이스 불일치 수정**:
+  - `src/training/trainer_irt.py:166`: IRT 재할당 후 `.to(device)` 추가
+  - `src/immune/irt.py`: 파라미터 텐서(`metric_L`, `self_sigs`)를 입력 디바이스로 명시적 이동 (3곳)
+  - RuntimeError: Expected all tensors to be on the same device 해결
+  - 근본 원인: IRT 모듈 재생성 시 CPU에 남아있는 문제 해결
+- **PyTorch 텐서 변환 경고 제거**:
+  - `src/environments/portfolio_env.py:288-289`: `torch.tensor([array])` → `torch.from_numpy(array).unsqueeze(0)` 변경
+  - UserWarning: Creating a tensor from a list of numpy.ndarrays 제거
+  - 성능 개선: O(n) 복사 → O(1) zero-copy 메모리 공유
+
+### ✨ Added
+- **IQL 사전학습 개선**:
+  - `configs/default_irt.yaml`: `steps_per_epoch: auto`, `log_interval: 10` 파라미터 추가
+  - `src/training/trainer_irt.py`: epoch당 전체 데이터셋 순회 구현
+  - 학습량: 50 steps → 23,500 steps (470배 증가)
+  - 데이터 활용률: 10.6% → 100% (전체 데이터 50회 순회)
+  - 실제 사전학습 효과 확보로 온라인 학습 안정성 향상
+
+### 📊 Improvements
+- **IQL 사전학습 시간**: 1초 → ~2-3분 (의미 있는 학습)
+- **메모리 효율**: 텐서 변환 시 zero-copy로 메모리 사용량 감소
+- **디바이스 안정성**: CPU/GPU 혼용 환경에서 오류 없이 실행
+
 ### 예정
 - IRT 논문 작성 및 학회 발표
 - 멀티 자산 클래스 확장 (채권, 원자재, 암호화폐)

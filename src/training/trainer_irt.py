@@ -273,21 +273,45 @@ class TrainerIRT:
         n_epochs = offline_config.get('epochs', 50)
         batch_size = offline_config.get('batch_size', 256)
 
+        # steps_per_epoch 계산
+        steps_per_epoch_cfg = offline_config.get('steps_per_epoch', 'auto')
+        if steps_per_epoch_cfg == 'auto':
+            steps_per_epoch = max(1, len(dataset) // batch_size)
+        else:
+            steps_per_epoch = max(1, int(steps_per_epoch_cfg))
+
+        log_interval = offline_config.get('log_interval', 10)
+        self.logger.info(f"IQL 학습 시작: {n_epochs} epochs × {steps_per_epoch} steps = {n_epochs * steps_per_epoch} total steps")
+
         for epoch in tqdm(range(n_epochs), desc="IQL Training"):
-            batch = dataset.sample_batch(batch_size)
+            epoch_losses = {'value_loss': [], 'q_loss': [], 'actor_loss': []}
 
-            states = torch.FloatTensor(batch['states']).to(self.device)
-            actions = torch.FloatTensor(batch['actions']).to(self.device)
-            rewards = torch.FloatTensor(batch['rewards']).to(self.device)
-            next_states = torch.FloatTensor(batch['next_states']).to(self.device)
-            dones = torch.FloatTensor(batch['dones']).to(self.device)
+            # Epoch 내 여러 step 순회
+            for step in range(steps_per_epoch):
+                batch = dataset.sample_batch(batch_size)
 
-            losses = iql_agent.update(states, actions, rewards, next_states, dones)
+                states = torch.FloatTensor(batch['states']).to(self.device)
+                actions = torch.FloatTensor(batch['actions']).to(self.device)
+                rewards = torch.FloatTensor(batch['rewards']).to(self.device)
+                next_states = torch.FloatTensor(batch['next_states']).to(self.device)
+                dones = torch.FloatTensor(batch['dones']).to(self.device)
 
-            if epoch % 10 == 0:
+                losses = iql_agent.update(states, actions, rewards, next_states, dones)
+
+                # Loss 누적
+                for k, v in losses.items():
+                    epoch_losses[k].append(v)
+
+            # Epoch 평균 로깅
+            if epoch % log_interval == 0 or epoch == n_epochs - 1:
+                avg_value = np.mean(epoch_losses['value_loss'])
+                avg_q = np.mean(epoch_losses['q_loss'])
+                avg_actor = np.mean(epoch_losses['actor_loss'])
+
                 self.logger.info(
-                    f"Epoch {epoch}: V={losses['value_loss']:.4f}, "
-                    f"Q={losses['q_loss']:.4f}, Actor={losses['actor_loss']:.4f}"
+                    f"Epoch {epoch}/{n_epochs}: "
+                    f"V={avg_value:.4f}, Q={avg_q:.4f}, Actor={avg_actor:.4f} "
+                    f"({(epoch+1)*steps_per_epoch} total steps)"
                 )
 
         # Actor에 IQL 정책 가중치 로드 (프로토타입 디코더로)

@@ -285,8 +285,8 @@ class PortfolioEnv(gym.Env):
         if self.objective and self.use_advanced_reward:
             # 고급 보상 함수 사용
             returns_tensor = torch.tensor([portfolio_return], dtype=torch.float32)
-            weights_tensor = torch.tensor([self.weights], dtype=torch.float32)
-            prev_weights_tensor = torch.tensor([self.prev_weights], dtype=torch.float32)
+            weights_tensor = torch.from_numpy(self.weights).unsqueeze(0).float()
+            prev_weights_tensor = torch.from_numpy(self.prev_weights).unsqueeze(0).float()
 
             objective_value, metrics = self.objective(returns_tensor, weights_tensor, prev_weights_tensor)
             reward = objective_value.item()
