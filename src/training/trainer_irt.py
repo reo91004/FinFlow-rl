@@ -163,7 +163,7 @@ class TrainerIRT:
             n_self_sigs=irt_config.get('n_self_sigs', 4),
             max_iters=irt_config.get('max_iters', 10),
             tol=irt_config.get('tol', 0.001)
-        )
+        ).to(self.device)
 
         # REDQ Critics
         redq_config = self.config.get('redq', {})

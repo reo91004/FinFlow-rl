@@ -19,6 +19,17 @@
 ## [2.0.1-IRT] - 2025-10-02
 
 ### 🐛 Fixed
+- **T-Cell NaN 오류 수정**:
+  - batch=1일 때 `std()` 계산에서 NaN 발생 문제 해결
+  - `src/immune/t_cell.py`: `z.size(0) > 1` 조건 추가로 batch 통계 업데이트 안정화
+  - ValueError: Expected parameter concentration to satisfy constraint 근본 원인 해결
+- **IRT 수치 안정성 강화**:
+  - `src/immune/irt.py`: crisis_level에 `torch.nan_to_num` 적용
+  - w 계산 시 NaN 발생 시 균등 분포로 대체 (1/M)
+  - 재정규화 로직 추가로 합=1 보장
+- **Polyak update 함수 호출 오류 수정**:
+  - `src/training/trainer_irt.py`: generator 대신 network module 전달
+  - AttributeError: 'generator' object has no attribute 'parameters' 해결
 - **Device 처리 개선**:
   - MPS (Apple Silicon) 호환성 문제로 인한 오류 제거
   - `resolve_device()` 함수 추가 (`src/utils/training_utils.py`)

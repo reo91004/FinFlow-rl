@@ -144,6 +144,7 @@ class IRT(nn.Module):
         d_M(x,y) = sqrt((x-y)^T M (x-y)), M = L^T L
         """
         M = self.metric_L.T @ self.metric_L  # [D, D]
+        M = M.to(E.device)  # 디바이스 동기화
 
         diff = E.unsqueeze(2) - K.unsqueeze(1)  # [B, m, M, D]
 
@@ -182,7 +183,7 @@ class IRT(nn.Module):
         # 3. 음성 선택 (Tolerance)
         # 자기-내성 서명과 유사한 에피토프 억제
         E_norm = F.normalize(E, dim=-1)  # [B, m, D]
-        sig_norm = F.normalize(self.self_sigs, dim=-1)  # [S, D]
+        sig_norm = F.normalize(self.self_sigs.to(E.device), dim=-1)  # [S, D]
 
         cos_sim = E_norm @ sig_norm.T  # [B, m, S]
         worst_match = cos_sim.max(dim=-1, keepdim=True)[0]  # [B, m, 1]
@@ -254,7 +255,7 @@ class IRT(nn.Module):
 
         # 자기-내성 페널티 (프로토타입도 검사)
         K_norm = F.normalize(K, dim=-1)  # [B, M, D]
-        sig_norm = F.normalize(self.self_sigs, dim=-1)  # [S, D]
+        sig_norm = F.normalize(self.self_sigs.to(K.device), dim=-1)  # [S, D]
 
         proto_self_sim = (K_norm @ sig_norm.T).max(dim=-1)[0]  # [B, M]
         # r_penalty 계수도 config화 가능하지만 실험적 파라미터이므로 0.5 유지
