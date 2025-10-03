@@ -1,402 +1,325 @@
-# FinFlow-RL: IRT (Immune Replicator Transport) Portfolio Management
+<div align="center">
+<img align="center" width="30%" alt="image" src="https://github.com/AI4Finance-Foundation/FinGPT/assets/31713746/e0371951-1ce1-488e-aa25-0992dafcc139">
+</div>
 
-[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
-[![PyTorch 1.12+](https://img.shields.io/badge/pytorch-1.12+-ee4c2c.svg)](https://pytorch.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+# FinRL®: Financial Reinforcement Learning [![twitter][1.1]][1] [![facebook][1.2]][2] [![google+][1.3]][3] [![linkedin][1.4]][4]
 
-IRT (Immune Replicator Transport) Operator 기반 위기 적응형 포트폴리오 관리 시스템
+[1.1]: http://www.tensorlet.org/wp-content/uploads/2021/01/button_twitter_22x22.png
+[1.2]: http://www.tensorlet.org/wp-content/uploads/2021/01/facebook-button_22x22.png
+[1.3]: http://www.tensorlet.org/wp-content/uploads/2021/01/button_google_22.xx_.png
+[1.4]: http://www.tensorlet.org/wp-content/uploads/2021/01/button_linkedin_22x22.png
 
-## 📋 목차
-- [개요](#개요)
-- [주요 특징](#주요-특징)
-- [설치](#설치)
-- [빠른 시작](#빠른-시작)
-- [사용법](#사용법)
-- [프로젝트 구조](#프로젝트-구조)
-- [문서](#문서)
-- [성능 목표](#성능-목표)
-- [문제 해결](#문제-해결)
+[1]: https://twitter.com/intent/tweet?text=FinRL-Financial-Deep-Reinforcement-Learning%20&url=https://github.com/AI4Finance-Foundation/FinRL&hashtags=DRL&hashtags=AI
+[2]: https://www.facebook.com/sharer.php?u=http%3A%2F%2Fgithub.com%2FAI4Finance-Foundation%2FFinRL
+[3]: https://plus.google.com/share?url=https://github.com/AI4Finance-Foundation/FinRL
+[4]: https://www.linkedin.com/sharing/share-offsite/?url=http%3A%2F%2Fgithub.com%2FAI4Finance-Foundation%2FFinRL
 
-## 개요
+<div align="center">
+<img align="center" src=figs/logo_transparent_background.png width="55%"/>
+</div>
 
-FinFlow-RL IRT는 **Optimal Transport**와 **Replicator Dynamics**를 결합한 혁신적인 정책 혼합 연산자를 통해 위기 상황에 적응적으로 대응하는 포트폴리오 관리 시스템이다.
+[![Downloads](https://static.pepy.tech/badge/finrl)](https://pepy.tech/project/finrl)
+[![Downloads](https://static.pepy.tech/badge/finrl/week)](https://pepy.tech/project/finrl)
+[![Join Discord](https://img.shields.io/badge/Discord-Join-blue)](https://discord.gg/trsr8SXpW5)
+[![Python 3.6](https://img.shields.io/badge/python-3.6-blue.svg)](https://www.python.org/downloads/release/python-360/)
+[![PyPI](https://img.shields.io/pypi/v/finrl.svg)](https://pypi.org/project/finrl/)
+[![Documentation Status](https://readthedocs.org/projects/finrl/badge/?version=latest)](https://finrl.readthedocs.io/en/latest/?badge=latest)
+![License](https://img.shields.io/github/license/AI4Finance-Foundation/finrl.svg?color=brightgreen)
+![](https://img.shields.io/github/issues-raw/AI4Finance-Foundation/finrl?label=Issues)
+![](https://img.shields.io/github/issues-closed-raw/AI4Finance-Foundation/finrl?label=Closed+Issues)
+![](https://img.shields.io/github/issues-pr-raw/AI4Finance-Foundation/finrl?label=Open+PRs)
+![](https://img.shields.io/github/issues-pr-closed-raw/AI4Finance-Foundation/finrl?label=Closed+PRs)
 
-### IRT 핵심 수식
-```
-w_t = (1-α)·Replicator(w_{t-1}, f_t) + α·Transport(E_t, K, C_t)
-```
+[FinGPT](https://github.com/AI4Finance-Foundation/ChatGPT-for-FinTech): Open-source for open-finance! Revolutionize FinTech.
 
-### 차별점
-- **시간 메모리**: w_{t-1}을 통한 과거 성공 전략 기억
-- **구조적 매칭**: Optimal Transport로 현재 상태와 전문가 전략 최적 결합
-- **면역학적 비용**: 공자극, 내성, 체크포인트를 통한 도메인 지식 내장
 
-### 최근 업데이트 (v2.1.0-IRT, 2025-10-04)
-- ✅ **BC Warm-start**: IQL 완전 대체, AWR/Expectile bias 제거
-- ✅ **Progressive Exploration**: 3-stage 적응형 탐색 스케줄 추가
-- ✅ **Config 기반 설정**: 모든 하드코딩 제거 (Dirichlet, Progressive)
-- ✅ **레거시 정리**: IQL 삭제, 코드 간소화
+[![](https://dcbadge.vercel.app/api/server/trsr8SXpW5)](https://discord.gg/trsr8SXpW5)
 
-### 이전 업데이트 (v2.0-IRT)
-- 🆕 **IRT Operator**: OT + Replicator 기반 새로운 정책 혼합
-- 🆕 **경량 T-Cell**: 단일 신경망으로 위기 감지 간소화
-- ✅ **코드 간소화**: 파일 수 33% 감소, 코드 라인 31% 감소
-- ✅ **해석 가능성 강화**: 수송 행렬, 복제자 가중치 시각화
-- 🔧 **실전 작동 보장**: End-to-end 학습 가능
+![Visitors](https://api.visitorbadge.io/api/VisitorHit?user=AI4Finance-Foundation&repo=FinRL&countColor=%23B17A)
 
-## 주요 특징
 
-- 🧬 **IRT Operator**: Optimal Transport + Replicator Dynamics 결합
-- 🎯 **위기 적응**: 위기 시 자동으로 방어적 전략으로 전환
-- 📊 **REDQ Critics**: 10개 Q-network 앙상블로 안정적 학습
-- 🔍 **해석 가능성**: 수송 행렬 P, 프로토타입 가중치 w 시각화
-- ⚡ **경량화**: 기존 대비 코드 31% 감소, 실행 속도 향상
-- 💰 **실전 검증**: 다우존스 30종목 백테스팅
 
-## 설치
+**Financial reinforcement learning (FinRL®)** ([Document website](https://finrl.readthedocs.io/en/latest/index.html)) is **the first open-source framework** for financial reinforcement learning. FinRL has evolved into an **ecosystem**
+* [FinRL-DeepSeek](https://github.com/AI4Finance-Foundation/FinRL_DeepSeek): LLM-Infused Risk-Sensitive Reinforcement Learning for Trading Agents
 
-### 요구사항
-- Python 3.8+
-- PyTorch 1.12+
-- CUDA 11.3+ (GPU 사용 시)
+| Dev Roadmap  | Stage | Users | Project | Description |
+|----|----|----|----|----|
+| 0.0 (Preparation) | entrance | practitioners | [FinRL-Meta](https://github.com/AI4Finance-Foundation/FinRL-Meta)| gym-style market environments |
+| 1.0 (Proof-of-Concept)| full-stack | developers | [this repo](https://github.com/AI4Finance-Foundation/FinRL) | automatic pipeline |
+| 2.0 (Professional) | profession | experts | [ElegantRL](https://github.com/AI4Finance-Foundation/ElegantRL) | algorithms |
+| 3.0 (Production) | service | hedge funds | [Podracer](https://github.com/AI4Finance-Foundation/FinRL_Podracer) | cloud-native deployment |
 
-### 설치 방법
 
-```bash
-# 저장소 클론
-git clone https://github.com/yourusername/FinFlow-rl.git
-cd FinFlow-rl
+## Outline
 
-# 의존성 설치
-pip install -r requirements.txt
+  - [Overview](#overview)
+  - [File Structure](#file-structure)
+  - [Supported Data Sources](#supported-data-sources)
+  - [Installation](#installation)
+  - [Status Update](#status-update)
+  - [Tutorials](#tutorials)
+  - [Publications](#publications)
+  - [News](#news)
+  - [Citing FinRL](#citing-finrl)
+  - [Join and Contribute](#join-and-contribute)
+    - [Contributors](#contributors)
+    - [Sponsorship](#sponsorship)
+  - [LICENSE](#license)
 
-# (선택) 개발 도구 설치
-pip install -e ".[dev]"
-```
+## Overview
 
-## 빠른 시작
+FinRL has three layers: market environments, agents, and applications.  For a trading task (on the top), an agent (in the middle) interacts with a market environment (at the bottom), making sequential decisions.
 
-### 🚀 3분 데모 (최소 설정)
+<div align="center">
+<img align="center" src=figs/finrl_framework.png>
+</div>
 
-```bash
-# 1. 빠른 IRT 테스트 (1 에피소드, 5종목)
-python main.py --mode demo --config configs/default_irt.yaml
+A quick start: Stock_NeurIPS2018.ipynb. Videos [FinRL](http://www.youtube.com/watch?v=ZSGJjtM-5jA) at [AI4Finance Youtube Channel](https://www.youtube.com/channel/UCrVri6k3KPBa3NhapVV4K5g).
 
-# 2. 결과 확인
-ls logs/*/results/
-cat logs/*/finflow_training.log | tail -5
 
-# 3. 학습된 모델로 평가
-python main.py --mode evaluate \
-    --resume logs/*/checkpoints/best_model.pth
-```
+## File Structure
 
-### 📊 전체 IRT 파이프라인 실행
-
-```bash
-# 1. IRT 학습 (BC warm-start → IRT 미세조정)
-python scripts/train_irt.py --config configs/default_irt.yaml
-
-# 2. 평가 및 시각화 (12 plots 자동 생성)
-python scripts/evaluate_irt.py \
-    --checkpoint logs/*/checkpoints/best_model.pth
-
-# 3. Ablation studies (BC 기여도 검증)
-python scripts/train_irt.py --config configs/experiments/ablation_bc_a1.yaml  # Random init
-python scripts/train_irt.py --config configs/experiments/ablation_bc_a2.yaml  # BC only
-python scripts/train_irt.py --config configs/experiments/ablation_bc_a3.yaml  # BC + Diversity
-```
-
-## 사용법
-
-### 1. 메인 엔트리포인트 (main.py)
-
-#### IRT 학습 모드
-```bash
-# 1. 기본 IRT 학습
-python main.py --config configs/default_irt.yaml
-
-# 2. 위기 구간 집중 학습
-python main.py --config configs/experiments/crisis_focus.yaml
-
-# 3. Ablation study (α 파라미터 비교)
-python main.py --config configs/experiments/ablation_irt.yaml
-
-# 4. 빠른 데모 (3개 종목, 10 에피소드)
-python main.py --mode demo
-```
-
-#### 평가 모드
-```bash
-# 1. 기본 평가
-python main.py --mode evaluate \
-    --resume logs/20250122_120000/models/checkpoint_best.pt
-
-# 2. 특정 설정으로 평가 (yaml 사용)
-python main.py --mode evaluate \
-    --config configs/experiments/test_iql_redq.yaml \
-    --resume logs/*/checkpoints/best.pt
-
-# 3. 빠른 테스트 후 바로 평가
-python main.py --mode train \
-    --config configs/experiments/quick_test.yaml
-python main.py --mode evaluate \
-    --config configs/experiments/quick_test.yaml \
-    --resume logs/latest/checkpoints/best.pt
-
-# 4. 다른 데이터로 평가 (일반화 성능 테스트)
-python main.py --mode evaluate \
-    --config configs/experiments/test_td3bc_tqc.yaml \
-    --resume logs/*/checkpoints/best.pt \
-    --tickers NVDA AMD TSM  # 다른 종목으로 평가
-```
-
-#### 주요 옵션
-| 옵션 | 설명 | 기본값 |
-|------|------|--------|
-| `--mode` | train, evaluate, demo | train |
-| `--config` | 설정 파일 경로 | configs/default.yaml |
-| `--resume` | 체크포인트 경로 | None |
-| `--tickers` | 주식 심볼 리스트 | config 파일 참조 |
-| `--no-cache` | 데이터 재다운로드 | False |
-| `--bc-epochs` | BC warm-start 에포크 | config 파일 |
-| `--sac-episodes` | SAC 미세조정 에피소드 | config 파일 |
-| `--batch-size` | 배치 크기 | config 파일 |
-| `--device` | auto, cuda, mps, cpu | auto |
-| `--verbose` | 상세 출력 | False |
-
-> 📖 전체 옵션은 [docs/CONFIGURATION.md](docs/CONFIGURATION.md) 참조
-
-### 2. 개별 스크립트 실행
-
-#### 통합 학습 (권장)
-```bash
-# BC + IRT 전체 파이프라인
-python scripts/train_irt.py --config configs/default_irt.yaml
-```
-
-#### BC Warm-start만
-```bash
-python scripts/validate_offline_data.py --data data/offline_data.npz  # 데이터 검증
-# BC는 trainer_irt.py의 pretrain_with_bc() 메소드에서 자동 실행
-```
-
-#### 평가 + 백테스팅
-```bash
-# 현실적 백테스트 포함
-python scripts/evaluate.py \
-    --checkpoint logs/*/models/checkpoint_best.pt \
-    --with-backtest
-```
-
-> 📖 학습 상세 가이드: [docs/TRAINING.md](docs/TRAINING.md)
-> 📖 평가 상세 가이드: [docs/EVALUATION.md](docs/EVALUATION.md)
-
-### 3. 고급 사용법
-
-#### GPU/MPS 가속
-```bash
-# CUDA GPU
-python main.py --mode train --device cuda
-
-# Apple Silicon
-python main.py --mode train --device mps
-```
-
-#### 체크포인트 재개
-```bash
-python main.py --mode train \
-    --resume logs/20250122_120000/models/checkpoint_latest.pt
-```
-
-#### 하이퍼파라미터 튜닝
-```bash
-python src/core/tuning.py \
-    --config configs/default.yaml \
-    --n-trials 100
-```
-
-## 프로젝트 구조
+The main folder **finrl** has three subfolders **applications, agents, meta**. We employ a **train-test-trade** pipeline with three files: train.py, test.py, and trade.py.
 
 ```
-FinFlow-rl/
-├── main.py                     # 메인 엔트리포인트
-├── configs/
-│   ├── default_irt.yaml        # IRT 기본 설정
-│   └── experiments/
-│       ├── ablation_irt.yaml   # Ablation study
-│       └── crisis_focus.yaml   # 위기 구간 집중
+FinRL
+├── finrl (main folder)
+│   ├── applications
+│   	├── Stock_NeurIPS2018
+│   	├── imitation_learning
+│   	├── cryptocurrency_trading
+│   	├── high_frequency_trading
+│   	├── portfolio_allocation
+│   	└── stock_trading
+│   ├── agents
+│   	├── elegantrl
+│   	├── rllib
+│   	└── stablebaseline3
+│   ├── meta
+│   	├── data_processors
+│   	├── env_cryptocurrency_trading
+│   	├── env_portfolio_allocation
+│   	├── env_stock_trading
+│   	├── preprocessor
+│   	├── data_processor.py
+│       ├── meta_config_tickers.py
+│   	└── meta_config.py
+│   ├── config.py
+│   ├── config_tickers.py
+│   ├── main.py
+│   ├── plot.py
+│   ├── train.py
+│   ├── test.py
+│   └── trade.py
 │
-├── src/
-│   ├── immune/                 # [NEW] IRT 면역 모듈
-│   │   ├── __init__.py
-│   │   ├── irt.py              # IRT Operator
-│   │   └── t_cell.py           # 경량 T-Cell
-│   │
-│   ├── agents/
-│   │   ├── __init__.py
-│   │   └── bcell_irt.py        # IRT 기반 Actor
-│   │
-│   ├── algorithms/
-│   │   ├── offline/
-│   │   │   ├── __init__.py
-│   │   │   └── bc_agent.py     # BC Warm-start (v2.1.0+)
-│   │   └── critics/
-│   │       ├── __init__.py
-│   │       └── redq.py         # REDQ 앙상블
-│   │
-│   ├── environments/           # 변경 없음
-│   │   ├── portfolio_env.py
-│   │   └── reward_functions.py
-│   │
-│   ├── data/                   # 변경 없음
-│   │   ├── market_loader.py
-│   │   ├── feature_extractor.py
-│   │   ├── offline_dataset.py
-│   │   └── replay_buffer.py
-│   │
-│   ├── evaluation/
-│   │   ├── metrics.py
-│   │   ├── visualizer.py       # IRT 시각화 추가
-│   │   └── explainer.py        # IRT 해석 추가
-│   │
-│   ├── training/
-│   │   ├── __init__.py
-│   │   └── trainer_irt.py      # IRT 전용 트레이너
-│   │
-│   └── utils/                  # 변경 없음
-│       ├── logger.py
-│       ├── monitoring.py
-│       └── training_utils.py
-│
-├── scripts/
-│   ├── train_irt.py            # IRT 학습
-│   ├── evaluate_irt.py         # IRT 평가
-│   └── visualize_irt.py        # IRT 시각화
-│
-├── tests/
-│   ├── test_irt.py             # IRT 단위 테스트
-│   └── test_integration_irt.py # 통합 테스트
-│
-├── docs/
-│   ├── IRT_ARCHITECTURE.md     # IRT 아키텍처
-│   ├── HANDOVER.md             # 리팩토링 가이드
-│   └── REFACTORING.md          # IRT 이론적 기초
-│
-└── logs/                        # 실행 로그
+├── examples
+├── unit_tests (unit tests to verify codes on env & data)
+│   ├── environments
+│   	└── test_env_cashpenalty.py
+│   └── downloaders
+│   	├── test_yahoodownload.py
+│   	└── test_alpaca_downloader.py
+├── setup.py
+├── requirements.txt
+└── README.md
 ```
 
-## 문서
+## Supported Data Sources
 
-### 📚 상세 문서
-- [학습 가이드](docs/TRAINING.md) - 오프라인/온라인 학습, 알고리즘 비교
-- [설정 가이드](docs/CONFIGURATION.md) - 파라미터 튜닝 및 문제 해결
-- [평가 가이드](docs/EVALUATION.md) - 백테스팅과 메트릭
-- [아키텍처](docs/ARCHITECTURE.md) - 시스템 구조, 알고리즘 조합
-- [API 레퍼런스](docs/API.md) - 주요 클래스와 함수
-- [XAI 문서](docs/XAI.md) - 설명 가능한 AI 기능
-- [변경 이력](docs/CHANGELOG.md) - 버전별 업데이트
+|Data Source |Type |Range and Frequency |Request Limits|Raw Data|Preprocessed Data|
+|  ----  |  ----  |  ----  |  ----  |  ----  |  ----  |
+|[Akshare](https://alpaca.markets/docs/introduction/)| CN Securities| 2015-now, 1day| Account-specific| OHLCV| Prices&Indicators|
+|[Alpaca](https://docs.alpaca.markets/docs/getting-started)| US Stocks, ETFs| 2015-now, 1min| Account-specific| OHLCV| Prices&Indicators|
+|[Baostock](http://baostock.com/baostock/index.php/Python_API%E6%96%87%E6%A1%A3)| CN Securities| 1990-12-19-now, 5min| Account-specific| OHLCV| Prices&Indicators|
+|[Binance](https://binance-docs.github.io/apidocs/spot/en/#public-api-definitions)| Cryptocurrency| API-specific, 1s, 1min| API-specific| Tick-level daily aggegrated trades, OHLCV| Prices&Indicators|
+|[CCXT](https://docs.ccxt.com/en/latest/manual.html)| Cryptocurrency| API-specific, 1min| API-specific| OHLCV| Prices&Indicators|
+|[EODhistoricaldata](https://eodhistoricaldata.com/financial-apis/)| US Securities| Frequency-specific, 1min| API-specific | OHLCV | Prices&Indicators|
+|[IEXCloud](https://iexcloud.io/docs/api/)| NMS US securities|1970-now, 1 day|100 per second per IP|OHLCV| Prices&Indicators|
+|[JoinQuant](https://www.joinquant.com/)| CN Securities| 2005-now, 1min| 3 requests each time| OHLCV| Prices&Indicators|
+|[QuantConnect](https://www.quantconnect.com/docs/v2)| US Securities| 1998-now, 1s| NA| OHLCV| Prices&Indicators|
+|[RiceQuant](https://www.ricequant.com/doc/rqdata/python/)| CN Securities| 2005-now, 1ms| Account-specific| OHLCV| Prices&Indicators|
+[Sinopac](https://sinotrade.github.io/zh_TW/tutor/prepare/terms/) | Taiwan securities | 2023-04-13~now, 1min | Account-specific | OHLCV | Prices&Indicators|
+|[Tushare](https://tushare.pro/document/1?doc_id=131)| CN Securities, A share| -now, 1 min| Account-specific| OHLCV| Prices&Indicators|
+|[WRDS](https://wrds-www.wharton.upenn.edu/pages/about/data-vendors/nyse-trade-and-quote-taq/)| US Securities| 2003-now, 1ms| 5 requests each time| Intraday Trades|Prices&Indicators|
+|[YahooFinance](https://pypi.org/project/yfinance/)| US Securities| Frequency-specific, 1min| 2,000/hour| OHLCV | Prices&Indicators|
 
-### 📊 학습 결과
 
-학습 완료 후 생성되는 파일:
+<!-- |Data Source |Type |Max Frequency |Raw Data|Preprocessed Data|
+|  ----  |  ----  |  ----  |  ----  |  ----  |
+|    AkShare |  CN Securities | 1 day  |  OHLCV |  Prices, indicators |
+|    Alpaca |  US Stocks, ETFs |  1 min |  OHLCV |  Prices, indicators |
+|    Alpha Vantage | Stock, ETF, forex, crypto, technical indicators | 1 min |  OHLCV  & Prices, indicators |
+|    Baostock |  CN Securities |  5 min |  OHLCV |  Prices, indicators |
+|    Binance |  Cryptocurrency |  1 s |  OHLCV |  Prices, indicators |
+|    CCXT |  Cryptocurrency |  1 min  |  OHLCV |  Prices, indicators |
+|    currencyapi |  Exchange rate | 1 day |  Exchange rate | Exchange rate, indicators |
+|    currencylayer |  Exchange rate | 1 day  |  Exchange rate | Exchange rate, indicators |
+|    EOD Historical Data | US stocks, and ETFs |  1 day  |  OHLCV  | Prices, indicators |
+|    Exchangerates |  Exchange rate |  1 day  |  Exchange rate | Exchange rate, indicators |
+|    findatapy |  CN Securities | 1 day  |  OHLCV |  Prices, indicators |
+|    Financial Modeling prep | US stocks, currencies, crypto |  1 min |  OHLCV  | Prices, indicators |
+|    finnhub | US Stocks, currencies, crypto |   1 day |  OHLCV  | Prices, indicators |
+|    Fixer |  Exchange rate |  1 day  |  Exchange rate | Exchange rate, indicators |
+|    IEXCloud |  NMS US securities | 1 day  | OHLCV |  Prices, indicators |
+|    JoinQuant |  CN Securities |  1 min  |  OHLCV |  Prices, indicators |
+|    Marketstack | 50+ countries |  1 day  |  OHLCV | Prices, indicators |
+|    Open Exchange Rates |  Exchange rate |  1 day  |  Exchange rate | Exchange rate, indicators |
+|    pandas\_datareader |  US Securities |  1 day |  OHLCV | Prices, indicators |
+|    pandas-finance |  US Securities |  1 day  |  OHLCV  & Prices, indicators |
+|    Polygon |  US Securities |  1 day  |  OHLCV  | Prices, indicators |
+|    Quandl | 250+ sources |  1 day  |  OHLCV  | Prices, indicators |
+|    QuantConnect |  US Securities |  1 s |  OHLCV |  Prices, indicators |
+|    RiceQuant |  CN Securities |  1 ms  |  OHLCV |  Prices, indicators |
+|    Sinopac   | Taiwan securities | 1min | OHLCV |  Prices, indicators |
+|    Tiingo | Stocks, crypto |  1 day  |  OHLCV  | Prices, indicators |
+|    Tushare |  CN Securities | 1 min  |  OHLCV |  Prices, indicators |
+|    WRDS |  US Securities |  1 ms  |  Intraday Trades | Prices, indicators |
+|    XE |  Exchange rate |  1 day  |  Exchange rate | Exchange rate, indicators |
+|    Xignite |  Exchange rate |  1 day  |  Exchange rate | Exchange rate, indicators |
+|    YahooFinance |  US Securities | 1 min  |  OHLCV  |  Prices, indicators |
+|    ystockquote |  US Securities |  1 day  |  OHLCV | Prices, indicators | -->
+
+
+
+OHLCV: open, high, low, and close prices; volume. adjusted_close: adjusted close price
+
+Technical indicators: 'macd', 'boll_ub', 'boll_lb', 'rsi_30', 'dx_30', 'close_30_sma', 'close_60_sma'. Users also can add new features.
+
+
+## Installation
++ [Install description for all operating systems (MAC OS, Ubuntu, Windows 10)](./docs/source/start/installation.rst)
++ [FinRL for Quantitative Finance: Install and Setup Tutorial for Beginners](https://ai4finance.medium.com/finrl-for-quantitative-finance-install-and-setup-tutorial-for-beginners-1db80ad39159)
+
+## Status Update
+<details><summary><b>Version History</b> <i>[click to expand]</i></summary>
+<div>
+
+* 2022-06-25
+	0.3.5: Formal release of FinRL, neo_finrl is chenged to FinRL-Meta with related files in directory: *meta*.
+* 2021-08-25
+	0.3.1: pytorch version with a three-layer architecture, apps (financial tasks), drl_agents (drl algorithms), neo_finrl (gym env)
+* 2020-12-14
+  	Upgraded to **Pytorch** with stable-baselines3; Remove tensorflow 1.0 at this moment, under development to support tensorflow 2.0
+* 2020-11-27
+  	0.1: Beta version with tensorflow 1.5
+</div>
+</details>
+
+
+## Tutorials
+
++ [Towardsdatascience] [Deep Reinforcement Learning for Automated Stock Trading](https://towardsdatascience.com/deep-reinforcement-learning-for-automated-stock-trading-f1dad0126a02)
+
+
+## Publications
+
+|Title |Conference/Journal |Link|Citations|Year|
+|  ----  |  ----  |  ----  |  ----  |  ----  |
+|Dynamic Datasets and Market Environments for Financial Reinforcement Learning| Machine Learning - Springer Nature| [paper](https://arxiv.org/abs/2304.13174) [code](https://github.com/AI4Finance-Foundation/FinRL-Meta) | 7 | 2024 |
+|**FinRL-Meta**: FinRL-Meta: Market Environments and Benchmarks for Data-Driven Financial Reinforcement Learning| NeurIPS 2022| [paper](https://arxiv.org/abs/2211.03107) [code](https://github.com/AI4Finance-Foundation/FinRL-Meta) | 37 | 2022 |
+|**FinRL**: Deep reinforcement learning framework to automate trading in quantitative finance| ACM International Conference on AI in Finance (ICAIF) | [paper](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=3955949) | 49 | 2021 |
+|**FinRL**: A deep reinforcement learning library for automated stock trading in quantitative finance| NeurIPS 2020 Deep RL Workshop  | [paper](https://arxiv.org/abs/2011.09607) | 87 | 2020 |
+|Deep reinforcement learning for automated stock trading: An ensemble strategy| ACM International Conference on AI in Finance (ICAIF) | [paper](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=3690996) [code](https://github.com/AI4Finance-Foundation/FinRL-Meta/blob/master/tutorials/2-Advance/FinRL_Ensemble_StockTrading_ICAIF_2020/FinRL_Ensemble_StockTrading_ICAIF_2020.ipynb) | 154 | 2020 |
+|Practical deep reinforcement learning approach for stock trading | NeurIPS 2018 Workshop on Challenges and Opportunities for AI in Financial Services| [paper](https://arxiv.org/abs/1811.07522) [code](https://github.com/AI4Finance-Foundation/DQN-DDPG_Stock_Trading](https://github.com/AI4Finance-Foundation/FinRL/tree/master/examples))| 164 | 2018 |
+
+
+## News
++ [央广网] [2021 IDEA大会于福田圆满落幕：群英荟萃论道AI 多项目发布亮点纷呈](http://tech.cnr.cn/techph/20211123/t20211123_525669092.shtml)
++ [央广网] [2021 IDEA大会开启AI思想盛宴 沈向洋理事长发布六大前沿产品](https://baijiahao.baidu.com/s?id=1717101783873523790&wfr=spider&for=pc)
++ [IDEA新闻] [2021 IDEA大会发布产品FinRL-Meta——基于数据驱动的强化学习金融风险模拟系统](https://idea.edu.cn/news/20211213143128.html)
++ [知乎] [FinRL-Meta基于数据驱动的强化学习金融元宇宙](https://zhuanlan.zhihu.com/p/437804814)
++ [量化投资与机器学习] [基于深度强化学习的股票交易策略框架（代码+文档)](https://www.mdeditor.tw/pl/p5Gg)
++ [运筹OR帷幄] [领读计划NO.10 | 基于深度增强学习的量化交易机器人：从AlphaGo到FinRL的演变过程](https://zhuanlan.zhihu.com/p/353557417)
++ [深度强化实验室] [【重磅推荐】哥大开源“FinRL”: 一个用于量化金融自动交易的深度强化学习库](https://blog.csdn.net/deeprl/article/details/114828024)
++ [商业新知] [金融科技讲座回顾|AI4Finance: 从AlphaGo到FinRL](https://www.shangyexinzhi.com/article/4170766.html)
++ [Kaggle] [Jane Street Market Prediction](https://www.kaggle.com/c/jane-street-market-prediction/discussion/199313)
++ [矩池云Matpool] [在矩池云上如何运行FinRL股票交易策略框架](http://www.python88.com/topic/111918)
++ [财智无界] [金融学会常务理事陈学彬: 深度强化学习在金融资产管理中的应用](https://www.sohu.com/a/486837028_120929319)
++ [Neurohive] [FinRL: глубокое обучение с подкреплением для трейдинга](https://neurohive.io/ru/gotovye-prilozhenija/finrl-glubokoe-obuchenie-s-podkrepleniem-dlya-trejdinga/)
++ [ICHI.PRO] [양적 금융을위한 FinRL: 단일 주식 거래를위한 튜토리얼](https://ichi.pro/ko/yangjeog-geum-yung-eul-wihan-finrl-dan-il-jusig-geolaeleul-wihan-tyutolieol-61395882412716)
++ [知乎] [基于深度强化学习的金融交易策略（FinRL+Stable baselines3，以道琼斯30股票为例）](https://zhuanlan.zhihu.com/p/563238735)
++ [知乎] [动态数据驱动的金融强化学习](https://zhuanlan.zhihu.com/p/616799055)
++ [知乎] [FinRL的W&B化+超参数搜索和模型优化(基于Stable Baselines 3）](https://zhuanlan.zhihu.com/p/498115373)
++ [知乎] [FinRL-Meta: 未来金融强化学习的元宇宙](https://zhuanlan.zhihu.com/p/544621882)
++
+## Citing FinRL
 
 ```
-logs/YYYYMMDD_HHMMSS/
-├── models/                    # 체크포인트
-│   ├── checkpoint_best.pt     # 최고 성능
-│   └── checkpoint_latest.pt   # 최신
-├── reports/                   # 평가 결과
-│   ├── metrics.json          # 성능 지표
-│   ├── equity_curve.png      # 수익률 곡선
-│   ├── drawdown.png         # 낙폭 분석
-│   └── weights.png          # 포트폴리오 구성
-├── metrics.jsonl             # 학습 메트릭
-└── console.log               # 실행 로그
-```
-
-## 성능 목표
-
-### IRT vs Baseline 개선 목표
-| 메트릭 | SAC Baseline | IRT 목표 | 개선율 |
-|--------|-------------|----------|--------|
-| **전체 Sharpe** | 1.2 | 1.4+ | +17% |
-| **위기 MDD** | -35% | -25% | **-29%** |
-| **복구 기간** | 45일 | 35일 | -22% |
-| **CVaR (5%)** | -3.5% | -2.5% | -29% |
-
-### 절대 성능 목표
-| 메트릭 | 목표값 | 설명 |
-|--------|--------|------|
-| Sharpe Ratio | ≥ 1.5 | 리스크 조정 수익률 |
-| 최대 낙폭 | ≤ 25% | 최대 손실 제한 |
-| 연간 수익률 | ≥ 15% | 목표 수익률 |
-| 회전율 | ≤ 50% | 일일 거래 빈도 |
-
-## 문제 해결
-
-### CUDA 메모리 부족
-```bash
-# 배치 크기 감소
-python main.py --mode train --batch-size 64
-
-# CPU 사용
-python main.py --mode train --device cpu
-```
-
-### 데이터 다운로드 실패
-```bash
-# 캐시 삭제 후 재시도
-rm -rf data/cache/
-python main.py --mode train --no-cache
-```
-
-### ImportError 해결
-```bash
-# 패키지 재설치
-pip install -r requirements.txt --upgrade
-```
-
-> 더 많은 해결책: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
-
-## 테스트
-
-```bash
-# 전체 테스트
-pytest tests/
-
-# 특정 테스트
-pytest tests/test_full_pipeline.py -v
-
-# 커버리지
-pytest tests/ --cov=src
-```
-
-## 기여
-
-기여를 환영합니다! [CONTRIBUTING.md](CONTRIBUTING.md) 참조
-
-## 라이센스
-
-MIT License - [LICENSE](LICENSE) 파일 참조
-
-## 인용
-
-```bibtex
-@software{finflow_irt_2025,
-  title = {FinFlow-RL: IRT (Immune Replicator Transport) for Crisis-Adaptive Portfolio Management},
-  author = {FinFlow Team},
-  year = {2025},
-  version = {2.0-IRT},
-  url = {https://github.com/yourusername/FinFlow-rl}
+@article{dynamic_datasets,
+    author = {Liu, Xiao-Yang and Xia, Ziyi and Yang, Hongyang and Gao, Jiechao and Zha, Daochen and Zhu, Ming and Wang, Christina Dan and Wang, Zhaoran and Guo, Jian},
+    title = {Dynamic Datasets and Market Environments for Financial Reinforcement Learning},
+    journal = {Machine Learning - Springer Nature},
+    year = {2024}
 }
 ```
 
-## 문의
 
-- Issue: [GitHub Issues](https://github.com/yourusername/FinFlow-rl/issues)
-- Email: contact@finflow.ai
+```
+@article{liu2022finrl_meta,
+  title={FinRL-Meta: Market Environments and Benchmarks for Data-Driven Financial Reinforcement Learning},
+  author={Liu, Xiao-Yang and Xia, Ziyi and Rui, Jingyang and Gao, Jiechao and Yang, Hongyang and Zhu, Ming and Wang, Christina Dan and Wang, Zhaoran and Guo, Jian},
+  journal={NeurIPS},
+  year={2022}
+}
+```
 
----
+```
+@article{liu2021finrl,
+    author  = {Liu, Xiao-Yang and Yang, Hongyang and Gao, Jiechao and Wang, Christina Dan},
+    title   = {{FinRL}: Deep reinforcement learning framework to automate trading in quantitative finance},
+    journal = {ACM International Conference on AI in Finance (ICAIF)},
+    year    = {2021}
+}
 
-*Last Updated: 2025-10-02 | Version: 2.0-IRT*
+```
+
+```
+@article{finrl2020,
+    author  = {Liu, Xiao-Yang and Yang, Hongyang and Chen, Qian and Zhang, Runjia and Yang, Liuqing and Xiao, Bowen and Wang, Christina Dan},
+    title   = {{FinRL}: A deep reinforcement learning library for automated stock trading in quantitative finance},
+    journal = {Deep RL Workshop, NeurIPS 2020},
+    year    = {2020}
+}
+```
+
+```
+@article{liu2018practical,
+  title={Practical deep reinforcement learning approach for stock trading},
+  author={Liu, Xiao-Yang and Xiong, Zhuoran and Zhong, Shan and Yang, Hongyang and Walid, Anwar},
+  journal={NeurIPS Workshop on Deep Reinforcement Learning},
+  year={2018}
+}
+```
+
+We published [FinRL papers](http://tensorlet.org/projects/ai-in-finance/) that are listed at [Google Scholar](https://scholar.google.com/citations?view_op=list_works&hl=en&hl=en&user=XsdPXocAAAAJ). Previous papers are given in the [list](https://github.com/AI4Finance-Foundation/FinRL/blob/master/tutorials/FinRL_papers.md).
+
+
+## Join and Contribute
+
+Welcome to **AI4Finance** community!
+
+Please check [Contributing Guidances](https://github.com/AI4Finance-Foundation/FinRL-Tutorials/blob/master/Contributing.md).
+
+### Contributors
+
+Thank you!
+
+<a href="https://github.com/AI4Finance-LLC/FinRL-Library/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=AI4Finance-LLC/FinRL-Library" />
+</a>
+
+
+## LICENSE
+
+MIT License
+```
+Trademark Disclaimer
+
+FinRL® is a registered trademark.
+This license does not grant permission to use the FinRL name, logo, or related trademarks
+without prior written consent, except as permitted by applicable trademark law.
+For trademark inquiries or permissions, please contact: contact@finrl.ai
+
+```
+
+**Disclaimer: We are sharing codes for academic purpose under the MIT education license. Nothing herein is financial advice, and NOT a recommendation to trade real money. Please use common sense and always first consult a professional before trading or investing.**

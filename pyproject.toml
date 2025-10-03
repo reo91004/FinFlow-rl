@@ -1,52 +1,58 @@
-[project]
-name = "finflow-rl"
-version = "2.0.0"
-description = "BIPD 2.0: Biologically-Inspired Portfolio Defense with IQL->SAC Pipeline"
-authors = [{name = "FinFlow Team"}]
+[tool.poetry]
+name = "finrl"
+version = "0.3.8"
+
+description = "FinRL: Financial Reinforcement Learning Framework. Version 0.3.5 notes: stable version, code refactoring, more tutorials, clear documentation"
+authors = ["Hongyang Yang, Xiaoyang Liu"]
+license = "MIT"
+
 readme = "README.md"
-requires-python = ">=3.8"
-license = {text = "MIT"}
+classifiers=[
+        # Trove classifiers
+        # Full list: https://pypi.python.org/pypi?%3Aaction=list_classifiers
+        "License :: OSI Approved :: MIT License",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.7",
+        "Programming Language :: Python :: 3.8",
+        "Programming Language :: Python :: 3.9",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: Implementation :: CPython",
+        "Programming Language :: Python :: Implementation :: PyPy",
+    ]
+keywords=["Reinforcement Learning", "Finance"]
+[tool.poetry.urls]
+github = "https://github.com/finrl/finrl-library"
 
-dependencies = [
-    "torch>=1.9.0",
-    "numpy>=1.21.0",
-    "pandas>=1.3.0",
-    "scipy>=1.7.0",
-    "scikit-learn>=1.0.0",
-    "yfinance>=0.1.70",
-    "matplotlib>=3.4.0",
-    "seaborn>=0.11.0",
-    "tqdm>=4.62.0",
-    "ta>=0.10.0",
-    "pyyaml>=6.0",
-    "shap>=0.40.0",
-    "wandb>=0.12.0",
-]
+[tool.poetry.dependencies]
+python = "^3.7"
+elegantrl = {git="https://github.com/AI4Finance-Foundation/ElegantRL.git#egg=elegantrl"}
+alpaca-trade-api = "^3"
+ccxt = "^3"
+jqdatasdk = "^1"
+pyfolio-reloaded = "^0.9"
+pyportfolioopt = "^1"
+ray = {extras=["default", "tune"], version = "^2"}
+scikit-learn = "^1"
+stable-baselines3 = {version = ">=2.0.0a5", extras = ["extra"]}
+stockstats = "^0.5"
+wrds = "^3"
+yfinance = "^0.2"
+alpaca-py = "^0.37"
+webdriver-manager = "^4"
+selenium = "^4"
+pandas-market-calendars = "^5"
 
-[project.optional-dependencies]
-dev = [
-    "pytest>=7.0.0",
-    "pytest-cov>=3.0.0",
-    "black>=22.0.0",
-    "flake8>=4.0.0",
-    "mypy>=0.950",
-    "ipython>=8.0.0",
-    "jupyter>=1.0.0",
-]
+
+[tool.poetry.group.dev.dependencies]
+black = "^24"
+isort = "^5"
+jupyter = "^1"
+mypy = "^1"
+pandas-stubs = "^2"
 
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
-build-backend = "setuptools.build_meta"
-
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["src*", "configs*", "scripts*"]
-
-[tool.black]
-line-length = 100
-target-version = ['py38', 'py39', 'py310']
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-python_files = ["test_*.py"]
-addopts = "-v"
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
