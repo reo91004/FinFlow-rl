@@ -127,9 +127,14 @@ def calculate_calmar_ratio(returns: Union[np.ndarray, pd.Series],
     """
     if len(returns) == 0:
         return 0.0
-    
+
     cumulative_returns = (1 + returns).cumprod()
-    annual_return = cumulative_returns.iloc[-1] ** (periods_per_year / len(returns)) - 1
+
+    # pandas Series를 numpy array로 변환 (일관성 확보)
+    if isinstance(cumulative_returns, pd.Series):
+        cumulative_returns = cumulative_returns.values
+
+    annual_return = cumulative_returns[-1] ** (periods_per_year / len(returns)) - 1
     max_dd = calculate_max_drawdown(cumulative_returns)
     
     if max_dd == 0:

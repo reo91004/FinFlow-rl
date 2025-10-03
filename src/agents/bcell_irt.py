@@ -190,7 +190,7 @@ class BCellIRTActor(nn.Module):
         # ===== Step 5: IRT 연산 =====
         w_prev_batch = self.w_prev.expand(B, -1)  # [B, M]
 
-        w, P = self.irt(
+        w, P, irt_debug = self.irt(
             E=E,
             K=K,
             danger=danger_embed,
@@ -245,7 +245,12 @@ class BCellIRTActor(nn.Module):
             'P': P.detach(),  # [B, m, M] - 수송 계획
             'crisis_level': crisis_level.detach(),  # [B, 1]
             'crisis_types': z.detach(),  # [B, K]
-            'fitness': fitness.detach()  # [B, M]
+            'fitness': fitness.detach(),  # [B, M]
+            # IRT 분해 정보 (시각화용)
+            'w_rep': irt_debug['w_rep'].detach(),  # [B, M] - Replicator 출력
+            'w_ot': irt_debug['w_ot'].detach(),    # [B, M] - OT 출력
+            'cost_matrix': irt_debug['cost_matrix'].detach(),  # [B, m, M]
+            'eta': irt_debug['eta'].detach()       # [B, 1] - Crisis learning rate
         }
 
         return action, info

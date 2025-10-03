@@ -1,9 +1,20 @@
 # scripts/visualize_irt.py
 
 """
-IRT 시각화 스크립트
+IRT 시각화 스크립트 (DEPRECATED)
 
-사용법:
+⚠️ DEPRECATED (v2.0.3): 이 스크립트는 더 이상 사용되지 않는다.
+시각화는 이제 evaluate_irt.py에서 자동으로 생성된다.
+
+대신 사용:
+    python main.py --mode evaluate --resume logs/*/checkpoints/best_model.pth
+
+또는:
+    python scripts/evaluate_irt.py --checkpoint logs/*/checkpoints/best_model.pth
+
+---
+
+Legacy 사용법 (단독 실행):
 python scripts/visualize_irt.py --results logs/YYYYMMDD_HHMMSS/evaluation/evaluation_results.json
 """
 

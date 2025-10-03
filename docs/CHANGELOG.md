@@ -7,6 +7,85 @@
 
 ## [Unreleased]
 
+---
+
+## [2.0.3-IRT] - 2025-10-03
+
+### ✨ Added
+- **자동 XAI 시각화 시스템** (12개 종합 플롯):
+  - **IRT 메커니즘 분석** (3개):
+    - `irt_decomposition.png`: w = (1-α)·w_rep + α·w_ot 분해, L2 norm 비교, η(c) 시각화
+    - `tcell_analysis.png`: Crisis type 분포, level vs returns, type correlation, regime 분석
+    - `cost_matrix.png`: Immunological cost 히트맵, 분포, early/late 진화
+  - **포트폴리오 분석** (3개):
+    - `stock_analysis.png`: Top 10 holdings (실제 종목명), 위기 민감도
+    - `attribution_analysis.png`: 종목/프로토타입별 수익 기여도
+    - `portfolio_weights.png`: 전체 자산 가중치 스택 차트
+  - **성과 & 리스크** (4개):
+    - `performance_timeline.png`: Rolling Sharpe, Drawdown, Turnover
+    - `benchmark_comparison.png`: vs Equal-weight, outperformance
+    - `risk_dashboard.png`: VaR/CVaR, drawdown waterfall, risk-return, crisis 비교
+    - `returns.png`: 일일/누적 수익률
+  - **IRT 컴포넌트** (2개):
+    - `crisis_levels.png`: 위기 레벨 감지
+    - `prototype_weights.png`: 프로토타입 가중치, 엔트로피
+- **IRT Debug Info 출력**:
+  - `src/immune/irt.py`: forward() 반환값에 debug_info 추가
+  - `w_rep`, `w_ot`, `cost_matrix`, `eta` 포함
+  - 학습 오버헤드: <0.1% (이미 계산된 중간 값 재사용)
+- **실제 종목명 표시**:
+  - 모든 시각화에서 "Asset 1" 대신 "AAPL", "MSFT" 등 실제 심볼 표시
+  - `config['data']['symbols']` 활용
+
+### 🐛 Fixed
+- **Device 문자열 처리**:
+  - `scripts/evaluate_irt.py`: 'auto' device 문자열 지원
+  - `resolve_device()` 함수 import 추가
+  - RuntimeError: Expected one of cpu, cuda... 해결
+- **Calmar Ratio 계산 오류**:
+  - `src/evaluation/metrics.py`: pandas/numpy 호환성 수정
+  - `cumulative_returns.iloc[-1]` → `cumulative_returns[-1]`
+  - AttributeError: 'numpy.ndarray' object has no attribute 'iloc' 해결
+
+### 🔄 Changed
+- **⚠️ BREAKING CHANGE - IRT Operator 시그니처 변경**:
+  - **이전**: `def forward(...) -> Tuple[torch.Tensor, torch.Tensor]`
+  - **신규**: `def forward(...) -> Tuple[torch.Tensor, torch.Tensor, Dict]`
+  - **영향**: v2.0.2 이전 체크포인트 호환 불가 (ValueError: not enough values to unpack)
+  - **권장**: 새 하이퍼파라미터로 재학습 (무거래 루프 해결 포함)
+- **평가 스크립트 통합**:
+  - `scripts/evaluate_irt.py`: 시각화 자동 생성 통합
+  - `scripts/visualize_irt.py`: DEPRECATED 표시 (단독 실행 가능하나 권장하지 않음)
+- **평가 데이터 확장**:
+  - `evaluation_results.json`에 추가 필드:
+    - `crisis_types`, `w_rep`, `w_ot`, `cost_matrices`, `eta`
+    - `symbols`, `price_data`, `dates` (벤치마크 계산용)
+
+### 📊 Improvements
+- **완전한 설명 가능성 (Explainability)**:
+  - IRT 분해: OT vs Replicator 정량 분석
+  - T-Cell: Crisis type 분포, regime 분석
+  - Attribution: 종목/프로토타입별 기여도
+  - Benchmark: Equal-weight 대비 성과
+- **평가 워크플로 간소화**:
+  - 1개 명령으로 평가 + 12개 시각화 자동 생성
+  - 평가 후 5-10초 내 모든 시각화 완료
+- **문서화**:
+  - `docs/IRT_ARCHITECTURE.md`: 12개 시각화 상세 설명, Backward Compatibility 섹션 추가
+  - `CLAUDE.md`: v2.0.3 업데이트, Troubleshooting #5 추가
+
+### 🗑️ Deprecated
+- `scripts/visualize_irt.py`: 단독 실행 가능하나 권장하지 않음 (evaluate_irt.py 사용 권장)
+
+### 📝 Notes
+- **재학습 권장**: 이전 체크포인트는 무거래 루프 + 호환성 문제로 재학습 필요
+- **하위 호환성**: 필요 시 `docs/IRT_ARCHITECTURE.md` 참조하여 하위 호환 코드 추가 가능
+- **XAI 오버헤드**: 학습 시 <0.1%, 평가 시 ~5-10초 (시각화 생성 시간)
+
+---
+
+## [2.0.2-IRT] - 2025-10-02
+
 ### 🚀 Performance Improvements
 - **무거래 문제 해결 (No-Trade Loop Fix)**:
   - 근본 원인: Turnover penalty 과다 + IRT exploration 억제 + No-trade band 트랩
@@ -468,5 +547,5 @@ MIT License - 자세한 내용은 [LICENSE](../LICENSE) 파일 참조
 
 ---
 
-*Last Updated: 2025-10-02*
-*Version: 2.0.1-IRT*
+*Last Updated: 2025-10-03*
+*Version: 2.0.3-IRT*

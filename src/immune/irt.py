@@ -230,6 +230,7 @@ class IRT(nn.Module):
         Returns:
             w: 새 혼합 가중치 [B, M]
             P: 수송 계획 [B, m, M] (해석용)
+            debug_info: IRT 분해 정보 (시각화용)
         """
         B, m, D = E.shape
         M = K.shape[1]
@@ -276,4 +277,12 @@ class IRT(nn.Module):
         w = torch.clamp(w, min=1e-6, max=1.0)
         w = w / w.sum(dim=-1, keepdim=True)  # 재정규화 (합=1)
 
-        return w, P
+        # ===== Step 4: 디버그 정보 (시각화용) =====
+        debug_info = {
+            'w_rep': tilde_w,  # [B, M] - Replicator 출력
+            'w_ot': p_mass,    # [B, M] - OT 출력
+            'cost_matrix': C,  # [B, m, M] - Immunological cost
+            'eta': eta         # [B, 1] - Crisis-adaptive learning rate
+        }
+
+        return w, P, debug_info
