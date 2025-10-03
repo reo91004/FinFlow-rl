@@ -61,15 +61,24 @@ env:
 # 특성 추출
 feature_dim: 12
 
-# 오프라인 학습 (IQL)
-offline:
-  method: "iql"
-  epochs: 50
-  steps_per_epoch: auto # 'auto' = len(dataset)//batch_size, 또는 숫자
-  log_interval: 10 # epoch 로깅 간격
-  batch_size: 256
-  expectile: 0.7
-  temperature: 1.0
+# BC (Behavioral Cloning) Warm-start (v2.1.0+)
+bc:
+  epochs: 30              # BC 학습 epoch 수 (vs IQL 50)
+  batch_size: 256         # 배치 크기
+  lr: 0.0003              # Adam learning rate
+  log_interval: 5         # 로깅 간격
+  diversity_noise: 0.15   # 프로토타입 다양화 노이즈 scale
+  dirichlet_min: 1.0      # Dirichlet concentration minimum
+  dirichlet_max: 100.0    # Dirichlet concentration maximum
+
+# Legacy: 오프라인 IQL (deprecated, BC로 대체)
+# offline:
+#   method: "iql"
+#   epochs: 50
+#   steps_per_epoch: auto
+#   batch_size: 256
+#   expectile: 0.7
+#   temperature: 1.0
 
 # IRT 설정
 irt:
@@ -79,8 +88,13 @@ irt:
   M_proto: 8 # 프로토타입 수
   alpha: 0.3 # OT-Replicator 결합 비율 (0=Replicator, 1=OT)
 
-  # Sinkhorn 알고리즘
-  eps: 0.10 # 엔트로피 정규화 (0.05 → 0.10, OT 다양성 증가)
+  # Diversity Regularization (v2.1.0+)
+  lambda_div: 0.10 # KL divergence bonus weight
+
+  # Sinkhorn 알고리즘 (Progressive Schedule)
+  eps: 0.08        # Final epsilon (Stage 3, exploitation)
+  eps_stage1: 0.15 # Stage 1 epsilon (0-1k steps, high exploration)
+  eps_stage2: 0.10 # Stage 2 epsilon (1k-5k steps, moderate)
   max_iters: 10 # 최대 반복 횟수
   tol: 0.001 # 수렴 임계값
 
@@ -100,6 +114,17 @@ irt:
 
   # EMA 메모리
   ema_beta: 0.9 # 지수 이동 평균 계수
+
+  # Progressive Exploration Schedule (v2.1.0+)
+  progressive:
+    stage1_steps: 1000       # Stage 1 boundary (high exploration)
+    stage2_steps: 5000       # Stage 2 boundary (moderate)
+    stage1_alpha_scale: 0.5  # Stage 1 concentration scaling
+    stage2_alpha_scale: 0.7  # Stage 2 concentration scaling
+    stage3_alpha_scale: 1.0  # Stage 3 concentration scaling (full)
+    stage1_rnd_beta: 0.10    # Stage 1 RND novelty bonus
+    stage2_rnd_beta: 0.05    # Stage 2 RND novelty bonus
+    stage3_rnd_beta: 0.01    # Stage 3 RND novelty bonus
 
 # REDQ 설정
 redq:

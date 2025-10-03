@@ -3,15 +3,15 @@
 """
 IRT 기반 학습 파이프라인
 
-Phase 1: IQL 오프라인 사전학습 (기존 유지)
-Phase 2: IRT 온라인 미세조정 (신규)
+Phase 1: BC 오프라인 warm-start (v2.1.0+)
+Phase 2: IRT 온라인 미세조정
 
 핵심 차이:
 - Actor: BCellIRTActor 사용
 - Critic: REDQ 앙상블
 - 로깅: IRT 해석 정보 추가
 
-의존성: BCellIRTActor, REDQCritic, IQLAgent, PortfolioEnv
+의존성: BCellIRTActor, REDQCritic, BCAgent, PortfolioEnv
 사용처: scripts/train_irt.py
 """
 
@@ -28,7 +28,7 @@ import json
 
 from src.agents.bcell_irt import BCellIRTActor
 from src.algorithms.critics.redq import REDQCritic
-from src.algorithms.offline.iql import IQLAgent
+from src.algorithms.offline.bc_agent import BCAgent
 from src.immune.irt import IRT
 from src.environments.portfolio_env import PortfolioEnv
 from src.data.market_loader import DataLoader
@@ -38,6 +38,81 @@ from src.data.replay_buffer import PrioritizedReplayBuffer, Transition
 from src.utils.logger import FinFlowLogger, get_session_directory
 from src.utils.training_utils import polyak_update, resolve_device
 from src.evaluation.metrics import MetricsCalculator
+
+
+class ProgressiveScheduler:
+    """
+    Progressive Exploration Schedule (v2.1.0+)
+
+    3-stage schedule로 균등 분포 탈출 → 점진적 exploitation
+
+    Stages:
+    - Stage 1 (0-1k): High exploration (eps=0.15, alpha_scale=0.5)
+    - Stage 2 (1k-5k): Moderate (eps=0.10, alpha_scale=0.7)
+    - Stage 3 (5k+): Exploitation (eps=0.08, alpha_scale=1.0)
+
+    목적: BC warm-start 후 대칭성 파괴 및 탐색 촉진
+    """
+
+    def __init__(self, config: Dict):
+        """
+        Args:
+            config: YAML 설정 dict (irt 섹션 참조)
+        """
+        irt_config = config.get('irt', {})
+        prog_config = irt_config.get('progressive', {})
+
+        # 3-stage schedule (step_end, eps_sinkhorn, alpha_scale, rnd_beta)
+        self.stages = [
+            # Stage 1: Break symmetry (high exploration)
+            (
+                prog_config.get('stage1_steps', 1000),
+                irt_config.get('eps_stage1', 0.15),  # High Sinkhorn entropy
+                prog_config.get('stage1_alpha_scale', 0.5),  # Low concentration (high noise)
+                prog_config.get('stage1_rnd_beta', 0.10)  # RND novelty bonus
+            ),
+            # Stage 2: Moderate exploration
+            (
+                prog_config.get('stage2_steps', 5000),
+                irt_config.get('eps_stage2', 0.10),
+                prog_config.get('stage2_alpha_scale', 0.7),
+                prog_config.get('stage2_rnd_beta', 0.05)
+            ),
+            # Stage 3: Exploitation (final values)
+            (
+                float('inf'),
+                irt_config.get('eps', 0.08),  # Final epsilon
+                prog_config.get('stage3_alpha_scale', 1.0),  # Full concentration
+                prog_config.get('stage3_rnd_beta', 0.01)
+            )
+        ]
+
+        self.logger = FinFlowLogger("ProgressiveScheduler")
+        self.logger.info("Progressive schedule 초기화:")
+        for i, (end, eps, scale, beta) in enumerate(self.stages):
+            end_str = f"{end}" if end != float('inf') else "∞"
+            self.logger.info(
+                f"  Stage {i+1}: ~{end_str} steps | "
+                f"eps={eps:.2f}, alpha_scale={scale:.1f}, rnd_beta={beta:.2f}"
+            )
+
+    def get_params(self, step: int) -> tuple:
+        """
+        현재 step에 맞는 파라미터 반환
+
+        Args:
+            step: Global training step
+
+        Returns:
+            (eps, alpha_scale, rnd_beta)
+        """
+        for step_end, eps, alpha_scale, rnd_beta in self.stages:
+            if step < step_end:
+                return eps, alpha_scale, rnd_beta
+
+        # Fallback (should never reach here)
+        return self.stages[-1][1:]
+
 
 class TrainerIRT:
     """IRT 기반 통합 학습기"""
@@ -141,6 +216,7 @@ class TrainerIRT:
 
         # IRT Actor
         irt_config = self.config.get('irt', {})
+        bc_config = self.config.get('bc', {})
         self.actor = BCellIRTActor(
             state_dim=state_dim,
             action_dim=n_assets,
@@ -149,7 +225,9 @@ class TrainerIRT:
             M_proto=irt_config.get('M_proto', 8),
             alpha=irt_config.get('alpha', 0.3),
             ema_beta=irt_config.get('ema_beta', 0.9),
-            market_feature_dim=feature_dim
+            market_feature_dim=feature_dim,
+            dirichlet_min=bc_config.get('dirichlet_min', 1.0),
+            dirichlet_max=bc_config.get('dirichlet_max', 100.0)
         ).to(self.device)
 
         # IRT Operator 내부 파라미터 설정
@@ -215,6 +293,9 @@ class TrainerIRT:
         self.tau = redq_config.get('tau', 0.005)
         self.utd_ratio = redq_config.get('utd_ratio', 10)
 
+        # Progressive schedule (v2.1.0+)
+        self.global_step = 0  # 전역 step 카운터
+
         self.logger.info(f"컴포넌트 초기화 완료: state_dim={state_dim}, action_dim={n_assets}")
 
     def train(self):
@@ -223,10 +304,10 @@ class TrainerIRT:
         self.logger.info("IRT 학습 시작")
         self.logger.info("="*60)
 
-        # Phase 1: 오프라인 사전학습 (선택적)
+        # Phase 1: BC 오프라인 warm-start (선택적)
         if not self.config.get('skip_offline', False):
-            self.logger.info("\n[Phase 1] 오프라인 IQL 사전학습")
-            self._offline_pretrain()
+            self.logger.info("\n[Phase 1] BC Warm-start")
+            self.pretrain_with_bc()
         else:
             self.logger.info("오프라인 학습 스킵")
 
@@ -243,9 +324,18 @@ class TrainerIRT:
 
         return best_model
 
-    def _offline_pretrain(self):
-        """오프라인 IQL 사전학습 (기존 로직 유지)"""
-        offline_config = self.config['offline']
+    def pretrain_with_bc(self):
+        """
+        BC (Behavioral Cloning) Warm-start (v2.1.0+)
+
+        IQL을 대체하는 단순한 모방 학습:
+        - AWR bias 없음 → 전이 문제 없음
+        - Expectile 없음 → Q-value 스케일 불일치 없음
+        - 빠른 학습: 30 epochs, 2-3분 (vs IQL 7분)
+
+        목적: "Reasonable starting point" 제공
+        """
+        self.logger.info("="*60)
 
         # 오프라인 데이터 로드/생성
         offline_data_path = Path('data/offline_data.npz')
@@ -261,86 +351,127 @@ class TrainerIRT:
             dataset.save(offline_data_path)
 
         dataset = OfflineDataset(data_path=offline_data_path)
+        self.logger.info(f"오프라인 데이터: {len(dataset)} 샘플")
 
-        # IQL 에이전트 파라미터 추출 (IQLAgent가 받는 것만)
-        iql_params = {
-            'expectile': offline_config.get('expectile', 0.7),
-            'temperature': offline_config.get('temperature', 1.0),
-        }
-
-        iql_agent = IQLAgent(
-            state_dim=self.state_dim,
-            action_dim=self.action_dim,
+        # BC Agent 초기화
+        bc_config = self.config.get('bc', {})
+        bc_agent = BCAgent(
+            actor=self.actor,
+            lr=bc_config.get('lr', 3e-4),
             device=self.device,
-            **iql_params
+            dirichlet_min=bc_config.get('dirichlet_min', 1.0),
+            dirichlet_max=bc_config.get('dirichlet_max', 100.0)
         )
 
-        # IQL 학습
-        n_epochs = offline_config.get('epochs', 50)
-        batch_size = offline_config.get('batch_size', 256)
+        # BC Training
+        n_epochs = bc_config.get('epochs', 30)
+        batch_size = bc_config.get('batch_size', 256)
+        log_interval = bc_config.get('log_interval', 5)
 
-        # steps_per_epoch 계산
-        steps_per_epoch_cfg = offline_config.get('steps_per_epoch', 'auto')
-        if steps_per_epoch_cfg == 'auto':
-            steps_per_epoch = max(1, len(dataset) // batch_size)
-        else:
-            steps_per_epoch = max(1, int(steps_per_epoch_cfg))
+        self.logger.info(f"BC 학습 시작: {n_epochs} epochs, batch_size={batch_size}")
 
-        log_interval = offline_config.get('log_interval', 10)
-        self.logger.info(f"IQL 학습 시작: {n_epochs} epochs × {steps_per_epoch} steps = {n_epochs * steps_per_epoch} total steps")
+        for epoch in tqdm(range(n_epochs), desc="BC Training"):
+            epoch_losses = []
+            epoch_alphas = []
+            epoch_entropies = []
 
-        for epoch in tqdm(range(n_epochs), desc="IQL Training"):
-            epoch_losses = {'value_loss': [], 'q_loss': [], 'actor_loss': []}
+            # Epoch 내 여러 batch 순회
+            n_batches = max(1, len(dataset) // batch_size)
 
-            # Epoch 내 여러 step 순회
-            for step in range(steps_per_epoch):
+            for step in range(n_batches):
                 batch = dataset.sample_batch(batch_size)
 
-                states = torch.FloatTensor(batch['states']).to(self.device)
-                actions = torch.FloatTensor(batch['actions']).to(self.device)
-                rewards = torch.FloatTensor(batch['rewards']).to(self.device)
-                next_states = torch.FloatTensor(batch['next_states']).to(self.device)
-                dones = torch.FloatTensor(batch['dones']).to(self.device)
+                # Numpy → Torch
+                batch_torch = {
+                    'states': torch.FloatTensor(batch['states']),
+                    'actions': torch.FloatTensor(batch['actions'])
+                }
 
-                losses = iql_agent.update(states, actions, rewards, next_states, dones)
+                metrics = bc_agent.update(batch_torch)
 
-                # Loss 누적
-                for k, v in losses.items():
-                    epoch_losses[k].append(v)
+                epoch_losses.append(metrics['loss'])
+                epoch_alphas.append(metrics['mean_alpha'])
+                epoch_entropies.append(metrics['entropy'])
 
             # Epoch 평균 로깅
             if epoch % log_interval == 0 or epoch == n_epochs - 1:
-                avg_value = np.mean(epoch_losses['value_loss'])
-                avg_q = np.mean(epoch_losses['q_loss'])
-                avg_actor = np.mean(epoch_losses['actor_loss'])
+                avg_loss = np.mean(epoch_losses)
+                avg_alpha = np.mean(epoch_alphas)
+                avg_entropy = np.mean(epoch_entropies)
 
                 self.logger.info(
-                    f"Epoch {epoch}/{n_epochs}: "
-                    f"V={avg_value:.4f}, Q={avg_q:.4f}, Actor={avg_actor:.4f} "
-                    f"({(epoch+1)*steps_per_epoch} total steps)"
+                    f"BC Epoch {epoch}/{n_epochs}: "
+                    f"Loss={avg_loss:.4f}, AvgAlpha={avg_alpha:.2f}, Entropy={avg_entropy:.3f}"
                 )
 
-        # Actor에 IQL 정책 가중치 로드 (프로토타입 디코더로)
-        self.logger.info("IQL 정책을 IRT Actor로 전이 중...")
-        # 여기서는 간단히 무시 (실제로는 프로토타입 초기화에 사용 가능)
+        self.logger.info("BC warm-start 완료")
+
+        # Post-BC: Diversify prototypes (대칭성 파괴)
+        self._diversify_prototypes()
+
+    def _diversify_prototypes(self):
+        """
+        Phase 1.5: 프로토타입 다양화 (대칭성 파괴)
+
+        BC 학습 후 모든 프로토타입이 유사하여 fitness 구분 불가.
+        Progressive noise를 추가해 강제로 차별화.
+
+        수식:
+        scale_j = base_noise * (j+1) / M
+        θ_j ← θ_j + N(0, scale_j)
+        """
+        self.logger.info("프로토타입 다양화 중...")
+
+        bc_config = self.config.get('bc', {})
+        M = self.config['irt']['M_proto']
+        noise_scale = bc_config.get('diversity_noise', 0.15)
+
+        for j, decoder in enumerate(self.actor.decoders):
+            # Progressive noise: 후반 프로토타입일수록 큰 노이즈
+            scale_j = noise_scale * (j + 1) / M
+
+            for param in decoder.parameters():
+                if param.requires_grad:
+                    param.data += torch.randn_like(param) * scale_j
+
+        self.logger.info(f"다양화 완료: base_noise={noise_scale}, M={M}")
 
     def _online_finetune(self):
-        """온라인 IRT 미세조정"""
+        """온라인 IRT 미세조정 (v2.1.0: Progressive Exploration)"""
         n_episodes = self.config.get('online_episodes', 200)
         eval_freq = 10
 
         best_sharpe = -float('inf')
         best_model_path = None
 
-        for episode in tqdm(range(n_episodes), desc="Online IRT Training"):
-            # 에피소드 실행
-            episode_info = self._run_episode(self.train_env, training=True)
+        # Progressive Scheduler 초기화 (v2.1.0+)
+        scheduler = ProgressiveScheduler(self.config)
+        self.global_step = 0  # 전역 step 카운터
 
-            # 로깅
+        for episode in tqdm(range(n_episodes), desc="Online IRT Training"):
+            # 현재 step의 exploration params
+            eps, alpha_scale, rnd_beta = scheduler.get_params(self.global_step)
+
+            # IRT Sinkhorn epsilon 동적 업데이트
+            self.actor.irt.sinkhorn.eps = eps
+
+            # IRT lambda_div (diversity regularization)
+            lambda_div = self.config['irt'].get('lambda_div', 0.10)
+
+            # 에피소드 실행 (exploration params 전달)
+            episode_info = self._run_episode(
+                self.train_env,
+                training=True,
+                alpha_scale=alpha_scale,
+                lambda_div=lambda_div
+            )
+
+            # 로깅 (exploration params 포함)
             self.logger.info(
                 f"Episode {episode}: Return={episode_info['return']:.4f}, "
                 f"AvgCrisis={episode_info['avg_crisis']:.3f}, "
-                f"Turnover={episode_info['turnover']:.4f}"
+                f"Turnover={episode_info['turnover']:.4f} "
+                f"(eps={eps:.2f}, α_scale={alpha_scale:.1f})"
             )
 
             # 평가
@@ -360,7 +491,8 @@ class TrainerIRT:
 
         return self.actor
 
-    def _run_episode(self, env: PortfolioEnv, training: bool = True) -> Dict:
+    def _run_episode(self, env: PortfolioEnv, training: bool = True,
+                    alpha_scale: float = 1.0, lambda_div: float = 0.0) -> Dict:
         """단일 에피소드 실행"""
         state, _ = env.reset()
         state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
@@ -374,12 +506,14 @@ class TrainerIRT:
         truncated = False
 
         while not (done or truncated):
-            # 행동 선택
+            # 행동 선택 (progressive params 전달)
             with torch.no_grad():
                 action, info = self.actor(
                     state_tensor,
                     critics=self.critic.get_all_critics() if training else None,
-                    deterministic=not training
+                    deterministic=not training,
+                    alpha_scale=alpha_scale,
+                    lambda_div=lambda_div
                 )
 
             action_np = action.cpu().numpy()[0]
@@ -401,7 +535,8 @@ class TrainerIRT:
             # IRT 업데이트 (UTD ratio만큼)
             if training and len(self.replay_buffer) > 1000:
                 for _ in range(self.utd_ratio):
-                    self._update_irt()
+                    self._update_irt(alpha_scale=alpha_scale, lambda_div=lambda_div)
+                    self.global_step += 1  # 전역 step 증가
 
             # 기록
             episode_return += reward
@@ -419,8 +554,8 @@ class TrainerIRT:
             'turnover': np.mean(turnovers)
         }
 
-    def _update_irt(self):
-        """IRT 업데이트 (1 스텝)"""
+    def _update_irt(self, alpha_scale: float = 1.0, lambda_div: float = 0.0):
+        """IRT 업데이트 (1 스텝, progressive params 전달)"""
         # 배치 샘플
         batch, weights, indices = self.replay_buffer.sample(256)
 
@@ -454,7 +589,12 @@ class TrainerIRT:
         self.critic_optim.step()
 
         # ===== Actor Update =====
-        new_actions, _ = self.actor(states, critics=self.critic.get_all_critics())
+        new_actions, _ = self.actor(
+            states,
+            critics=self.critic.get_all_critics(),
+            alpha_scale=alpha_scale,
+            lambda_div=lambda_div
+        )
 
         # Q값 평균 (모든 critics)
         q_values = self.critic(states, new_actions)

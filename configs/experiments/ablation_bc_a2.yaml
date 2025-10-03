@@ -1,0 +1,110 @@
+# configs/experiments/ablation_bc_a2.yaml
+# BC Ablation A2: BC Only (no diversity, no progressive)
+
+seed: 42
+device: auto
+
+# 간소화된 데이터 (빠른 실험용, 10 stocks)
+data:
+  symbols: ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "JPM", "V", "UNH"]
+  start: "2019-01-01"
+  end: "2021-12-31"
+  test_start: "2022-01-01"
+  test_end: "2023-12-31"
+  val_ratio: 0.2
+  interval: "1d"
+  cache: true
+
+# 환경
+env:
+  initial_balance: 1000000
+  transaction_cost: 0.001
+  slippage: 0.0005
+  max_leverage: 1.0
+  max_turnover: 0.5
+  window_size: 20
+  no_trade_band: 0.0
+
+feature_dim: 12
+
+# BC Warm-start (diversity 없음)
+bc:
+  epochs: 30
+  batch_size: 256
+  lr: 0.0003
+  log_interval: 5
+  diversity_noise: 0.0  # No diversity!
+  dirichlet_min: 1.0
+  dirichlet_max: 100.0
+
+# IRT 설정
+irt:
+  emb_dim: 128
+  m_tokens: 6
+  M_proto: 8
+  alpha: 0.3
+
+  # No diversity regularization
+  lambda_div: 0.0
+
+  # Fixed epsilon (no progressive)
+  eps: 0.10
+  max_iters: 10
+  tol: 0.001
+
+  gamma: 0.5
+  lambda_tol: 2.0
+  rho: 0.3
+  eta_0: 0.05
+  eta_1: 0.15
+  kappa: 1.0
+  eps_tol: 0.1
+  n_self_sigs: 4
+  ema_beta: 0.9
+
+  # Progressive Exploration Schedule (v2.1.0+)
+  progressive:
+    stage1_steps: 1000
+    stage2_steps: 5000
+    stage1_alpha_scale: 0.5
+    stage2_alpha_scale: 0.7
+    stage3_alpha_scale: 1.0
+    stage1_rnd_beta: 0.10
+    stage2_rnd_beta: 0.05
+    stage3_rnd_beta: 0.01
+
+# REDQ (경량화)
+redq:
+  n_critics: 5
+  m_sample: 2
+  utd_ratio: 5
+  hidden_dims: [256, 256]
+  actor_lr: 0.0003
+  critic_lr: 0.0003
+  batch_size: 256
+  gamma: 0.99
+  tau: 0.005
+  buffer_size: 50000
+
+# 학습 (빠른 실험)
+online_episodes: 50
+skip_offline: false  # BC 사용
+
+# Replay Buffer
+replay_buffer:
+  alpha: 0.6
+  beta: 0.4
+
+# 목적함수
+objectives:
+  sharpe_beta: 1.0
+  sharpe_ema_alpha: 0.99
+  cvar_alpha: 0.05
+  cvar_target: -0.02
+  lambda_cvar: 1.0
+  lambda_turn: 0.01
+  lambda_dd: 0.0
+  r_clip: 5.0
+
+# 로깅
+log_level: "INFO"

@@ -32,7 +32,9 @@ class BCellIRTActor(nn.Module):
                  M_proto: int = 8,
                  alpha: float = 0.3,
                  ema_beta: float = 0.9,
-                 market_feature_dim: int = 12):
+                 market_feature_dim: int = 12,
+                 dirichlet_min: float = 1.0,
+                 dirichlet_max: float = 100.0):
         """
         Args:
             state_dim: 상태 차원 (예: 43)
@@ -43,6 +45,8 @@ class BCellIRTActor(nn.Module):
             alpha: OT-Replicator 결합 비율
             ema_beta: EMA 메모리 계수
             market_feature_dim: 시장 특성 차원 (FeatureExtractor 출력)
+            dirichlet_min: Dirichlet concentration minimum
+            dirichlet_max: Dirichlet concentration maximum
         """
         super().__init__()
 
@@ -52,6 +56,8 @@ class BCellIRTActor(nn.Module):
         self.m = m_tokens
         self.M = M_proto
         self.ema_beta = ema_beta
+        self.dirichlet_min = dirichlet_min
+        self.dirichlet_max = dirichlet_max
 
         # ===== 에피토프 인코더 =====
         self.epitope_encoder = nn.Sequential(
@@ -100,17 +106,24 @@ class BCellIRTActor(nn.Module):
 
     def _compute_fitness(self,
                         state: torch.Tensor,
-                        critics: List[nn.Module]) -> torch.Tensor:
+                        critics: List[nn.Module],
+                        alpha_scale: float = 1.0,
+                        lambda_div: float = 0.0) -> torch.Tensor:
         """
-        각 프로토타입의 적합도 (fitness) 계산
+        각 프로토타입의 적합도 (fitness) 계산 + Diversity Regularization
 
-        방법: 각 프로토타입 정책으로 행동 샘플 → Critics로 Q값 평가
-        개선: 10번 샘플링 후 평균하여 기대값 E[Q(s, a~π_j)] 근사
-              → Fitness 표준오차 68% 감소 (σ/√10)
+        방법:
+        1. Q-based fitness: 각 프로토타입 정책으로 행동 샘플 → Critics로 Q값 평가
+        2. Diversity bonus: KL divergence로 프로토타입 간 차별화 유도
+
+        수식:
+        f_j = E[Q(s, a~π_j)] + λ_div · (1/(M-1)) Σ_{k≠j} KL(π_j || π_k)
 
         Args:
             state: [B, S]
             critics: QNetwork 리스트 (REDQ)
+            alpha_scale: Exploration scaling (progressive schedule용)
+            lambda_div: Diversity regularization weight
 
         Returns:
             fitness: [B, M]
@@ -121,15 +134,23 @@ class BCellIRTActor(nn.Module):
         with torch.no_grad():
             K_batch = self.proto_keys.unsqueeze(0).expand(B, -1, -1)  # [B, M, D]
 
+            # ===== Step 1: Q-based Fitness =====
+            all_concentrations = []
+
             for j in range(self.M):
                 # 프로토타입 j의 concentration
                 conc_j = self.decoders[j](K_batch[:, j, :])  # [B, A]
 
-                # Dirichlet 분포에서 샘플 (exploration 증가: min 1.0→0.5, max 100→50)
-                conc_j_clamped = torch.clamp(conc_j, min=0.5, max=50.0)
+                # Progressive exploration scaling
+                conc_j = conc_j * alpha_scale
+
+                # Dirichlet 분포에서 샘플
+                conc_j_clamped = torch.clamp(conc_j, min=self.dirichlet_min, max=self.dirichlet_max)
+                all_concentrations.append(conc_j_clamped)
+
                 dist_j = torch.distributions.Dirichlet(conc_j_clamped)
 
-                # 방안 1: 10번 샘플링 후 평균 (기대값 근사)
+                # 10번 샘플링 후 평균 (기대값 근사)
                 n_samples = 10
                 q_estimates = []
 
@@ -149,17 +170,78 @@ class BCellIRTActor(nn.Module):
                 # 샘플링 평균으로 기대값 근사
                 fitness[:, j] = torch.stack(q_estimates).mean(dim=0)  # [B]
 
+            # ===== Step 2: Diversity Bonus (KL Divergence) =====
+            if lambda_div > 0:
+                for j in range(self.M):
+                    kl_sum = torch.zeros(B, device=state.device)
+
+                    for k in range(self.M):
+                        if k != j:
+                            # KL(Dir(α_j) || Dir(α_k))
+                            # Dirichlet KL은 closed-form이 없으므로 Monte Carlo 근사
+                            # 또는 간단히 concentration 차이로 근사
+                            dist_j = torch.distributions.Dirichlet(all_concentrations[j])
+                            dist_k = torch.distributions.Dirichlet(all_concentrations[k])
+
+                            # KL divergence (PyTorch built-in)
+                            try:
+                                kl = torch.distributions.kl_divergence(dist_j, dist_k)
+                                kl_sum += kl
+                            except NotImplementedError:
+                                # Fallback: L2 distance between concentrations
+                                l2_dist = torch.norm(
+                                    all_concentrations[j] - all_concentrations[k],
+                                    dim=-1
+                                )
+                                kl_sum += l2_dist
+
+                    # Average KL to other prototypes
+                    mean_kl = kl_sum / max(1, self.M - 1)
+
+                    # Add diversity bonus to fitness
+                    fitness[:, j] += lambda_div * mean_kl
+
         return fitness
+
+    def forward_prototypes(self, state: torch.Tensor) -> torch.Tensor:
+        """
+        BC 학습용: IRT 없이 프로토타입 Dirichlet parameters 반환
+
+        Args:
+            state: [B, S]
+
+        Returns:
+            alphas: [B, M, N] - M개 프로토타입의 Dirichlet concentrations
+        """
+        B = state.size(0)
+
+        # Epitope encoding (상태 표현)
+        E = self.epitope_encoder(state).view(B, self.m, self.emb_dim)  # [B, m, D]
+
+        # Prototype keys 확장
+        K_batch = self.proto_keys.unsqueeze(0).expand(B, -1, -1)  # [B, M, D]
+
+        # 각 프로토타입의 Dirichlet concentration 계산
+        # K를 decoder 입력으로 사용 (epitope 대신)
+        alphas = torch.stack([
+            self.decoders[j](K_batch[:, j, :]) for j in range(self.M)
+        ], dim=1)  # [B, M, N]
+
+        return alphas
 
     def forward(self,
                 state: torch.Tensor,
                 critics: Optional[List[nn.Module]] = None,
-                deterministic: bool = False) -> Tuple[torch.Tensor, dict]:
+                deterministic: bool = False,
+                alpha_scale: float = 1.0,
+                lambda_div: float = 0.0) -> Tuple[torch.Tensor, dict]:
         """
         Args:
             state: [B, S]
             critics: QNetwork 리스트 (fitness 계산용)
             deterministic: 결정적 행동 (평가 시)
+            alpha_scale: Exploration scaling (progressive schedule용)
+            lambda_div: Diversity regularization weight
 
         Returns:
             action: [B, A] - 포트폴리오 가중치
@@ -182,7 +264,11 @@ class BCellIRTActor(nn.Module):
 
         # ===== Step 4: Fitness 계산 =====
         if critics is not None and not deterministic:
-            fitness = self._compute_fitness(state, critics)
+            fitness = self._compute_fitness(
+                state, critics,
+                alpha_scale=alpha_scale,
+                lambda_div=lambda_div
+            )
         else:
             # 평가 모드 또는 critics 없음: 균등 fitness
             fitness = torch.ones(B, self.M, device=state.device)
@@ -215,8 +301,8 @@ class BCellIRTActor(nn.Module):
             action = torch.clamp(action, min=0.0)
             action = action / (action.sum(dim=-1, keepdim=True) + 1e-8)
         else:
-            # 확률적: Dirichlet 샘플 (exploration 증가: min 1.0→0.5, max 100→50)
-            mixed_conc_clamped = torch.clamp(mixed_conc, min=0.5, max=50.0)
+            # 확률적: Dirichlet 샘플
+            mixed_conc_clamped = torch.clamp(mixed_conc, min=self.dirichlet_min, max=self.dirichlet_max)
             dist = torch.distributions.Dirichlet(mixed_conc_clamped)
             action = dist.sample()
 

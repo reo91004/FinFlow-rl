@@ -31,11 +31,11 @@ w_t = (1-α)·Replicator(w_{t-1}, f_t) + α·Transport(E_t, K, C_t)
 - **구조적 매칭**: Optimal Transport로 현재 상태와 전문가 전략 최적 결합
 - **면역학적 비용**: 공자극, 내성, 체크포인트를 통한 도메인 지식 내장
 
-### 최근 업데이트 (v2.0.2-IRT, 2025-10-02)
-- 🐛 **버그 수정 3건**: 디바이스 불일치, IQL 사전학습, 텐서 변환 경고
-- 🚀 **IQL 학습량 470배 증가**: 50 steps → 23,500 steps (실제 사전학습 효과)
-- ⚡ **메모리 최적화**: zero-copy 텐서 변환으로 성능 향상
-- 🎯 **안정성 개선**: CPU/GPU 혼용 환경에서 오류 없이 실행
+### 최근 업데이트 (v2.1.0-IRT, 2025-10-04)
+- ✅ **BC Warm-start**: IQL 완전 대체, AWR/Expectile bias 제거
+- ✅ **Progressive Exploration**: 3-stage 적응형 탐색 스케줄 추가
+- ✅ **Config 기반 설정**: 모든 하드코딩 제거 (Dirichlet, Progressive)
+- ✅ **레거시 정리**: IQL 삭제, 코드 간소화
 
 ### 이전 업데이트 (v2.0-IRT)
 - 🆕 **IRT Operator**: OT + Replicator 기반 새로운 정책 혼합
@@ -94,16 +94,17 @@ python main.py --mode evaluate \
 ### 📊 전체 IRT 파이프라인 실행
 
 ```bash
-# 1. IRT 학습 (IQL 사전학습 → IRT 미세조정)
+# 1. IRT 학습 (BC warm-start → IRT 미세조정)
 python scripts/train_irt.py --config configs/default_irt.yaml
 
-# 2. 평가 및 시각화
+# 2. 평가 및 시각화 (12 plots 자동 생성)
 python scripts/evaluate_irt.py \
     --checkpoint logs/*/checkpoints/best_model.pth
 
-# 3. IRT 해석 시각화
-python scripts/visualize_irt.py \
-    --checkpoint logs/*/checkpoints/best_model.pth
+# 3. Ablation studies (BC 기여도 검증)
+python scripts/train_irt.py --config configs/experiments/ablation_bc_a1.yaml  # Random init
+python scripts/train_irt.py --config configs/experiments/ablation_bc_a2.yaml  # BC only
+python scripts/train_irt.py --config configs/experiments/ablation_bc_a3.yaml  # BC + Diversity
 ```
 
 ## 사용법
@@ -158,7 +159,7 @@ python main.py --mode evaluate \
 | `--resume` | 체크포인트 경로 | None |
 | `--tickers` | 주식 심볼 리스트 | config 파일 참조 |
 | `--no-cache` | 데이터 재다운로드 | False |
-| `--iql-epochs` | IQL 사전학습 에포크 | config 파일 |
+| `--bc-epochs` | BC warm-start 에포크 | config 파일 |
 | `--sac-episodes` | SAC 미세조정 에피소드 | config 파일 |
 | `--batch-size` | 배치 크기 | config 파일 |
 | `--device` | auto, cuda, mps, cpu | auto |
@@ -170,16 +171,14 @@ python main.py --mode evaluate \
 
 #### 통합 학습 (권장)
 ```bash
-# IQL + B-Cell 전체 파이프라인
-python scripts/train.py --config configs/default.yaml
+# BC + IRT 전체 파이프라인
+python scripts/train_irt.py --config configs/default_irt.yaml
 ```
 
-#### IQL 사전학습만
+#### BC Warm-start만
 ```bash
-python scripts/pretrain_iql.py \
-    --config configs/default.yaml \
-    --collect-episodes 500 \
-    --train-steps 10000
+python scripts/validate_offline_data.py --data data/offline_data.npz  # 데이터 검증
+# BC는 trainer_irt.py의 pretrain_with_bc() 메소드에서 자동 실행
 ```
 
 #### 평가 + 백테스팅
@@ -241,7 +240,7 @@ FinFlow-rl/
 │   ├── algorithms/
 │   │   ├── offline/
 │   │   │   ├── __init__.py
-│   │   │   └── iql.py          # IQL 사전학습
+│   │   │   └── bc_agent.py     # BC Warm-start (v2.1.0+)
 │   │   └── critics/
 │   │       ├── __init__.py
 │   │       └── redq.py         # REDQ 앙상블
