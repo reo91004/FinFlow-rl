@@ -44,12 +44,41 @@ Evaluation 시 dtype 불일치로 인한 RuntimeError 해결과 함께, Market f
   - `forward()` 및 `action_log_prob()` 모두 helper 사용
   - 코드 중복 제거 (DRY principle)
 
+**Fitness Shape 처리 누락 회귀 버그 해결**
+- 문제: `RuntimeError: einsum(): the number of subscripts in the equation (2) does not match the number of dimensions (3) for operand 0`
+- 발생 위치: `bcell_actor.py:195` → `torch.einsum('bm,bma->ba', w, concentrations)`
+- 근본 원인:
+  - `_compute_fitness()` 추가 시 SAC Critic Q-value shape 처리 누락
+  - SAC Critic 출력: `(q1, q2)` 각각 `[B, 1]` 형태
+  - `torch.min(q1, q2)` → `[B, 1]` 유지
+  - `torch.stack([...], dim=1)` → `fitness: [B, M, 1]` (3차원)
+  - IRT broadcasting으로 `w: [B, M, 1]` 반환
+  - bcell_actor einsum이 `[B, M]` 기대했으나 `[B, M, 1]` 수신
+- 전파 과정:
+  ```
+  _compute_fitness() → fitness [B, M, 1]
+  → IRT.forward(fitness) → advantage [B, M, 1]
+  → F.softmax(log_tilde_w, dim=-1) → tilde_w [B, M, 1]
+  → w = (1-α)·tilde_w + α·p_mass → w [B, M, 1]
+  → einsum('bm,bma->ba') 실패
+  ```
+- 해결: `irt_policy.py:126-128`에서 `.squeeze(-1)` 추가
+  ```python
+  # 변경 전
+  q_min = torch.min(q_vals[0], q_vals[1])  # [B, 1]
+
+  # 변경 후
+  q_min = torch.min(q_vals[0], q_vals[1]).squeeze(-1)  # [B]
+  ```
+- 효과: fitness shape을 `[B, M]`으로 보장하여 IRT 및 bcell_actor 정상화
+
 #### Changed
 
 **finrl/agents/irt/irt_policy.py**
-- `IRTActorWrapper._compute_fitness()` 추가 (Line 81-134):
+- `IRTActorWrapper._compute_fitness()` 추가 및 수정 (Line 81-134):
   - Critic 기반 fitness 계산 로직을 공통 helper로 추출
   - 프로토타입별 Q-value 계산 (Twin Q 최소값 사용)
+  - `.squeeze(-1)` 추가로 fitness shape을 `[B, M]`으로 보장 (Line 126, 128)
   - `no_grad`로 효율성 확보
 - `IRTActorWrapper.forward()` 수정 (Line 136-159):
   - `obs.float()` dtype 변환 추가 (Line 148)
@@ -126,12 +155,14 @@ forward(obs)
        ├─> 각 프로토타입 j의 샘플 행동 생성
        │    └─> decoders[j](proto_keys[j]) → conc_j → softmax → a_j
        ├─> Critic Q-value 계산
-       │    └─> critic(obs, a_j) → (q1, q2) → min(q1, q2) → fitness[j]
-       └─> fitness: [B, M] 반환
+       │    ├─> critic(obs, a_j) → (q1, q2): [B, 1] each
+       │    ├─> min(q1, q2).squeeze(-1) → [B] (shape 보장)
+       │    └─> stack([...], dim=1) → fitness[j]
+       └─> fitness: [B, M] 반환 (✅ shape 보장)
   └─> IRT.forward(E, K, danger, w_prev, fitness, crisis)
-       └─> Replicator(fitness, w_prev) → w_rep (✅ 활성화!)
-       └─> OT(E, K, danger) → w_ot
-       └─> w = (1-α)·w_rep + α·w_ot
+       └─> Replicator(fitness, w_prev) → w_rep: [B, M] (✅ 활성화!)
+       └─> OT(E, K, danger) → w_ot: [B, M]
+       └─> w = (1-α)·w_rep + α·w_ot → [B, M] (✅ shape 보장)
 ```
 
 **IRT 혼합 공식 검증**

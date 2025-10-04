@@ -123,9 +123,9 @@ class IRTActorWrapper(Actor):
 
                     # Twin Q의 최소값 (conservative)
                     if isinstance(q_vals, tuple):
-                        q_min = torch.min(q_vals[0], q_vals[1])  # [B]
+                        q_min = torch.min(q_vals[0], q_vals[1]).squeeze(-1)  # [B]
                     else:
-                        q_min = q_vals  # [B]
+                        q_min = q_vals.squeeze(-1) if q_vals.ndim > 1 else q_vals  # [B]
 
                     q_values.append(q_min)
 
