@@ -17,6 +17,7 @@ Usage:
 """
 
 import argparse
+import json
 import os
 from datetime import datetime
 import numpy as np
@@ -34,6 +35,7 @@ from finrl.meta.preprocessor.preprocessors import FeatureEngineer, data_split
 from finrl.meta.env_stock_trading.env_stocktrading import StockTradingEnv
 from stable_baselines3 import SAC, PPO, A2C, TD3, DDPG
 from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
+from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv
 
 
@@ -53,6 +55,36 @@ MODEL_PARAMS = {
     'td3': TD3_PARAMS,
     'ddpg': DDPG_PARAMS
 }
+
+
+def save_metadata(output_dir, tickers, train_start, train_end, test_start, test_end):
+    """학습 메타데이터 저장 (평가 시 재사용)"""
+    metadata = {
+        'tickers': tickers,
+        'train_period': {'start': train_start, 'end': train_end},
+        'test_period': {'start': test_start, 'end': test_end},
+        'n_stocks': len(tickers)
+    }
+
+    metadata_path = os.path.join(output_dir, 'metadata.json')
+    with open(metadata_path, 'w') as f:
+        json.dump(metadata, f, indent=2)
+
+    print(f"  메타데이터 저장됨: {metadata_path}")
+
+
+def load_metadata(model_dir):
+    """저장된 메타데이터 로드"""
+    metadata_path = os.path.join(model_dir, 'metadata.json')
+
+    if not os.path.exists(metadata_path):
+        raise FileNotFoundError(
+            f"메타데이터 파일이 없습니다: {metadata_path}\n"
+            f"학습 시 사용된 주식 목록을 알 수 없어 평가를 진행할 수 없습니다."
+        )
+
+    with open(metadata_path, 'r') as f:
+        return json.load(f)
 
 
 def create_env(df, stock_dim, tech_indicators):
@@ -142,15 +174,18 @@ def train_model(args):
 
     # 4. 환경 생성
     print(f"\n[4/5] Creating environments...")
-    stock_dim = len(train_df.tic.unique())
+    actual_tickers = train_df.tic.unique().tolist()
+    stock_dim = len(actual_tickers)
 
     # 데이터 누락 경고
     if stock_dim != len(DOW_30_TICKER):
         removed_count = len(DOW_30_TICKER) - stock_dim
+        excluded_tickers = set(DOW_30_TICKER) - set(actual_tickers)
         print(f"  ⚠️  주의: {removed_count}개 주식이 데이터 부족으로 제외됨")
-        print(f"      (2008년 초 데이터가 없는 종목: Visa (V) 등)")
+        print(f"      제외된 종목: {sorted(excluded_tickers)}")
 
     print(f"  실제 주식 수: {stock_dim}")
+    print(f"  사용된 종목: {actual_tickers[:5]}... (생략)")
     train_env = create_env(train_df, stock_dim, INDICATORS)
     test_env = create_env(test_df, stock_dim, INDICATORS)
     print(f"  State space: {train_env.state_space}")
@@ -166,8 +201,11 @@ def train_model(args):
         name_prefix=f"{args.model}_model"
     )
 
+    # Monitor wrapper로 평가 환경 래핑
+    eval_env = Monitor(test_env)
+
     eval_callback = EvalCallback(
-        test_env,
+        eval_env,
         best_model_save_path=os.path.join(log_dir, "best_model"),
         log_path=os.path.join(log_dir, "eval"),
         eval_freq=5000,
@@ -206,12 +244,23 @@ def train_model(args):
     final_model_path = os.path.join(log_dir, f"{args.model}_final.zip")
     model.save(final_model_path)
 
+    # 메타데이터 저장 (평가 시 일관성 유지)
+    save_metadata(
+        output_dir=log_dir,
+        tickers=actual_tickers,
+        train_start=args.train_start,
+        train_end=args.train_end,
+        test_start=args.test_start,
+        test_end=args.test_end
+    )
+
     print(f"\n" + "=" * 70)
     print(f"Training completed!")
     print("=" * 70)
     print(f"  Final model: {final_model_path}")
     print(f"  Best model: {os.path.join(log_dir, 'best_model', 'best_model.zip')}")
     print(f"  Logs: {log_dir}")
+    print(f"  Metadata: {os.path.join(log_dir, 'metadata.json')}")
 
     return log_dir, final_model_path
 
@@ -229,9 +278,18 @@ def test_model(args, model_path=None):
             raise ValueError("--checkpoint가 필요합니다 (--mode test 실행 시)")
         model_path = args.checkpoint
 
+    # 메타데이터 로드 (학습 시 사용된 ticker 정보)
+    model_dir = os.path.dirname(model_path)
+    metadata = load_metadata(model_dir)
+    train_tickers = metadata['tickers']
+
     print(f"\n[Config]")
     print(f"  Model: {model_path}")
     print(f"  Test: {args.test_start} ~ {args.test_end}")
+
+    print(f"\n[메타데이터]")
+    print(f"  학습 시 사용된 주식: {len(train_tickers)}개")
+    print(f"  주식 목록: {train_tickers[:5]}... (생략)")
 
     # 1. 데이터 준비
     print(f"\n[1/4] Downloading test data...")
@@ -240,7 +298,15 @@ def test_model(args, model_path=None):
         end_date=args.test_end,
         ticker_list=DOW_30_TICKER
     ).fetch_data()
-    print(f"  Downloaded: {df.shape[0]} rows")
+    print(f"  Downloaded: {df.shape[0]} rows, {df.tic.nunique()}개 종목")
+
+    # 학습 시 사용된 ticker로 필터링 (중요!)
+    df = df[df['tic'].isin(train_tickers)]
+    print(f"  필터링 후: {df.shape[0]} rows, {df.tic.nunique()}개 종목")
+
+    if df.tic.nunique() != len(train_tickers):
+        missing = set(train_tickers) - set(df.tic.unique())
+        print(f"  ⚠️  경고: 평가 기간에 데이터가 없는 종목: {missing}")
 
     # 2. Feature Engineering
     print(f"\n[2/4] Feature Engineering...")

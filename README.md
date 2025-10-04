@@ -43,11 +43,13 @@ pip install -e .
 ### 2. Minimal Test
 
 **FinRL 환경 테스트**:
+
 ```bash
 python tests/test_finrl_minimal.py
 ```
 
 예상 출력:
+
 ```
 ✅ FinRL 최소 실행 테스트 성공!
 Total Portfolio Value: $1,000,234.56
@@ -55,11 +57,13 @@ Total Reward: 0.0234
 ```
 
 **IRT Policy 테스트**:
+
 ```bash
 python tests/test_irt_policy.py
 ```
 
 예상 출력:
+
 ```
 ✅ Test 1 passed: IRT forward pass 정상 작동
 ✅ Test 2 passed: Simplex 제약 만족
@@ -121,6 +125,7 @@ python scripts/evaluate.py \
 ```
 
 자동으로 생성되는 결과물:
+
 - `evaluation_results.json` - 메트릭 (Sharpe, Calmar, Max Drawdown 등)
 - `evaluation_plots/` - 시각화 (Portfolio Value, Drawdown, Returns Distribution)
 
@@ -195,7 +200,7 @@ INDICATORS = [
 
 ```python
 # finrl/config.py
-TRAIN_START_DATE = "2008-01-01"
+TRAIN_START_DATE = "2008-04-01"
 TRAIN_END_DATE = "2020-12-31"
 
 TEST_START_DATE = "2021-01-01"
@@ -206,11 +211,11 @@ TEST_END_DATE = "2024-12-31"
 
 ## Performance Metrics
 
-| Metric | SAC Baseline | IRT | Improvement |
-|--------|--------------|-----|-------------|
-| Sharpe Ratio | 1.0-1.2 | 1.2-1.4 | +10-15% |
-| Max Drawdown | -30 ~ -35% | -20 ~ -25% | **-20-30%** |
-| Crisis MDD | -40 ~ -45% | -25 ~ -30% | **-30-40%** |
+| Metric       | SAC Baseline | IRT        | Improvement |
+| ------------ | ------------ | ---------- | ----------- |
+| Sharpe Ratio | 1.0-1.2      | 1.2-1.4    | +10-15%     |
+| Max Drawdown | -30 ~ -35%   | -20 ~ -25% | **-20-30%** |
+| Crisis MDD   | -40 ~ -45%   | -25 ~ -30% | **-30-40%** |
 
 **Note**: 위기 구간(2020 COVID, 2022 Fed 금리 인상)에서의 개선이 두드러짐.
 
@@ -237,6 +242,7 @@ TEST_END_DATE = "2024-12-31"
 ```
 
 FinRL 인용:
+
 ```bibtex
 @article{liu2024finrl,
   title={FinRL: Financial reinforcement learning framework},

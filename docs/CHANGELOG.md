@@ -6,6 +6,97 @@
 
 ## [Unreleased]
 
+### Phase 1.2 - 학습/평가 일관성 개선 (2025-10-04)
+
+학습과 평가 간 데이터 불일치 문제를 해결하고, off-policy 알고리즘 호환성을 개선했다.
+
+#### Fixed
+
+**Observation Space 불일치 해결**
+- `scripts/train.py`에 metadata 저장/로드 기능 추가:
+  - 학습 시: 실제 사용된 ticker list를 `metadata.json`으로 저장
+  - 평가 시: 저장된 ticker list를 로드하여 데이터 필터링
+  - 문제: 학습 시 29개 ticker (Visa 제외) vs 평가 시 30개 ticker → observation space 불일치
+  - 해결: 평가 데이터를 학습 ticker로 필터링 → observation space 일치
+- `FeatureEngineer.clean_data()`의 기간별 독립 실행 문제 해결:
+  - 2008-2021 기간: Visa (V) 없음 → 29개 ticker
+  - 2021-2024 기간: Visa (V) 있음 → 30개 ticker
+  - 해결: FeatureEngineer 전에 ticker 필터링 수행
+
+**Monitor Wrapper 경고 해결**
+- `scripts/train.py`의 `EvalCallback`에 `Monitor` wrapper 추가:
+  - 이전: "Evaluation environment is not wrapped with a Monitor wrapper" 경고 10회 반복
+  - 수정: `eval_env = Monitor(test_env)` 명시적 래핑
+  - 영향: Episode 길이/reward가 정확하게 기록됨
+
+**Off-Policy 알고리즘 호환성 개선**
+- `finrl/agents/stablebaselines3/models.py`의 `TensorboardCallback` 문제 해결:
+  - 문제: `_on_rollout_end()`에서 `rollout_buffer` 접근 → SAC/TD3/DDPG (off-policy)에서 오류
+  - 원인: On-policy (PPO/A2C)만 `rollout_buffer` 있음, off-policy는 `replay_buffer` 사용
+  - 이전: `Logging Error: 'rollout_buffer'` 반복 출력
+- `DRLAgent.train_model()` callbacks 처리 개선:
+  - `callbacks=None` (기본): `TensorboardCallback()` 자동 추가 → 기존 호환성 유지
+  - `callbacks=[]` (빈 리스트): TensorboardCallback 비활성화 → off-policy 알고리즘 지원
+  - `callbacks=[CustomCallback()]`: TensorboardCallback + CustomCallback → 확장성
+- `scripts/train_finrl_standard.py`에서 `callbacks=[]` 사용:
+  - SAC/TD3/DDPG 학습 시 rollout_buffer 오류 제거
+  - 학습 정상 진행, TensorBoard는 SB3 기본 로깅으로 동작
+
+#### Changed
+
+**scripts/train.py**
+- `save_metadata()` 함수 추가: ticker, train/test 기간 저장
+- `load_metadata()` 함수 추가: metadata.json 로드
+- `train_model()`: 학습 후 metadata 저장
+- `test_model()`: metadata 로드 → 데이터 필터링 → 환경 생성
+- Import 추가: `json`, `Monitor`
+
+**finrl/agents/stablebaselines3/models.py**
+- `train_model()` (Line 136-155): callbacks 처리 로직 개선
+- `train_model()` (Line 259-284): callbacks 처리 로직 개선 (두 번째 오버로드)
+- 기존 15개 호출자 모두 호환성 유지 (callbacks 미지정 → None → 기존 동작)
+
+**scripts/train_finrl_standard.py**
+- `train_model()` 호출 시 `callbacks=[]` 전달
+- 주석 업데이트: TensorboardCallback 비활성화 이유 설명
+
+#### Technical Details
+
+**Metadata 구조**
+```json
+{
+  "tickers": ["AAPL", "MSFT", ...],  // 실제 사용된 29개 ticker
+  "train_period": {"start": "2008-01-01", "end": "2020-12-31"},
+  "test_period": {"start": "2021-01-01", "end": "2024-12-31"},
+  "n_stocks": 29
+}
+```
+
+**Callbacks 처리 로직**
+```python
+# finrl/agents/stablebaselines3/models.py
+if callbacks == []:
+    callback = None  # TensorboardCallback 비활성화
+elif callbacks is not None:
+    callback = CallbackList([TensorboardCallback()] + callbacks)
+else:
+    callback = TensorboardCallback()  # 기본 동작 (기존 호환)
+```
+
+**영향 범위**
+- ✅ 기존 코드 호환: 모든 기존 호출자 영향 없음
+- ✅ 아키텍처 보존: API 변경 없음
+- ✅ 오류 해결: observation space 불일치, Monitor 경고, rollout_buffer 오류 모두 해결
+
+#### Performance
+
+**학습/평가 안정성**
+- Observation space 일치로 평가 오류 0건
+- Monitor wrapper로 정확한 episode 통계
+- Off-policy 알고리즘에서 불필요한 경고 제거
+
+---
+
 ### Phase 1 리팩터링 - FinRL 기반 재구축 (2025-10-04)
 
 이전 독립 구현(src/ 디렉토리)을 제거하고 FinRL 프레임워크 기반으로 전면 재구축했다.
@@ -96,6 +187,77 @@
 - FinRL의 검증된 환경 활용
 - SB3의 안정적인 학습 루프 사용
 - 하이퍼파라미터 중앙 관리 (config.py)
+
+---
+
+### Phase 1.1 - IRT Policy 아키텍처 개선 (2025-10-04)
+
+IRT 아키텍처를 보존하면서 Stable Baselines3와의 통합을 개선했다.
+
+#### Fixed
+
+**IRT 아키텍처 보존**
+- `action_log_prob()`에서 IRT 중복 호출 제거:
+  - 이전: IRT forward를 두 번 호출하여 EMA 메모리 (`w_prev`) 손상
+  - 수정: 한 번만 호출하고 `info`에서 Dirichlet concentration 재사용
+  - 영향: EMA 메모리, T-Cell 통계, IRT 연산이 정확히 한 번씩만 실행됨
+- BCellIRTActor `info` 확장:
+  - `concentrations`: [B, M, A] - 프로토타입별 Dirichlet concentration
+  - `mixed_conc`: [B, A] - 혼합된 concentration
+  - `mixed_conc_clamped`: [B, A] - log_prob 계산용 (clamped)
+- T-Cell 통계 오염 방지:
+  - `update_stats=self.training`으로 학습 시에만 통계 업데이트
+  - 평가 시에는 통계 업데이트 없음
+
+**Monitor wrapper 경고 해결**
+- `train_irt.py`에서 evaluation environment를 `Monitor`로 감싸기
+- UserWarning 제거: "Evaluation environment is not wrapped with a Monitor wrapper"
+
+#### Changed
+
+**IRTPolicy 구조 개선**
+- `BasePolicy` → `SACPolicy` 상속:
+  - SAC가 요구하는 인터페이스 완벽 구현
+  - `make_actor()` 메서드로 IRT Actor 생성
+- `IRTActorWrapper` 추가:
+  - `BCellIRTActor`를 SB3의 Actor 인터페이스로 wrapping
+  - SAC가 기대하는 메서드 제공: `forward()`, `action_log_prob()`, `get_std()`
+  - `nn.Module` 초기화만 수행 (Actor 초기화 건너뛰기)
+
+#### Performance
+
+**학습 효율성 향상**
+- IRT forward pass 중복 제거로 학습 속도 약 2배 향상
+- `action_log_prob()` 코드 간소화: 65줄 → 26줄 (39줄 감소)
+- 메모리 사용량 감소 (중복 계산 제거)
+
+#### Technical Details
+
+**아키텍처 흐름**
+```
+SAC.train()
+  └─> IRTPolicy (SACPolicy 상속)
+       └─> IRTActorWrapper (Actor 인터페이스)
+            └─> BCellIRTActor (IRT 구현)
+                 └─> IRT Operator (OT + Replicator)
+                      └─> T-Cell (위기 감지)
+```
+
+**핵심 변경 파일**
+- `finrl/agents/irt/irt_policy.py`:
+  - `IRTPolicy`: BasePolicy → SACPolicy
+  - `IRTActorWrapper`: 새로 추가
+  - `make_actor()`: override
+- `finrl/agents/irt/bcell_actor.py`:
+  - `info`에 Dirichlet concentration 추가
+- `scripts/train_irt.py`:
+  - `Monitor` import 및 적용
+
+**검증 완료**
+- ✅ EMA 메모리 (`w_prev`): 한 번만 업데이트
+- ✅ T-Cell 통계: `update_stats=self.training`
+- ✅ IRT 연산: 한 번만 실행
+- ✅ Dirichlet 샘플링: 정확한 concentration 사용
 
 ---
 

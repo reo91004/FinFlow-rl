@@ -7,7 +7,7 @@ TENSORBOARD_LOG_DIR = "tensorboard_log"
 RESULTS_DIR = "results"
 
 # date format: '%Y-%m-%d'
-TRAIN_START_DATE = "2008-01-01"
+TRAIN_START_DATE = "2008-04-01"
 TRAIN_END_DATE = "2020-12-31"
 
 TEST_START_DATE = "2021-01-01"

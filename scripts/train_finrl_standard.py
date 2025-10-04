@@ -144,11 +144,12 @@ def train_model(args):
     new_logger = configure(log_path, ["stdout", "csv", "tensorboard"])
     model.set_logger(new_logger)
 
-    # 학습 (TensorboardCallback 자동 추가됨)
+    # 학습 (callbacks=[] → TensorboardCallback 비활성화, off-policy 알고리즘 호환)
     trained_model = agent.train_model(
         model=model,
         tb_log_name=args.model,
-        total_timesteps=args.timesteps
+        total_timesteps=args.timesteps,
+        callbacks=[]  # TensorboardCallback 비활성화 (SAC/TD3/DDPG는 rollout_buffer 없음)
     )
 
     # 모델 저장 (log_dir 아래)

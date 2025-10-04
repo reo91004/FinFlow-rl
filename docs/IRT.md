@@ -3,12 +3,13 @@
 ## 📋 목차
 
 1. [개요](#개요)
-2. [IRT의 3가지 핵심 메커니즘](#irt의-3가지-핵심-메커니즘)
-3. [효과 및 성능 목표](#효과-및-성능-목표)
-4. [다른 알고리즘과의 비교](#다른-알고리즘과의-비교)
-5. [하이퍼파라미터 가이드](#하이퍼파라미터-가이드)
-6. [사용 예시](#사용-예시)
-7. [참고 문헌](#참고-문헌)
+2. [내부 아키텍처](#내부-아키텍처)
+3. [IRT의 3가지 핵심 메커니즘](#irt의-3가지-핵심-메커니즘)
+4. [효과 및 성능 목표](#효과-및-성능-목표)
+5. [다른 알고리즘과의 비교](#다른-알고리즘과의-비교)
+6. [하이퍼파라미터 가이드](#하이퍼파라미터-가이드)
+7. [사용 예시](#사용-예시)
+8. [참고 문헌](#참고-문헌)
 
 ---
 
@@ -48,6 +49,162 @@ IRT는 **여러 전문가 전략(프로토타입)**을 학습하고, 현재 상�
          → OT가 위기 신호와 정렬된 프로토타입 선택
          → 위기 적응형 포트폴리오 구성
 ```
+
+---
+
+## 내부 아키텍처
+
+### Stable Baselines3 통합 구조
+
+IRT는 Stable Baselines3의 SAC 알고리즘과 통합하여 작동한다. 다음은 전체 아키텍처 흐름이다:
+
+```
+SAC.train()
+  │
+  ├─> policy.predict(obs, deterministic)
+  │    │
+  │    └─> IRTPolicy._predict(obs)
+  │         │
+  │         └─> IRTActorWrapper.forward(obs, deterministic)
+  │              │
+  │              └─> BCellIRTActor(state=obs, fitness=None, deterministic)
+  │                   │
+  │                   ├─> Step 1: T-Cell 위기 감지
+  │                   │    └─> TCellMinimal(market_features) → crisis_level, danger_embed
+  │                   │
+  │                   ├─> Step 2: Epitope 인코딩
+  │                   │    └─> epitope_encoder(state) → E [B, m, D]
+  │                   │
+  │                   ├─> Step 3: Prototype 확장
+  │                   │    └─> proto_keys → K [B, M, D]
+  │                   │
+  │                   ├─> Step 4: IRT 연산
+  │                   │    └─> IRT(E, K, danger, w_prev, fitness, crisis) → w, P
+  │                   │         │
+  │                   │         ├─> Sinkhorn (OT) → w_ot
+  │                   │         └─> Replicator Dynamics → w_rep
+  │                   │         └─> Mixing: w = (1-α)·w_rep + α·w_ot
+  │                   │
+  │                   ├─> Step 5: Dirichlet 정책
+  │                   │    └─> decoders[j](K) → concentrations
+  │                   │    └─> mixed_conc = w @ concentrations
+  │                   │    └─> Dirichlet(mixed_conc).sample() → action
+  │                   │
+  │                   └─> Step 6: EMA 업데이트 (w_prev)
+  │                        └─> w_prev = β·w_prev + (1-β)·w.mean()
+  │
+  └─> policy.actor.action_log_prob(obs)
+       │
+       └─> IRTActorWrapper.action_log_prob(obs)
+            │
+            └─> BCellIRTActor(state=obs, deterministic=False)  # 한 번만 호출!
+                 │
+                 └─> info['mixed_conc_clamped'] 사용하여 log_prob 계산
+```
+
+### 레이어별 역할
+
+#### 1. IRTPolicy (SACPolicy 상속)
+
+**역할**: SB3의 정책 인터페이스를 구현한다.
+
+**주요 메서드**:
+- `make_actor()`: IRT Actor를 생성 (SACPolicy 메서드 override)
+- `_get_constructor_parameters()`: 체크포인트 저장용 파라미터
+
+**왜 SACPolicy를 상속하는가?**
+- SAC는 `policy.actor`를 통해 Actor에 접근함
+- `make_actor()`를 override하여 IRT Actor를 주입
+- Critic은 SB3 기본 사용 (IRT는 Actor만 교체)
+
+#### 2. IRTActorWrapper (Actor 인터페이스)
+
+**역할**: BCellIRTActor를 SAC가 기대하는 Actor 인터페이스로 wrapping한다.
+
+**주요 메서드**:
+- `forward(obs, deterministic)`: mean actions 반환
+- `action_log_prob(obs)`: action과 log_prob 반환
+- `get_std()`: standard deviation 반환 (gSDE용, IRT는 미사용)
+
+**왜 Wrapper가 필요한가?**
+- SAC는 `actor.action_log_prob(obs)`를 호출함
+- BCellIRTActor는 `(state, fitness, deterministic)` 시그니처를 사용
+- Wrapper가 인터페이스를 변환하고, IRT를 **한 번만** 호출하도록 보장
+
+**핵심 최적화**:
+```python
+# action_log_prob()에서 IRT 한 번만 호출
+action, info = self.irt_actor(state=obs, fitness=None, deterministic=False)
+
+# info에서 concentration 재사용
+mixed_conc_clamped = info['mixed_conc_clamped']
+dist = torch.distributions.Dirichlet(mixed_conc_clamped)
+log_prob = dist.log_prob(action)
+```
+
+이전에는 IRT를 두 번 호출하여 EMA 메모리(`w_prev`)가 손상되었으나, 현재는 **한 번만** 호출하여 아키텍처를 완벽히 보존한다.
+
+#### 3. BCellIRTActor (IRT 구현)
+
+**역할**: IRT 알고리즘의 핵심 구현체.
+
+**주요 컴포넌트**:
+- `epitope_encoder`: 상태 → 다중 토큰 (E)
+- `proto_keys`: 학습 가능한 프로토타입 키 (K)
+- `decoders`: 프로토타입별 Dirichlet 디코더
+- `irt`: IRT Operator (Sinkhorn + Replicator)
+- `t_cell`: T-Cell 위기 감지
+- `w_prev`: EMA 메모리 (buffer)
+
+**Info 구조** (v1.1부터 확장):
+```python
+info = {
+    'w': w,                          # [B, M] - 최종 프로토타입 가중치
+    'P': P,                          # [B, m, M] - 수송 계획
+    'crisis_level': crisis_level,    # [B, 1] - 위기 레벨
+    'w_rep': w_rep,                  # [B, M] - Replicator 출력
+    'w_ot': w_ot,                    # [B, M] - OT 출력
+    # v1.1 추가: log_prob 계산용
+    'concentrations': concentrations,         # [B, M, A]
+    'mixed_conc': mixed_conc,                 # [B, A]
+    'mixed_conc_clamped': mixed_conc_clamped  # [B, A]
+}
+```
+
+#### 4. IRT Operator
+
+**역할**: Optimal Transport와 Replicator Dynamics를 혼합한다.
+
+**수식**:
+```
+w_t = (1-α)·Replicator(w_{t-1}, f_t) + α·Transport(E_t, K, C_t)
+```
+
+**세부사항**은 [IRT의 3가지 핵심 메커니즘](#irt의-3가지-핵심-메커니즘) 참조.
+
+### 왜 이 구조가 필요한가?
+
+#### 1. SAC 인터페이스 준수
+- SAC는 `policy.actor.action_log_prob(obs)`를 호출
+- IRTActorWrapper가 이 인터페이스를 제공
+
+#### 2. IRT 아키텍처 보존
+- EMA 메모리 (`w_prev`): 한 번만 업데이트
+- T-Cell 통계: `update_stats=self.training`
+- IRT 연산: 한 번만 실행
+
+#### 3. 효율성
+- IRT forward 중복 제거 → 학습 속도 약 2배 향상
+- 코드 간소화: 65줄 → 26줄 (`action_log_prob`)
+
+### 검증 완료
+
+| 메커니즘 | 상태 | 검증 위치 |
+|---------|------|----------|
+| **EMA 메모리 (`w_prev`)** | ✅ 정상 | bcell_actor.py:190-195 |
+| **T-Cell 통계** | ✅ 정상 | bcell_actor.py:138 (`update_stats=self.training`) |
+| **IRT 연산** | ✅ 정상 | irt_policy.py:106-110 (한 번만 호출) |
+| **Dirichlet 샘플링** | ✅ 정상 | bcell_actor.py:181-183 |
 
 ---
 

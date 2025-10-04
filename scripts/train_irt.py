@@ -33,6 +33,7 @@ from finrl.meta.preprocessor.preprocessors import FeatureEngineer, data_split
 from finrl.meta.env_stock_trading.env_stocktrading import StockTradingEnv
 from stable_baselines3 import SAC
 from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
+from stable_baselines3.common.monitor import Monitor
 
 # Import IRT Policy
 from finrl.agents.irt import IRTPolicy
@@ -147,7 +148,7 @@ def train_irt(args):
     )
 
     eval_callback = EvalCallback(
-        test_env,
+        Monitor(test_env),
         best_model_save_path=os.path.join(log_dir, "best_model"),
         log_path=os.path.join(log_dir, "eval"),
         eval_freq=5000,

@@ -21,11 +21,11 @@ FinRL-IRT 프로젝트의 학습 및 평가 스크립트 사용법을 설명한�
 
 본 프로젝트는 세 가지 학습 파이프라인을 제공한다:
 
-| 스크립트 | 목적 | 파이프라인 | 특징 |
-|---------|------|-----------|------|
-| `train.py` | 일반 RL 알고리즘 학습 | SB3 직접 사용 | SAC, PPO, A2C, TD3, DDPG 지원 |
-| `train_irt.py` | IRT Policy 학습 | SAC + IRTPolicy | 위기 적응형 포트폴리오 관리 |
-| `train_finrl_standard.py` | FinRL 표준 베이스라인 | DRLAgent 사용 | 논문 재현성 검증 |
+| 스크립트                  | 목적                  | 파이프라인      | 특징                          |
+| ------------------------- | --------------------- | --------------- | ----------------------------- |
+| `train.py`                | 일반 RL 알고리즘 학습 | SB3 직접 사용   | SAC, PPO, A2C, TD3, DDPG 지원 |
+| `train_irt.py`            | IRT Policy 학습       | SAC + IRTPolicy | 위기 적응형 포트폴리오 관리   |
+| `train_finrl_standard.py` | FinRL 표준 베이스라인 | DRLAgent 사용   | 논문 재현성 검증              |
 
 모든 스크립트는 결과를 `logs/` 아래에 타임스탬프로 저장한다.
 
@@ -43,17 +43,17 @@ python scripts/train.py [OPTIONS]
 
 ### 주요 인자
 
-| 인자 | 타입 | 기본값 | 설명 |
-|-----|------|--------|------|
-| `--model` | str | **필수** | RL 알고리즘 (`sac`, `ppo`, `a2c`, `td3`, `ddpg`) |
-| `--mode` | str | `both` | 실행 모드 (`train`, `test`, `both`) |
-| `--episodes` | int | 200 | 에피소드 수 (총 timesteps = 250 × episodes) |
-| `--train-start` | str | `2008-01-01` | 학습 시작일 |
-| `--train-end` | str | `2020-12-31` | 학습 종료일 |
-| `--test-start` | str | `2021-01-01` | 테스트 시작일 |
-| `--test-end` | str | `2024-12-31` | 테스트 종료일 |
-| `--output` | str | `logs` | 출력 디렉토리 |
-| `--checkpoint` | str | `None` | 평가 전용 모드에서 모델 경로 |
+| 인자            | 타입 | 기본값       | 설명                                             |
+| --------------- | ---- | ------------ | ------------------------------------------------ |
+| `--model`       | str  | **필수**     | RL 알고리즘 (`sac`, `ppo`, `a2c`, `td3`, `ddpg`) |
+| `--mode`        | str  | `both`       | 실행 모드 (`train`, `test`, `both`)              |
+| `--episodes`    | int  | 200          | 에피소드 수 (총 timesteps = 250 × episodes)      |
+| `--train-start` | str  | `2008-01-01` | 학습 시작일                                      |
+| `--train-end`   | str  | `2020-12-31` | 학습 종료일                                      |
+| `--test-start`  | str  | `2021-01-01` | 테스트 시작일                                    |
+| `--test-end`    | str  | `2024-12-31` | 테스트 종료일                                    |
+| `--output`      | str  | `logs`       | 출력 디렉토리                                    |
+| `--checkpoint`  | str  | `None`       | 평가 전용 모드에서 모델 경로                     |
 
 ### 예시
 
@@ -64,6 +64,7 @@ python scripts/train.py --model sac --mode both --episodes 200
 ```
 
 출력:
+
 ```
 logs/sac/20251004_120000/
 ├── checkpoints/
@@ -72,6 +73,7 @@ logs/sac/20251004_120000/
 ├── best_model/
 │   └── best_model.zip
 ├── sac_final.zip
+├── metadata.json          # 학습 시 사용된 ticker 및 기간 정보
 ├── tensorboard/
 └── eval/
 ```
@@ -102,6 +104,8 @@ python scripts/train.py \
 - **Callbacks**: CheckpointCallback (10,000 steps마다), EvalCallback (5,000 steps마다)
 - **TensorBoard**: `logs/{model}/{timestamp}/tensorboard/` 에서 확인
 - **평가**: `model.predict()` 직접 호출 → portfolio value 수동 계산
+- **Metadata 저장**: 학습 시 사용된 ticker list와 기간 정보를 `metadata.json`으로 저장
+- **평가 일관성**: 평가 시 저장된 metadata를 로드하여 동일한 ticker로 데이터 필터링 (observation space 불일치 방지)
 
 ### 총 Timesteps 계산
 
@@ -123,29 +127,29 @@ python scripts/train_irt.py [OPTIONS]
 
 ### 주요 인자
 
-| 인자 | 타입 | 기본값 | 설명 |
-|-----|------|--------|------|
-| `--mode` | str | `both` | 실행 모드 (`train`, `test`, `both`) |
-| `--episodes` | int | 200 | 에피소드 수 (총 timesteps = 250 × episodes) |
-| `--train-start` | str | `2008-01-01` | 학습 시작일 |
-| `--train-end` | str | `2020-12-31` | 학습 종료일 |
-| `--test-start` | str | `2021-01-01` | 테스트 시작일 |
-| `--test-end` | str | `2024-12-31` | 테스트 종료일 |
-| `--output` | str | `logs` | 출력 디렉토리 |
-| `--checkpoint` | str | `None` | 평가 전용 모드에서 모델 경로 |
+| 인자            | 타입 | 기본값       | 설명                                        |
+| --------------- | ---- | ------------ | ------------------------------------------- |
+| `--mode`        | str  | `both`       | 실행 모드 (`train`, `test`, `both`)         |
+| `--episodes`    | int  | 200          | 에피소드 수 (총 timesteps = 250 × episodes) |
+| `--train-start` | str  | `2008-01-01` | 학습 시작일                                 |
+| `--train-end`   | str  | `2020-12-31` | 학습 종료일                                 |
+| `--test-start`  | str  | `2021-01-01` | 테스트 시작일                               |
+| `--test-end`    | str  | `2024-12-31` | 테스트 종료일                               |
+| `--output`      | str  | `logs`       | 출력 디렉토리                               |
+| `--checkpoint`  | str  | `None`       | 평가 전용 모드에서 모델 경로                |
 
 ### IRT 하이퍼파라미터
 
-| 인자 | 타입 | 기본값 | 설명 |
-|-----|------|--------|------|
-| `--emb-dim` | int | 128 | IRT embedding dimension |
-| `--m-tokens` | int | 6 | Epitope tokens 수 |
-| `--M-proto` | int | 8 | Prototype 수 |
-| `--alpha` | float | 0.3 | OT-Replicator mixing ratio |
-| `--eps` | float | 0.10 | Sinkhorn entropy |
-| `--eta-0` | float | 0.05 | Base learning rate (Replicator) |
-| `--eta-1` | float | 0.15 | Crisis increase (Replicator) |
-| `--market-feature-dim` | int | 12 | Market feature dimension |
+| 인자                   | 타입  | 기본값 | 설명                            |
+| ---------------------- | ----- | ------ | ------------------------------- |
+| `--emb-dim`            | int   | 128    | IRT embedding dimension         |
+| `--m-tokens`           | int   | 6      | Epitope tokens 수               |
+| `--M-proto`            | int   | 8      | Prototype 수                    |
+| `--alpha`              | float | 0.3    | OT-Replicator mixing ratio      |
+| `--eps`                | float | 0.10   | Sinkhorn entropy                |
+| `--eta-0`              | float | 0.05   | Base learning rate (Replicator) |
+| `--eta-1`              | float | 0.15   | Crisis increase (Replicator)    |
+| `--market-feature-dim` | int   | 12     | Market feature dimension        |
 
 ### 예시
 
@@ -156,6 +160,7 @@ python scripts/train_irt.py --mode both
 ```
 
 출력:
+
 ```
 logs/irt/20251004_150000/
 ├── checkpoints/
@@ -193,6 +198,7 @@ python scripts/train_irt.py \
 - **B-Cell IRT Actor**: Epitope encoder + Prototype decoders + IRT mixing
 - **위기 적응**: T-Cell 출력에 따라 동적으로 포트폴리오 조정
 - **config.py 사용**: `SAC_PARAMS` 자동 로드
+- **Monitor wrapper**: Evaluation environment를 자동으로 Monitor로 감싸기 (경고 방지)
 
 ### IRT 수식
 
@@ -224,17 +230,17 @@ python scripts/train_finrl_standard.py [OPTIONS]
 
 ### 주요 인자
 
-| 인자 | 타입 | 기본값 | 설명 |
-|-----|------|--------|------|
-| `--model` | str | **필수** | RL 알고리즘 (`sac`, `ppo`, `a2c`, `td3`, `ddpg`) |
-| `--mode` | str | `both` | 실행 모드 (`train`, `test`, `both`) |
-| `--timesteps` | int | 50000 | 총 학습 timesteps (FinRL 표준) |
-| `--train-start` | str | `2008-01-01` | 학습 시작일 |
-| `--train-end` | str | `2020-12-31` | 학습 종료일 |
-| `--test-start` | str | `2021-01-01` | 테스트 시작일 |
-| `--test-end` | str | `2024-12-31` | 테스트 종료일 |
-| `--output` | str | `logs` | 출력 디렉토리 |
-| `--checkpoint` | str | `None` | 평가 전용 모드에서 모델 경로 |
+| 인자            | 타입 | 기본값       | 설명                                             |
+| --------------- | ---- | ------------ | ------------------------------------------------ |
+| `--model`       | str  | **필수**     | RL 알고리즘 (`sac`, `ppo`, `a2c`, `td3`, `ddpg`) |
+| `--mode`        | str  | `both`       | 실행 모드 (`train`, `test`, `both`)              |
+| `--timesteps`   | int  | 50000        | 총 학습 timesteps (FinRL 표준)                   |
+| `--train-start` | str  | `2008-01-01` | 학습 시작일                                      |
+| `--train-end`   | str  | `2020-12-31` | 학습 종료일                                      |
+| `--test-start`  | str  | `2021-01-01` | 테스트 시작일                                    |
+| `--test-end`    | str  | `2024-12-31` | 테스트 종료일                                    |
+| `--output`      | str  | `logs`       | 출력 디렉토리                                    |
+| `--checkpoint`  | str  | `None`       | 평가 전용 모드에서 모델 경로                     |
 
 ### 예시
 
@@ -245,6 +251,7 @@ python scripts/train_finrl_standard.py --model sac --mode both
 ```
 
 출력:
+
 ```
 logs/finrl_sac/20251004_130000/
 ├── sac_50k.zip
@@ -278,7 +285,9 @@ python scripts/train_finrl_standard.py \
 
 - **DRLAgent 사용**: FinRL 표준 파이프라인
 - **get_sb_env()**: DummyVecEnv 자동 래핑
-- **TensorboardCallback**: reward min/mean/max 자동 로깅
+- **TensorboardCallback**: `callbacks=[]`로 비활성화 (off-policy 알고리즘 호환)
+  - SAC/TD3/DDPG는 `rollout_buffer` 없음 (`replay_buffer` 사용)
+  - On-policy (PPO/A2C)만 `rollout_buffer` 있음
 - **평가**: `DRLAgent.DRL_prediction()` → `account_memory` (DataFrame)
 - **결과 형식**: FinRL 논문과 동일 (account_value, actions CSV)
 
@@ -304,26 +313,31 @@ python scripts/evaluate.py [OPTIONS]
 
 ### 주요 인자
 
-| 인자 | 타입 | 기본값 | 설명 |
-|-----|------|--------|------|
-| `--model` | str | **필수** | 모델 파일 경로 (`.zip`) |
-| `--model-type` | str | 자동 감지 | 모델 타입 (`sac`, `ppo`, `a2c`, `td3`, `ddpg`) |
-| `--method` | str | `direct` | 평가 방식 (`direct`, `drlagent`) |
-| `--test-start` | str | `2021-01-01` | 테스트 시작일 |
-| `--test-end` | str | `2024-12-31` | 테스트 종료일 |
-| `--save-plot` | flag | `False` | 시각화 결과 저장 |
-| `--save-json` | flag | `False` | JSON 결과 저장 |
-| `--output` | str | 모델 디렉토리 | Plot 출력 디렉토리 |
-| `--output-json` | str | 모델 디렉토리 | JSON 출력 파일 |
+| 인자            | 타입 | 기본값        | 설명                                           |
+| --------------- | ---- | ------------- | ---------------------------------------------- |
+| `--model`       | str  | **필수**      | 모델 파일 경로 (`.zip`)                        |
+| `--model-type`  | str  | 자동 감지     | 모델 타입 (`sac`, `ppo`, `a2c`, `td3`, `ddpg`) |
+| `--method`      | str  | `direct`      | 평가 방식 (`direct`, `drlagent`)               |
+| `--test-start`  | str  | `2021-01-01`  | 테스트 시작일                                  |
+| `--test-end`    | str  | `2024-12-31`  | 테스트 종료일                                  |
+| `--save-plot`   | flag | `False`       | 시각화 결과 저장                               |
+| `--save-json`   | flag | `False`       | JSON 결과 저장                                 |
+| `--output`      | str  | 모델 디렉토리 | Plot 출력 디렉토리                             |
+| `--output-json` | str  | 모델 디렉토리 | JSON 출력 파일                                 |
 
 ### 평가 방식
 
 **1. Direct 방식 (`--method direct`)**
+
 - `train.py` 결과 평가용
 - `model.predict()` 직접 호출
 - portfolio value 수동 계산
+- **주의**: `scripts/evaluate.py`는 아직 metadata 자동 로드를 지원하지 않음
+  - `train.py --mode test`를 사용하면 metadata가 자동으로 로드됨
+  - 또는 `evaluate.py` 수정 필요 (향후 개선 예정)
 
 **2. DRLAgent 방식 (`--method drlagent`)**
+
 - `train_finrl_standard.py` 결과 평가용
 - `DRLAgent.DRL_prediction()` 사용
 - `account_memory` (DataFrame) 반환
@@ -393,6 +407,7 @@ Performance Metrics
 ### 시각화 (--save-plot)
 
 생성되는 플롯:
+
 1. **portfolio_value.png** - 포트폴리오 가치 추이
 2. **drawdown.png** - Drawdown 차트
 3. **returns_distribution.png** - 일별 수익률 분포
@@ -403,26 +418,26 @@ Performance Metrics
 
 ```json
 {
-  "model_path": "logs/sac/20251004_120000/sac_final.zip",
-  "model_type": "sac",
-  "evaluation_method": "direct",
-  "test_period": {
-    "start": "2021-01-01",
-    "end": "2024-12-31",
-    "steps": 1008
-  },
-  "metrics": {
-    "total_return": 0.4523,
-    "annualized_return": 0.1287,
-    "volatility": 0.1842,
-    "sharpe_ratio": 0.698,
-    "sortino_ratio": 1.023,
-    "calmar_ratio": 0.581,
-    "max_drawdown": -0.2215,
-    "final_value": 1452300.0,
-    "profit_loss": 452300.0
-  },
-  "timestamp": "2025-10-04T14:30:00.000000"
+	"model_path": "logs/sac/20251004_120000/sac_final.zip",
+	"model_type": "sac",
+	"evaluation_method": "direct",
+	"test_period": {
+		"start": "2021-01-01",
+		"end": "2024-12-31",
+		"steps": 1008
+	},
+	"metrics": {
+		"total_return": 0.4523,
+		"annualized_return": 0.1287,
+		"volatility": 0.1842,
+		"sharpe_ratio": 0.698,
+		"sortino_ratio": 1.023,
+		"calmar_ratio": 0.581,
+		"max_drawdown": -0.2215,
+		"final_value": 1452300.0,
+		"profit_loss": 452300.0
+	},
+	"timestamp": "2025-10-04T14:30:00.000000"
 }
 ```
 
@@ -434,24 +449,27 @@ Performance Metrics
 
 ### 4개 스크립트 상세 비교
 
-| 항목 | train.py | train_irt.py | train_finrl_standard.py | evaluate.py |
-|------|----------|--------------|------------------------|-------------|
-| **목적** | 일반 RL 알고리즘 학습 | IRT Policy 학습 | FinRL 표준 베이스라인 | 모델 평가 |
-| **알고리즘** | SAC, PPO, A2C, TD3, DDPG | SAC + IRTPolicy | SAC, PPO, A2C, TD3, DDPG | - |
-| **파이프라인** | SB3 직접 사용 | SB3 + IRTPolicy | DRLAgent + get_sb_env() | Direct / DRLAgent |
-| **환경 생성** | `create_env()` | `create_env()` | `get_sb_env()` | `create_env()` |
-| **DummyVecEnv** | 자동 래핑 (SB3 내부) | 자동 래핑 (SB3 내부) | 수동 래핑 (get_sb_env) | 평가 시 생성 |
-| **모델 생성** | `MODEL_CLASSES[model]()` | `SAC(policy=IRTPolicy)` | `DRLAgent.get_model()` | 로드만 |
-| **하이퍼파라미터** | config.py (MODEL_PARAMS) | config.py (SAC_PARAMS) + IRT args | config.py (MODEL_KWARGS) | - |
-| **평가 방식** | `model.predict()` | `model.predict()` | `DRL_prediction()` | `direct` / `drlagent` |
-| **FinRL 표준** | ❌ No | ❌ No | ✅ Yes | drlagent만 Yes |
-| **출력 위치** | `logs/{model}/` | `logs/irt/` | `logs/finrl_{model}/` | 평가 결과 |
-| **시각화** | - | - | - | finrl/evaluation/visualizer.py 사용 |
-| **IRT 플롯** | - | 14개 | - | 14개 (IRT Policy 전용) |
+| 항목               | train.py                 | train_irt.py                      | train_finrl_standard.py  | evaluate.py                         |
+| ------------------ | ------------------------ | --------------------------------- | ------------------------ | ----------------------------------- |
+| **목적**           | 일반 RL 알고리즘 학습    | IRT Policy 학습                   | FinRL 표준 베이스라인    | 모델 평가                           |
+| **알고리즘**       | SAC, PPO, A2C, TD3, DDPG | SAC + IRTPolicy                   | SAC, PPO, A2C, TD3, DDPG | -                                   |
+| **파이프라인**     | SB3 직접 사용            | SB3 + IRTPolicy                   | DRLAgent + get_sb_env()  | Direct / DRLAgent                   |
+| **환경 생성**      | `create_env()`           | `create_env()`                    | `get_sb_env()`           | `create_env()`                      |
+| **DummyVecEnv**    | 자동 래핑 (SB3 내부)     | 자동 래핑 (SB3 내부)              | 수동 래핑 (get_sb_env)   | 평가 시 생성                        |
+| **모델 생성**      | `MODEL_CLASSES[model]()` | `SAC(policy=IRTPolicy)`           | `DRLAgent.get_model()`   | 로드만                              |
+| **하이퍼파라미터** | config.py (MODEL_PARAMS) | config.py (SAC_PARAMS) + IRT args | config.py (MODEL_KWARGS) | -                                   |
+| **Metadata 저장**  | ✅ Yes (ticker, 기간)     | ✅ Yes (ticker, 기간)              | ❌ No                    | ❌ No (train.py 사용 권장)          |
+| **TensorboardCallback** | CheckpointCallback, EvalCallback | CheckpointCallback, EvalCallback | `callbacks=[]` (비활성화) | -                          |
+| **평가 방식**      | `model.predict()`        | `model.predict()`                 | `DRL_prediction()`       | `direct` / `drlagent`               |
+| **FinRL 표준**     | ❌ No                    | ❌ No                             | ✅ Yes                   | drlagent만 Yes                      |
+| **출력 위치**      | `logs/{model}/`          | `logs/irt/`                       | `logs/finrl_{model}/`    | 평가 결과                           |
+| **시각화**         | -                        | -                                 | -                        | finrl/evaluation/visualizer.py 사용 |
+| **IRT 플롯**       | -                        | 14개                              | -                        | 14개 (IRT Policy 전용)              |
 
 ### DummyVecEnv 래핑 방식
 
 **1. 자동 래핑** (train.py, train_irt.py)
+
 - StockTradingEnv를 직접 생성
 - SB3 모델에 전달 시 내부적으로 DummyVecEnv 자동 래핑
 - 코드가 간결하지만 FinRL 표준은 아님
@@ -463,6 +481,7 @@ model = SAC("MlpPolicy", train_env, ...)  # SB3가 자동으로 DummyVecEnv 래�
 ```
 
 **2. 수동 래핑** (train_finrl_standard.py)
+
 - `get_sb_env()` 메소드 사용
 - StockTradingEnv를 DummyVecEnv로 명시적 래핑
 - FinRL 표준 파이프라인 준수
@@ -478,12 +497,13 @@ model = agent.get_model("sac", policy="MlpPolicy", ...)
 
 ### 평가 방식 차이
 
-| 방식 | 사용 스크립트 | 호출 메소드 | 반환값 | 특징 |
-|------|-------------|-----------|--------|------|
-| **Direct** | train.py, train_irt.py | `model.predict()` | action | Portfolio value 수동 계산 |
+| 방식         | 사용 스크립트           | 호출 메소드        | 반환값    | 특징                        |
+| ------------ | ----------------------- | ------------------ | --------- | --------------------------- |
+| **Direct**   | train.py, train_irt.py  | `model.predict()`  | action    | Portfolio value 수동 계산   |
 | **DRLAgent** | train_finrl_standard.py | `DRL_prediction()` | DataFrame | FinRL 표준 (account_memory) |
 
 **evaluate.py 방식 선택**:
+
 - `--method direct`: train.py, train_irt.py 결과 평가용
 - `--method drlagent`: train_finrl_standard.py 결과 평가용
 
@@ -492,14 +512,17 @@ model = agent.get_model("sac", policy="MlpPolicy", ...)
 **시나리오별 스크립트 선택**:
 
 1. **일반 RL 알고리즘 학습** → `train.py`
+
    - SAC, PPO 등 표준 알고리즘
    - IRT와 동일 조건 비교 가능
 
 2. **IRT Policy 학습** → `train_irt.py`
+
    - 위기 적응형 포트폴리오
    - Alpha, eps 등 하이퍼파라미터 조정
 
 3. **FinRL 표준 베이스라인** → `train_finrl_standard.py`
+
    - 논문 재현성 검증
    - DRLAgent 표준 파이프라인
 
@@ -526,6 +549,7 @@ logs/
 │       ├── best_model/
 │       │   └── best_model.zip
 │       ├── sac_final.zip
+│       ├── metadata.json         # 학습 시 사용된 ticker 및 기간 정보
 │       ├── tensorboard/
 │       │   └── events.out.tfevents.*
 │       └── eval/
@@ -553,17 +577,18 @@ logs/
 
 ### 파일 설명
 
-| 파일 | 생성 스크립트 | 설명 |
-|-----|-------------|------|
-| `{model}_final.zip` | train.py | 최종 모델 (학습 종료 시) |
-| `best_model/best_model.zip` | train.py | 최고 성능 모델 (EvalCallback) |
-| `checkpoints/{model}_model_*_steps.zip` | train.py | 주기적 체크포인트 (10,000 steps마다) |
-| `{model}_50k.zip` | train_finrl_standard.py | 모델 (50k timesteps) |
-| `account_value_test.csv` | train_finrl_standard.py | 평가 결과 (포트폴리오 가치) |
-| `actions_test.csv` | train_finrl_standard.py | 평가 결과 (행동 로그) |
-| `tensorboard/` | 공통 | TensorBoard 로그 |
-| `logs/progress.csv` | train_finrl_standard.py | 학습 진행 로그 |
-| `eval/` | train.py | 평가 로그 (EvalCallback) |
+| 파일                                    | 생성 스크립트           | 설명                                 |
+| --------------------------------------- | ----------------------- | ------------------------------------ |
+| `{model}_final.zip`                     | train.py                | 최종 모델 (학습 종료 시)             |
+| `best_model/best_model.zip`             | train.py                | 최고 성능 모델 (EvalCallback)        |
+| `checkpoints/{model}_model_*_steps.zip` | train.py                | 주기적 체크포인트 (10,000 steps마다) |
+| `metadata.json`                         | train.py                | 학습 시 사용된 ticker 및 기간 정보 (평가 일관성) |
+| `{model}_50k.zip`                       | train_finrl_standard.py | 모델 (50k timesteps)                 |
+| `account_value_test.csv`                | train_finrl_standard.py | 평가 결과 (포트폴리오 가치)          |
+| `actions_test.csv`                      | train_finrl_standard.py | 평가 결과 (행동 로그)                |
+| `tensorboard/`                          | 공통                    | TensorBoard 로그                     |
+| `logs/progress.csv`                     | train_finrl_standard.py | 학습 진행 로그                       |
+| `eval/`                                 | train.py                | 평가 로그 (EvalCallback)             |
 
 ---
 
@@ -717,6 +742,7 @@ python scripts/evaluate.py \
 ### 재현성
 
 동일 결과를 얻으려면:
+
 1. 동일한 `--train-start`, `--train-end` 사용
 2. 동일한 `--episodes` 또는 `--timesteps` 사용
 3. 동일한 `config.py` 하이퍼파라미터 사용
@@ -725,16 +751,19 @@ python scripts/evaluate.py \
 ### 문제 해결
 
 **Q: "ModuleNotFoundError: No module named 'finrl'"**
+
 ```bash
 pip install -e .
 ```
 
 **Q: "ValueError: Model type cannot be detected"**
+
 ```bash
 python scripts/evaluate.py --model ... --model-type sac
 ```
 
 **Q: "Data download failed"**
+
 - 인터넷 연결 확인
 - Yahoo Finance API 상태 확인
 - `--train-end` 날짜가 미래가 아닌지 확인

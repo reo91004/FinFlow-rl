@@ -139,16 +139,18 @@ class DRLAgent:
         total_timesteps=5000,
         callbacks: Type[BaseCallback] = None,
     ):  # this function is static method, so it can be called without creating an instance of the class
+        # callbacks 처리: None(기본) → TensorboardCallback 추가, [](빈 리스트) → 추가 안 함
+        if callbacks == []:
+            callback = None
+        elif callbacks is not None:
+            callback = CallbackList([TensorboardCallback()] + callbacks)
+        else:
+            callback = TensorboardCallback()
+
         model = model.learn(
             total_timesteps=total_timesteps,
             tb_log_name=tb_log_name,
-            callback=(
-                CallbackList(
-                    [TensorboardCallback()] + [callback for callback in callbacks]
-                )
-                if callbacks is not None
-                else TensorboardCallback()
-            ),
+            callback=callback,
         )
         return model
 
@@ -263,16 +265,18 @@ class DRLEnsembleAgent:
         total_timesteps=5000,
         callbacks: Type[BaseCallback] = None,
     ):
+        # callbacks 처리: None(기본) → TensorboardCallback 추가, [](빈 리스트) → 추가 안 함
+        if callbacks == []:
+            callback = None
+        elif callbacks is not None:
+            callback = CallbackList([TensorboardCallback()] + callbacks)
+        else:
+            callback = TensorboardCallback()
+
         model = model.learn(
             total_timesteps=total_timesteps,
             tb_log_name=tb_log_name,
-            callback=(
-                CallbackList(
-                    [TensorboardCallback()] + [callback for callback in callbacks]
-                )
-                if callbacks is not None
-                else TensorboardCallback()
-            ),
+            callback=callback,
         )
         model.save(
             f"{config.TRAINED_MODEL_DIR}/{model_name.upper()}_{total_timesteps // 1000}k_{iter_num}"

@@ -205,7 +205,11 @@ class BCellIRTActor(nn.Module):
             'w_rep': irt_debug['w_rep'].detach(),  # [B, M] - Replicator 출력
             'w_ot': irt_debug['w_ot'].detach(),    # [B, M] - OT 출력
             'cost_matrix': irt_debug['cost_matrix'].detach(),  # [B, m, M]
-            'eta': irt_debug['eta'].detach()       # [B, 1] - Crisis learning rate
+            'eta': irt_debug['eta'].detach(),       # [B, 1] - Crisis learning rate
+            # Dirichlet 정보 (log_prob 계산용)
+            'concentrations': concentrations.detach(),  # [B, M, A] - 프로토타입별 concentration
+            'mixed_conc': mixed_conc.detach(),  # [B, A] - 혼합된 concentration
+            'mixed_conc_clamped': mixed_conc_clamped if not deterministic else mixed_conc.detach()  # [B, A]
         }
 
         return action, info
