@@ -67,9 +67,22 @@ SAC.train()
   │         │
   │         └─> IRTActorWrapper.forward(obs, deterministic)
   │              │
-  │              └─> BCellIRTActor(state=obs, fitness=None, deterministic)
+  │              ├─> obs.float()  # dtype 변환 (float64 → float32)
+  │              │
+  │              ├─> _compute_fitness(obs)  # Critic 기반 fitness 계산
+  │              │    │
+  │              │    ├─> 각 프로토타입 j의 샘플 행동 생성
+  │              │    │    └─> decoders[j](proto_keys[j]) → conc_j → softmax → a_j
+  │              │    │
+  │              │    └─> Critic Q-value 계산 (Twin Q 최소값)
+  │              │         └─> critic(obs, a_j) → fitness[j]
+  │              │
+  │              └─> BCellIRTActor(state=obs, fitness=fitness, deterministic)
   │                   │
   │                   ├─> Step 1: T-Cell 위기 감지
+  │                   │    ├─> Market features 추출 (12차원):
+  │                   │    │    ├─ 시장 통계: balance, price_mean, price_std, cash_ratio
+  │                   │    │    └─ Tech indicators: macd, boll_ub, boll_lb, rsi_30, cci_30, dx_30, sma_30, sma_60
   │                   │    └─> TCellMinimal(market_features) → crisis_level, danger_embed
   │                   │
   │                   ├─> Step 2: Epitope 인코딩
@@ -82,7 +95,7 @@ SAC.train()
   │                   │    └─> IRT(E, K, danger, w_prev, fitness, crisis) → w, P
   │                   │         │
   │                   │         ├─> Sinkhorn (OT) → w_ot
-  │                   │         └─> Replicator Dynamics → w_rep
+  │                   │         └─> Replicator Dynamics(fitness) → w_rep  # ✅ fitness 사용
   │                   │         └─> Mixing: w = (1-α)·w_rep + α·w_ot
   │                   │
   │                   ├─> Step 5: Dirichlet 정책
@@ -97,7 +110,11 @@ SAC.train()
        │
        └─> IRTActorWrapper.action_log_prob(obs)
             │
-            └─> BCellIRTActor(state=obs, deterministic=False)  # 한 번만 호출!
+            ├─> obs.float()  # dtype 변환
+            │
+            ├─> _compute_fitness(obs)  # 동일한 helper 사용
+            │
+            └─> BCellIRTActor(state=obs, fitness=fitness, deterministic=False)  # 한 번만 호출!
                  │
                  └─> info['mixed_conc_clamped'] 사용하여 log_prob 계산
 ```
@@ -122,6 +139,7 @@ SAC.train()
 **역할**: BCellIRTActor를 SAC가 기대하는 Actor 인터페이스로 wrapping한다.
 
 **주요 메서드**:
+- `_compute_fitness(obs)`: Critic 기반 fitness 계산 (helper method)
 - `forward(obs, deterministic)`: mean actions 반환
 - `action_log_prob(obs)`: action과 log_prob 반환
 - `get_std()`: standard deviation 반환 (gSDE용, IRT는 미사용)
@@ -131,18 +149,40 @@ SAC.train()
 - BCellIRTActor는 `(state, fitness, deterministic)` 시그니처를 사용
 - Wrapper가 인터페이스를 변환하고, IRT를 **한 번만** 호출하도록 보장
 
-**핵심 최적화**:
+**핵심 최적화 (Phase 1.4)**:
 ```python
-# action_log_prob()에서 IRT 한 번만 호출
-action, info = self.irt_actor(state=obs, fitness=None, deterministic=False)
+# _compute_fitness() helper method (공통 로직)
+def _compute_fitness(self, obs):
+    # 각 프로토타입의 Q-value 계산
+    for j in range(M):
+        a_j = softmax(decoders[j](proto_keys[j]))
+        fitness[j] = min(critic(obs, a_j))  # Twin Q 최소값
+    return fitness
 
-# info에서 concentration 재사용
-mixed_conc_clamped = info['mixed_conc_clamped']
-dist = torch.distributions.Dirichlet(mixed_conc_clamped)
-log_prob = dist.log_prob(action)
+# forward()와 action_log_prob() 모두 helper 사용
+def forward(self, obs, deterministic):
+    obs = obs.float()  # dtype 변환
+    fitness = self._compute_fitness(obs)  # ✅ Critic 기반
+    action, info = self.irt_actor(state=obs, fitness=fitness, deterministic=deterministic)
+    return action
+
+def action_log_prob(self, obs):
+    obs = obs.float()  # dtype 변환
+    fitness = self._compute_fitness(obs)  # ✅ 동일한 helper
+    action, info = self.irt_actor(state=obs, fitness=fitness, deterministic=False)
+
+    # info에서 concentration 재사용
+    mixed_conc_clamped = info['mixed_conc_clamped']
+    dist = torch.distributions.Dirichlet(mixed_conc_clamped)
+    log_prob = dist.log_prob(action)
+    return action, log_prob
 ```
 
-이전에는 IRT를 두 번 호출하여 EMA 메모리(`w_prev`)가 손상되었으나, 현재는 **한 번만** 호출하여 아키텍처를 완벽히 보존한다.
+**주요 개선사항**:
+- ✅ **dtype 안정성**: `obs.float()` 변환으로 float64 → float32
+- ✅ **Train-Eval 일관성**: 둘 다 Critic 기반 fitness 사용
+- ✅ **코드 중복 제거**: `_compute_fitness()` helper로 DRY principle 준수
+- ✅ **IRT 한 번만 호출**: EMA 메모리 (`w_prev`) 보존
 
 #### 3. BCellIRTActor (IRT 구현)
 
@@ -202,9 +242,13 @@ w_t = (1-α)·Replicator(w_{t-1}, f_t) + α·Transport(E_t, K, C_t)
 | 메커니즘 | 상태 | 검증 위치 |
 |---------|------|----------|
 | **EMA 메모리 (`w_prev`)** | ✅ 정상 | bcell_actor.py:190-195 |
-| **T-Cell 통계** | ✅ 정상 | bcell_actor.py:138 (`update_stats=self.training`) |
-| **IRT 연산** | ✅ 정상 | irt_policy.py:106-110 (한 번만 호출) |
-| **Dirichlet 샘플링** | ✅ 정상 | bcell_actor.py:181-183 |
+| **T-Cell 통계** | ✅ 정상 | bcell_actor.py:159 (`update_stats=self.training`) |
+| **T-Cell Market Features** | ✅ 개선 | bcell_actor.py:136-157 (시장 통계 + Tech indicators) |
+| **IRT 연산** | ✅ 정상 | irt_policy.py:154-158 (한 번만 호출) |
+| **Fitness 계산** | ✅ 완전 활성화 | irt_policy.py:81-134, 151 (Train+Eval 모두) |
+| **dtype 안정성** | ✅ 정상 | irt_policy.py:148, 173 (`obs.float()`) |
+| **Dirichlet 샘플링** | ✅ 정상 | bcell_actor.py:174-183 |
+| **Replicator 활성화** | ✅ 70% (alpha=0.3) | irt_operator.py:248-268 (fitness 기반) |
 
 ---
 
@@ -288,11 +332,16 @@ C_ij = distance - γ·co_stimulation + λ·tolerance + ρ·checkpoint
 
 ### 핵심 목표
 
-| 메트릭 | SAC Baseline | IRT 목표 | 개선율 |
-|--------|--------------|---------|--------|
-| **Sharpe Ratio** | 1.0-1.2 | 1.2-1.4 | **+10-15%** |
-| **전체 Max Drawdown** | -30~-35% | -20~-25% | **-20-30%** |
-| **위기 구간 MDD** | -40~-45% | -25~-30% | **-30-40%** |
+| 메트릭 | SAC Baseline | IRT 목표 (Phase 1.4) | 개선율 |
+|--------|--------------|---------------------|--------|
+| **Sharpe Ratio** | 1.0-1.2 | 1.3-1.5 | **+15-20%** |
+| **전체 Max Drawdown** | -30~-35% | -18~-23% | **-25-35%** |
+| **위기 구간 MDD** | -40~-45% | -22~-27% | **-35-45%** |
+
+**Phase 1.4 개선사항 반영**:
+- Replicator 완전 활성화 (0% → 70%)
+- TCell 위기 감지 정확도 향상 (시장 통계 + Tech indicators)
+- Train-Eval 일관성 확보
 
 ### 위기 구간 집중
 
@@ -625,6 +674,27 @@ print(f"IRT 분해 - OT: {info['w_ot']}")
 7. **Portfolio Optimization**
    - Markowitz, H. (1952). "Portfolio Selection"
    - Journal of Finance
+
+---
+
+## 최신 업데이트 (Phase 1.4 - 2025-10-05)
+
+### 주요 변경사항
+
+1. **dtype 불일치 해결** ✅
+   - Evaluation 시 RuntimeError 완전 해결
+   - `IRTActorWrapper`에서 `obs.float()` 변환
+
+2. **Market Features 개선** ✅
+   - TCell이 의미있는 시장 특성 사용
+   - 시장 통계 (4개) + Technical indicators (8개)
+
+3. **Evaluation Fitness 계산** ✅
+   - Replicator 메커니즘 완전 활성화 (0% → 70%)
+   - Train-Eval 일관성 확보
+   - `_compute_fitness()` helper로 DRY principle 준수
+
+자세한 내용은 [CHANGELOG.md - Phase 1.4](CHANGELOG.md#phase-14---evaluation-dtype-불일치-및-성능-개선-2025-10-05) 참조.
 
 ---
 

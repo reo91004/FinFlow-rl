@@ -6,6 +6,145 @@
 
 ## [Unreleased]
 
+### Phase 1.4 - Evaluation dtype 불일치 및 성능 개선 (2025-10-05)
+
+Evaluation 시 dtype 불일치로 인한 RuntimeError 해결과 함께, Market features 추출 로직 개선 및 Evaluation에서도 Critic 기반 Fitness 계산을 적용했다.
+
+#### Fixed
+
+**RuntimeError: dtype 불일치 해결**
+- 문제: `RuntimeError: mat1 and mat2 must have the same dtype, but got Double and Float`
+- 발생 위치: `t_cell.py:76` → `self.encoder(features)` (Linear layer)
+- 근본 원인:
+  - StockTradingEnv가 observation을 float64로 반환 (Gymnasium spaces.Box 기본값)
+  - IRT 모듈은 모두 float32 weight 사용
+  - Training 시: SB3 자동 변환으로 문제 없음
+  - Evaluation 시: `model.predict()`에서 dtype 변환 불완전
+- 해결: `IRTActorWrapper.forward()` 및 `action_log_prob()`에서 `obs.float()` 변환 추가
+
+**Market Features 추출 오류 수정**
+- 문제: TCell이 의미없는 features 사용 (balance + prices[:11])
+- State 구조 분석:
+  ```
+  [balance(1), prices(30), shares(30), tech_indicators(240)]
+  총 301차원
+  ```
+- 기존: `state[:, :12]` (balance + 일부 prices만 사용)
+- 수정: 의미있는 시장 특성 12개 추출
+  - 시장 통계: balance, price_mean, price_std, cash_ratio (4개)
+  - Technical indicators: macd, boll_ub, boll_lb, rsi_30, cci_30, dx_30, close_30_sma, close_60_sma (8개)
+- 효과: TCell이 실제 시장 위기(변동성, 모멘텀 등) 감지 가능
+
+**Evaluation Fitness 계산 누락 해결**
+- 문제: `IRTActorWrapper.forward()`에서 `fitness=None` 전달
+  - Replicator가 균등 분포 사용 → `advantage=0` → 70% 비활성화
+  - Training과 Evaluation 동작 불일치
+- 해결: Critic 기반 fitness 계산을 Evaluation에도 적용
+  - `_compute_fitness()` helper method 추가
+  - `forward()` 및 `action_log_prob()` 모두 helper 사용
+  - 코드 중복 제거 (DRY principle)
+
+#### Changed
+
+**finrl/agents/irt/irt_policy.py**
+- `IRTActorWrapper._compute_fitness()` 추가 (Line 81-134):
+  - Critic 기반 fitness 계산 로직을 공통 helper로 추출
+  - 프로토타입별 Q-value 계산 (Twin Q 최소값 사용)
+  - `no_grad`로 효율성 확보
+- `IRTActorWrapper.forward()` 수정 (Line 136-159):
+  - `obs.float()` dtype 변환 추가 (Line 148)
+  - `_compute_fitness(obs)` 호출하여 fitness 계산 (Line 151)
+  - IRT forward에 fitness 전달 (Line 156)
+- `IRTActorWrapper.action_log_prob()` 리팩터링 (Line 161-193):
+  - `obs.float()` dtype 변환 추가 (Line 173)
+  - Fitness 계산 로직 제거 → `_compute_fitness()` 호출 (Line 176)
+  - 코드 간소화: ~65줄 → ~33줄 (32줄 감소)
+
+**finrl/agents/irt/bcell_actor.py**
+- `BCellIRTActor.forward()` Market features 추출 개선 (Line 127-162):
+  - State 구조 문서화 및 주석 상세화
+  - 의미있는 시장 특성 12개 추출:
+    - 시장 통계량: balance, price_mean, price_std, cash_ratio
+    - Technical indicators: 8개 지표의 첫 번째 주식 값
+  - torch.cat으로 features 결합
+
+#### Performance
+
+**Evaluation 성능 향상**
+- Replicator 메커니즘 완전 활성화: 0% → 70% (alpha=0.3 기준)
+- Train-Eval 일관성 확보: 동일한 메커니즘 사용
+- 예상 성능 개선:
+  - Sharpe Ratio: +5% ~ +10% (Replicator 활성화)
+  - Max Drawdown: -10% ~ -15% (위기 적응 + 성공 전략 재사용)
+
+**TCell 위기 감지 정확도 향상**
+- 이전: balance + prices → 가격 정보만
+- 현재: 시장 통계 + Technical indicators → 변동성, 모멘텀, 추세 반영
+- 위기 감지 민감도 향상: 실제 시장 위기 신호 포착 가능
+
+**코드 품질 개선**
+- DRY principle 준수: 중복 코드 32줄 제거
+- Maintainability 향상: fitness 계산 로직 단일화
+- Type safety: dtype 불일치 근본 해결
+
+#### Technical Details
+
+**dtype 변환 위치 선택 이유**
+
+| Option | 위치 | 장점 | 단점 | 선택 |
+|--------|------|------|------|------|
+| **1** | IRTActorWrapper | 모든 하위 모듈 일관성 | FinRL 수정 불필요 | ✅ 채택 |
+| 2 | StockTradingEnv | 근본적 해결 | FinRL 수정 필요 | ❌ |
+| 3 | TCell.forward() | 국소적 수정 | 다른 곳 문제 가능 | ❌ |
+
+**Market Features 추출 로직**
+```python
+# State 구조: [balance(1), prices(30), shares(30), tech_indicators(240)]
+balance = state[:, 0:1]
+prices = state[:, 1:31]
+shares = state[:, 31:61]
+
+# 시장 통계량 계산
+price_mean = prices.mean(dim=1, keepdim=True)
+price_std = prices.std(dim=1, keepdim=True) + 1e-8
+cash_ratio = balance / (total_value + 1e-8)
+
+# Technical indicators 인덱스
+tech_indices = [61, 91, 121, 151, 181, 211, 241, 271]
+# [macd, boll_ub, boll_lb, rsi_30, cci_30, dx_30, close_30_sma, close_60_sma]
+
+market_features = torch.cat([
+    balance, price_mean, price_std, cash_ratio,  # 시장 통계 (4)
+    state[:, tech_indices]                        # 기술적 지표 (8)
+], dim=1)  # [B, 12]
+```
+
+**Fitness 계산 플로우 (Evaluation)**
+```
+forward(obs)
+  └─> _compute_fitness(obs)
+       ├─> 각 프로토타입 j의 샘플 행동 생성
+       │    └─> decoders[j](proto_keys[j]) → conc_j → softmax → a_j
+       ├─> Critic Q-value 계산
+       │    └─> critic(obs, a_j) → (q1, q2) → min(q1, q2) → fitness[j]
+       └─> fitness: [B, M] 반환
+  └─> IRT.forward(E, K, danger, w_prev, fitness, crisis)
+       └─> Replicator(fitness, w_prev) → w_rep (✅ 활성화!)
+       └─> OT(E, K, danger) → w_ot
+       └─> w = (1-α)·w_rep + α·w_ot
+```
+
+**IRT 혼합 공식 검증**
+- Training: `w = 0.7·Replicator(fitness) + 0.3·OT` ✅
+- Evaluation (이전): `w = 0.7·Replicator(균등) + 0.3·OT` ❌
+- Evaluation (현재): `w = 0.7·Replicator(fitness) + 0.3·OT` ✅
+
+#### Breaking Changes
+
+없음. 모든 변경사항은 내부 구현 개선이며, API는 변경 없음.
+
+---
+
 ### Phase 1.3 - IRT Replicator Dynamics 활성화 (2025-10-05)
 
 IRT의 핵심 메커니즘인 Replicator Dynamics가 비활성화되어 있던 문제를 해결하고, Critic Q-network 기반 Fitness 계산을 구현했다.

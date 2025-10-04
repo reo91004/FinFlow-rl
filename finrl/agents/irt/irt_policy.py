@@ -78,40 +78,19 @@ class IRTActorWrapper(Actor):
         self.dirichlet_min = irt_actor.dirichlet_min
         self.dirichlet_max = irt_actor.dirichlet_max
 
-    def forward(self, obs: torch.Tensor, deterministic: bool = False) -> torch.Tensor:
+    def _compute_fitness(self, obs: torch.Tensor) -> Optional[torch.Tensor]:
         """
-        Forward pass - mean actions 반환
-
-        Args:
-            obs: [B, features_dim]
-            deterministic: 결정적 행동 여부
-
-        Returns:
-            mean_actions: [B, action_dim]
-        """
-        # IRT Actor forward
-        action, info = self.irt_actor(
-            state=obs,
-            fitness=None,
-            deterministic=deterministic
-        )
-        return action
-
-    def action_log_prob(self, obs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Sample action and compute log probability
+        Critic 기반 fitness 계산 (공통 helper method)
 
         Args:
             obs: [B, features_dim]
 
         Returns:
-            action: [B, action_dim]
-            log_prob: [B, 1]
+            fitness: [B, M] - 프로토타입별 Q-value, None if critic unavailable
         """
         B = obs.size(0)
         M = self.irt_actor.M
 
-        # ===== Step 1: Fitness 계산 (Critic Q-network 사용) =====
         fitness = None
 
         # Weakref로부터 policy 가져오기
@@ -151,6 +130,50 @@ class IRTActorWrapper(Actor):
                     q_values.append(q_min)
 
                 fitness = torch.stack(q_values, dim=1)  # [B, M]
+
+        return fitness
+
+    def forward(self, obs: torch.Tensor, deterministic: bool = False) -> torch.Tensor:
+        """
+        Forward pass - mean actions 반환
+
+        Args:
+            obs: [B, features_dim]
+            deterministic: 결정적 행동 여부
+
+        Returns:
+            mean_actions: [B, action_dim]
+        """
+        # Ensure float32 dtype (환경에서 float64로 들어올 수 있음)
+        obs = obs.float()
+
+        # Critic 기반 fitness 계산
+        fitness = self._compute_fitness(obs)
+
+        # IRT Actor forward
+        action, info = self.irt_actor(
+            state=obs,
+            fitness=fitness,
+            deterministic=deterministic
+        )
+        return action
+
+    def action_log_prob(self, obs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Sample action and compute log probability
+
+        Args:
+            obs: [B, features_dim]
+
+        Returns:
+            action: [B, action_dim]
+            log_prob: [B, 1]
+        """
+        # Ensure float32 dtype (환경에서 float64로 들어올 수 있음)
+        obs = obs.float()
+
+        # ===== Step 1: Fitness 계산 (Critic Q-network 사용) =====
+        fitness = self._compute_fitness(obs)
 
         # ===== Step 2: IRT forward with fitness =====
         action, info = self.irt_actor(

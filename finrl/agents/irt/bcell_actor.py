@@ -125,13 +125,36 @@ class BCellIRTActor(nn.Module):
         B = state.size(0)
 
         # ===== Step 1: T-Cell 위기 감지 =====
-        # FinRL state 구조: [price_features (30), technical_indicators (30*8), balance(1)]
-        # 시장 특성은 technical indicators에서 추출 (첫 12개)
-        # 또는 전체 state에서 동적으로 추출
+        # FinRL state 구조: [balance(1), prices(30), shares(30), tech_indicators(240)]
+        # Tech indicators: [macd*30, boll_ub*30, boll_lb*30, rsi_30*30,
+        #                   cci_30*30, dx_30*30, close_30_sma*30, close_60_sma*30]
 
-        # 간단한 전략: state 앞부분을 market features로 사용
-        # 실제로는 feature_extractor 필요
-        market_features = state[:, :self.market_feature_dim]  # [B, 12]
+        # Market features 추출 (12차원):
+        # 1. 시장 전체 특성 (4개): balance, price_mean, price_std, cash_ratio
+        # 2. Technical indicators 대표값 (8개): 각 indicator의 첫 번째 주식 값
+
+        balance = state[:, 0:1]  # [B, 1]
+        prices = state[:, 1:31]  # [B, 30]
+        shares = state[:, 31:61]  # [B, 30]
+
+        # 시장 통계량
+        price_mean = prices.mean(dim=1, keepdim=True)  # [B, 1]
+        price_std = prices.std(dim=1, keepdim=True) + 1e-8  # [B, 1]
+        total_value = balance + (prices * shares).sum(dim=1, keepdim=True)  # [B, 1]
+        cash_ratio = balance / (total_value + 1e-8)  # [B, 1]
+
+        # Technical indicators (각 지표의 첫 번째 주식 값)
+        # macd, boll_ub, boll_lb, rsi_30, cci_30, dx_30, close_30_sma, close_60_sma
+        tech_indices = [61, 91, 121, 151, 181, 211, 241, 271]
+        tech_features = state[:, tech_indices]  # [B, 8]
+
+        market_features = torch.cat([
+            balance,           # [B, 1] - 현금 보유량
+            price_mean,        # [B, 1] - 평균 주가
+            price_std,         # [B, 1] - 주가 변동성
+            cash_ratio,        # [B, 1] - 현금 비율
+            tech_features      # [B, 8] - 기술적 지표들
+        ], dim=1)  # [B, 12]
 
         z, danger_embed, crisis_level = self.t_cell(
             market_features,
