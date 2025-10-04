@@ -6,6 +6,213 @@
 
 ## [Unreleased]
 
+### Phase 1.5 - IRT 평가 완전화 및 모델 비교 도구 (2025-10-05)
+
+IRT 모델 평가 시 14개 시각화와 JSON 결과가 자동 생성되도록 개선하고, 두 모델을 비교 분석하는 도구를 추가했다.
+
+#### Added
+
+**IRTPolicy.get_irt_info() 메서드**
+- IRTActorWrapper에 `_last_irt_info` 버퍼 추가
+- `forward()` 및 `action_log_prob()`에서 IRT info 저장
+- `IRTPolicy.get_irt_info()`: 마지막 forward의 IRT 정보 반환
+  - w, w_rep, w_ot: 프로토타입 가중치 정보
+  - crisis_level, crisis_types: T-Cell 위기 감지 정보
+  - cost_matrix, P: IRT 연산 정보
+  - fitness: 프로토타입 적합도
+- 사용처: `train_irt.py` 평가 시 IRT 데이터 수집
+
+**scripts/compare_models.py - 모델 비교 분석 도구**
+- 기능:
+  - 두 모델(SAC, IRT 등) 자동 평가
+  - 10개 성능 지표 비교 테이블 출력
+  - 8개 비교 시각화 자동 생성
+  - IRT 특화 분석 (Crisis Response)
+  - **자동 모델 경로 해석**: 디렉토리만 주면 최신 타임스탬프 자동 찾기
+  - **Final vs Best 선택**: `--use-best` 플래그로 best_model 사용 가능
+- 입력: `--model1`, `--model2`, `--output`, `--use-best`
+- 출력:
+  - `comparison_summary.json`: 비교 결과
+  - `plots/`: 8개 비교 플롯
+    1. portfolio_value_comparison.png
+    2. returns_distribution.png
+    3. drawdown_comparison.png
+    4. performance_metrics.png (Sharpe, Sortino, Calmar)
+    5. risk_metrics.png (MDD, Volatility, VaR, CVaR)
+    6. cumulative_returns.png
+    7. rolling_sharpe.png (30-day window)
+    8. crisis_response.png (IRT only)
+- 경로 해석 예시:
+  ```bash
+  # 자동 최신 타임스탬프 + final 모델
+  python scripts/compare_models.py \
+    --model1 logs/sac \
+    --model2 logs/irt
+
+  # 자동 최신 타임스탬프 + best 모델
+  python scripts/compare_models.py \
+    --model1 logs/sac \
+    --model2 logs/irt \
+    --use-best
+
+  # 특정 타임스탬프 디렉토리
+  python scripts/compare_models.py \
+    --model1 logs/sac/20251005_123456 \
+    --model2 logs/irt/20251005_234567
+
+  # 정확한 파일 경로 (기존 방식)
+  python scripts/compare_models.py \
+    --model1 logs/sac/xxx/sac_final.zip \
+    --model2 logs/irt/xxx/irt_final.zip
+  ```
+
+#### Fixed
+
+**IRT 평가 시 시각화 미생성 문제 해결**
+- 문제: `train_irt.py` 평가 시 `irt_data = None` 발생
+  - 원인: `model.policy.get_irt_info()` 메서드 없음
+  - 결과: 14개 시각화 및 JSON 생성 실패
+- 해결: `IRTPolicy.get_irt_info()` 추가로 IRT 데이터 수집 가능
+- 효과: 14개 시각화 + 2개 JSON 정상 생성
+
+**visualizer.py histogram bins 오류 해결**
+- 문제: `ValueError: Too many bins for data range`
+- 발생 위치: `plot_irt_decomposition()`, `plot_risk_dashboard()`
+- 원인: 데이터 범위가 작을 때 bins=30 또는 bins='auto' 실패
+- 해결:
+  - Dynamic bins 조정: `bins = min(max(len(np.unique(data)), 3), 20)`
+  - Try-except fallback: histogram 실패 시 scatter plot 사용
+- 영향 파일:
+  - `finrl/evaluation/visualizer.py:222-238` (irt_decomposition)
+  - `finrl/evaluation/visualizer.py:499` (risk_dashboard)
+
+#### Changed
+
+**finrl/agents/irt/irt_policy.py**
+- `IRTActorWrapper.__init__()` (Line 81-82):
+  - `self._last_irt_info = None` 추가
+- `IRTActorWrapper.forward()` (Line 163-164):
+  - `self._last_irt_info = info` 저장
+- `IRTActorWrapper.action_log_prob()` (Line 192-193):
+  - `self._last_irt_info = info` 저장
+- `IRTPolicy.get_irt_info()` 추가 (Line 365-383):
+  - `return self.actor._last_irt_info` 반환
+
+**finrl/evaluation/visualizer.py**
+- `plot_irt_decomposition()` (Line 222-238):
+  - Dynamic bins 조정 + try-except fallback
+- `plot_risk_dashboard()` (Line 499):
+  - `bins=30` → `bins='auto'`
+
+**scripts/compare_models.py**
+- Import 추가 (Line 33): `import re`
+- `TIMESTAMP_PATTERN` 상수 추가 (Line 50): 타임스탬프 패턴 `\d{8}_\d{6}`
+- `find_latest_timestamp()` 함수 추가 (Line 53-72):
+  - 베이스 디렉토리에서 최신 타임스탬프 찾기
+- `_resolve_in_timestamp_dir()` 함수 추가 (Line 75-99):
+  - 타임스탬프 디렉토리 내에서 final 또는 best 모델 찾기
+- `resolve_model_path()` 함수 추가 (Line 102-143):
+  - 모델 경로 자동 해석 (디렉토리 → 파일)
+  - 파일, 타임스탬프 디렉토리, 베이스 디렉토리 모두 지원
+- `main()` 수정 (Line 673-700):
+  - `--use-best` argument 추가 (Line 679-680)
+  - 모델 경로 해석 로직 추가 (Line 690-699)
+  - 해석된 경로 출력
+
+#### Performance
+
+**IRT 평가 개선**
+- 이전: 3개 시각화만 생성 (portfolio_value, returns, drawdown)
+- 현재: 14개 시각화 + 2개 JSON 생성
+  - 일반: portfolio_value, returns_distribution, drawdown
+  - IRT: irt_decomposition, portfolio_weights, crisis_levels, prototype_weights, stock_analysis, performance_timeline, benchmark_comparison, risk_dashboard, tcell_analysis, attribution_analysis, cost_matrix
+  - JSON: evaluation_results.json (3.0MB), evaluation_insights.json (3KB)
+
+**모델 비교 효율성**
+- 수동 평가 + 수동 비교 → 자동화된 비교 파이프라인
+- 10개 지표 자동 비교 (Total Return, Sharpe, MDD 등)
+- 8개 시각화 자동 생성
+- 상대 성능(Δ%) 및 승자 표시
+
+#### Technical Details
+
+**IRT Info 수집 플로우**
+```
+model.predict(obs)
+  → IRTActorWrapper.forward(obs)
+       → IRT Actor forward → (action, info)
+       → self._last_irt_info = info  # 저장
+  → model.policy.get_irt_info()
+       → return self.actor._last_irt_info  # 반환
+  → train_irt.py에서 수집
+       → irt_data_list['w'].append(info['w'])
+       → visualizer.plot_all(irt_data=irt_data)
+```
+
+**비교 도구 아키텍처**
+```
+compare_models.py
+├── resolve_model_path(path, use_best) → 실제 파일 경로
+│    ├── 파일인 경우: 그대로 반환
+│    ├── 타임스탬프 디렉토리: _resolve_in_timestamp_dir()
+│    └── 베이스 디렉토리: find_latest_timestamp() → _resolve_in_timestamp_dir()
+├── evaluate_model(model1) → result1 (metrics, portfolio_values, irt_data)
+├── evaluate_model(model2) → result2
+├── print_comparison_table(result1, result2) → 10개 지표 비교
+├── plot_comparisons(result1, result2) → 8개 플롯 생성
+└── save_results() → JSON 저장
+```
+
+**모델 경로 해석 로직**
+```python
+# 1. 파일인 경우
+logs/sac/20251005_123456/sac_final.zip → 그대로 반환
+
+# 2. 타임스탬프 디렉토리
+logs/sac/20251005_123456
+  → *_final.zip 또는 best_model/best_model.zip 찾기
+
+# 3. 베이스 디렉토리
+logs/sac
+  → find_latest_timestamp() → 20251005_123456 (최신)
+  → *_final.zip 찾기
+```
+
+**Histogram Fallback 로직**
+```python
+try:
+    bins = min(max(len(np.unique(data)), 3), 20)
+    ax.hist(data, bins=bins, ...)
+except ValueError:
+    # 데이터 범위가 너무 작으면 scatter plot 사용
+    ax.scatter(data, np.zeros_like(data), ...)
+```
+
+#### Breaking Changes
+
+없음. 모든 변경사항은 추가 기능이며, 기존 API는 변경 없음.
+
+#### Migration Guide
+
+**IRT 평가 사용자**
+- 변경 없음. `python scripts/train_irt.py` 실행 시 자동으로 14개 시각화 생성
+
+**모델 비교**
+```bash
+# 이전: 수동 평가 + 수동 비교
+python scripts/evaluate.py --model model1.zip
+python scripts/evaluate.py --model model2.zip
+# (수동으로 메트릭 비교)
+
+# 현재: 자동 비교
+python scripts/compare_models.py \
+  --model1 model1.zip \
+  --model2 model2.zip \
+  --output comparison_results
+```
+
+---
+
 ### Phase 1.4 - Evaluation dtype 불일치 및 성능 개선 (2025-10-05)
 
 Evaluation 시 dtype 불일치로 인한 RuntimeError 해결과 함께, Market features 추출 로직 개선 및 Evaluation에서도 Critic 기반 Fitness 계산을 적용했다.

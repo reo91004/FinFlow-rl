@@ -219,10 +219,20 @@ def plot_irt_decomposition(w_rep: np.ndarray,
 
     # (3) Distribution
     ax3 = axes[1, 0]
-    ax3.hist(avg_w_rep, bins=30, alpha=0.6, label='Replicator', edgecolor='black')
-    ax3.hist(avg_w_ot, bins=30, alpha=0.6, label='OT', edgecolor='black')
+    # bins를 데이터에 맞게 동적 조정 (범위가 작을 때 대응)
+    try:
+        bins_rep = min(max(len(np.unique(avg_w_rep)), 3), 20)
+        bins_ot = min(max(len(np.unique(avg_w_ot)), 3), 20)
+        ax3.hist(avg_w_rep, bins=bins_rep, alpha=0.6, label='Replicator', edgecolor='black')
+        ax3.hist(avg_w_ot, bins=bins_ot, alpha=0.6, label='OT', edgecolor='black')
+    except ValueError:
+        # 데이터 범위가 너무 작으면 scatter plot 사용
+        ax3.scatter(avg_w_rep, np.zeros_like(avg_w_rep), alpha=0.6, label='Replicator', s=20)
+        ax3.scatter(avg_w_ot, np.ones_like(avg_w_ot) * 0.5, alpha=0.6, label='OT', s=20)
+        ax3.set_ylabel('Component')
     ax3.set_xlabel('Weight Value')
-    ax3.set_ylabel('Frequency')
+    if not isinstance(ax3, plt.Axes) or 'Component' not in ax3.get_ylabel():
+        ax3.set_ylabel('Frequency')
     ax3.set_title('Component Distribution', fontsize=12, fontweight='bold')
     ax3.legend()
     ax3.grid(True, alpha=0.3)
@@ -495,7 +505,7 @@ def plot_risk_dashboard(returns: np.ndarray,
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
 
     # (1) Returns Distribution
-    axes[0, 0].hist(returns, bins=30, alpha=0.7, edgecolor='black', color='steelblue')
+    axes[0, 0].hist(returns, bins='auto', alpha=0.7, edgecolor='black', color='steelblue')
     axes[0, 0].axvline(returns.mean(), color='red', linestyle='--', linewidth=2,
                        label=f'Mean = {returns.mean():.4f}')
     axes[0, 0].set_xlabel('Return')

@@ -78,6 +78,9 @@ class IRTActorWrapper(Actor):
         self.dirichlet_min = irt_actor.dirichlet_min
         self.dirichlet_max = irt_actor.dirichlet_max
 
+        # 마지막 forward의 IRT info 저장 (평가/시각화용)
+        self._last_irt_info = None
+
     def _compute_fitness(self, obs: torch.Tensor) -> Optional[torch.Tensor]:
         """
         Critic 기반 fitness 계산 (공통 helper method)
@@ -156,6 +159,10 @@ class IRTActorWrapper(Actor):
             fitness=fitness,
             deterministic=deterministic
         )
+
+        # 마지막 IRT info 저장 (평가/시각화용)
+        self._last_irt_info = info
+
         return action
 
     def action_log_prob(self, obs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -181,6 +188,9 @@ class IRTActorWrapper(Actor):
             fitness=fitness,
             deterministic=False
         )
+
+        # 마지막 IRT info 저장 (평가/시각화용)
+        self._last_irt_info = info
 
         # ===== Step 3: Log probability 계산 =====
         # info에서 Dirichlet concentration 가져오기
@@ -351,6 +361,26 @@ class IRTPolicy(SACPolicy):
             )
         )
         return data
+
+    def get_irt_info(self) -> Optional[Dict]:
+        """
+        마지막 forward의 IRT 정보 반환 (평가/시각화용)
+
+        Returns:
+            dict: IRT info containing:
+                - w: [B, M] - 프로토타입 혼합 가중치
+                - w_rep: [B, M] - Replicator 출력
+                - w_ot: [B, M] - OT 출력
+                - crisis_level: [B, 1] - 위기 레벨
+                - crisis_types: [B, K] - 위기 타입
+                - cost_matrix: [B, m, M] - Immunological cost
+                - P: [B, m, M] - 수송 계획
+                - fitness: [B, M] - 프로토타입 적합도
+            None: IRTPolicy가 아니거나 아직 forward 안 함
+        """
+        if hasattr(self, 'actor') and hasattr(self.actor, '_last_irt_info'):
+            return self.actor._last_irt_info
+        return None
 
 
 class IRTActorCriticPolicy(IRTPolicy):
