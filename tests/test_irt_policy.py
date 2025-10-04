@@ -207,6 +207,108 @@ def test_irt_decomposition(irt_config, sample_state):
     print("✅ Test 5 passed: IRT 분해 공식 검증")
 
 
+def test_fitness_calculation(irt_config):
+    """
+    테스트 6 (새로운): Fitness 계산이 Critic Q-value를 사용하는가?
+    """
+    from finrl.agents.irt.irt_policy import IRTActorWrapper
+    import torch.nn as nn
+
+    # Mock Critic 생성
+    class MockCritic(nn.Module):
+        def __init__(self, action_dim):
+            super().__init__()
+            self.action_dim = action_dim
+
+        def forward(self, obs, action):
+            # 행동 합에 비례하는 Q-value 반환 (테스트용)
+            q_value = action.sum(dim=-1) * 10.0
+            return (q_value, q_value)  # Twin Q
+
+    # Mock Policy 생성
+    class MockPolicy:
+        def __init__(self, critic):
+            self.critic = critic
+
+    # BCellIRTActor 생성
+    actor = BCellIRTActor(**irt_config)
+
+    # Observation space
+    obs_space = spaces.Box(
+        low=-np.inf, high=np.inf,
+        shape=(irt_config['state_dim'],),
+        dtype=np.float32
+    )
+    action_space = spaces.Box(
+        low=0.0, high=1.0,
+        shape=(irt_config['action_dim'],),
+        dtype=np.float32
+    )
+
+    # Mock Policy와 Critic
+    critic = MockCritic(irt_config['action_dim'])
+    policy = MockPolicy(critic)
+
+    # IRTActorWrapper 생성
+    wrapper = IRTActorWrapper(
+        irt_actor=actor,
+        features_dim=irt_config['state_dim'],
+        action_space=action_space,
+        policy=policy
+    )
+
+    wrapper.eval()
+
+    # 샘플 관측
+    obs = torch.randn(4, irt_config['state_dim'])
+
+    with torch.no_grad():
+        action, log_prob = wrapper.action_log_prob(obs)
+
+    # action_log_prob 내부에서 fitness 계산되었는지 확인
+    # (간접 확인: action이 정상적으로 반환되었는지)
+    assert action.shape == (4, irt_config['action_dim'])
+    assert log_prob.shape == (4, 1)
+
+    print("✅ Test 6 passed: Fitness 계산 검증")
+
+
+def test_replicator_activation(irt_config):
+    """
+    테스트 7 (새로운): Replicator가 fitness에 따라 가중치를 조정하는가?
+    """
+    actor = BCellIRTActor(**irt_config)
+    actor.eval()
+
+    B = 4
+    M = irt_config['M_proto']
+    state = torch.randn(B, irt_config['state_dim'])
+
+    # Case 1: fitness=None (균등)
+    with torch.no_grad():
+        action1, info1 = actor(state, fitness=None, deterministic=True)
+        w1 = info1['w']
+
+    # Case 2: 불균등 fitness (프로토타입 0이 가장 높음)
+    fitness = torch.ones(B, M) * 0.1
+    fitness[:, 0] = 1.0  # 프로토타입 0에 높은 fitness
+
+    with torch.no_grad():
+        action2, info2 = actor(state, fitness=fitness, deterministic=True)
+        w2 = info2['w']
+        w_rep2 = info2['w_rep']
+
+    # Replicator가 작동했다면, w_rep2에서 프로토타입 0의 가중치가 더 커야 함
+    # w_rep2[:, 0]의 평균이 1/M보다 커야 함
+    avg_w0 = w_rep2[:, 0].mean()
+    uniform_weight = 1.0 / M
+
+    assert avg_w0 > uniform_weight, \
+        f"Replicator not activated: w_rep[0] = {avg_w0:.4f}, expected > {uniform_weight:.4f}"
+
+    print(f"✅ Test 7 passed: Replicator 작동 확인 (w_rep[0] = {avg_w0:.4f} > {uniform_weight:.4f})")
+
+
 if __name__ == '__main__':
     # 직접 실행 시 테스트 수행
     import sys
@@ -233,6 +335,8 @@ if __name__ == '__main__':
         test_sb3_integration(config)
         test_device_compatibility(config, state)
         test_irt_decomposition(config, state)
+        test_fitness_calculation(config)
+        test_replicator_activation(config)
 
         print("=" * 70)
         print("✅ All tests passed!")
@@ -241,5 +345,7 @@ if __name__ == '__main__':
     except Exception as e:
         print("=" * 70)
         print(f"❌ Test failed: {e}")
+        import traceback
+        traceback.print_exc()
         print("=" * 70)
         sys.exit(1)

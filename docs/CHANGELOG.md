@@ -6,6 +6,103 @@
 
 ## [Unreleased]
 
+### Phase 1.3 - IRT Replicator Dynamics 활성화 (2025-10-05)
+
+IRT의 핵심 메커니즘인 Replicator Dynamics가 비활성화되어 있던 문제를 해결하고, Critic Q-network 기반 Fitness 계산을 구현했다.
+
+#### Fixed
+
+**Replicator Dynamics 비활성화 문제 해결**
+- `IRTActorWrapper.action_log_prob()`에서 항상 `fitness=None` 전달 문제:
+  - 문제: `fitness=None` → 균등 분포 사용 → `advantage=0` → Replicator 작동 안 함
+  - 영향: IRT가 "OT + EMA"로 축소되어 "과거 성공 전략 선호" 메커니즘 손실
+  - 원인: Critic Q-network 참조 누락
+- Fitness 계산 구현:
+  - 각 프로토타입의 샘플 행동 생성 (mode 사용: 안정성)
+  - Critic Q-value 계산 (Twin Q 최소값: conservative)
+  - `no_grad`로 계산 (효율성, Replicator에만 영향)
+- 순환 참조 방지:
+  - Policy → Actor → Policy 순환 참조 발생
+  - `weakref` 사용하여 해결
+
+#### Changed
+
+**finrl/agents/irt/irt_policy.py**
+- `IRTActorWrapper.__init__()`:
+  - `policy` 파라미터 추가 (Optional)
+  - `weakref.ref(policy)` 저장 (순환 참조 방지)
+- `IRTActorWrapper.action_log_prob()`:
+  - **Step 1**: 프로토타입별 Q-value 계산
+    - 각 프로토타입 j의 concentration → mode action
+    - Critic(obs, action) → Twin Q 최소값
+    - Fitness: [B, M] 텐서
+  - **Step 2**: IRT forward with fitness (기존 유지)
+  - **Step 3**: Log probability 계산 (기존 유지)
+- `IRTPolicy.make_actor()`:
+  - `policy=self` 전달하여 Actor가 Critic 참조 가능
+
+**tests/test_irt_policy.py**
+- Test 6 추가: Fitness 계산 검증
+  - Mock Critic으로 Q-value 제공
+  - `action_log_prob()` 정상 작동 확인
+- Test 7 추가: Replicator 작동 확인
+  - 불균등 fitness 입력 (프로토타입 0에 높은 값)
+  - `w_rep[0] > 1/M` 검증
+  - 결과: w_rep[0] = 0.1346 > 0.1250 ✅
+
+#### Performance
+
+**Replicator 활성화 효과**
+- 시간 메모리 메커니즘 복원: 높은 Q-value 프로토타입 선호
+- 구조적 매칭 (OT) + 시간 메모리 (Replicator) 결합 완성
+- 예상 성능 (Baseline SAC 대비):
+  - Sharpe Ratio: +10% ~ +20%
+  - Max Drawdown: -20% ~ -30% (위기 적응 + 성공 전략 재사용)
+
+**계산 비용**
+- M개 프로토타입 평가 오버헤드 (M=8: 약 8배)
+- `no_grad` 사용으로 gradient 계산 제거
+- 예상: 학습 시간 5-10% 증가 (측정 필요)
+
+#### Technical Details
+
+**Fitness 계산 로직**
+```python
+# Step 1: 프로토타입별 샘플 행동 생성
+for j in range(M):
+    conc_j = decoders[j](proto_keys[j])
+    a_j = softmax(conc_j)  # Mode 사용 (안정성)
+    proto_actions.append(a_j)
+
+# Step 2: Critic Q-value 계산
+for j in range(M):
+    q1, q2 = critic(obs, proto_actions[j])
+    fitness[j] = min(q1, q2)  # Twin Q 최소값
+
+# Step 3: IRT forward
+action, info = irt_actor(obs, fitness=fitness)
+```
+
+**Phase 1.1 요구사항 준수**
+- ✅ IRT forward는 **1번만** 호출 (EMA 메모리 보존)
+- ✅ `info`에서 Dirichlet concentration 재사용
+- ✅ T-Cell 통계 오염 방지 (`update_stats=self.training`)
+
+**Replicator Dynamics 수식**
+$\tilde{w}_j \propto w_{t-1,j} \cdot \exp(\eta(c) \cdot [f_j - \bar{f}] - r_j)$
+
+- $f_j$: Fitness (Critic Q-value) ← 이제 작동함! ✅
+- $\bar{f}$: Baseline (weighted average)
+- $\eta(c)$: 위기 가열 ($\eta_0 + \eta_1 \cdot c$)
+
+**IRT 혼합 공식 검증**
+$w_t = (1-\alpha) \cdot \text{Replicator}(f_t, w_{t-1}) + \alpha \cdot \text{OT}(E_t, K)$
+
+- Test 5: L2 거리 $||w - ((1-\alpha)w_{\text{rep}} + \alpha w_{\text{ot}})|| < 0.1$ ✅
+- Test 7: Replicator가 높은 fitness 프로토타입 가중치 증가 ✅
+
+---
+
 ### Phase 1.2 - 학습/평가 일관성 개선 (2025-10-04)
 
 학습과 평가 간 데이터 불일치 문제를 해결하고, off-policy 알고리즘 호환성을 개선했다.

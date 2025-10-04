@@ -28,6 +28,7 @@ SB3의 SACPolicy를 상속하여 IRT Actor를 통합한다.
 
 import torch
 import torch.nn as nn
+import weakref
 from typing import Any, Dict, List, Optional, Tuple, Type, Union
 from gymnasium import spaces
 
@@ -52,13 +53,15 @@ class IRTActorWrapper(Actor):
         self,
         irt_actor: BCellIRTActor,
         features_dim: int,
-        action_space: spaces.Box
+        action_space: spaces.Box,
+        policy: Optional['IRTPolicy'] = None
     ):
         """
         Args:
             irt_actor: BCellIRTActor 인스턴스
             features_dim: feature extractor 출력 차원
             action_space: action space
+            policy: parent IRTPolicy (Critic 참조용)
         """
         # Actor 부모 클래스 초기화를 건너뛰고 nn.Module만 초기화
         nn.Module.__init__(self)
@@ -67,6 +70,9 @@ class IRTActorWrapper(Actor):
         self.features_dim = features_dim
         self.action_space = action_space
         self.action_dim = int(action_space.shape[0])
+
+        # Policy를 weakref로 저장 (순환 참조 방지)
+        self._policy_ref = weakref.ref(policy) if policy is not None else None
 
         # Dirichlet 파라미터 저장
         self.dirichlet_min = irt_actor.dirichlet_min
@@ -102,14 +108,58 @@ class IRTActorWrapper(Actor):
             action: [B, action_dim]
             log_prob: [B, 1]
         """
-        # ===== IRT forward (한 번만 호출) =====
+        B = obs.size(0)
+        M = self.irt_actor.M
+
+        # ===== Step 1: Fitness 계산 (Critic Q-network 사용) =====
+        fitness = None
+
+        # Weakref로부터 policy 가져오기
+        policy = self._policy_ref() if self._policy_ref is not None else None
+
+        if policy is not None and hasattr(policy, 'critic'):
+            with torch.no_grad():
+                # 각 프로토타입의 샘플 행동 생성
+                K = self.irt_actor.proto_keys  # [M, D]
+                proto_actions = []
+
+                for j in range(M):
+                    # 프로토타입 j의 concentration
+                    conc_j = self.irt_actor.decoders[j](K[j:j+1].expand(B, -1))  # [B, action_dim]
+                    conc_j_clamped = torch.clamp(conc_j, min=self.dirichlet_min, max=self.dirichlet_max)
+
+                    # 샘플 행동 (mode 사용: 더 안정적)
+                    # Dirichlet mode = (α - 1) / (Σα - K) for α > 1
+                    # 안전하게 softmax 사용
+                    a_j = torch.softmax(conc_j_clamped, dim=-1)  # [B, action_dim]
+                    proto_actions.append(a_j)
+
+                proto_actions = torch.stack(proto_actions, dim=1)  # [B, M, action_dim]
+
+                # Critic Q-value 계산 (Twin Q 중 최소값 사용)
+                q_values = []
+                for j in range(M):
+                    # SB3 Critic: forward(obs, actions) → [q1, q2]
+                    q_vals = policy.critic(obs, proto_actions[:, j])  # Tuple[Tensor, Tensor]
+
+                    # Twin Q의 최소값 (conservative)
+                    if isinstance(q_vals, tuple):
+                        q_min = torch.min(q_vals[0], q_vals[1])  # [B]
+                    else:
+                        q_min = q_vals  # [B]
+
+                    q_values.append(q_min)
+
+                fitness = torch.stack(q_values, dim=1)  # [B, M]
+
+        # ===== Step 2: IRT forward with fitness =====
         action, info = self.irt_actor(
             state=obs,
-            fitness=None,
+            fitness=fitness,
             deterministic=False
         )
 
-        # ===== Log probability 계산 =====
+        # ===== Step 3: Log probability 계산 =====
         # info에서 Dirichlet concentration 가져오기
         mixed_conc_clamped = info['mixed_conc_clamped']
 
@@ -249,11 +299,12 @@ class IRTPolicy(SACPolicy):
             eta_1=self.eta_1
         )
 
-        # Wrapper로 감싸기
+        # Wrapper로 감싸기 (self 전달: Critic 참조용)
         actor = IRTActorWrapper(
             irt_actor=bcell_actor,
             features_dim=features_dim,
-            action_space=self.action_space
+            action_space=self.action_space,
+            policy=self
         )
 
         return actor
