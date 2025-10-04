@@ -98,6 +98,12 @@ runs/
 wandb/
 mlruns/
 
+# FinRL legacy directories (루트에 생성되는 경우 무시)
+/datasets/
+/results/
+/tensorboard_log/
+/trained_models/
+
 # Testing
 .pytest_cache/
 .coverage

@@ -44,13 +44,25 @@ def train_model(args):
     print(f"{args.model.upper()} Training (FinRL Standard Pipeline)")
     print("=" * 70)
 
-    # 디렉토리 생성 (FinRL 표준 디렉토리 + logs)
-    check_and_make_directories([DATA_SAVE_DIR, TRAINED_MODEL_DIR, TENSORBOARD_LOG_DIR, RESULTS_DIR])
-
     # 출력 디렉토리 (logs/ 아래에 통일)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_dir = os.path.join(args.output, f"finrl_{args.model}", timestamp)
     os.makedirs(log_dir, exist_ok=True)
+
+    # Config 경로를 log_dir 하위로 동적 override (타임스탬프 통합)
+    import finrl.config as config
+    config.DATA_SAVE_DIR = os.path.join(log_dir, "datasets")
+    config.TRAINED_MODEL_DIR = os.path.join(log_dir, "trained_models")
+    config.TENSORBOARD_LOG_DIR = os.path.join(log_dir, "tensorboard_log")
+    config.RESULTS_DIR = os.path.join(log_dir, "results")
+
+    # 디렉토리 생성 (override된 경로 사용)
+    check_and_make_directories([
+        config.DATA_SAVE_DIR,
+        config.TRAINED_MODEL_DIR,
+        config.TENSORBOARD_LOG_DIR,
+        config.RESULTS_DIR
+    ])
 
     print(f"\n[Config]")
     print(f"  Model: {args.model.upper()}")
