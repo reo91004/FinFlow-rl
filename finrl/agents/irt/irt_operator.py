@@ -246,13 +246,22 @@ class IRT(nn.Module):
         p_mass = P.sum(dim=1)  # [B, M]
 
         # ===== Step 2: Replicator 업데이트 =====
-        # 위기 가열: η(c) = η_0 + η_1·c (NaN 방어)
-        crisis_level_safe = torch.nan_to_num(crisis_level, nan=0.0)
-        eta = self.eta_0 + self.eta_1 * crisis_level_safe  # [B, 1]
-
         # Advantage 계산
         baseline = (w_prev * fitness).sum(dim=-1, keepdim=True)  # [B, 1]
         advantage = fitness - baseline  # [B, M]
+
+        # ===== Gradient Stabilization: Advantage Clipping =====
+        # Reference: RLC 2024 - Weight Clipping for Deep RL
+        advantage = torch.clamp(advantage, min=-10.0, max=10.0)
+
+        # 위기 가열: η(c) = η_0 + η_1·c (NaN 방어)
+        crisis_level_safe = torch.nan_to_num(crisis_level, nan=0.0)
+
+        # ===== Gradient Stabilization: Crisis Saturation =====
+        # Prevent exponential explosion in extreme crisis
+        crisis_level_safe = torch.clamp(crisis_level_safe, min=0.0, max=1.0)
+
+        eta = self.eta_0 + self.eta_1 * crisis_level_safe  # [B, 1]
 
         # 자기-내성 페널티 (프로토타입도 검사)
         K_norm = F.normalize(K, dim=-1)  # [B, M, D]

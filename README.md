@@ -265,4 +265,6 @@ FinRL은 원저자의 라이선스를 따름.
 
 ---
 
-**Status**: Phase 0 완료 ✅ | Phase 1 완료 ✅ | Phase 2 준비 중 📋
+**Status**: Phase 0 완료 ✅ | Phase 1 완료 ✅ | **Phase 1.7 (Gradient Stabilization) 완료 ✅** | Phase 2 준비 중 📋
+
+**Latest**: SAC+IRT gradient stabilization implemented (3-Tier Solution) - See [docs/GRADIENT_STABILIZATION.md](docs/GRADIENT_STABILIZATION.md)

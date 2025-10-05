@@ -203,7 +203,7 @@ class BCellIRTActor(nn.Module):
             proto_conf=None
         )
 
-        # ===== Step 6: Gaussian + Softmax 정책 =====
+        # ===== Step 6: Projected Gaussian Policy =====
         # 각 프로토타입의 Gaussian 파라미터 계산
         mus = torch.stack([
             self.mu_decoders[j](K[:, j, :]) for j in range(self.M)
@@ -227,23 +227,18 @@ class BCellIRTActor(nn.Module):
             eps = torch.randn_like(mixed_mu)
             z = mixed_mu + eps * mixed_std
 
-        # Softmax projection (Simplex 제약)
-        action = F.softmax(z, dim=-1)  # [B, A]
+        # Euclidean projection onto probability simplex (Duchi et al. 2008)
+        action = self._project_to_simplex(z)  # [B, A]
 
-        # Log probability 계산
+        # Log probability 계산 (unconstrained Gaussian)
+        # Projection gradient는 SAC policy gradient에서 암묵적으로 처리됨
         if not deterministic:
-            # Gaussian log prob
             log_prob_gaussian = -0.5 * (
                 ((z - mixed_mu) / mixed_std) ** 2
                 + 2 * torch.log(mixed_std)
                 + np.log(2 * np.pi)
             )
-            log_prob_gaussian = log_prob_gaussian.sum(dim=-1, keepdim=True)  # [B, 1]
-
-            # Jacobian correction (approximation)
-            log_prob_jacobian = -torch.log(action + 1e-8).sum(dim=-1, keepdim=True)  # [B, 1]
-
-            log_prob = log_prob_gaussian + log_prob_jacobian
+            log_prob = log_prob_gaussian.sum(dim=-1, keepdim=True)  # [B, 1]
         else:
             log_prob = None
 
@@ -277,6 +272,37 @@ class BCellIRTActor(nn.Module):
         if log_prob is not None:
             info['log_prob'] = log_prob.detach()
             info['log_prob_gaussian'] = log_prob_gaussian.detach()
-            info['log_prob_jacobian'] = log_prob_jacobian.detach()
 
         return action, log_prob, info
+
+    def _project_to_simplex(self, z: torch.Tensor) -> torch.Tensor:
+        """
+        Euclidean projection onto probability simplex.
+
+        Reference: Duchi et al. (2008)
+        "Efficient Projections onto the l1-Ball for Learning in High Dimensions"
+
+        Args:
+            z: unconstrained vector [B, A]
+
+        Returns:
+            action: projected onto simplex [B, A], sum(action) = 1, action >= 0
+        """
+        # Sort z in descending order
+        z_sorted, _ = torch.sort(z, dim=-1, descending=True)
+
+        # Compute cumulative sum
+        cumsum = torch.cumsum(z_sorted, dim=-1)
+
+        # Find rho: largest j such that z_j + (1 - sum_{i=1}^j z_i) / j > 0
+        k = torch.arange(1, z.shape[-1] + 1, device=z.device, dtype=z.dtype)
+        condition = z_sorted + (1 - cumsum) / k > 0
+        rho = condition.sum(dim=-1, keepdim=True) - 1  # [B, 1]
+
+        # Compute threshold theta
+        theta = (cumsum.gather(-1, rho) - 1) / (rho.float() + 1)
+
+        # Project
+        action = torch.clamp(z - theta, min=0)
+
+        return action

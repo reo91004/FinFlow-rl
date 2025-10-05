@@ -309,9 +309,9 @@ def test_replicator_activation(irt_config):
     print(f"✅ Test 7 passed: Replicator 작동 확인 (w_rep[0] = {avg_w0:.4f} > {uniform_weight:.4f})")
 
 
-def test_gaussian_softmax_policy():
+def test_gaussian_projection_policy():
     """
-    테스트 8: Gaussian + Softmax가 정상 작동하는가?
+    테스트 8: Projected Gaussian Policy가 정상 작동하는가?
     """
     config = {
         'state_dim': 301,  # FinRL Dow30 표준
@@ -341,21 +341,25 @@ def test_gaussian_softmax_policy():
     assert 'std' in info, "Missing 'std' in info"
     assert 'z' in info, "Missing 'z' in info"
 
-    # 3. Log prob 구성
-    assert 'log_prob_gaussian' in info, "Missing 'log_prob_gaussian' in info"
-    assert 'log_prob_jacobian' in info, "Missing 'log_prob_jacobian' in info"
+    # 3. Log prob 구성 (Projected Gaussian: no Jacobian correction)
+    assert 'log_prob_gaussian' in info, "Missing 'log_prob_gaussian' in info (per-action values)"
+    assert 'log_prob' in info, "Missing 'log_prob' in info (summed value)"
 
-    # 4. Log prob 합
-    log_prob_manual = info['log_prob_gaussian'] + info['log_prob_jacobian']
-    assert torch.allclose(log_prob, log_prob_manual, atol=1e-5), \
-        f"Log prob mismatch: {log_prob} vs {log_prob_manual}"
+    # 4. Log prob은 info['log_prob']과 일치해야 함
+    assert torch.allclose(log_prob, info['log_prob'], atol=1e-5), \
+        f"Log prob mismatch: {log_prob} vs {info['log_prob']}"
 
-    print("✅ Test 8 passed: Gaussian + Softmax 검증")
+    # 5. info['log_prob']은 info['log_prob_gaussian']의 합이어야 함
+    log_prob_manual = info['log_prob_gaussian'].sum(dim=-1, keepdim=True)
+    assert torch.allclose(info['log_prob'], log_prob_manual, atol=1e-5), \
+        f"Log prob != sum(log_prob_gaussian): {info['log_prob']} vs {log_prob_manual}"
+
+    print("✅ Test 8 passed: Projected Gaussian Policy 검증")
 
 
 def test_log_prob_calculation():
     """
-    테스트 9: Log probability 계산이 정확한가?
+    테스트 9: Projected Gaussian log probability 계산이 정확한가?
     """
     config = {
         'state_dim': 301,  # FinRL Dow30 표준
@@ -375,12 +379,12 @@ def test_log_prob_calculation():
 
     action, log_prob, info = actor(state, fitness, deterministic=False)
 
-    # Manual 계산
+    # Manual 계산 (Projected Gaussian: unconstrained Gaussian log prob)
     mu = info['mu']
     std = info['std']
     z = info['z']
 
-    # Gaussian log prob
+    # Gaussian log prob (no Jacobian correction for projection)
     import numpy as np
     log_prob_gaussian_manual = -0.5 * (
         ((z - mu) / std) ** 2
@@ -388,15 +392,13 @@ def test_log_prob_calculation():
         + np.log(2 * np.pi)
     ).sum(dim=-1, keepdim=True)
 
-    # Jacobian correction
-    log_prob_jacobian_manual = -torch.log(action + 1e-8).sum(dim=-1, keepdim=True)
-
-    log_prob_manual = log_prob_gaussian_manual + log_prob_jacobian_manual
+    # Projected Gaussian: log_prob = log_prob_gaussian (projection gradient handled by SAC)
+    log_prob_manual = log_prob_gaussian_manual
 
     assert torch.allclose(log_prob, log_prob_manual, atol=1e-4), \
         f"Log prob calculation error: diff={torch.abs(log_prob - log_prob_manual).max()}"
 
-    print("✅ Test 9 passed: Log probability 계산 정확성 검증")
+    print("✅ Test 9 passed: Projected Gaussian log probability 계산 정확성 검증")
 
 
 if __name__ == '__main__':
@@ -427,7 +429,7 @@ if __name__ == '__main__':
         test_irt_decomposition(config, state)
         test_fitness_calculation(config)
         test_replicator_activation(config)
-        test_gaussian_softmax_policy()
+        test_gaussian_projection_policy()
         test_log_prob_calculation()
 
         print("=" * 70)

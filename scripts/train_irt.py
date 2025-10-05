@@ -20,6 +20,7 @@ import argparse
 import os
 from datetime import datetime
 import numpy as np
+import torch
 
 from finrl.config import (
     INDICATORS,
@@ -37,6 +38,53 @@ from stable_baselines3.common.monitor import Monitor
 
 # Import IRT Policy
 from finrl.agents.irt import IRTPolicy
+
+
+# ===== Tier 3: SAC with Global Gradient Clipping =====
+
+class SACWithGradClip(SAC):
+    """
+    SAC with global gradient clipping for numerical stability.
+
+    References:
+    - Neptune.ai (2025): "Gradient clipping is especially beneficial in RL"
+    - RLC 2024: "Weight clipping for Deep Continual and Reinforcement Learning"
+    - CE-GPPO (2025): Gradient clipping preserves stability in policy optimization
+    """
+
+    def __init__(self, *args, max_grad_norm=10.0, **kwargs):
+        """
+        Args:
+            max_grad_norm: Maximum gradient norm (default: 10.0)
+        """
+        self.max_grad_norm = max_grad_norm
+        super().__init__(*args, **kwargs)
+
+    def _setup_model(self):
+        """Override to add gradient clipping to optimizers"""
+        super()._setup_model()
+
+        # Wrap actor and critic optimizers with gradient clipping
+        self._add_grad_clip_to_optimizer(self.policy.actor.optimizer)
+        self._add_grad_clip_to_optimizer(self.policy.critic.optimizer)
+
+    def _add_grad_clip_to_optimizer(self, optimizer):
+        """Wrap optimizer.step() to clip gradients before parameter update"""
+        original_step = optimizer.step
+        max_norm = self.max_grad_norm
+
+        def step_with_clip(closure=None):
+            # Clip gradients before optimizer step
+            if max_norm is not None:
+                params = []
+                for param_group in optimizer.param_groups:
+                    params.extend(param_group['params'])
+                torch.nn.utils.clip_grad_norm_(params, max_norm)
+
+            # Call original optimizer step
+            return original_step(closure)
+
+        optimizer.step = step_with_clip
 
 # Import metrics for evaluation
 from finrl.evaluation.metrics import (
@@ -179,11 +227,12 @@ def train_irt(args):
     print(f"  SAC params: {sac_params}")
     print(f"  IRT params: {policy_kwargs}")
 
-    # Create SAC model with IRT Policy
-    model = SAC(
+    # Create SAC model with IRT Policy + Gradient Clipping
+    model = SACWithGradClip(
         policy=IRTPolicy,
         env=train_env,
         policy_kwargs=policy_kwargs,
+        max_grad_norm=10.0,  # Tier 3: Global gradient clipping
         **sac_params,
         verbose=1,
         tensorboard_log=os.path.join(log_dir, "tensorboard")
@@ -259,7 +308,7 @@ def test_irt(args, model_path=None):
     print(f"  실제 주식 수: {stock_dim}")
     test_env = create_env(test_df, stock_dim, INDICATORS)
 
-    model = SAC.load(model_path, env=test_env)
+    model = SACWithGradClip.load(model_path, env=test_env)
     print(f"  Model loaded successfully")
 
     # 4. Run evaluation
