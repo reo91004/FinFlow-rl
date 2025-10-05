@@ -227,8 +227,9 @@ class BCellIRTActor(nn.Module):
             eps = torch.randn_like(mixed_mu)
             z = mixed_mu + eps * mixed_std
 
-        # Euclidean projection onto probability simplex (Duchi et al. 2008)
-        action = self._project_to_simplex(z)  # [B, A]
+        # Tier 2: Euclidean projection onto constrained simplex (min_weight = 2%)
+        # 최대 집중도: 50% (15개 at 2%, 나머지 1개 at 50%)
+        action = self._project_to_simplex(z, min_weight=0.02)  # [B, A]
 
         # Log probability 계산 (unconstrained Gaussian)
         # Projection gradient는 SAC policy gradient에서 암묵적으로 처리됨
@@ -275,34 +276,61 @@ class BCellIRTActor(nn.Module):
 
         return action, log_prob, info
 
-    def _project_to_simplex(self, z: torch.Tensor) -> torch.Tensor:
+    def _project_to_simplex(self, z: torch.Tensor, min_weight: float = 0.02) -> torch.Tensor:
         """
-        Euclidean projection onto probability simplex.
+        Euclidean projection onto constrained probability simplex.
 
-        Reference: Duchi et al. (2008)
-        "Efficient Projections onto the l1-Ball for Learning in High Dimensions"
+        Constraints:
+        - sum(w) = 1
+        - w >= min_weight (기본: 2% → 최대 집중도 50%)
+
+        Algorithm:
+        1. 변수 변환: w = w' + min_weight (w' >= 0)
+        2. sum(w) = sum(w') + n*min_weight = 1
+        3. sum(w') = 1 - n*min_weight
+        4. Project z onto simplex with sum = 1 - n*min_weight
+        5. w = w' + min_weight
+
+        Reference:
+        - Duchi et al. (2008) "Efficient Projections onto the l1-Ball"
 
         Args:
             z: unconstrained vector [B, A]
+            min_weight: minimum weight per asset (default: 0.02 = 2%)
 
         Returns:
-            action: projected onto simplex [B, A], sum(action) = 1, action >= 0
+            action: projected onto constrained simplex [B, A]
         """
-        # Sort z in descending order
-        z_sorted, _ = torch.sort(z, dim=-1, descending=True)
+        n = z.shape[-1]
 
-        # Compute cumulative sum
+        # Compute target sum for excess variables
+        # w = w' + min_weight, sum(w) = 1
+        # => sum(w') = 1 - n*min_weight
+        target_sum = 1.0 - n * min_weight
+
+        # Check feasibility
+        if target_sum < 0:
+            # min_weight too large, fallback to uniform
+            return torch.full_like(z, 1.0 / n)
+
+        # Project z onto simplex with sum = target_sum
+        z_sorted, _ = torch.sort(z, dim=-1, descending=True)
         cumsum = torch.cumsum(z_sorted, dim=-1)
 
-        # Find rho: largest j such that z_j + (1 - sum_{i=1}^j z_i) / j > 0
-        k = torch.arange(1, z.shape[-1] + 1, device=z.device, dtype=z.dtype)
-        condition = z_sorted + (1 - cumsum) / k > 0
+        k = torch.arange(1, n + 1, device=z.device, dtype=z.dtype)
+        condition = z_sorted + (target_sum - cumsum) / k > 0
         rho = condition.sum(dim=-1, keepdim=True) - 1  # [B, 1]
 
-        # Compute threshold theta
-        theta = (cumsum.gather(-1, rho) - 1) / (rho.float() + 1)
+        # Threshold
+        theta = (cumsum.gather(-1, rho) - target_sum) / (rho.float() + 1)
 
         # Project
-        action = torch.clamp(z - theta, min=0)
+        w_excess = torch.clamp(z - theta, min=0)  # [B, A], sum = target_sum
 
-        return action
+        # Add minimum weight
+        w_final = w_excess + min_weight  # [B, A], sum = 1
+
+        # Numerical stability: ensure exact sum=1
+        w_final = w_final / w_final.sum(dim=-1, keepdim=True)
+
+        return w_final

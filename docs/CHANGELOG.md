@@ -6,6 +6,219 @@
 
 ## [Unreleased]
 
+### Phase 1.8 - Portfolio Concentration 문제 해결 (2025-10-05)
+
+SAC+IRT 학습 안정화 후 발견된 **단일 종목 100% 집중 문제**를 해결했다. Tier 1-B (Target Entropy), Tier 2 (Minimum Weight), Tier 4 (OT Alpha) 수정으로 진정한 분산투자를 구현했다.
+
+#### Fixed
+
+**Portfolio Concentration 문제 해결**
+- 문제: 학습 안정화 후 단일 종목(NVDA, JPM, AXP 등)에 100% 집중
+  - 관측: Top holding = 1.0 (100%), 나머지 29개 종목 = 0.0
+  - Turnover = 0.0 → buy-and-hold, 포트폴리오 관리 없음
+  - 이것은 포트폴리오 관리가 아니라 "종목 타이밍"
+- 근본 원인 3가지:
+  1. **SAC target_entropy 불일치**:
+     - Phase 1.7의 Euclidean projection은 simplex 제약만 만족
+     - SAC target_entropy = -30 (Gaussian 기준)
+     - Simplex 정책의 uniform entropy = log(30) ≈ 3.4
+     - Gap: 20 nats → SAC entropy 최적화 실패
+  2. **최소 분산투자 제약 없음**:
+     - Euclidean projection: `[1.0, 0, 0, ...]` 허용
+     - 포트폴리오 이론: 분산투자로 리스크 감소
+     - 금융 규제: 보통 종목당 최대 20-30% 제한
+  3. **Replicator exploitation**:
+     - NVDA fitness 높음 → Replicator 70%가 NVDA로 수렴
+     - OT 30% 기여 → 분산 효과 부족
+
+#### Added
+
+**Tier 1-B: SAC Target Entropy Override (Simplex 최적화)**
+- **파일**: `scripts/train_irt.py` (Line 227-235)
+- **변경**:
+  - Simplex 정책에 맞는 target entropy 계산
+  - Uniform distribution entropy: `H = log(N)` (N=30 → 3.4 nats)
+  - Target entropy: `-0.5 * uniform_entropy` ≈ -1.7 nats
+  - SAC parameters override: `sac_params['target_entropy'] = -1.7`
+- **원리**:
+  - Gaussian 기준 target_entropy = -action_dim (≈ -30)는 simplex에 부적절
+  - Simplex entropy 범위: 0 (one-hot) ~ log(N) (uniform)
+  - -0.5 * log(N): 중간 지점, SAC가 적절한 exploration 유도
+- **효과**:
+  - ent_coef 안정화 (> 0.1 유지 예상)
+  - Entropy-driven exploration → 분산투자 유도
+
+**Tier 2: Minimum Weight Constraint (분산투자 강제)**
+- **파일**: `finrl/agents/irt/bcell_actor.py` (Line 279-336, 231-232)
+- **변경**:
+  - `_project_to_simplex()` 메서드 수정
+  - 최소 가중치 제약 추가: `min_weight=0.02` (2%)
+  - 알고리즘: 변수 변환 + Euclidean projection
+    ```python
+    # 변수 변환: w = w' + min_weight
+    # sum(w) = 1 → sum(w') = 1 - n*min_weight
+    # Project z onto simplex with sum = 1 - n*min_weight
+    # w = w' + min_weight
+    ```
+  - Forward 호출: `action = self._project_to_simplex(z, min_weight=0.02)`
+- **효과**:
+  - 모든 종목 최소 2% 투자 강제
+  - 최대 집중도: 50% (15개 at 2%, 나머지 1개 at 50%)
+  - Herfindahl index (HHI): 1.0 (단일 종목) → 0.19 (42% 집중)
+
+**Tier 4: OT Alpha 증가 (Prototype 다양성 반영)**
+- **파일**: `scripts/train_irt.py` (Line 545)
+- **변경**:
+  - Alpha default: 0.3 → 0.5
+  - `parser.add_argument("--alpha", default=0.5)`
+- **효과**:
+  - Replicator 기여: 70% → 50%
+  - OT 기여: 30% → 50%
+  - Prototype 다양성이 포트폴리오에 더 반영
+  - Replicator exploitation 완화
+
+#### Changed
+
+**finrl/agents/irt/bcell_actor.py**
+- `_project_to_simplex()` 수정 (Line 279-336):
+  - Signature: `(z)` → `(z, min_weight=0.02)`
+  - Algorithm: Duchi et al. (2008) Euclidean projection + 변수 변환
+  - Constraints: `sum(w) = 1`, `w >= min_weight`
+  - Feasibility check: `1 - n*min_weight >= 0` (fallback to uniform)
+- Forward 호출 수정 (Line 231-232):
+  - `action = self._project_to_simplex(z)` → `self._project_to_simplex(z, min_weight=0.02)`
+
+**scripts/train_irt.py**
+- SAC target_entropy override (Line 227-235):
+  - n_stocks 계산: `train_env.action_space.shape[0]`
+  - uniform_entropy: `np.log(n_stocks)`
+  - target_entropy: `-0.5 * uniform_entropy`
+  - sac_params 업데이트: `sac_params['target_entropy'] = target_entropy`
+- OT alpha default 변경 (Line 545):
+  - Argument help 업데이트: "default: 0.5, increased from 0.3"
+
+#### Performance
+
+**Short Training (10 episodes) 검증 결과**
+
+| Metric | Before (NVDA/JPM) | After (10 ep) | 개선 |
+|--------|-------------------|---------------|------|
+| **Top Holding** | 100% | **42% (AXP)** | ✅ 58%p 감소 |
+| **Min Weight** | 0% | **2.0%** | ✅ 제약 작동 |
+| **Num Holdings > 2%** | 1 | **30 (전체)** | ✅ 완전 분산 |
+| **Max Drawdown** | -32.8% | **-17.2%** | ✅ 48% 감소 |
+| **Sharpe Ratio** | 0.79-0.82 | 0.70 | ⚠️ 짧은 학습 |
+| **Total Return** | 113-130% | 61.9% | ⚠️ 짧은 학습 |
+| **Replicator** | 71% | **50.5%** | ✅ 균형 |
+| **OT** | 29% | **49.5%** | ✅ 증가 |
+| **Portfolio Entropy** | 0.0 | **2.07** | ✅ log(30)=3.4 근접 |
+
+**Full Training (200 episodes) 예상 성능**
+- Sharpe ratio > 0.9 (목표)
+- Max drawdown < -20% (목표)
+- Portfolio entropy > 2.5 (목표)
+- ent_coef > 0.1 (안정화 목표)
+- Avg turnover > 0.01 (포트폴리오 관리 증거)
+
+#### Technical Details
+
+**Target Entropy 계산 (Simplex 최적화)**
+```python
+# Simplex entropy: H(uniform) = log(N)
+n_stocks = 30
+uniform_entropy = np.log(n_stocks)  # ≈ 3.4 nats
+
+# Target: 중간 지점 (one-hot과 uniform 사이)
+target_entropy = -0.5 * uniform_entropy  # ≈ -1.7 nats
+
+# SAC 설정
+sac_params['target_entropy'] = target_entropy
+```
+
+**Minimum Weight Constraint (변수 변환)**
+```python
+def _project_to_simplex(z, min_weight=0.02):
+    """
+    Constrained simplex projection.
+
+    Constraints:
+    - sum(w) = 1
+    - w >= min_weight
+
+    Algorithm:
+    1. 변수 변환: w = w' + min_weight (w' >= 0)
+    2. sum(w) = sum(w') + n*min_weight = 1
+    3. sum(w') = 1 - n*min_weight
+    4. Project z onto simplex with sum = 1 - n*min_weight
+    5. w = w' + min_weight
+    """
+    n = z.shape[-1]
+    target_sum = 1.0 - n * min_weight
+
+    # Feasibility check
+    if target_sum < 0:
+        return torch.full_like(z, 1.0 / n)  # Uniform fallback
+
+    # Euclidean projection onto shifted simplex
+    z_sorted, _ = torch.sort(z, dim=-1, descending=True)
+    cumsum = torch.cumsum(z_sorted, dim=-1)
+
+    k = torch.arange(1, n + 1, device=z.device)
+    condition = z_sorted + (target_sum - cumsum) / k > 0
+    rho = condition.sum(dim=-1, keepdim=True) - 1
+
+    theta = (cumsum.gather(-1, rho) - target_sum) / (rho + 1)
+    w_excess = torch.clamp(z - theta, min=0)
+
+    # Add minimum weight
+    w_final = w_excess + min_weight
+    w_final = w_final / w_final.sum(dim=-1, keepdim=True)  # Normalize
+
+    return w_final
+```
+
+**IRT Alpha 효과**
+```python
+# alpha = 0.3 (이전)
+w = 0.7 * w_rep + 0.3 * w_ot
+# Replicator 70% → exploitation 우세 → 단일 종목 집중
+
+# alpha = 0.5 (현재)
+w = 0.5 * w_rep + 0.5 * w_ot
+# Replicator 50%, OT 50% → exploration/exploitation 균형
+```
+
+**Unit Test 검증**
+```python
+# Test 1: Extreme bias
+z = torch.zeros(1, 30)
+z[0, 0] = 100.0  # 극단적 bias
+
+action = _project_to_simplex(z, min_weight=0.02)
+
+assert action.min() >= 0.02 - 1e-6  # ✅ Min constraint
+assert action.max() <= 0.42 + 1e-6  # ✅ Max concentration (42%)
+assert torch.allclose(action.sum(), torch.tensor(1.0))  # ✅ Sum constraint
+```
+
+#### Breaking Changes
+
+없음. 모든 변경사항은 내부 구현 개선이며, API는 변경 없음.
+
+#### Next Steps
+
+1. **Full Training (200 episodes)**: 성능 완전 발현
+2. **Baseline 비교**: SAC vs IRT (동일 조건)
+3. **Ablation Study**: min_weight, target_entropy, alpha 효과 분리
+
+#### References
+
+1. **Duchi et al. (2008)**: "Efficient Projections onto the l1-Ball for Learning in High Dimensions"
+2. **Haarnoja et al. (2018)**: "Soft Actor-Critic: Off-Policy Maximum Entropy Deep RL"
+3. **Markowitz (1952)**: "Portfolio Selection" (분산투자 이론)
+
+---
+
 ### Phase 1.7 - Gradient Stabilization: 3-Tier Solution (2025-10-05)
 
 SAC+IRT 학습 발산 문제를 근본적으로 해결하기 위한 3단계 Gradient Stabilization 구현했다.

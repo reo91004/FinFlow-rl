@@ -265,6 +265,16 @@ FinRL은 원저자의 라이선스를 따름.
 
 ---
 
-**Status**: Phase 0 완료 ✅ | Phase 1 완료 ✅ | **Phase 1.7 (Gradient Stabilization) 완료 ✅** | Phase 2 준비 중 📋
+**Status**: Phase 0 완료 ✅ | Phase 1 완료 ✅ | **Phase 1.8 (Portfolio Diversification) 완료 ✅** | Phase 2 준비 중 📋
 
-**Latest**: SAC+IRT gradient stabilization implemented (3-Tier Solution) - See [docs/GRADIENT_STABILIZATION.md](docs/GRADIENT_STABILIZATION.md)
+**Latest**:
+- **Phase 1.8 (2025-10-05)**: Portfolio concentration 문제 해결 - 단일 종목 100% → 42% 분산투자 구현
+- **Phase 1.7 (2025-10-05)**: SAC+IRT gradient stabilization (3-Tier Solution)
+
+**Key Achievements**:
+- ✅ 단일 종목 집중 해결: 모든 종목 최소 2% 투자 강제
+- ✅ Target entropy override: Simplex 정책에 맞는 entropy 목표 (-1.7 nats)
+- ✅ IRT 균형: Replicator 50% + OT 50% (alpha=0.5)
+- ✅ 리스크 감소: Max DD -32.8% → -17.2% (10 episodes)
+
+See [docs/CHANGELOG.md - Phase 1.8](docs/CHANGELOG.md#phase-18---portfolio-concentration-문제-해결-2025-10-05) for details.

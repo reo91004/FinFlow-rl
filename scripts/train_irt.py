@@ -224,7 +224,18 @@ def train_irt(args):
     if 'ent_coef' in sac_params and isinstance(sac_params['ent_coef'], str):
         sac_params['ent_coef'] = 'auto'
 
+    # Tier 1-B: Target Entropy Override for Simplex Policy
+    # Gaussian 기준 target_entropy = -action_dim (≈ -30)은 simplex에 부적절
+    # Simplex entropy: uniform distribution H = log(N)
+    n_stocks = train_env.action_space.shape[0]  # Box shape
+    uniform_entropy = np.log(n_stocks)  # log(30) ≈ 3.4 nats
+    target_entropy = -0.5 * uniform_entropy  # ≈ -1.7 nats (simplex 중간 지점)
+
+    # Override target_entropy
+    sac_params['target_entropy'] = target_entropy
+
     print(f"  SAC params: {sac_params}")
+    print(f"  Target entropy: {target_entropy:.4f} (simplex-optimized)")
     print(f"  IRT params: {policy_kwargs}")
 
     # Create SAC model with IRT Policy + Gradient Clipping
@@ -529,8 +540,10 @@ def main():
                         help="Number of epitope tokens (default: 6)")
     parser.add_argument("--M-proto", type=int, default=8,
                         help="Number of prototypes (default: 8)")
-    parser.add_argument("--alpha", type=float, default=0.3,
-                        help="OT-Replicator mixing ratio (default: 0.3)")
+    # Tier 4: OT Alpha 증가 (0.3 → 0.5)
+    # Prototype 다양성을 포트폴리오에 더 반영하여 Replicator exploitation 완화
+    parser.add_argument("--alpha", type=float, default=0.5,
+                        help="OT-Replicator mixing ratio (default: 0.5, increased from 0.3)")
     parser.add_argument("--eps", type=float, default=0.10,
                         help="Sinkhorn entropy (default: 0.10)")
     parser.add_argument("--eta-0", type=float, default=0.05,

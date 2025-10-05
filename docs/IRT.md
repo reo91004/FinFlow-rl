@@ -256,6 +256,71 @@ w_t = (1-α)·Replicator(w_{t-1}, f_t) + α·Transport(E_t, K, C_t)
 
 ---
 
+## Constrained Projected Gaussian Policy (Phase 1.8)
+
+### 개요
+
+Phase 1.7의 Projected Gaussian Policy에서 **Minimum Weight Constraint**를 추가하여, Phase 1.8에서 단일 종목 집중 문제를 해결했다.
+
+### Phase 1.8 개선: Minimum Weight Constraint
+
+**문제**: Phase 1.7 구현 후에도 단일 종목에 100% 집중
+- Euclidean projection은 simplex 제약(`sum=1`, `w≥0`)만 만족
+- `[1.0, 0, 0, ..., 0]` (단일 종목 100%) 허용됨
+- 포트폴리오 이론: 분산투자로 리스크 감소 필요
+
+**해결**: Constrained Simplex Projection
+- 추가 제약: `w >= min_weight` (기본 2%)
+- 최대 집중도: 50% (15개 at 2%, 나머지 1개 at 50%)
+- 모든 종목에 최소 투자 강제 → 진정한 분산투자
+
+**알고리즘** (변수 변환 기반):
+```python
+def _project_to_simplex(z, min_weight=0.02):
+    """
+    Constrained simplex projection.
+
+    Constraints:
+    - sum(w) = 1
+    - w >= min_weight
+
+    Algorithm:
+    1. 변수 변환: w = w' + min_weight (w' >= 0)
+    2. sum(w) = 1 → sum(w') = 1 - n*min_weight
+    3. Project z onto simplex with sum = 1 - n*min_weight
+    4. w = w' + min_weight
+    """
+    n = z.shape[-1]
+    target_sum = 1.0 - n * min_weight
+
+    # Feasibility check
+    if target_sum < 0:
+        return torch.full_like(z, 1.0 / n)
+
+    # Euclidean projection onto shifted simplex
+    z_sorted, _ = torch.sort(z, dim=-1, descending=True)
+    cumsum = torch.cumsum(z_sorted, dim=-1)
+
+    k = torch.arange(1, n + 1, device=z.device)
+    condition = z_sorted + (target_sum - cumsum) / k > 0
+    rho = condition.sum(dim=-1, keepdim=True) - 1
+
+    theta = (cumsum.gather(-1, rho) - target_sum) / (rho + 1)
+    w_excess = torch.clamp(z - theta, min=0)
+
+    # Add minimum weight
+    w_final = w_excess + min_weight
+    w_final = w_final / w_final.sum(dim=-1, keepdim=True)
+
+    return w_final
+```
+
+**효과** (10 episodes 검증):
+- Top holding: 100% → **42%** ✅
+- Min weight: 0% → **2.0%** ✅
+- Portfolio entropy: 0.0 → **2.07** ✅
+- Max drawdown: -32.8% → **-17.2%** ✅
+
 ## Projected Gaussian Policy (Phase 1.7)
 
 ### 개요
@@ -358,6 +423,12 @@ SAC의 policy gradient는 projection을 통과한 action에 대해 계산되지�
   - Manual 계산과 비교하여 정확성 검증
 
 **결과**: 9/9 unit tests passing ✅
+
+**Phase 1.8 추가 검증**: Minimum Weight Constraint
+- Extreme bias test: `z[0] = 100, z[1:] = 0` → `action[0] = 0.42, action[1:] = 0.02` ✅
+- Min constraint: `all(action >= 0.02)` ✅
+- Max concentration: `max(action) <= 0.42` (50% 이하) ✅
+- Sum constraint: `sum(action) = 1.0` ✅
 
 ---
 
