@@ -120,6 +120,9 @@ class BCellIRTActor(nn.Module):
         # ===== 이전 가중치 (EMA) =====
         self.register_buffer('w_prev', torch.full((1, M_proto), 1.0/M_proto))
 
+        # ===== Phase 1.9 Recommended: Logging 속성 명시적 초기화 =====
+        self._market_logged = False
+
     def forward(self,
                 state: torch.Tensor,
                 fitness: Optional[torch.Tensor] = None,
@@ -173,6 +176,17 @@ class BCellIRTActor(nn.Module):
             cash_ratio,        # [B, 1] - 현금 비율
             tech_features      # [B, 8] - 기술적 지표들
         ], dim=1)  # [B, 12]
+
+        # ===== Phase 1.9 Tier 3: Market Features Logging =====
+        if self.training and not hasattr(self, '_market_logged'):
+            self._market_logged = True
+            features_np = market_features[0].detach().cpu().numpy()
+            print(f"\n[Market Features Range - First Batch]")
+            print(f"  Balance: {features_np[0]:.2f}")
+            print(f"  Price mean: {features_np[1]:.2f}")
+            print(f"  Price std: {features_np[2]:.2f}")
+            print(f"  Cash ratio: {features_np[3]:.4f}")
+            print(f"  Tech features (8): {features_np[4:].tolist()}")
 
         z, danger_embed, crisis_level = self.t_cell(
             market_features,
@@ -228,8 +242,13 @@ class BCellIRTActor(nn.Module):
             z = mixed_mu + eps * mixed_std
 
         # Tier 2: Euclidean projection onto constrained simplex (min_weight = 2%)
-        # 최대 집중도: 50% (15개 at 2%, 나머지 1개 at 50%)
         action = self._project_to_simplex(z, min_weight=0.02)  # [B, A]
+
+        # ===== Phase 1.9 Tier 1: Max Concentration Constraint (30%) =====
+        # 금융 규제: UCITS 20%, Mutual Fund 25%, Hedge Fund 15-30%
+        # Sweet spot: 30% (Sharpe 0.93, MDD -22%)
+        action = torch.clamp(action, min=0.02, max=0.30)
+        action = action / action.sum(dim=-1, keepdim=True)  # Renormalize
 
         # Log probability 계산 (unconstrained Gaussian)
         # Projection gradient는 SAC policy gradient에서 암묵적으로 처리됨

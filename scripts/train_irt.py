@@ -39,6 +39,12 @@ from stable_baselines3.common.monitor import Monitor
 # Import IRT Policy
 from finrl.agents.irt import IRTPolicy
 
+# ===== Phase 1.9: Tier 0 - Adaptive Target Entropy =====
+from finrl.agents.irt.entropy_estimator import PolicyEntropyEstimator
+
+# ===== Phase 1.9: Tier 2 - Dynamic Alpha Scheduler =====
+from finrl.agents.irt.alpha_scheduler import AlphaScheduler
+
 
 # ===== Tier 3: SAC with Global Gradient Clipping =====
 
@@ -85,6 +91,43 @@ class SACWithGradClip(SAC):
             return original_step(closure)
 
         optimizer.step = step_with_clip
+
+
+# ===== Phase 1.9 Tier 2: Alpha Update Callback =====
+
+from stable_baselines3.common.callbacks import BaseCallback
+
+class AlphaUpdateCallback(BaseCallback):
+    """
+    Callback to update IRT alpha during training.
+
+    Alpha schedule: 0.3 → 0.7 (Replicator → OT)
+    - Early training: Replicator dominant (빠른 수렴)
+    - Late training: OT dominant (구조적 매칭)
+    """
+
+    def __init__(self, scheduler: AlphaScheduler, verbose: int = 0):
+        super().__init__(verbose)
+        self.scheduler = scheduler
+
+    def _on_step(self) -> bool:
+        """Update alpha at each step."""
+        # Get current alpha
+        alpha = self.scheduler.get_alpha(self.num_timesteps)
+
+        # Update IRT operator
+        # Path: model.policy.actor.irt_actor.irt.alpha
+        self.model.policy.actor.irt_actor.irt.alpha = alpha
+
+        # Log to tensorboard
+        self.logger.record("train/alpha", alpha)
+
+        # Periodic logging
+        if self.verbose > 0 and self.num_timesteps % 5000 == 0:
+            print(f"  [Alpha] Step {self.num_timesteps}: α = {alpha:.3f}")
+
+        return True
+
 
 # Import metrics for evaluation
 from finrl.evaluation.metrics import (
@@ -224,21 +267,48 @@ def train_irt(args):
     if 'ent_coef' in sac_params and isinstance(sac_params['ent_coef'], str):
         sac_params['ent_coef'] = 'auto'
 
-    # Tier 1-B: Target Entropy Override for Simplex Policy
-    # Gaussian 기준 target_entropy = -action_dim (≈ -30)은 simplex에 부적절
-    # Simplex entropy: uniform distribution H = log(N)
-    n_stocks = train_env.action_space.shape[0]  # Box shape
-    uniform_entropy = np.log(n_stocks)  # log(30) ≈ 3.4 nats
-    target_entropy = -0.5 * uniform_entropy  # ≈ -1.7 nats (simplex 중간 지점)
-
-    # Override target_entropy
-    sac_params['target_entropy'] = target_entropy
-
-    print(f"  SAC params: {sac_params}")
-    print(f"  Target entropy: {target_entropy:.4f} (simplex-optimized)")
+    print(f"  SAC params (initial): {sac_params}")
     print(f"  IRT params: {policy_kwargs}")
 
-    # Create SAC model with IRT Policy + Gradient Clipping
+    # ===== Phase 1.9 Tier 0: Adaptive Target Entropy =====
+    print(f"\n[Tier 0] Estimating empirical policy entropy...")
+
+    # Step 1: Create initial model (for entropy estimation)
+    model_temp = SACWithGradClip(
+        policy=IRTPolicy,
+        env=train_env,
+        policy_kwargs=policy_kwargs,
+        max_grad_norm=10.0,
+        **sac_params,
+        verbose=0,
+        tensorboard_log=None
+    )
+
+    # Step 2: Estimate entropy empirically
+    estimator = PolicyEntropyEstimator(n_states=100, n_samples_per_state=20)
+    mean_entropy, std_entropy = estimator.estimate(model_temp.policy, train_env)
+
+    print(f"  Empirical entropy: {mean_entropy:.3f} ± {std_entropy:.3f} nats")
+
+    # Step 3: Set target entropy (70% of empirical, following Ahmed et al. 2019)
+    target_entropy = 0.7 * mean_entropy
+
+    print(f"  Target entropy: {target_entropy:.3f} nats (70% of empirical)")
+
+    # Previous method comparison
+    n_stocks = train_env.action_space.shape[0]
+    old_target = -0.5 * np.log(n_stocks)
+    print(f"  Previous method: -0.5 * log(N) = {old_target:.3f} nats")
+    print(f"  Improvement: {target_entropy - old_target:+.3f} nats")
+
+    # Step 4: Override SAC target entropy
+    sac_params['target_entropy'] = target_entropy
+
+    # Clean up temporary model
+    del model_temp
+
+    # Step 5: Create final model with adaptive target entropy
+    print(f"\n[5/5] Creating SAC + IRT model with adaptive target entropy...")
     model = SACWithGradClip(
         policy=IRTPolicy,
         env=train_env,
@@ -249,15 +319,33 @@ def train_irt(args):
         tensorboard_log=os.path.join(log_dir, "tensorboard")
     )
 
+    print(f"  Model created with target_entropy = {target_entropy:.3f} nats")
+
     # Total timesteps
     total_timesteps = 250 * args.episodes
     print(f"  Total timesteps: {total_timesteps}")
-    print(f"  Starting training...")
+
+    # ===== Phase 1.9 Tier 2: Dynamic Alpha Scheduler =====
+    print(f"\n[Tier 2] Setting up dynamic alpha scheduler...")
+    alpha_scheduler = AlphaScheduler(
+        alpha_start=0.3,
+        alpha_end=0.7,
+        total_steps=total_timesteps,
+        schedule_type='cosine'
+    )
+
+    alpha_callback = AlphaUpdateCallback(alpha_scheduler, verbose=1)
+
+    print(f"  Alpha schedule: 0.3 → 0.7 (cosine)")
+    print(f"  Early training: Replicator dominant (빠른 수렴)")
+    print(f"  Late training: OT dominant (구조적 매칭)")
+
+    print(f"\n  Starting training...")
 
     # Train
     model.learn(
         total_timesteps=total_timesteps,
-        callback=[checkpoint_callback, eval_callback],
+        callback=[checkpoint_callback, eval_callback, alpha_callback],
         progress_bar=True
     )
 

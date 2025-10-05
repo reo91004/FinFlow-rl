@@ -43,6 +43,10 @@ class TCellMinimal(nn.Module):
         self.emb_dim = emb_dim
         self.momentum = momentum
 
+        # ===== Phase 1.9 Tier 3: Crisis Logging =====
+        self._debug_counter = 0
+        self._debug_interval = 5000  # 5000 step마다 출력 (Optional: 빈도 감소)
+
         # 단일 인코더 (효율성)
         self.encoder = nn.Sequential(
             nn.Linear(in_dim, 128),
@@ -98,6 +102,17 @@ class TCellMinimal(nn.Module):
         c = torch.sigmoid(
             (z_std * alpha_norm).sum(dim=-1, keepdim=True)
         )  # [B, 1]
+
+        # ===== Phase 1.9 Tier 3: Crisis Logging =====
+        if update_stats and self.training:
+            self._debug_counter += 1
+            if self._debug_counter % self._debug_interval == 0:
+                print(f"\n[T-Cell Debug - Step {self._debug_counter}]")
+                print(f"  Crisis level: mean={c.mean().item():.4f}, "
+                      f"min={c.min().item():.4f}, max={c.max().item():.4f}")
+                print(f"  Crisis type scores (raw z): {z[0, :].tolist()}")
+                print(f"  Crisis type scores (std z): {z_std[0, :].tolist()}")
+                print(f"  Alpha weights: {alpha_norm.tolist()}")
 
         return z, d, c
 
