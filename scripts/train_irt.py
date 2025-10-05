@@ -45,6 +45,9 @@ from finrl.agents.irt.entropy_estimator import PolicyEntropyEstimator
 # ===== Phase 1.9: Tier 2 - Dynamic Alpha Scheduler =====
 from finrl.agents.irt.alpha_scheduler import AlphaScheduler
 
+# ===== Multi-Objective Reward Wrapper =====
+from finrl.meta.env_portfolio_optimization.reward_wrapper import MultiObjectiveRewardWrapper
+
 
 # ===== Tier 3: SAC with Global Gradient Clipping =====
 
@@ -225,6 +228,37 @@ def train_irt(args):
     print(f"  실제 주식 수: {stock_dim}")
     train_env = create_env(train_df, stock_dim, INDICATORS)
     test_env = create_env(test_df, stock_dim, INDICATORS)
+
+    # ===== Multi-Objective Reward Wrapper 적용 =====
+    if args.use_multiobjective:
+        print(f"\n  [Multi-Objective Reward] Wrapper 적용 중...")
+        train_env = MultiObjectiveRewardWrapper(
+            train_env,
+            lambda_turnover=args.lambda_turnover,
+            lambda_diversity=args.lambda_diversity,
+            lambda_drawdown=args.lambda_drawdown,
+            tc_rate=args.tc_rate,
+            enable_turnover=not args.no_turnover,
+            enable_diversity=not args.no_diversity,
+            enable_drawdown=not args.no_drawdown
+        )
+        test_env = MultiObjectiveRewardWrapper(
+            test_env,
+            lambda_turnover=args.lambda_turnover,
+            lambda_diversity=args.lambda_diversity,
+            lambda_drawdown=args.lambda_drawdown,
+            tc_rate=args.tc_rate,
+            enable_turnover=not args.no_turnover,
+            enable_diversity=not args.no_diversity,
+            enable_drawdown=not args.no_drawdown
+        )
+        print(f"    - Turnover penalty: {args.lambda_turnover if not args.no_turnover else 'disabled'}")
+        print(f"    - Diversity bonus: {args.lambda_diversity if not args.no_diversity else 'disabled'}")
+        print(f"    - Drawdown penalty: {args.lambda_drawdown if not args.no_drawdown else 'disabled'}")
+        print(f"    - Transaction cost: {args.tc_rate * 100:.2f}%")
+    else:
+        print(f"\n  [단순 보상] 원본 ln(V_t/V_{{t-1}}) 사용 (Baseline 비교용)")
+
     print(f"  State space: {train_env.state_space}")
     print(f"  Action space: {train_env.action_space}")
 
@@ -406,6 +440,20 @@ def test_irt(args, model_path=None):
     stock_dim = len(test_df.tic.unique())
     print(f"  실제 주식 수: {stock_dim}")
     test_env = create_env(test_df, stock_dim, INDICATORS)
+
+    # ===== Multi-Objective Reward Wrapper 적용 (학습과 동일한 설정) =====
+    if args.use_multiobjective:
+        print(f"  [Multi-Objective Reward] Wrapper 적용 중...")
+        test_env = MultiObjectiveRewardWrapper(
+            test_env,
+            lambda_turnover=args.lambda_turnover,
+            lambda_diversity=args.lambda_diversity,
+            lambda_drawdown=args.lambda_drawdown,
+            tc_rate=args.tc_rate,
+            enable_turnover=not args.no_turnover,
+            enable_diversity=not args.no_diversity,
+            enable_drawdown=not args.no_drawdown
+        )
 
     model = SACWithGradClip.load(model_path, env=test_env)
     print(f"  Model loaded successfully")
@@ -652,6 +700,30 @@ def main():
                         help="Plot output directory (default: log_dir/evaluation_plots)")
     parser.add_argument("--no-json", action="store_true",
                         help="Disable saving evaluation results as JSON (default: enabled)")
+
+    # ===== Multi-Objective Reward 옵션 =====
+    parser.add_argument("--use-multiobjective", action="store_true", default=True,
+                        help="다목적 보상 사용 (default: True)")
+    parser.add_argument("--no-multiobjective", dest="use_multiobjective", action="store_false",
+                        help="다목적 보상 비활성화 (Baseline 비교용)")
+
+    # 보상 함수 하이퍼파라미터
+    parser.add_argument("--lambda-turnover", type=float, default=0.01,
+                        help="회전율 패널티 가중치 (default: 0.01)")
+    parser.add_argument("--lambda-diversity", type=float, default=0.1,
+                        help="다양성 보너스 가중치 (default: 0.1)")
+    parser.add_argument("--lambda-drawdown", type=float, default=0.05,
+                        help="낙폭 패널티 가중치 (default: 0.05)")
+    parser.add_argument("--tc-rate", type=float, default=0.001,
+                        help="거래 비용률 (default: 0.001 = 0.1%%)")
+
+    # Ablation study용 플래그
+    parser.add_argument("--no-turnover", action="store_true",
+                        help="회전율 패널티 비활성화 (ablation)")
+    parser.add_argument("--no-diversity", action="store_true",
+                        help="다양성 보너스 비활성화 (ablation)")
+    parser.add_argument("--no-drawdown", action="store_true",
+                        help="낙폭 패널티 비활성화 (ablation)")
 
     args = parser.parse_args()
 
