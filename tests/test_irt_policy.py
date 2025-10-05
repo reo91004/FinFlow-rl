@@ -23,7 +23,7 @@ from finrl.agents.irt.irt_policy import IRTPolicy
 def irt_config():
     """IRT 테스트 설정"""
     return {
-        'state_dim': 181,  # FinRL Dow30: 30 + 30*8 + 1 = 181
+        'state_dim': 301,  # FinRL Dow30: 1 + (8 + 2) * 30 = 301
         'action_dim': 30,
         'emb_dim': 128,
         'm_tokens': 6,
@@ -49,7 +49,7 @@ def test_irt_forward_pass(irt_config, sample_state):
     actor.eval()
 
     with torch.no_grad():
-        action, info = actor(sample_state, deterministic=True)
+        action, log_prob, info = actor(sample_state, deterministic=True)
 
     # 형상 체크
     assert action.shape == (sample_state.shape[0], irt_config['action_dim'])
@@ -77,7 +77,7 @@ def test_simplex_constraint(irt_config, sample_state):
     actor.eval()
 
     with torch.no_grad():
-        action, info = actor(sample_state, deterministic=True)
+        action, log_prob, info = actor(sample_state, deterministic=True)
 
     # Simplex 제약 체크
     # 1. 합 = 1
@@ -155,7 +155,7 @@ def test_device_compatibility(irt_config, sample_state):
     sample_state_cpu = sample_state.cpu()
 
     with torch.no_grad():
-        action_cpu, info_cpu = actor(sample_state_cpu, deterministic=True)
+        action_cpu, log_prob_cpu, info_cpu = actor(sample_state_cpu, deterministic=True)
 
     assert action_cpu.device.type == 'cpu'
     assert info_cpu['w'].device.type == 'cpu'
@@ -168,7 +168,7 @@ def test_device_compatibility(irt_config, sample_state):
         sample_state_gpu = sample_state.cuda()
 
         with torch.no_grad():
-            action_gpu, info_gpu = actor(sample_state_gpu, deterministic=True)
+            action_gpu, log_prob_gpu, info_gpu = actor(sample_state_gpu, deterministic=True)
 
         assert action_gpu.device.type == 'cuda'
         assert info_gpu['w'].device.type == 'cuda'
@@ -187,7 +187,7 @@ def test_irt_decomposition(irt_config, sample_state):
     actor.eval()
 
     with torch.no_grad():
-        action, info = actor(sample_state, deterministic=True)
+        action, log_prob, info = actor(sample_state, deterministic=True)
 
     w = info['w']
     w_rep = info['w_rep']
@@ -286,7 +286,7 @@ def test_replicator_activation(irt_config):
 
     # Case 1: fitness=None (균등)
     with torch.no_grad():
-        action1, info1 = actor(state, fitness=None, deterministic=True)
+        action1, log_prob1, info1 = actor(state, fitness=None, deterministic=True)
         w1 = info1['w']
 
     # Case 2: 불균등 fitness (프로토타입 0이 가장 높음)
@@ -294,7 +294,7 @@ def test_replicator_activation(irt_config):
     fitness[:, 0] = 1.0  # 프로토타입 0에 높은 fitness
 
     with torch.no_grad():
-        action2, info2 = actor(state, fitness=fitness, deterministic=True)
+        action2, log_prob2, info2 = actor(state, fitness=fitness, deterministic=True)
         w2 = info2['w']
         w_rep2 = info2['w_rep']
 
@@ -309,6 +309,96 @@ def test_replicator_activation(irt_config):
     print(f"✅ Test 7 passed: Replicator 작동 확인 (w_rep[0] = {avg_w0:.4f} > {uniform_weight:.4f})")
 
 
+def test_gaussian_softmax_policy():
+    """
+    테스트 8: Gaussian + Softmax가 정상 작동하는가?
+    """
+    config = {
+        'state_dim': 301,  # FinRL Dow30 표준
+        'action_dim': 30,
+        'emb_dim': 128,
+        'm_tokens': 6,
+        'M_proto': 8,
+        'alpha': 0.3,
+        'market_feature_dim': 12
+    }
+
+    actor = BCellIRTActor(**config)
+    actor.eval()
+
+    state = torch.randn(4, config['state_dim'])
+    fitness = torch.randn(4, config['M_proto'])
+
+    action, log_prob, info = actor(state, fitness, deterministic=False)
+
+    # 1. Simplex 제약
+    assert torch.allclose(action.sum(dim=-1), torch.ones(4), atol=1e-5), \
+        f"Action sum not 1.0: {action.sum(dim=-1)}"
+    assert (action >= 0).all(), f"Negative actions found: {action.min()}"
+
+    # 2. Gaussian 파라미터 존재
+    assert 'mu' in info, "Missing 'mu' in info"
+    assert 'std' in info, "Missing 'std' in info"
+    assert 'z' in info, "Missing 'z' in info"
+
+    # 3. Log prob 구성
+    assert 'log_prob_gaussian' in info, "Missing 'log_prob_gaussian' in info"
+    assert 'log_prob_jacobian' in info, "Missing 'log_prob_jacobian' in info"
+
+    # 4. Log prob 합
+    log_prob_manual = info['log_prob_gaussian'] + info['log_prob_jacobian']
+    assert torch.allclose(log_prob, log_prob_manual, atol=1e-5), \
+        f"Log prob mismatch: {log_prob} vs {log_prob_manual}"
+
+    print("✅ Test 8 passed: Gaussian + Softmax 검증")
+
+
+def test_log_prob_calculation():
+    """
+    테스트 9: Log probability 계산이 정확한가?
+    """
+    config = {
+        'state_dim': 301,  # FinRL Dow30 표준
+        'action_dim': 30,
+        'emb_dim': 128,
+        'm_tokens': 6,
+        'M_proto': 8,
+        'alpha': 0.3,
+        'market_feature_dim': 12
+    }
+
+    actor = BCellIRTActor(**config)
+    actor.eval()
+
+    state = torch.randn(4, config['state_dim'])
+    fitness = torch.randn(4, config['M_proto'])
+
+    action, log_prob, info = actor(state, fitness, deterministic=False)
+
+    # Manual 계산
+    mu = info['mu']
+    std = info['std']
+    z = info['z']
+
+    # Gaussian log prob
+    import numpy as np
+    log_prob_gaussian_manual = -0.5 * (
+        ((z - mu) / std) ** 2
+        + 2 * torch.log(std)
+        + np.log(2 * np.pi)
+    ).sum(dim=-1, keepdim=True)
+
+    # Jacobian correction
+    log_prob_jacobian_manual = -torch.log(action + 1e-8).sum(dim=-1, keepdim=True)
+
+    log_prob_manual = log_prob_gaussian_manual + log_prob_jacobian_manual
+
+    assert torch.allclose(log_prob, log_prob_manual, atol=1e-4), \
+        f"Log prob calculation error: diff={torch.abs(log_prob - log_prob_manual).max()}"
+
+    print("✅ Test 9 passed: Log probability 계산 정확성 검증")
+
+
 if __name__ == '__main__':
     # 직접 실행 시 테스트 수행
     import sys
@@ -318,7 +408,7 @@ if __name__ == '__main__':
     print("=" * 70)
 
     config = {
-        'state_dim': 181,
+        'state_dim': 301,  # FinRL Dow30 표준
         'action_dim': 30,
         'emb_dim': 128,
         'm_tokens': 6,
@@ -337,6 +427,8 @@ if __name__ == '__main__':
         test_irt_decomposition(config, state)
         test_fitness_calculation(config)
         test_replicator_activation(config)
+        test_gaussian_softmax_policy()
+        test_log_prob_calculation()
 
         print("=" * 70)
         print("✅ All tests passed!")

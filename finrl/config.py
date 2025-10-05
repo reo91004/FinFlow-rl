@@ -45,7 +45,7 @@ SAC_PARAMS = {
     "buffer_size": 100000,
     "learning_rate": 0.0001,
     "learning_starts": 100,
-    "ent_coef": "auto_0.1",
+    "ent_coef": "auto",  # auto (target_entropy=-action_dim for Gaussian)
 }
 ERL_PARAMS = {
     "learning_rate": 3e-5,

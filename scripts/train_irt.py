@@ -165,7 +165,10 @@ def train_irt(args):
         "eps": args.eps,
         "eta_0": args.eta_0,
         "eta_1": args.eta_1,
-        "market_feature_dim": args.market_feature_dim
+        "market_feature_dim": args.market_feature_dim,
+        # Gaussian policy parameters
+        "log_std_min": -20,
+        "log_std_max": 2,
     }
 
     # SAC parameters

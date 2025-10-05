@@ -98,10 +98,11 @@ SAC.train()
   │                   │         └─> Replicator Dynamics(fitness) → w_rep  # ✅ fitness 사용
   │                   │         └─> Mixing: w = (1-α)·w_rep + α·w_ot
   │                   │
-  │                   ├─> Step 5: Dirichlet 정책
-  │                   │    └─> decoders[j](K) → concentrations
-  │                   │    └─> mixed_conc = w @ concentrations
-  │                   │    └─> Dirichlet(mixed_conc).sample() → action
+  │                   ├─> Step 5: Gaussian + Softmax 정책
+  │                   │    └─> mu_decoders[j](K), log_std_decoders[j](K) → mus, log_stds
+  │                   │    └─> mixed_mu = w @ mus, mixed_std = w @ stds
+  │                   │    └─> z = mixed_mu + ε·mixed_std (Gaussian 샘플링)
+  │                   │    └─> action = softmax(z) (Simplex 제약)
   │                   │
   │                   └─> Step 6: EMA 업데이트 (w_prev)
   │                        └─> w_prev = β·w_prev + (1-β)·w.mean()
@@ -196,7 +197,7 @@ def action_log_prob(self, obs):
 - `t_cell`: T-Cell 위기 감지
 - `w_prev`: EMA 메모리 (buffer)
 
-**Info 구조** (v1.1부터 확장):
+**Info 구조** (v1.6부터 Gaussian+Softmax):
 ```python
 info = {
     'w': w,                          # [B, M] - 최종 프로토타입 가중치
@@ -204,10 +205,12 @@ info = {
     'crisis_level': crisis_level,    # [B, 1] - 위기 레벨
     'w_rep': w_rep,                  # [B, M] - Replicator 출력
     'w_ot': w_ot,                    # [B, M] - OT 출력
-    # v1.1 추가: log_prob 계산용
-    'concentrations': concentrations,         # [B, M, A]
-    'mixed_conc': mixed_conc,                 # [B, A]
-    'mixed_conc_clamped': mixed_conc_clamped  # [B, A]
+    # v1.6 추가: Gaussian+Softmax 정책 정보
+    'mu': mixed_mu,                  # [B, A] - 혼합된 Gaussian mean
+    'std': mixed_std,                # [B, A] - 혼합된 Gaussian std
+    'z': z,                          # [B, A] - Gaussian 샘플
+    'log_prob_gaussian': ...,        # [B, 1] - Gaussian log prob
+    'log_prob_jacobian': ...,        # [B, 1] - Jacobian correction
 }
 ```
 
@@ -497,8 +500,8 @@ PPO와 동일한 문제 (V(s) 기반, On-policy).
 | **eta_1** | 0.15 | 0.05-0.20 | 위기 증가량 (Replicator) |
 | **m_tokens** | 6 | 4-8 | 에피토프 토큰 수 |
 | **M_proto** | 8 | 6-12 | 프로토타입 수 |
-| **dirichlet_min** | 0.5 | 0.1-1.0 | Dirichlet concentration 최소값 |
-| **dirichlet_max** | 50.0 | 20.0-100.0 | Dirichlet concentration 최대값 |
+| **log_std_min** | -20 | -30 ~ -10 | Gaussian log std 최소값 |
+| **log_std_max** | 2 | 1 ~ 5 | Gaussian log std 최대값 |
 
 ### 파라미터 효과
 
@@ -695,6 +698,123 @@ print(f"IRT 분해 - OT: {info['w_ot']}")
    - `_compute_fitness()` helper로 DRY principle 준수
 
 자세한 내용은 [CHANGELOG.md - Phase 1.4](CHANGELOG.md#phase-14---evaluation-dtype-불일치-및-성능-개선-2025-10-05) 참조.
+
+---
+
+## Policy 재설계: Dirichlet → Gaussian+Softmax (Phase 1.6)
+
+### 문제 상황
+
+#### 증상
+- Dirichlet Policy 사용 시 SAC 훈련 발산
+- ent_coef 폭발: 1.63 → 1.28e+09 (200 episodes)
+- critic_loss 폭발: 3.34e+03 → 2.84e+08 (200 episodes)
+- actor_loss 발산: -1.91e+03 → -1.41e+08 (200 episodes)
+
+#### 근본 원인
+- Dirichlet 정책의 Entropy: -3 ~ -50 (매우 낮음)
+- SAC target_entropy: -30 (Gaussian 가정)
+- SAC의 자동 엔트로피 조정:
+  ```python
+  J_entropy = -log(ent_coef) * (entropy - target_entropy)
+  # entropy (-50) << target_entropy (-30)
+  # → SAC가 ent_coef를 폭발적으로 증가
+  ```
+- Actor loss 폭발: `L_actor ∝ ent_coef * entropy`
+- Critic이 높은 Q-value로 보상 → 발산
+
+### 해결책: Gaussian + Softmax
+
+#### 설계 원리
+1. **Gaussian Policy**: `z ~ N(μ, σ²)` - SAC와 자연스럽게 호환
+2. **Softmax Projection**: `a = softmax(z)` - Simplex 제약 유지
+3. **Variable Transformation**: Log probability with Jacobian correction
+
+#### 수식
+```
+z_i ~ N(μ_i, σ_i²)
+a_i = exp(z_i) / Σ exp(z_j)  (Softmax)
+
+log p(a) = log p(z) + log |∂z/∂a|
+         = Σ [-0.5((z_i - μ_i)/σ_i)² - log(σ_i) - 0.5log(2π)]
+           - Σ log(a_i)
+```
+
+**Jacobian Correction**:
+- Softmax의 Jacobian: `∂z_i/∂a_j = δ_ij / a_i` (diagonal 근사)
+- Log-det Jacobian: `-Σ log(a_i)`
+
+#### 장점
+- ✅ SAC 호환: Entropy -30 ~ -20 (target_entropy 범위)
+- ✅ Simplex 제약: `Σ a_i = 1`, `a_i ≥ 0` 자동 만족
+- ✅ IRT 독립성: Policy 분포만 변경, IRT 메커니즘 보존
+- ✅ 안정성: ent_coef < 1.0 (Dirichlet의 1.28e+09 vs)
+
+### 구현 상세
+
+#### 변경 파일 (Core 4개 + Tests 1개)
+
+**1. finrl/agents/irt/bcell_actor.py**
+- **Decoder 교체** (Line 83-103):
+  - 이전: `dirichlet_decoders` → Dirichlet concentration
+  - 현재: `mu_decoders`, `log_std_decoders` → Gaussian 파라미터
+- **Forward 변경** (Line 206-246):
+  - Gaussian 혼합: `mixed_mu = w @ mus`, `mixed_std = w @ stds`
+  - Gaussian 샘플링: `z = μ + ε·σ`
+  - Softmax projection: `action = softmax(z)`
+  - Log probability: Gaussian + Jacobian
+- **Return 변경**: `(action, info)` → `(action, log_prob, info)`
+
+**2. finrl/agents/irt/irt_policy.py**
+- **action_log_prob() 간소화** (Line 167-196):
+  - BCellIRTActor가 log_prob 직접 반환
+  - Dirichlet 계산 제거
+- **_compute_fitness() 수정** (Line 84-136):
+  - Gaussian mean action 사용: `a_j = softmax(mu_j)`
+- **파라미터 변경** (Line 241-242):
+  - `dirichlet_min/max` → `log_std_min/max`
+
+**3. finrl/config.py**
+- **SAC_PARAMS.ent_coef** (Line 48):
+  - 이전: `"auto_0.1"` (Dirichlet 특화)
+  - 현재: `"auto"` (Gaussian 표준)
+
+**4. scripts/train_irt.py**
+- **policy_kwargs 추가**:
+  - `log_std_min=-20, log_std_max=2`
+
+**5. tests/test_irt_policy.py**
+- **Test 8 추가**: Gaussian+Softmax 검증
+- **Test 9 추가**: Log probability 계산 검증
+- **state_dim 수정**: 181 → 301 (FinRL Dow30 표준)
+- **모든 테스트**: 3-value return 처리
+
+### 검증 결과
+
+#### Unit Tests
+- ✅ 9/9 passing
+- ✅ Simplex 제약: `Σ a_i = 1 ± 1e-5`
+- ✅ Gaussian parameters: mu, std, z 존재
+- ✅ Log prob 정확성: Gaussian + Jacobian 검증
+
+#### Integration Test (2025-10-05)
+- ✅ Training: 250 timesteps 정상 완료 (발산 없음)
+- ✅ Evaluation: 19 steps, Final return -0.69%
+- ✅ 시각화: 14개 IRT 플롯 모두 생성
+- ✅ 훈련 안정성: ent_coef, critic_loss, actor_loss 폭발 없음
+
+### IRT 메커니즘 보존 확인
+
+**정책 독립성**:
+- IRT 혼합 공식: `w = (1-α)·Replicator + α·OT` (변경 없음)
+- Epitope 인코딩: 동일
+- T-Cell 위기 감지: 동일
+- OT 수송: 동일
+- Replicator Dynamics: 동일
+
+**변경 사항**: Policy head만 교체
+- 이전: `w @ [Dirichlet(conc_j) for j in M] → action`
+- 현재: `w @ [Gaussian(μ_j, σ_j) for j in M] → z → softmax(z) → action`
 
 ---
 

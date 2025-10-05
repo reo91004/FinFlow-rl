@@ -74,9 +74,9 @@ class IRTActorWrapper(Actor):
         # Policy를 weakref로 저장 (순환 참조 방지)
         self._policy_ref = weakref.ref(policy) if policy is not None else None
 
-        # Dirichlet 파라미터 저장
-        self.dirichlet_min = irt_actor.dirichlet_min
-        self.dirichlet_max = irt_actor.dirichlet_max
+        # Gaussian policy 파라미터 저장
+        self.log_std_min = irt_actor.log_std_min
+        self.log_std_max = irt_actor.log_std_max
 
         # 마지막 forward의 IRT info 저장 (평가/시각화용)
         self._last_irt_info = None
@@ -106,14 +106,13 @@ class IRTActorWrapper(Actor):
                 proto_actions = []
 
                 for j in range(M):
-                    # 프로토타입 j의 concentration
-                    conc_j = self.irt_actor.decoders[j](K[j:j+1].expand(B, -1))  # [B, action_dim]
-                    conc_j_clamped = torch.clamp(conc_j, min=self.dirichlet_min, max=self.dirichlet_max)
+                    # 프로토타입 j의 Gaussian mean
+                    mu_j = self.irt_actor.mu_decoders[j](K[j:j+1].expand(B, -1))  # [B, action_dim]
+                    log_std_j = self.irt_actor.log_std_decoders[j](K[j:j+1].expand(B, -1))
+                    log_std_j = torch.clamp(log_std_j, self.log_std_min, self.log_std_max)
 
-                    # 샘플 행동 (mode 사용: 더 안정적)
-                    # Dirichlet mode = (α - 1) / (Σα - K) for α > 1
-                    # 안전하게 softmax 사용
-                    a_j = torch.softmax(conc_j_clamped, dim=-1)  # [B, action_dim]
+                    # Mean action (deterministic, 안정적)
+                    a_j = torch.softmax(mu_j, dim=-1)  # [B, action_dim]
                     proto_actions.append(a_j)
 
                 proto_actions = torch.stack(proto_actions, dim=1)  # [B, M, action_dim]
@@ -154,7 +153,7 @@ class IRTActorWrapper(Actor):
         fitness = self._compute_fitness(obs)
 
         # IRT Actor forward
-        action, info = self.irt_actor(
+        action, log_prob, info = self.irt_actor(
             state=obs,
             fitness=fitness,
             deterministic=deterministic
@@ -169,6 +168,8 @@ class IRTActorWrapper(Actor):
         """
         Sample action and compute log probability
 
+        BCellIRTActor가 log_prob를 직접 반환하므로 단순 전달
+
         Args:
             obs: [B, features_dim]
 
@@ -179,11 +180,11 @@ class IRTActorWrapper(Actor):
         # Ensure float32 dtype (환경에서 float64로 들어올 수 있음)
         obs = obs.float()
 
-        # ===== Step 1: Fitness 계산 (Critic Q-network 사용) =====
+        # Fitness 계산 (Critic Q-network 사용)
         fitness = self._compute_fitness(obs)
 
-        # ===== Step 2: IRT forward with fitness =====
-        action, info = self.irt_actor(
+        # BCellIRTActor에서 log_prob 직접 계산됨
+        action, log_prob, info = self.irt_actor(
             state=obs,
             fitness=fitness,
             deterministic=False
@@ -191,14 +192,6 @@ class IRTActorWrapper(Actor):
 
         # 마지막 IRT info 저장 (평가/시각화용)
         self._last_irt_info = info
-
-        # ===== Step 3: Log probability 계산 =====
-        # info에서 Dirichlet concentration 가져오기
-        mixed_conc_clamped = info['mixed_conc_clamped']
-
-        # Dirichlet distribution으로 log_prob 계산
-        dist = torch.distributions.Dirichlet(mixed_conc_clamped)
-        log_prob = dist.log_prob(action).unsqueeze(-1)  # [B, 1]
 
         return action, log_prob
 
@@ -245,8 +238,8 @@ class IRTPolicy(SACPolicy):
         alpha: float = 0.3,
         ema_beta: float = 0.9,
         market_feature_dim: int = 12,
-        dirichlet_min: float = 0.5,
-        dirichlet_max: float = 50.0,
+        log_std_min: float = -20,
+        log_std_max: float = 2,
         eps: float = 0.10,
         eta_0: float = 0.05,
         eta_1: float = 0.15,
@@ -263,8 +256,8 @@ class IRTPolicy(SACPolicy):
             alpha: OT-Replicator 혼합 비율
             ema_beta: EMA 메모리 계수
             market_feature_dim: 시장 특성 차원
-            dirichlet_min: Dirichlet concentration minimum
-            dirichlet_max: Dirichlet concentration maximum
+            log_std_min: Log standard deviation minimum (Gaussian policy)
+            log_std_max: Log standard deviation maximum (Gaussian policy)
             eps: Sinkhorn 엔트로피
             eta_0: 기본 학습률 (Replicator)
             eta_1: 위기 증가량 (Replicator)
@@ -276,8 +269,8 @@ class IRTPolicy(SACPolicy):
         self.alpha_irt = alpha
         self.ema_beta = ema_beta
         self.market_feature_dim = market_feature_dim
-        self.dirichlet_min = dirichlet_min
-        self.dirichlet_max = dirichlet_max
+        self.log_std_min = log_std_min
+        self.log_std_max = log_std_max
         self.eps = eps
         self.eta_0 = eta_0
         self.eta_1 = eta_1
@@ -325,8 +318,8 @@ class IRTPolicy(SACPolicy):
             alpha=self.alpha_irt,
             ema_beta=self.ema_beta,
             market_feature_dim=self.market_feature_dim,
-            dirichlet_min=self.dirichlet_min,
-            dirichlet_max=self.dirichlet_max,
+            log_std_min=self.log_std_min,
+            log_std_max=self.log_std_max,
             eps=self.eps,
             eta_0=self.eta_0,
             eta_1=self.eta_1
@@ -353,8 +346,8 @@ class IRTPolicy(SACPolicy):
                 alpha=self.alpha_irt,
                 ema_beta=self.ema_beta,
                 market_feature_dim=self.market_feature_dim,
-                dirichlet_min=self.dirichlet_min,
-                dirichlet_max=self.dirichlet_max,
+                log_std_min=self.log_std_min,
+                log_std_max=self.log_std_max,
                 eps=self.eps,
                 eta_0=self.eta_0,
                 eta_1=self.eta_1,

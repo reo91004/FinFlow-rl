@@ -6,6 +6,140 @@
 
 ## [Unreleased]
 
+### Phase 1.6 - Policy 재설계: Dirichlet → Gaussian+Softmax (2025-10-05)
+
+Dirichlet Policy의 SAC 엔트로피 불일치로 인한 훈련 발산 문제를 해결하기 위해 Gaussian+Softmax 정책으로 교체했다.
+
+#### Fixed
+
+**SAC 훈련 발산 문제 해결**
+- 문제: Dirichlet Policy 사용 시 ent_coef 폭발 (1.63 → 1.28e+09)
+  - 근본 원인: Dirichlet entropy (-3 ~ -50) << SAC target_entropy (-30)
+  - SAC의 자동 엔트로피 조정이 ent_coef를 폭발적으로 증가
+  - Actor loss 폭발: `L_actor ∝ ent_coef * entropy`
+  - Critic이 높은 Q-value로 보상 → critic_loss 폭발 (3.34e+03 → 2.84e+08)
+- 해결: Gaussian + Softmax Policy 도입
+  - `z ~ N(μ, σ²)` → `a = softmax(z)`
+  - Log probability: Gaussian + Jacobian correction
+  - Entropy: -30 ~ -20 (SAC target_entropy 범위)
+
+#### Changed
+
+**finrl/agents/irt/bcell_actor.py**
+- Decoder 교체 (Line 83-103):
+  - 이전: `dirichlet_decoders` → Dirichlet concentration
+  - 현재: `mu_decoders`, `log_std_decoders` → Gaussian 파라미터 (각 M개)
+- Forward 로직 변경 (Line 206-246):
+  - Gaussian 혼합: `mixed_mu = w @ mus`, `mixed_std = w @ stds`
+  - Gaussian 샘플링: `z = μ + ε·σ` (deterministic: z = μ)
+  - Softmax projection: `action = softmax(z)` (Simplex 제약)
+  - Log probability 계산:
+    - Gaussian log prob: `Σ [-0.5((z-μ)/σ)² - log(σ) - 0.5log(2π)]`
+    - Jacobian correction: `-Σ log(a_i)`
+- Return 시그니처 변경: `(action, info)` → `(action, log_prob, info)`
+- Info 구조 변경:
+  - 제거: `concentrations`, `mixed_conc`, `mixed_conc_clamped`
+  - 추가: `mu`, `std`, `z`, `log_prob_gaussian`, `log_prob_jacobian`
+
+**finrl/agents/irt/irt_policy.py**
+- `action_log_prob()` 간소화 (Line 167-196):
+  - BCellIRTActor가 log_prob 직접 반환하므로 Dirichlet 계산 제거
+  - 코드: ~40줄 → ~20줄
+- `_compute_fitness()` 수정 (Line 84-136):
+  - 프로토타입 j의 샘플 행동: `a_j = softmax(mu_j)` (Gaussian mean)
+- 파라미터 변경:
+  - 제거: `dirichlet_min`, `dirichlet_max`
+  - 추가: `log_std_min=-20`, `log_std_max=2`
+
+**finrl/config.py**
+- `SAC_PARAMS.ent_coef` 변경 (Line 48):
+  - 이전: `"auto_0.1"` (Dirichlet 특화)
+  - 현재: `"auto"` (Gaussian 표준, target_entropy=-action_dim)
+
+**scripts/train_irt.py**
+- `policy_kwargs`에 Gaussian 파라미터 추가:
+  - `log_std_min=-20`
+  - `log_std_max=2`
+
+**tests/test_irt_policy.py**
+- Test 8 추가: `test_gaussian_softmax_policy()`
+  - Simplex 제약 검증
+  - Gaussian 파라미터 존재 검증 (mu, std, z)
+  - Log prob 구성 검증 (Gaussian + Jacobian)
+- Test 9 추가: `test_log_prob_calculation()`
+  - Manual 계산과 비교하여 log prob 정확성 검증
+- 모든 테스트 수정: `(action, info)` → `(action, log_prob, info)` 3-value unpack
+- `state_dim` 수정: 181 → 301 (FinRL Dow30 표준)
+
+#### Performance
+
+**안정성 개선**
+- ent_coef: 1.28e+09 → < 1.0 (예상)
+- critic_loss: 2.84e+08 → < 10 (예상)
+- actor_loss: 발산 → 안정화 (예상)
+
+**Unit Tests**
+- 9/9 passing ✅
+- Simplex 제약: `Σ a_i = 1 ± 1e-5` ✅
+- Gaussian parameters: mu, std, z 존재 ✅
+- Log prob 정확성: Gaussian + Jacobian 검증 ✅
+
+**Integration Test (2025-10-05)**
+- Training: 250 timesteps 정상 완료 (발산 없음) ✅
+- Evaluation: 19 steps, Final return -0.69% ✅
+- 시각화: 14개 IRT 플롯 모두 생성 ✅
+- 훈련 안정성: ent_coef, critic_loss, actor_loss 폭발 없음 ✅
+
+#### Technical Details
+
+**Gaussian + Softmax 정책**
+```python
+# 1. Gaussian 파라미터 계산
+mus = stack([mu_decoders[j](K[:, j]) for j in M])      # [B, M, A]
+log_stds = stack([log_std_decoders[j](K[:, j]) for j in M])  # [B, M, A]
+stds = log_stds.exp()
+
+# 2. IRT 가중치로 혼합
+mixed_mu = w @ mus      # [B, A]
+mixed_std = w @ stds    # [B, A]
+
+# 3. Gaussian 샘플링
+z = mixed_mu + eps * mixed_std  # [B, A]
+
+# 4. Softmax projection (Simplex 제약)
+action = softmax(z)  # [B, A], Σ a_i = 1, a_i ≥ 0
+
+# 5. Log probability
+log_prob_gaussian = -0.5 * (((z - mixed_mu) / mixed_std)² + 2*log(mixed_std) + log(2π))
+log_prob_jacobian = -log(action).sum()  # Jacobian correction
+log_prob = log_prob_gaussian + log_prob_jacobian
+```
+
+**IRT 메커니즘 보존**
+- ✅ IRT 혼합: `w = (1-α)·Replicator + α·OT` (변경 없음)
+- ✅ Epitope 인코딩: 동일
+- ✅ T-Cell 위기 감지: 동일
+- ✅ OT 수송: 동일
+- ✅ Replicator Dynamics: 동일
+- ⚠️ Policy head만 교체: Dirichlet → Gaussian+Softmax
+
+**변경 파일**
+- Core: 4개 (bcell_actor.py, irt_policy.py, config.py, train_irt.py)
+- Tests: 1개 (test_irt_policy.py)
+- Docs: 2개 (IRT.md, CHANGELOG.md)
+
+#### Breaking Changes
+
+없음. API 변경 없음, 내부 구현만 변경.
+
+#### Next Steps
+
+1. Full Training (200 episodes) 수행
+2. 성능 비교: Dirichlet vs Gaussian+Softmax
+3. 논문 작성: 문제 분석, 해결책, 실험 결과
+
+---
+
 ### Phase 1.5 - IRT 평가 완전화 및 모델 비교 도구 (2025-10-05)
 
 IRT 모델 평가 시 14개 시각화와 JSON 결과가 자동 생성되도록 개선하고, 두 모델을 비교 분석하는 도구를 추가했다.

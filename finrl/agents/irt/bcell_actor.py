@@ -6,13 +6,14 @@ B-Cell Actor with IRT (Immune Replicator Transport)
 핵심 기능:
 1. 에피토프 인코딩: 상태 → 다중 토큰
 2. IRT 연산: OT + Replicator 혼합
-3. Dirichlet 디코딩: 혼합 → 포트폴리오 가중치
+3. Gaussian + Softmax 디코딩: 혼합 → 포트폴리오 가중치
 4. EMA 메모리: w_prev 관리
 
 의존성: IRT, TCellMinimal
 사용처: IRTPolicy
 """
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -33,8 +34,8 @@ class BCellIRTActor(nn.Module):
                  alpha: float = 0.3,
                  ema_beta: float = 0.9,
                  market_feature_dim: int = 12,
-                 dirichlet_min: float = 0.5,
-                 dirichlet_max: float = 50.0,
+                 log_std_min: float = -20,
+                 log_std_max: float = 2,
                  **irt_kwargs):
         """
         Args:
@@ -46,8 +47,8 @@ class BCellIRTActor(nn.Module):
             alpha: OT-Replicator 결합 비율
             ema_beta: EMA 메모리 계수
             market_feature_dim: 시장 특성 차원 (T-Cell 입력, 기본 12)
-            dirichlet_min: Dirichlet concentration minimum (핸드오버: 0.5)
-            dirichlet_max: Dirichlet concentration maximum (핸드오버: 50.0)
+            log_std_min: Log standard deviation minimum (Gaussian policy)
+            log_std_max: Log standard deviation maximum (Gaussian policy)
             **irt_kwargs: IRT 파라미터 (eps, eta_0, eta_1 등)
         """
         super().__init__()
@@ -58,8 +59,8 @@ class BCellIRTActor(nn.Module):
         self.m = m_tokens
         self.M = M_proto
         self.ema_beta = ema_beta
-        self.dirichlet_min = dirichlet_min
-        self.dirichlet_max = dirichlet_max
+        self.log_std_min = log_std_min
+        self.log_std_max = log_std_max
         self.market_feature_dim = market_feature_dim
 
         # ===== 에피토프 인코더 =====
@@ -77,15 +78,26 @@ class BCellIRTActor(nn.Module):
             torch.randn(M_proto, emb_dim) / (emb_dim ** 0.5)
         )
 
-        # ===== 프로토타입별 Dirichlet 디코더 =====
+        # ===== 프로토타입별 Gaussian 디코더 =====
         # 각 프로토타입은 독립적인 정책 (전문가)
-        self.decoders = nn.ModuleList([
+        # μ decoders (mean)
+        self.mu_decoders = nn.ModuleList([
             nn.Sequential(
                 nn.Linear(emb_dim, 128),
                 nn.ReLU(),
                 nn.Dropout(0.1),
-                nn.Linear(128, action_dim),
-                nn.Softplus()  # 양수 concentration 보장
+                nn.Linear(128, action_dim)
+            )
+            for _ in range(M_proto)
+        ])
+
+        # log_std decoders (standard deviation)
+        self.log_std_decoders = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(emb_dim, 128),
+                nn.ReLU(),
+                nn.Dropout(0.1),
+                nn.Linear(128, action_dim)
             )
             for _ in range(M_proto)
         ])
@@ -143,9 +155,15 @@ class BCellIRTActor(nn.Module):
         total_value = balance + (prices * shares).sum(dim=1, keepdim=True)  # [B, 1]
         cash_ratio = balance / (total_value + 1e-8)  # [B, 1]
 
-        # Technical indicators (각 지표의 첫 번째 주식 값)
+        # Technical indicators (8개 필수)
         # macd, boll_ub, boll_lb, rsi_30, cci_30, dx_30, close_30_sma, close_60_sma
-        tech_indices = [61, 91, 121, 151, 181, 211, 241, 271]
+        # FinRL Dow30 표준: state_dim = 1 + 30*2 + 30*8 = 301
+        expected_state_dim = 61 + 8 * 30  # 301
+        assert state.size(1) >= expected_state_dim, \
+            f"State dimension too small: {state.size(1)}, expected >= {expected_state_dim} " \
+            f"(FinRL Dow30 standard: balance(1) + prices(30) + shares(30) + tech_indicators(8*30))"
+
+        tech_indices = [61 + i * 30 for i in range(8)]
         tech_features = state[:, tech_indices]  # [B, 8]
 
         market_features = torch.cat([
@@ -185,29 +203,49 @@ class BCellIRTActor(nn.Module):
             proto_conf=None
         )
 
-        # ===== Step 6: Dirichlet 혼합 정책 =====
-        # 각 프로토타입의 concentration 계산
-        concentrations = torch.stack([
-            self.decoders[j](K[:, j, :]) for j in range(self.M)
+        # ===== Step 6: Gaussian + Softmax 정책 =====
+        # 각 프로토타입의 Gaussian 파라미터 계산
+        mus = torch.stack([
+            self.mu_decoders[j](K[:, j, :]) for j in range(self.M)
         ], dim=1)  # [B, M, A]
 
+        log_stds = torch.stack([
+            self.log_std_decoders[j](K[:, j, :]) for j in range(self.M)
+        ], dim=1)  # [B, M, A]
+
+        log_stds = torch.clamp(log_stds, self.log_std_min, self.log_std_max)
+        stds = log_stds.exp()
+
         # IRT 가중치로 혼합
-        mixed_conc = torch.einsum('bm,bma->ba', w, concentrations) + 1.0  # [B, A]
+        mixed_mu = torch.einsum('bm,bma->ba', w, mus)      # [B, A]
+        mixed_std = torch.einsum('bm,bma->ba', w, stds)    # [B, A]
 
+        # Gaussian 샘플링
         if deterministic:
-            # 결정적: Dirichlet 평균 (mode)
-            # mode = (α - 1) / (Σα - K) for α > 1
-            # 안전한 계산: softmax
-            action = F.softmax(mixed_conc, dim=-1)
+            z = mixed_mu
         else:
-            # 확률적: Dirichlet 샘플
-            mixed_conc_clamped = torch.clamp(mixed_conc, min=self.dirichlet_min, max=self.dirichlet_max)
-            dist = torch.distributions.Dirichlet(mixed_conc_clamped)
-            action = dist.sample()
+            eps = torch.randn_like(mixed_mu)
+            z = mixed_mu + eps * mixed_std
 
-        # Simplex 보장 (수치 안정성)
-        action = torch.clamp(action, min=0.0, max=1.0)
-        action = action / (action.sum(dim=-1, keepdim=True) + 1e-8)
+        # Softmax projection (Simplex 제약)
+        action = F.softmax(z, dim=-1)  # [B, A]
+
+        # Log probability 계산
+        if not deterministic:
+            # Gaussian log prob
+            log_prob_gaussian = -0.5 * (
+                ((z - mixed_mu) / mixed_std) ** 2
+                + 2 * torch.log(mixed_std)
+                + np.log(2 * np.pi)
+            )
+            log_prob_gaussian = log_prob_gaussian.sum(dim=-1, keepdim=True)  # [B, 1]
+
+            # Jacobian correction (approximation)
+            log_prob_jacobian = -torch.log(action + 1e-8).sum(dim=-1, keepdim=True)  # [B, 1]
+
+            log_prob = log_prob_gaussian + log_prob_jacobian
+        else:
+            log_prob = None
 
         # ===== Step 7: EMA 업데이트 (w_prev) =====
         if self.training:
@@ -229,10 +267,16 @@ class BCellIRTActor(nn.Module):
             'w_ot': irt_debug['w_ot'].detach(),    # [B, M] - OT 출력
             'cost_matrix': irt_debug['cost_matrix'].detach(),  # [B, m, M]
             'eta': irt_debug['eta'].detach(),       # [B, 1] - Crisis learning rate
-            # Dirichlet 정보 (log_prob 계산용)
-            'concentrations': concentrations.detach(),  # [B, M, A] - 프로토타입별 concentration
-            'mixed_conc': mixed_conc.detach(),  # [B, A] - 혼합된 concentration
-            'mixed_conc_clamped': mixed_conc_clamped if not deterministic else mixed_conc.detach()  # [B, A]
+            # Gaussian policy 정보
+            'mu': mixed_mu.detach(),  # [B, A] - 혼합된 mean
+            'std': mixed_std.detach(),  # [B, A] - 혼합된 std
+            'z': z.detach(),  # [B, A] - Gaussian 샘플
         }
 
-        return action, info
+        # Log prob 정보 (deterministic=False일 때만)
+        if log_prob is not None:
+            info['log_prob'] = log_prob.detach()
+            info['log_prob_gaussian'] = log_prob_gaussian.detach()
+            info['log_prob_jacobian'] = log_prob_jacobian.detach()
+
+        return action, log_prob, info
