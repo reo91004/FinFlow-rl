@@ -200,20 +200,24 @@ class IRTActorWrapper(Actor):
         # 마지막 IRT info 저장 (평가/시각화용)
         self._last_irt_info = info
 
-        # Alpha controller 업데이트 (실제 log_prob 사용)
+        # Alpha scheduler 업데이트 (adaptive mode에서 실제 log_prob 사용)
         policy = self._policy_ref() if self._policy_ref is not None else None
-        if policy is not None and hasattr(policy, 'alpha_controller') and policy.alpha_controller is not None:
-            # Increment step count
-            policy.step_count += obs.size(0)  # Batch size만큼 증가
+        if policy is not None and hasattr(policy, 'alpha_scheduler') and policy.alpha_scheduler is not None:
+            # Check if scheduler is in adaptive mode
+            if policy.alpha_scheduler.schedule_type == 'adaptive':
+                # Increment step count
+                policy.step_count += obs.size(0)  # Batch size만큼 증가
 
-            # Update alpha with real log_prob
-            new_alpha, alpha_loss = policy.alpha_controller.update(
-                policy.step_count,
-                log_prob.mean()  # Batch의 평균 log_prob 사용
-            )
+                # Update alpha with real log_prob
+                # log_prob is [B, 1], we need to detach and take mean for entropy estimation
+                log_prob_mean = log_prob.detach().mean()  # Scalar tensor
+                new_alpha, alpha_loss = policy.alpha_scheduler.update(
+                    policy.step_count,
+                    log_prob_mean
+                )
 
-            # Apply updated alpha to IRT operator
-            self.irt_actor.irt.alpha = new_alpha.item()
+                # Apply updated alpha to IRT operator
+                self.irt_actor.irt.alpha = new_alpha.item()
 
         return action, log_prob
 
@@ -265,7 +269,7 @@ class IRTPolicy(SACPolicy):
         eps: float = 0.10,
         eta_0: float = 0.05,
         eta_1: float = 0.15,
-        alpha_controller: Optional[Any] = None,  # AlphaController instance
+        alpha_scheduler: Optional[Any] = None,  # AlphaScheduler instance (adaptive mode)
     ):
         """
         Args:
@@ -284,7 +288,7 @@ class IRTPolicy(SACPolicy):
             eps: Sinkhorn 엔트로피
             eta_0: 기본 학습률 (Replicator)
             eta_1: 위기 증가량 (Replicator)
-            alpha_controller: Optional AlphaController for adaptive alpha tuning
+            alpha_scheduler: Optional AlphaScheduler for adaptive alpha tuning
         """
         # IRT 파라미터 저장
         self.emb_dim = emb_dim
@@ -298,8 +302,8 @@ class IRTPolicy(SACPolicy):
         self.eps = eps
         self.eta_0 = eta_0
         self.eta_1 = eta_1
-        self.alpha_controller = alpha_controller
-        self.step_count = 0  # Track steps for alpha controller
+        self.alpha_scheduler = alpha_scheduler
+        self.step_count = 0  # Track steps for alpha scheduler
 
         # SACPolicy 초기화
         super().__init__(

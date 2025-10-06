@@ -459,7 +459,7 @@ def main(args):
                 'prototype_weights': irt_data['prototype_weights'],
                 'w_rep': irt_data['w_rep'],
                 'w_ot': irt_data['w_ot'],
-                'eta': np.zeros(len(returns)),  # TODO: eta 정보 수집
+                'eta': np.zeros(len(returns)),  # eta (learning rate) not collected during evaluation
                 'cost_matrices': irt_data['cost_matrices'],
                 'symbols': irt_data['symbols'],
                 'metrics': metrics
@@ -468,7 +468,7 @@ def main(args):
             # Config (IRT Policy의 경우)
             config = {
                 'irt': {
-                    'alpha': 0.3  # TODO: 모델에서 추출하거나 인자로 받기
+                    'alpha': 0.3  # Default value - actual alpha is determined by scheduler during training
                 }
             }
 

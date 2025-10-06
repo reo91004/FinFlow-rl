@@ -105,9 +105,6 @@ if __name__ == "__main__":
 
     ## if users want to use rllib, or stable-baselines3, users can remove the following comments
 
-    # # demo for rllib
-    # import ray
-    # ray.shutdown()  # always shutdown previous session if any
     # account_value_rllib = test(
     #     start_date=TEST_START_DATE,
     #     end_date=TEST_END_DATE,

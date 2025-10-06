@@ -144,109 +144,6 @@ from finrl.evaluation.metrics import (
 )
 
 
-class AlphaController:
-    """
-    Adaptive Alpha Controller with Entropy-based Tuning
-
-    SAC 스타일의 자동 alpha 조정:
-    - Target entropy 기반 alpha 튜닝
-    - Warmup period로 초기 안정화
-    - Alpha clamping으로 과도한 변화 방지
-
-    Args:
-        action_dim: Action space dimension (for target entropy)
-        alpha_min: Minimum alpha value (0.05)
-        alpha_max: Maximum alpha value (0.40)
-        warmup_steps: Steps before alpha adaptation starts
-        lr: Learning rate for alpha optimization
-    """
-
-    def __init__(
-        self,
-        action_dim: int,
-        alpha_min: float = 0.05,
-        alpha_max: float = 0.40,
-        warmup_steps: int = 5000,
-        lr: float = 3e-4
-    ):
-        import math
-        self.target_entropy = -float(action_dim)  # SAC 표준: -dim(A)
-        self.alpha_min = alpha_min
-        self.alpha_max = alpha_max
-        self.warmup_steps = warmup_steps
-
-        # Log-space alpha parameter (SAC style)
-        self.log_alpha = torch.nn.Parameter(torch.log(torch.tensor(0.3)))
-        self.optimizer = torch.optim.Adam([self.log_alpha], lr=lr)
-
-    @property
-    def alpha(self) -> torch.Tensor:
-        """Get current alpha with clamping."""
-        import math
-        with torch.no_grad():
-            self.log_alpha.data.clamp_(
-                math.log(self.alpha_min),
-                math.log(self.alpha_max)
-            )
-        return self.log_alpha.exp()
-
-    def update(self, step: int, log_prob: torch.Tensor):
-        """
-        Update alpha based on policy entropy.
-
-        Args:
-            step: Current training step
-            log_prob: Log probability from policy
-
-        Returns:
-            alpha: Current alpha value
-            alpha_loss: Alpha optimization loss
-        """
-        # Warmup period: fixed alpha
-        if step < self.warmup_steps:
-            return self.alpha.detach(), 0.0
-
-        # Compute alpha loss (maximize entropy)
-        alpha_loss = -(self.log_alpha * (
-            self.target_entropy + log_prob.detach()
-        )).mean()
-
-        # Optimize alpha
-        self.optimizer.zero_grad()
-        alpha_loss.backward()
-        self.optimizer.step()
-
-        return self.alpha.detach(), alpha_loss.item()
-
-
-class AdaptiveAlphaCallback(BaseCallback):
-    """
-    [DEPRECATED] Adaptive Alpha Callback using AlphaController.
-
-    이 callback은 더 이상 필요하지 않다.
-    IRTPolicy 내부에서 실제 log_prob로 alpha를 업데이트한다.
-
-    Deprecated since Phase 2.1.1: AlphaController is now integrated in IRTPolicy.
-    """
-
-    def __init__(self, controller: AlphaController, verbose: int = 0):
-        import warnings
-        warnings.warn(
-            "AdaptiveAlphaCallback is deprecated. "
-            "AlphaController should be passed to policy_kwargs instead.",
-            DeprecationWarning,
-            stacklevel=2
-        )
-        super().__init__(verbose)
-        self.controller = controller
-
-    def _on_rollout_start(self) -> None:
-        pass  # No-op
-
-    def _on_step(self) -> bool:
-        return True  # No-op
-
-
 def create_env(df, stock_dim, tech_indicators):
     """StockTradingEnv 생성"""
 
@@ -288,7 +185,6 @@ def train_irt(args):
     print(f"  Train: {args.train_start} ~ {args.train_end}")
     print(f"  Test: {args.test_start} ~ {args.test_end}")
     print(f"  Episodes: {args.episodes}")
-    print(f"  IRT alpha: {args.alpha}")
     print(f"  Output: {log_dir}")
 
     # 1. Download data
@@ -456,31 +352,32 @@ def train_irt(args):
 
     # Check if adaptive alpha is enabled
     if args.adaptive_alpha:
-        print(f"  Using Adaptive Alpha Controller (Tier 3 - Policy Integrated)")
+        print(f"  Using Adaptive Alpha (Tier 3 - Entropy-based)")
         stock_dim = len(train_df.tic.unique())
-        alpha_controller = AlphaController(
+        alpha_scheduler = AlphaScheduler(
+            schedule_type='adaptive',
             action_dim=stock_dim,
             alpha_min=0.05,
             alpha_max=0.40,
             warmup_steps=5000,
             lr=3e-4
         )
-        # Add alpha_controller to policy_kwargs (NEW: Policy-integrated approach)
-        policy_kwargs['alpha_controller'] = alpha_controller
-        print(f"  Target entropy: {alpha_controller.target_entropy:.1f}")
-        print(f"  Alpha range: [{alpha_controller.alpha_min}, {alpha_controller.alpha_max}]")
-        print(f"  Warmup steps: {alpha_controller.warmup_steps}")
+        # Add alpha_scheduler to policy_kwargs for adaptive mode
+        policy_kwargs['alpha_scheduler'] = alpha_scheduler
+        print(f"  Target entropy: {alpha_scheduler.target_entropy:.1f}")
+        print(f"  Alpha range: [{alpha_scheduler.alpha_min}, {alpha_scheduler.alpha_max}]")
+        print(f"  Warmup steps: {alpha_scheduler.warmup_steps}")
         print(f"  Note: Alpha updates happen inside IRTPolicy using real log_prob")
     else:
-        print(f"  Using Cosine Alpha Scheduler (Tier 2)")
+        print(f"  Using Cosine Alpha Scheduler (Tier 2 - Step-based)")
         alpha_scheduler = AlphaScheduler(
+            schedule_type='cosine',
             alpha_start=0.3,
             alpha_end=0.7,
-            total_steps=total_timesteps,
-            schedule_type='cosine'
+            total_steps=total_timesteps
         )
         alpha_callback = AlphaUpdateCallback(alpha_scheduler, verbose=1)
-        callbacks.append(alpha_callback)  # Only add callback for cosine scheduler
+        callbacks.append(alpha_callback)  # Only add callback for step-based scheduler
         print(f"  Alpha schedule: 0.3 → 0.7 (cosine)")
         print(f"  Early training: Replicator dominant (빠른 수렴)")
         print(f"  Late training: OT dominant (구조적 매칭)")
@@ -744,7 +641,7 @@ def test_irt(args, model_path=None):
             'prototype_weights': irt_data['prototype_weights'],
             'w_rep': irt_data['w_rep'],
             'w_ot': irt_data['w_ot'],
-            'eta': np.zeros(len(returns)),  # eta 정보가 있다면 사용
+            'eta': np.zeros(len(returns)),  # eta (learning rate) not currently collected
             'cost_matrices': irt_data['cost_matrices'],
             'symbols': irt_data['symbols'],
             'metrics': metrics
@@ -801,10 +698,8 @@ def main():
                         help="Number of epitope tokens (default: 6)")
     parser.add_argument("--M-proto", type=int, default=8,
                         help="Number of prototypes (default: 8)")
-    # Tier 4: OT Alpha 증가 (0.3 → 0.5)
-    # Prototype 다양성을 포트폴리오에 더 반영하여 Replicator exploitation 완화
     parser.add_argument("--alpha", type=float, default=0.5,
-                        help="OT-Replicator mixing ratio (default: 0.5, increased from 0.3)")
+                        help="Initial OT-Replicator mixing ratio (default: 0.5, overridden by scheduler if used)")
     parser.add_argument("--eps", type=float, default=0.10,
                         help="Sinkhorn entropy (default: 0.10)")
     parser.add_argument("--eta-0", type=float, default=0.05,

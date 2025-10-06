@@ -22,12 +22,6 @@ from finrl.meta.env_stock_trading.env_stocktrading_np import StockTradingEnv
 
 # construct environment
 
-# try:
-#     from finrl.config_private import ALPACA_API_KEY, ALPACA_API_SECRET
-# except ImportError:
-#     raise FileNotFoundError(
-#         "Please set your own ALPACA_API_KEY and ALPACA_API_SECRET in config_private.py"
-#     )
 
 
 def build_parser():

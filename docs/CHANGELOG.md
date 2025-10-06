@@ -6,35 +6,103 @@
 
 ## [Unreleased]
 
+### Phase 2.1.2 - AlphaScheduler 통합 (2025-10-07)
+
+**문제 진단**:
+- AlphaController와 AlphaScheduler가 분리되어 코드 복잡도 증가
+- 중복된 책임: step-based scheduling vs entropy-based tuning
+- 일관성 없는 사용법과 import 관리
+
+**해결책**:
+AlphaScheduler로 모든 alpha 관리 로직 통합
+
+#### Modified
+
+**AlphaScheduler 확장** (`finrl/agents/irt/alpha_scheduler.py`, 수정 120줄)
+- `schedule_type` 파라미터 추가: 'linear', 'cosine', 'exponential', **'adaptive'**
+- Adaptive mode: SAC 스타일 entropy 기반 자동 튜닝 통합
+- 단일 인터페이스로 모든 alpha 스케줄링 지원
+```python
+# Step-based scheduling
+scheduler = AlphaScheduler(schedule_type='cosine')
+alpha = scheduler.get_alpha(step)
+
+# Adaptive (entropy-based)
+scheduler = AlphaScheduler(schedule_type='adaptive', action_dim=30)
+new_alpha, loss = scheduler.update(step, log_prob)
+```
+
+**Import 간소화** (`scripts/train_irt.py`, `irt_policy.py`)
+- `alpha_controller` → `alpha_scheduler`로 파라미터명 통일
+- 불필요한 import 제거
+- AdaptiveAlphaCallback 완전 제거
+
+#### Removed
+
+**AlphaController 삭제** (`finrl/agents/irt/alpha_controller.py`)
+- 모든 기능이 AlphaScheduler로 이동
+- 중복 코드 제거
+
+#### 장점
+
+| 측면 | 이전 (분리) | 현재 (통합) |
+|------|----------|------------|
+| 클래스 수 | 2개 (Scheduler + Controller) | **1개 (Scheduler)** |
+| Import | 2개 모듈 관리 | **1개 모듈** |
+| 사용법 | 모드별로 다른 클래스 | **schedule_type으로 통일** |
+| 유지보수 | 두 파일 관리 | **단일 파일** |
+
+---
+
 ### Phase 2.1.1 - Adaptive Alpha Controller 근본적 수정 (2025-10-07)
 
 **문제 진단**:
 - Phase 2.1에서 더미 log_prob 값 사용 (학술적으로 부적절)
 - AdaptiveAlphaCallback이 실제 policy entropy에 접근 불가
 - Alpha가 50,000 스텝 동안 0.3에 고정 → 34% return (성능 저하 42%)
+- **RuntimeError**: gradient 추적 실패로 학습 불가
 
 **근본적 해결**:
-Policy 내부에서 실제 log_prob로 alpha 업데이트
+Policy 내부에서 실제 log_prob로 alpha 업데이트 + gradient 버그 수정
+
+#### Added
+
+**AlphaController 모듈** (`finrl/agents/irt/alpha_controller.py`, 신규 96줄)
+- train_irt.py에서 별도 모듈로 분리
+- log_alpha 초기화 버그 수정 (gradient tracking 보장)
+- SAC 스타일 entropy-based alpha tuning
 
 #### Modified
 
-**IRTPolicy 통합 방식** (`finrl/agents/irt/irt_policy.py`, 수정 30줄)
+**IRTPolicy 통합 방식** (`finrl/agents/irt/irt_policy.py`, 수정 35줄)
 - `__init__`에 `alpha_controller` 파라미터 추가
 - `step_count` 추적 변수 추가로 학습 진행 모니터링
 - IRTActorWrapper.action_log_prob()에서 실제 entropy로 alpha 업데이트
   ```python
-  # 실제 log_prob로 alpha 업데이트
+  # 실제 log_prob로 alpha 업데이트 (detached)
+  log_prob_mean = log_prob.detach().mean()
   new_alpha, _ = policy.alpha_controller.update(
       policy.step_count,
-      log_prob.mean()  # 실제 policy entropy
+      log_prob_mean
   )
   ```
 
-**AlphaController 원본 복원** (`scripts/train_irt.py`, 수정 50줄)
-- 더미 값 관련 코드 완전 제거
-- update() 메서드 원본으로 복원 (entropy-based update만)
+**train_irt.py 정리** (`scripts/train_irt.py`, 수정 -80줄)
+- AlphaController 클래스 제거 (별도 모듈로 이동)
 - AdaptiveAlphaCallback deprecated 처리
 - policy_kwargs에 alpha_controller 전달하도록 수정
+
+#### 버그 수정
+
+**Gradient 추적 문제 해결**:
+```python
+# 이전 (버그): gradient 없음
+self.log_alpha = torch.nn.Parameter(torch.log(torch.tensor(0.3)))
+
+# 수정: gradient 추적 가능
+initial_log_alpha = math.log(0.3)
+self.log_alpha = torch.nn.Parameter(torch.tensor(initial_log_alpha, dtype=torch.float32))
+```
 
 #### 장점
 

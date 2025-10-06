@@ -7,31 +7,42 @@ Dynamic Alpha Scheduler for IRT
 - Bengio et al. (2009): Curriculum Learning
   "Learning is more effective when examples are organized in a meaningful order."
 - Loshchilov & Hutter (2017): SGDR - Cosine annealing
+- Haarnoja et al. (2018): SAC - Entropy-regularized RL
 
 Alpha의 의미:
 - w = (1-α)·Replicator + α·OT
 - α=0.3 (Replicator 70%): 과거 성공 전략 선호 (exploitation)
 - α=0.7 (OT 70%): 구조적 매칭 (exploration)
 
-Curriculum 전략:
-- Early training: α low → Replicator dominant (빠른 수렴)
-- Late training: α high → OT dominant (구조적 매칭)
+Schedule types:
+- 'linear': Linear interpolation
+- 'cosine': Smooth transition (fast early, slow late)
+- 'exponential': Very fast early transition
+- 'adaptive': Entropy-based automatic tuning (SAC style)
 
 사용법:
-    scheduler = AlphaScheduler(alpha_start=0.3, alpha_end=0.7)
+    # Step-based scheduling
+    scheduler = AlphaScheduler(schedule_type='cosine', alpha_start=0.3, alpha_end=0.7)
+    alpha = scheduler.get_alpha(step)
 
-    for step in range(total_steps):
-        alpha = scheduler.get_alpha(step)
-        model.policy.actor.irt_actor.irt.alpha = alpha
+    # Adaptive (entropy-based) tuning
+    scheduler = AlphaScheduler(schedule_type='adaptive', action_dim=30)
+    new_alpha, alpha_loss = scheduler.update(step, log_prob)
 """
 
+import math
 import numpy as np
-from typing import Literal
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from typing import Literal, Optional, Tuple
 
 
 class AlphaScheduler:
     """
-    Alpha scheduler for IRT mixing ratio.
+    Unified Alpha Scheduler for IRT mixing ratio.
+
+    Supports both step-based scheduling and entropy-based adaptive tuning.
 
     w = (1-α)·Replicator + α·OT
 
@@ -39,36 +50,86 @@ class AlphaScheduler:
     - 'linear': α(t) = α_start + (α_end - α_start) * t/T
     - 'cosine': α(t) = α_start + 0.5*(α_end - α_start)*(1 - cos(πt/T))
     - 'exponential': α(t) = α_end - (α_end - α_start) * exp(-λt/T)
+    - 'adaptive': SAC-style entropy-based automatic tuning
 
-    권장: 'cosine' (smooth transition, fast early, slow late)
+    권장: 'cosine' for simplicity, 'adaptive' for best performance
     """
 
     def __init__(
         self,
+        schedule_type: Literal['linear', 'cosine', 'exponential', 'adaptive'] = 'cosine',
+        # Step-based scheduling parameters
         alpha_start: float = 0.3,
         alpha_end: float = 0.7,
         total_steps: int = 50000,
-        schedule_type: Literal['linear', 'cosine', 'exponential'] = 'cosine'
+        # Adaptive (entropy-based) parameters
+        action_dim: Optional[int] = None,
+        alpha_min: float = 0.05,
+        alpha_max: float = 0.40,
+        warmup_steps: int = 5000,
+        lr: float = 3e-4
     ):
         """
         Args:
+            schedule_type: Type of scheduling ('cosine' or 'adaptive')
+
+            Step-based scheduling:
             alpha_start: Initial alpha (low for Replicator dominance)
             alpha_end: Final alpha (high for OT dominance)
             total_steps: Total training steps
-            schedule_type: Schedule function ('cosine' recommended)
+
+            Adaptive (entropy-based):
+            action_dim: Action space dimension (for target entropy)
+            alpha_min: Minimum alpha value
+            alpha_max: Maximum alpha value
+            warmup_steps: Steps before alpha adaptation starts
+            lr: Learning rate for alpha optimization
         """
-        self.alpha_start = alpha_start
-        self.alpha_end = alpha_end
-        self.total_steps = total_steps
         self.schedule_type = schedule_type
 
-        assert 0 <= alpha_start <= 1, "alpha_start must be in [0, 1]"
-        assert 0 <= alpha_end <= 1, "alpha_end must be in [0, 1]"
-        assert alpha_start < alpha_end, "alpha should increase over time"
+        if schedule_type in ['linear', 'cosine', 'exponential']:
+            # Step-based scheduling
+            self.alpha_start = alpha_start
+            self.alpha_end = alpha_end
+            self.total_steps = total_steps
+
+            assert 0 <= alpha_start <= 1, "alpha_start must be in [0, 1]"
+            assert 0 <= alpha_end <= 1, "alpha_end must be in [0, 1]"
+            assert alpha_start < alpha_end, "alpha should increase over time"
+
+        elif schedule_type == 'adaptive':
+            # Adaptive (entropy-based) tuning
+            assert action_dim is not None, "action_dim required for adaptive mode"
+
+            self.target_entropy = -float(action_dim)  # SAC 표준: -dim(A)
+            self.alpha_min = alpha_min
+            self.alpha_max = alpha_max
+            self.warmup_steps = warmup_steps
+
+            # Log-space alpha parameter (SAC style)
+            initial_log_alpha = math.log(0.3)  # log(0.3) ≈ -1.204
+            self.log_alpha = torch.nn.Parameter(torch.tensor(initial_log_alpha, dtype=torch.float32))
+            self.optimizer = torch.optim.Adam([self.log_alpha], lr=lr)
+
+        else:
+            raise ValueError(f"Unknown schedule type: {schedule_type}")
+
+    @property
+    def alpha(self) -> torch.Tensor:
+        """Get current alpha with clamping (adaptive mode only)."""
+        if self.schedule_type != 'adaptive':
+            raise RuntimeError("alpha property only available in adaptive mode")
+
+        with torch.no_grad():
+            self.log_alpha.data.clamp_(
+                math.log(self.alpha_min),
+                math.log(self.alpha_max)
+            )
+        return self.log_alpha.exp()
 
     def get_alpha(self, step: int) -> float:
         """
-        Get alpha for current step.
+        Get alpha for current step (step-based scheduling).
 
         Args:
             step: Current training step
@@ -76,6 +137,10 @@ class AlphaScheduler:
         Returns:
             alpha: Mixing ratio ∈ [alpha_start, alpha_end]
         """
+        if self.schedule_type == 'adaptive':
+            # Adaptive mode uses update() method instead
+            return self.alpha.item()
+
         progress = min(step / self.total_steps, 1.0)
         delta = self.alpha_end - self.alpha_start
 
@@ -96,6 +161,41 @@ class AlphaScheduler:
             raise ValueError(f"Unknown schedule type: {self.schedule_type}")
 
         return float(alpha)
+
+    def update(self, step: int, log_prob: torch.Tensor) -> Tuple[torch.Tensor, float]:
+        """
+        Update alpha based on policy entropy (adaptive mode only).
+
+        Args:
+            step: Current training step
+            log_prob: Log probability from policy (scalar tensor, already detached)
+
+        Returns:
+            alpha: Current alpha value
+            alpha_loss: Alpha optimization loss
+        """
+        if self.schedule_type != 'adaptive':
+            raise RuntimeError("update() method only available in adaptive mode")
+
+        # Warmup period: fixed alpha
+        if step < self.warmup_steps:
+            return self.alpha.detach(), 0.0
+
+        # Ensure log_prob is a scalar tensor
+        if log_prob.numel() > 1:
+            log_prob = log_prob.mean()
+
+        # Compute alpha loss (maximize entropy)
+        # Note: log_prob is already detached, no need to detach again
+        # The gradient flows only through self.log_alpha
+        alpha_loss = -(self.log_alpha * (self.target_entropy + log_prob))
+
+        # Optimize alpha
+        self.optimizer.zero_grad()
+        alpha_loss.backward()
+        self.optimizer.step()
+
+        return self.alpha.detach(), alpha_loss.item()
 
     def plot_schedule(self, save_path: str = None):
         """
