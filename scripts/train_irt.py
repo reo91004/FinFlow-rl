@@ -221,38 +221,30 @@ class AlphaController:
 
 class AdaptiveAlphaCallback(BaseCallback):
     """
-    Adaptive Alpha Callback using AlphaController.
+    [DEPRECATED] Adaptive Alpha Callback using AlphaController.
 
-    동적으로 alpha를 조정하여 exploration-exploitation 균형 유지.
+    이 callback은 더 이상 필요하지 않다.
+    IRTPolicy 내부에서 실제 log_prob로 alpha를 업데이트한다.
+
+    Deprecated since Phase 2.1.1: AlphaController is now integrated in IRTPolicy.
     """
 
     def __init__(self, controller: AlphaController, verbose: int = 0):
+        import warnings
+        warnings.warn(
+            "AdaptiveAlphaCallback is deprecated. "
+            "AlphaController should be passed to policy_kwargs instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
         super().__init__(verbose)
         self.controller = controller
-        self.last_log_prob = None
 
     def _on_rollout_start(self) -> None:
-        """Capture log_prob from rollouts if available."""
-        # This would require modifying SAC to expose log_prob
-        # For now, use scheduler-based approach
-        pass
+        pass  # No-op
 
     def _on_step(self) -> bool:
-        """Update alpha adaptively."""
-        # Get current alpha
-        alpha = self.controller.alpha
-
-        # Update IRT operator
-        self.model.policy.actor.irt_actor.irt.alpha = alpha.item()
-
-        # Log to tensorboard
-        self.logger.record("train/adaptive_alpha", alpha.item())
-
-        # Periodic logging
-        if self.verbose > 0 and self.num_timesteps % 5000 == 0:
-            print(f"  [Adaptive Alpha] Step {self.num_timesteps}: α = {alpha.item():.3f}")
-
-        return True
+        return True  # No-op
 
 
 def create_env(df, stock_dim, tech_indicators):
@@ -452,6 +444,47 @@ def train_irt(args):
     # Clean up temporary model
     del model_temp
 
+    # Total timesteps
+    total_timesteps = 250 * args.episodes
+    print(f"  Total timesteps: {total_timesteps}")
+
+    # ===== Phase 1.9 Tier 2: Dynamic Alpha Scheduler =====
+    print(f"\n[Tier 2] Setting up alpha scheduler...")
+
+    # Callback list
+    callbacks = [checkpoint_callback, eval_callback]
+
+    # Check if adaptive alpha is enabled
+    if args.adaptive_alpha:
+        print(f"  Using Adaptive Alpha Controller (Tier 3 - Policy Integrated)")
+        stock_dim = len(train_df.tic.unique())
+        alpha_controller = AlphaController(
+            action_dim=stock_dim,
+            alpha_min=0.05,
+            alpha_max=0.40,
+            warmup_steps=5000,
+            lr=3e-4
+        )
+        # Add alpha_controller to policy_kwargs (NEW: Policy-integrated approach)
+        policy_kwargs['alpha_controller'] = alpha_controller
+        print(f"  Target entropy: {alpha_controller.target_entropy:.1f}")
+        print(f"  Alpha range: [{alpha_controller.alpha_min}, {alpha_controller.alpha_max}]")
+        print(f"  Warmup steps: {alpha_controller.warmup_steps}")
+        print(f"  Note: Alpha updates happen inside IRTPolicy using real log_prob")
+    else:
+        print(f"  Using Cosine Alpha Scheduler (Tier 2)")
+        alpha_scheduler = AlphaScheduler(
+            alpha_start=0.3,
+            alpha_end=0.7,
+            total_steps=total_timesteps,
+            schedule_type='cosine'
+        )
+        alpha_callback = AlphaUpdateCallback(alpha_scheduler, verbose=1)
+        callbacks.append(alpha_callback)  # Only add callback for cosine scheduler
+        print(f"  Alpha schedule: 0.3 → 0.7 (cosine)")
+        print(f"  Early training: Replicator dominant (빠른 수렴)")
+        print(f"  Late training: OT dominant (구조적 매칭)")
+
     # Step 5: Create final model with adaptive target entropy
     print(f"\n[5/5] Creating SAC + IRT model with adaptive target entropy...")
     model = SACWithGradClip(
@@ -466,47 +499,12 @@ def train_irt(args):
 
     print(f"  Model created with target_entropy = {target_entropy:.3f} nats")
 
-    # Total timesteps
-    total_timesteps = 250 * args.episodes
-    print(f"  Total timesteps: {total_timesteps}")
-
-    # ===== Phase 1.9 Tier 2: Dynamic Alpha Scheduler =====
-    print(f"\n[Tier 2] Setting up alpha scheduler...")
-
-    # Check if adaptive alpha is enabled
-    if args.adaptive_alpha:
-        print(f"  Using Adaptive Alpha Controller (Tier 3)")
-        stock_dim = len(train_df.tic.unique())
-        alpha_controller = AlphaController(
-            action_dim=stock_dim,
-            alpha_min=0.05,
-            alpha_max=0.40,
-            warmup_steps=5000,
-            lr=3e-4
-        )
-        alpha_callback = AdaptiveAlphaCallback(alpha_controller, verbose=1)
-        print(f"  Target entropy: {alpha_controller.target_entropy:.1f}")
-        print(f"  Alpha range: [{alpha_controller.alpha_min}, {alpha_controller.alpha_max}]")
-        print(f"  Warmup steps: {alpha_controller.warmup_steps}")
-    else:
-        print(f"  Using Cosine Alpha Scheduler (Tier 2)")
-        alpha_scheduler = AlphaScheduler(
-            alpha_start=0.3,
-            alpha_end=0.7,
-            total_steps=total_timesteps,
-            schedule_type='cosine'
-        )
-        alpha_callback = AlphaUpdateCallback(alpha_scheduler, verbose=1)
-        print(f"  Alpha schedule: 0.3 → 0.7 (cosine)")
-        print(f"  Early training: Replicator dominant (빠른 수렴)")
-        print(f"  Late training: OT dominant (구조적 매칭)")
-
     print(f"\n  Starting training...")
 
     # Train
     model.learn(
         total_timesteps=total_timesteps,
-        callback=[checkpoint_callback, eval_callback, alpha_callback],
+        callback=callbacks,
         progress_bar=True
     )
 

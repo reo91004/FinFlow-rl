@@ -6,6 +6,62 @@
 
 ## [Unreleased]
 
+### Phase 2.1.1 - Adaptive Alpha Controller 근본적 수정 (2025-10-07)
+
+**문제 진단**:
+- Phase 2.1에서 더미 log_prob 값 사용 (학술적으로 부적절)
+- AdaptiveAlphaCallback이 실제 policy entropy에 접근 불가
+- Alpha가 50,000 스텝 동안 0.3에 고정 → 34% return (성능 저하 42%)
+
+**근본적 해결**:
+Policy 내부에서 실제 log_prob로 alpha 업데이트
+
+#### Modified
+
+**IRTPolicy 통합 방식** (`finrl/agents/irt/irt_policy.py`, 수정 30줄)
+- `__init__`에 `alpha_controller` 파라미터 추가
+- `step_count` 추적 변수 추가로 학습 진행 모니터링
+- IRTActorWrapper.action_log_prob()에서 실제 entropy로 alpha 업데이트
+  ```python
+  # 실제 log_prob로 alpha 업데이트
+  new_alpha, _ = policy.alpha_controller.update(
+      policy.step_count,
+      log_prob.mean()  # 실제 policy entropy
+  )
+  ```
+
+**AlphaController 원본 복원** (`scripts/train_irt.py`, 수정 50줄)
+- 더미 값 관련 코드 완전 제거
+- update() 메서드 원본으로 복원 (entropy-based update만)
+- AdaptiveAlphaCallback deprecated 처리
+- policy_kwargs에 alpha_controller 전달하도록 수정
+
+#### 장점
+
+| 측면 | 이전 (Callback) | 현재 (Policy-integrated) |
+|------|----------------|-------------------------|
+| log_prob | 더미 값 (-1.0) | **실제 policy entropy** |
+| 학술적 정당성 | ❌ 재현성 문제 | ✅ 완전히 정당 |
+| 코드 구조 | Callback 의존 | Policy 자체 관리 |
+| Alpha 업데이트 | 무의미한 업데이트 | **실제 entropy 기반** |
+
+#### 사용법
+
+```bash
+# Adaptive Alpha Controller (Policy-integrated, 실제 log_prob 사용)
+python scripts/train_irt.py --episodes 200 --adaptive-alpha
+
+# Cosine Scheduler (검증된 방법)
+python scripts/train_irt.py --episodes 200
+```
+
+**예상 효과**:
+- Alpha 동적 조정: 0.05 → 0.40 (entropy 기반)
+- Return 개선: 34% → 50%+ (예상)
+- 학습 안정성 향상
+
+---
+
 ### Phase 2.1 - Critical Fixes for Learning Failure (2025-10-06)
 
 **문제 진단**:

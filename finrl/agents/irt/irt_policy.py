@@ -33,7 +33,10 @@ from typing import Any, Dict, List, Optional, Tuple, Type, Union
 from gymnasium import spaces
 
 from stable_baselines3.sac.policies import SACPolicy, Actor
-from stable_baselines3.common.torch_layers import BaseFeaturesExtractor, FlattenExtractor
+from stable_baselines3.common.torch_layers import (
+    BaseFeaturesExtractor,
+    FlattenExtractor,
+)
 from stable_baselines3.common.type_aliases import Schedule
 from stable_baselines3.common.preprocessing import get_action_dim
 
@@ -54,7 +57,7 @@ class IRTActorWrapper(Actor):
         irt_actor: BCellIRTActor,
         features_dim: int,
         action_space: spaces.Box,
-        policy: Optional['IRTPolicy'] = None
+        policy: Optional["IRTPolicy"] = None,
     ):
         """
         Args:
@@ -99,7 +102,7 @@ class IRTActorWrapper(Actor):
         # Weakref로부터 policy 가져오기
         policy = self._policy_ref() if self._policy_ref is not None else None
 
-        if policy is not None and hasattr(policy, 'critic'):
+        if policy is not None and hasattr(policy, "critic"):
             with torch.no_grad():
                 # 각 프로토타입의 샘플 행동 생성
                 K = self.irt_actor.proto_keys  # [M, D]
@@ -107,9 +110,15 @@ class IRTActorWrapper(Actor):
 
                 for j in range(M):
                     # 프로토타입 j의 Gaussian mean
-                    mu_j = self.irt_actor.mu_decoders[j](K[j:j+1].expand(B, -1))  # [B, action_dim]
-                    log_std_j = self.irt_actor.log_std_decoders[j](K[j:j+1].expand(B, -1))
-                    log_std_j = torch.clamp(log_std_j, self.log_std_min, self.log_std_max)
+                    mu_j = self.irt_actor.mu_decoders[j](
+                        K[j : j + 1].expand(B, -1)
+                    )  # [B, action_dim]
+                    log_std_j = self.irt_actor.log_std_decoders[j](
+                        K[j : j + 1].expand(B, -1)
+                    )
+                    log_std_j = torch.clamp(
+                        log_std_j, self.log_std_min, self.log_std_max
+                    )
 
                     # Mean action (deterministic, 안정적)
                     a_j = torch.softmax(mu_j, dim=-1)  # [B, action_dim]
@@ -121,7 +130,9 @@ class IRTActorWrapper(Actor):
                 q_values = []
                 for j in range(M):
                     # SB3 Critic: forward(obs, actions) → [q1, q2]
-                    q_vals = policy.critic(obs, proto_actions[:, j])  # Tuple[Tensor, Tensor]
+                    q_vals = policy.critic(
+                        obs, proto_actions[:, j]
+                    )  # Tuple[Tensor, Tensor]
 
                     # Twin Q의 최소값 (conservative)
                     if isinstance(q_vals, tuple):
@@ -154,9 +165,7 @@ class IRTActorWrapper(Actor):
 
         # IRT Actor forward
         action, log_prob, info = self.irt_actor(
-            state=obs,
-            fitness=fitness,
-            deterministic=deterministic
+            state=obs, fitness=fitness, deterministic=deterministic
         )
 
         # 마지막 IRT info 저장 (평가/시각화용)
@@ -185,13 +194,26 @@ class IRTActorWrapper(Actor):
 
         # BCellIRTActor에서 log_prob 직접 계산됨
         action, log_prob, info = self.irt_actor(
-            state=obs,
-            fitness=fitness,
-            deterministic=False
+            state=obs, fitness=fitness, deterministic=False
         )
 
         # 마지막 IRT info 저장 (평가/시각화용)
         self._last_irt_info = info
+
+        # Alpha controller 업데이트 (실제 log_prob 사용)
+        policy = self._policy_ref() if self._policy_ref is not None else None
+        if policy is not None and hasattr(policy, 'alpha_controller') and policy.alpha_controller is not None:
+            # Increment step count
+            policy.step_count += obs.size(0)  # Batch size만큼 증가
+
+            # Update alpha with real log_prob
+            new_alpha, alpha_loss = policy.alpha_controller.update(
+                policy.step_count,
+                log_prob.mean()  # Batch의 평균 log_prob 사용
+            )
+
+            # Apply updated alpha to IRT operator
+            self.irt_actor.irt.alpha = new_alpha.item()
 
         return action, log_prob
 
@@ -243,13 +265,14 @@ class IRTPolicy(SACPolicy):
         eps: float = 0.10,
         eta_0: float = 0.05,
         eta_1: float = 0.15,
+        alpha_controller: Optional[Any] = None,  # AlphaController instance
     ):
         """
         Args:
             observation_space: 관측 공간
             action_space: 행동 공간
             lr_schedule: 학습률 스케줄
-            (SACPolicy 기본 파라미터들...)
+            (SAC반본 파라미터들...)
             emb_dim: IRT 임베딩 차원
             m_tokens: 에피토프 토큰 수
             M_proto: 프로토타입 수
@@ -261,6 +284,7 @@ class IRTPolicy(SACPolicy):
             eps: Sinkhorn 엔트로피
             eta_0: 기본 학습률 (Replicator)
             eta_1: 위기 증가량 (Replicator)
+            alpha_controller: Optional AlphaController for adaptive alpha tuning
         """
         # IRT 파라미터 저장
         self.emb_dim = emb_dim
@@ -274,6 +298,8 @@ class IRTPolicy(SACPolicy):
         self.eps = eps
         self.eta_0 = eta_0
         self.eta_1 = eta_1
+        self.alpha_controller = alpha_controller
+        self.step_count = 0  # Track steps for alpha controller
 
         # SACPolicy 초기화
         super().__init__(
@@ -295,7 +321,9 @@ class IRTPolicy(SACPolicy):
             share_features_extractor=share_features_extractor,
         )
 
-    def make_actor(self, features_extractor: Optional[BaseFeaturesExtractor] = None) -> IRTActorWrapper:
+    def make_actor(
+        self, features_extractor: Optional[BaseFeaturesExtractor] = None
+    ) -> IRTActorWrapper:
         """
         Create IRT Actor
 
@@ -322,7 +350,7 @@ class IRTPolicy(SACPolicy):
             log_std_max=self.log_std_max,
             eps=self.eps,
             eta_0=self.eta_0,
-            eta_1=self.eta_1
+            eta_1=self.eta_1,
         )
 
         # Wrapper로 감싸기 (self 전달: Critic 참조용)
@@ -330,7 +358,7 @@ class IRTPolicy(SACPolicy):
             irt_actor=bcell_actor,
             features_dim=features_dim,
             action_space=self.action_space,
-            policy=self
+            policy=self,
         )
 
         return actor
@@ -371,7 +399,7 @@ class IRTPolicy(SACPolicy):
                 - fitness: [B, M] - 프로토타입 적합도
             None: IRTPolicy가 아니거나 아직 forward 안 함
         """
-        if hasattr(self, 'actor') and hasattr(self.actor, '_last_irt_info'):
+        if hasattr(self, "actor") and hasattr(self.actor, "_last_irt_info"):
             return self.actor._last_irt_info
         return None
 
