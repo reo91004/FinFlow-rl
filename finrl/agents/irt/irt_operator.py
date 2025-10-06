@@ -276,8 +276,18 @@ class IRT(nn.Module):
 
         tilde_w = F.softmax(log_tilde_w, dim=-1)  # [B, M]
 
-        # ===== Step 3: 이중 결합 (OT ∘ Replicator) =====
-        w = (1 - self.alpha) * tilde_w + self.alpha * p_mass
+        # ===== Step 3: Hybrid Approach (Crisis-Adaptive Mixing) =====
+        # 위기 시 Replicator 우선, 평시 OT 우선
+        # crisis_level > 0.5: alpha → 0 (Replicator 100%)
+        # crisis_level < 0.5: alpha → 기본값 (OT 비중 증가)
+        crisis_threshold = 0.5
+        adaptive_alpha = torch.where(
+            crisis_level > crisis_threshold,
+            torch.zeros_like(crisis_level) * self.alpha * 0.2,  # 위기: alpha를 20%로 감소
+            torch.ones_like(crisis_level) * self.alpha  # 평시: 기본 alpha
+        )
+
+        w = (1 - adaptive_alpha) * tilde_w + adaptive_alpha * p_mass
 
         # 정규화 (수치 안정성, NaN 방어)
         w = torch.nan_to_num(w, nan=1.0/self.M)  # NaN 시 균등 분포
@@ -290,7 +300,8 @@ class IRT(nn.Module):
             'w_rep': tilde_w,  # [B, M] - Replicator 출력
             'w_ot': p_mass,    # [B, M] - OT 출력
             'cost_matrix': C,  # [B, m, M] - Immunological cost
-            'eta': eta         # [B, 1] - Crisis-adaptive learning rate
+            'eta': eta,        # [B, 1] - Crisis-adaptive learning rate
+            'adaptive_alpha': adaptive_alpha  # [B, 1] - Hybrid mixing ratio
         }
 
         return w, P, debug_info

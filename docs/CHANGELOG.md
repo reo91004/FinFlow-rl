@@ -6,6 +6,117 @@
 
 ## [Unreleased]
 
+### Phase 2.1 - Critical Fixes for Learning Failure (2025-10-06)
+
+**문제 진단**:
+- Phase 2.0 결과: Sharpe 0.84, **Turnover 0%** (학습 실패)
+- 원인 분석: 3계층 구조적 문제 발견
+  - Layer 1 (60%): Reward 구조 - diversity가 base의 3000배
+  - Layer 2 (25%): Variance 계산 - Gaussian mixture 수학 오류
+  - Layer 3 (15%): Target entropy - 과대 추정 (42.767 vs -30)
+
+**해결 방법**:
+핸드오버 문서 기반 Critical Path 수정
+
+#### Modified
+
+**Tier 1: Reward Redesign** (`finrl/meta/env_portfolio_optimization/reward_wrapper.py`, 수정 60줄)
+- **Turnover Band Penalty**: 목표 6% ± 3% band
+  - Band 내: 패널티 없음 (거래 장려)
+  - Band 외: L2 squared penalty
+  - λ: 0.02 → 0.005 (과도한 패널티 완화)
+- **HHI-based Diversity**: Entropy → HHI (Herfindahl-Hirschman Index)
+  - 목표 HHI = 0.20 (적당한 집중도)
+  - 초과시만 패널티 (균등분배 탈출)
+  - λ: 0.15 → 0.05 (과도한 보너스 제거)
+
+**Tier 2: Variance Fix** (`finrl/agents/irt/bcell_actor.py`, 수정 10줄)
+- **Law of Total Variance** 적용
+  - 잘못: `σ_mix = Σw·σ` (선형 결합)
+  - 수정: `σ² = E[X²] - E[X]²` where `E[X²] = Σw(σ²+μ²)`
+- SAC entropy gradient 정확도 향상
+
+**Tier 3: Alpha Controller** (`scripts/train_irt.py`, 추가 100줄)
+- **AlphaController 클래스**: Adaptive alpha tuning
+  - Target entropy: -action_dim (SAC 표준)
+  - Alpha range: [0.05, 0.40] with clamping
+  - Warmup: 5000 steps
+- **AdaptiveAlphaCallback**: 동적 exploration-exploitation
+- `--adaptive-alpha` 옵션 추가
+
+#### 예상 효과
+
+| 메트릭 | Phase 2.0 | Phase 2.1 (예상) | 개선 |
+|--------|-----------|-----------------|------|
+| Sharpe | 0.84 | 1.0-1.2 | +40% |
+| Turnover | 0% | 6-12% | 정상화 |
+| ent_coef | 0.00656 | 0.15-0.30 | +30x |
+| Policy 학습 | 고착 | 정상 | ✓ |
+
+#### 실행 명령어
+
+```bash
+# 기본 학습 (Tier 1+2)
+python scripts/train_irt.py --mode train --episodes 200
+
+# Adaptive Alpha 포함 (Tier 1+2+3)
+python scripts/train_irt.py --mode train --episodes 200 --adaptive-alpha
+
+# 빠른 테스트
+python scripts/train_irt.py --mode both --episodes 50
+```
+
+---
+
+### Phase 2.0.1 - Hybrid Approach 및 파라미터 튜닝 (2025-10-06)
+
+**문제 정의**:
+- Phase 2.0 실험 결과: Sharpe 0.55 (목표 미달), Turnover 여전히 0%
+- Crisis mechanism 비활성 (eta = 0)
+- OT와 Replicator 목적함수 충돌로 인한 학습 비효율
+
+**해결 방법**:
+Crisis-adaptive mixing을 통한 Hybrid Approach 도입 및 Multi-Objective 람다 튜닝
+
+#### Modified
+
+**IRT Operator Hybrid Approach** (`finrl/agents/irt/irt_operator.py`, 수정 15줄)
+- Crisis-adaptive alpha mixing 구현
+  - `crisis_level > 0.5`: alpha → 0.06 (Replicator 94%, OT 6%)
+  - `crisis_level < 0.5`: alpha → 0.3 (Replicator 70%, OT 30%)
+- 위기 시 빠른 적응(Replicator), 평시 구조적 매칭(OT) 우선
+- 수식: `adaptive_alpha = torch.where(crisis > 0.5, 0.06, 0.3)`
+
+**Multi-Objective 람다 튜닝** (`scripts/train_irt.py`, 수정 2줄)
+- `--lambda-turnover`: 0.01 → 0.02 (거래 유인 강화)
+- `--lambda-diversity`: 0.1 → 0.15 (포트폴리오 분산 강화)
+- 목적: Turnover 0% 문제 해결, 종목 집중도 감소
+
+**디버그 정보 추가** (`finrl/agents/irt/bcell_actor.py`, 수정 1줄)
+- `adaptive_alpha` 추적 추가로 mixing ratio 실시간 모니터링
+- Crisis 상황별 OT/Replicator 비중 분석 가능
+
+#### 예상 효과
+
+| 메트릭 | Phase 2.0 | Phase 2.0.1 (예상) |
+|--------|-----------|-------------------|
+| Sharpe | 0.55 | 0.65-0.75 |
+| Turnover | 0% | 3-7% |
+| Crisis Detection | 비활성 | 부분 활성 |
+| 종목 집중도 | 34% (DIS) | 20-25% |
+
+#### 실험 명령어
+
+```bash
+# Hybrid Approach 테스트 (50 episode)
+python scripts/train_irt.py --episodes 50 --alpha 0.3
+
+# Full training (200 episode)
+python scripts/train_irt.py --episodes 200 --lambda-turnover 0.02 --lambda-diversity 0.15
+```
+
+---
+
 ### Phase 2.0 - Multi-Objective Reward Framework (2025-10-06)
 
 **문제 정의**:

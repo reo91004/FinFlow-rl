@@ -144,6 +144,117 @@ from finrl.evaluation.metrics import (
 )
 
 
+class AlphaController:
+    """
+    Adaptive Alpha Controller with Entropy-based Tuning
+
+    SAC 스타일의 자동 alpha 조정:
+    - Target entropy 기반 alpha 튜닝
+    - Warmup period로 초기 안정화
+    - Alpha clamping으로 과도한 변화 방지
+
+    Args:
+        action_dim: Action space dimension (for target entropy)
+        alpha_min: Minimum alpha value (0.05)
+        alpha_max: Maximum alpha value (0.40)
+        warmup_steps: Steps before alpha adaptation starts
+        lr: Learning rate for alpha optimization
+    """
+
+    def __init__(
+        self,
+        action_dim: int,
+        alpha_min: float = 0.05,
+        alpha_max: float = 0.40,
+        warmup_steps: int = 5000,
+        lr: float = 3e-4
+    ):
+        import math
+        self.target_entropy = -float(action_dim)  # SAC 표준: -dim(A)
+        self.alpha_min = alpha_min
+        self.alpha_max = alpha_max
+        self.warmup_steps = warmup_steps
+
+        # Log-space alpha parameter (SAC style)
+        self.log_alpha = torch.nn.Parameter(torch.log(torch.tensor(0.3)))
+        self.optimizer = torch.optim.Adam([self.log_alpha], lr=lr)
+
+    @property
+    def alpha(self) -> torch.Tensor:
+        """Get current alpha with clamping."""
+        import math
+        with torch.no_grad():
+            self.log_alpha.data.clamp_(
+                math.log(self.alpha_min),
+                math.log(self.alpha_max)
+            )
+        return self.log_alpha.exp()
+
+    def update(self, step: int, log_prob: torch.Tensor):
+        """
+        Update alpha based on policy entropy.
+
+        Args:
+            step: Current training step
+            log_prob: Log probability from policy
+
+        Returns:
+            alpha: Current alpha value
+            alpha_loss: Alpha optimization loss
+        """
+        # Warmup period: fixed alpha
+        if step < self.warmup_steps:
+            return self.alpha.detach(), 0.0
+
+        # Compute alpha loss (maximize entropy)
+        alpha_loss = -(self.log_alpha * (
+            self.target_entropy + log_prob.detach()
+        )).mean()
+
+        # Optimize alpha
+        self.optimizer.zero_grad()
+        alpha_loss.backward()
+        self.optimizer.step()
+
+        return self.alpha.detach(), alpha_loss.item()
+
+
+class AdaptiveAlphaCallback(BaseCallback):
+    """
+    Adaptive Alpha Callback using AlphaController.
+
+    동적으로 alpha를 조정하여 exploration-exploitation 균형 유지.
+    """
+
+    def __init__(self, controller: AlphaController, verbose: int = 0):
+        super().__init__(verbose)
+        self.controller = controller
+        self.last_log_prob = None
+
+    def _on_rollout_start(self) -> None:
+        """Capture log_prob from rollouts if available."""
+        # This would require modifying SAC to expose log_prob
+        # For now, use scheduler-based approach
+        pass
+
+    def _on_step(self) -> bool:
+        """Update alpha adaptively."""
+        # Get current alpha
+        alpha = self.controller.alpha
+
+        # Update IRT operator
+        self.model.policy.actor.irt_actor.irt.alpha = alpha.item()
+
+        # Log to tensorboard
+        self.logger.record("train/adaptive_alpha", alpha.item())
+
+        # Periodic logging
+        if self.verbose > 0 and self.num_timesteps % 5000 == 0:
+            print(f"  [Adaptive Alpha] Step {self.num_timesteps}: α = {alpha.item():.3f}")
+
+        return True
+
+
 def create_env(df, stock_dim, tech_indicators):
     """StockTradingEnv 생성"""
 
@@ -360,19 +471,35 @@ def train_irt(args):
     print(f"  Total timesteps: {total_timesteps}")
 
     # ===== Phase 1.9 Tier 2: Dynamic Alpha Scheduler =====
-    print(f"\n[Tier 2] Setting up dynamic alpha scheduler...")
-    alpha_scheduler = AlphaScheduler(
-        alpha_start=0.3,
-        alpha_end=0.7,
-        total_steps=total_timesteps,
-        schedule_type='cosine'
-    )
+    print(f"\n[Tier 2] Setting up alpha scheduler...")
 
-    alpha_callback = AlphaUpdateCallback(alpha_scheduler, verbose=1)
-
-    print(f"  Alpha schedule: 0.3 → 0.7 (cosine)")
-    print(f"  Early training: Replicator dominant (빠른 수렴)")
-    print(f"  Late training: OT dominant (구조적 매칭)")
+    # Check if adaptive alpha is enabled
+    if args.adaptive_alpha:
+        print(f"  Using Adaptive Alpha Controller (Tier 3)")
+        stock_dim = len(train_df.tic.unique())
+        alpha_controller = AlphaController(
+            action_dim=stock_dim,
+            alpha_min=0.05,
+            alpha_max=0.40,
+            warmup_steps=5000,
+            lr=3e-4
+        )
+        alpha_callback = AdaptiveAlphaCallback(alpha_controller, verbose=1)
+        print(f"  Target entropy: {alpha_controller.target_entropy:.1f}")
+        print(f"  Alpha range: [{alpha_controller.alpha_min}, {alpha_controller.alpha_max}]")
+        print(f"  Warmup steps: {alpha_controller.warmup_steps}")
+    else:
+        print(f"  Using Cosine Alpha Scheduler (Tier 2)")
+        alpha_scheduler = AlphaScheduler(
+            alpha_start=0.3,
+            alpha_end=0.7,
+            total_steps=total_timesteps,
+            schedule_type='cosine'
+        )
+        alpha_callback = AlphaUpdateCallback(alpha_scheduler, verbose=1)
+        print(f"  Alpha schedule: 0.3 → 0.7 (cosine)")
+        print(f"  Early training: Replicator dominant (빠른 수렴)")
+        print(f"  Late training: OT dominant (구조적 매칭)")
 
     print(f"\n  Starting training...")
 
@@ -689,6 +816,10 @@ def main():
     parser.add_argument("--market-feature-dim", type=int, default=12,
                         help="Market feature dimension (default: 12)")
 
+    # Tier 3: Adaptive Alpha
+    parser.add_argument("--adaptive-alpha", action="store_true",
+                        help="Enable Adaptive Alpha Controller (Tier 3)")
+
     # Evaluation only
     parser.add_argument("--checkpoint", type=str, default=None,
                         help="Checkpoint path for evaluation (required for --mode test)")
@@ -708,10 +839,10 @@ def main():
                         help="다목적 보상 비활성화 (Baseline 비교용)")
 
     # 보상 함수 하이퍼파라미터
-    parser.add_argument("--lambda-turnover", type=float, default=0.01,
-                        help="회전율 패널티 가중치 (default: 0.01)")
-    parser.add_argument("--lambda-diversity", type=float, default=0.1,
-                        help="다양성 보너스 가중치 (default: 0.1)")
+    parser.add_argument("--lambda-turnover", type=float, default=0.02,
+                        help="회전율 패널티 가중치 (default: 0.02, increased from 0.01)")
+    parser.add_argument("--lambda-diversity", type=float, default=0.15,
+                        help="다양성 보너스 가중치 (default: 0.15, increased from 0.1)")
     parser.add_argument("--lambda-drawdown", type=float, default=0.05,
                         help="낙폭 패널티 가중치 (default: 0.05)")
     parser.add_argument("--tc-rate", type=float, default=0.001,

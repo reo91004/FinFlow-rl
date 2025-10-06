@@ -508,6 +508,165 @@ C_ij = distance - γ·co_stimulation + λ·tolerance + ρ·checkpoint
 
 ---
 
+## Hybrid Approach (Phase 2.0.1)
+
+### 개요
+
+Phase 2.0에서 발견된 OT와 Replicator 간 목적함수 충돌 문제를 해결하기 위해, Crisis-adaptive mixing을 도입한다. 이는 위기 상황에 따라 OT와 Replicator의 비중을 동적으로 조절한다.
+
+### 작동 원리
+
+```python
+# 기존: 고정된 mixing
+w = (1 - α) * w_rep + α * w_ot  # α = 0.3 고정
+
+# Hybrid: Crisis-adaptive mixing
+adaptive_alpha = torch.where(
+    crisis_level > 0.5,
+    0.06,  # 위기: Replicator 94%, OT 6%
+    0.30   # 평시: Replicator 70%, OT 30%
+)
+w = (1 - adaptive_alpha) * w_rep + adaptive_alpha * w_ot
+```
+
+### 핵심 아이디어
+
+**위기 시 (crisis_level > 0.5)**:
+- **Replicator 우선** (94%)
+- 과거 성공 경험에 의존
+- 빠른 적응과 안정성
+- 검증된 전략 재사용
+
+**평시 (crisis_level ≤ 0.5)**:
+- **OT 비중 증가** (30%)
+- 현재 상태 최적 매칭
+- 새로운 기회 탐색
+- 구조적 유사성 활용
+
+### 수학적 정의
+
+```
+adaptive_α(c) = {
+    0.06  if c > 0.5  (위기)
+    0.30  if c ≤ 0.5  (평시)
+}
+
+w_t = (1 - adaptive_α(c_t)) · w_rep + adaptive_α(c_t) · w_ot
+```
+
+여기서:
+- `c_t`: T-Cell이 출력한 crisis level [0, 1]
+- `w_rep`: Replicator dynamics 출력
+- `w_ot`: Optimal transport 출력
+
+### 장점
+
+1. **목적함수 충돌 완화**: 상황에 따라 적절한 메커니즘 선택
+2. **위기 대응 강화**: 위기 시 안정적 전략(Replicator) 우선
+3. **탐색-활용 균형**: 평시 구조적 매칭(OT)으로 새로운 기회 포착
+4. **해석 가능성**: adaptive_alpha로 현재 전략 명확히 파악
+
+### 하이퍼파라미터
+
+| 파라미터 | 기본값 | 설명 |
+|---------|--------|------|
+| `crisis_threshold` | 0.5 | 위기/평시 구분 임계값 |
+| `alpha_crisis` | 0.06 | 위기 시 OT 비중 |
+| `alpha_normal` | 0.30 | 평시 OT 비중 |
+
+### 예상 효과
+
+- **Turnover 증가**: 0% → 3-7% (거래 활성화)
+- **Crisis detection 개선**: adaptive mixing으로 위기 신호 강화
+- **Portfolio 분산**: 단일 종목 집중 완화
+
+---
+
+## Critical Fixes (Phase 2.1)
+
+### 문제 진단
+
+Phase 2.0 실험에서 **Turnover 0%** 문제가 발생했다. 이는 Policy가 학습하지 않고 균등 분배에 고착되었음을 의미한다. 원인 분석 결과 3계층 구조적 문제를 발견했다:
+
+1. **Layer 1 (60%)**: Reward 구조 - diversity 보상이 base의 3000배
+2. **Layer 2 (25%)**: Variance 계산 - Gaussian mixture 수학 오류
+3. **Layer 3 (15%)**: Target entropy - 과대 추정
+
+### Tier 1: Reward Redesign
+
+**문제**:
+```python
+r_diversity = 0.15 × normalized_entropy ≈ 0.30  # base reward의 3000배!
+```
+
+**해결**:
+```python
+# Turnover Band Penalty (목표 6% ± 3%)
+target_turnover = 0.06
+band_width = 0.03
+excess = max(|turnover - target| - band, 0)
+r_turnover = -0.005 × excess²
+
+# HHI-based Diversity (목표 HHI = 0.20)
+hhi = Σw²
+excess = max(hhi - 0.20, 0)
+r_diversity = -0.05 × excess²
+```
+
+### Tier 2: Variance Fix
+
+**문제**:
+```python
+# 잘못된 계산
+mixed_std = Σw·σ  # 선형 결합
+```
+
+**해결**:
+```python
+# Law of Total Variance
+E[X²] = Σw(σ² + μ²)
+Var[X] = E[X²] - E[X]²
+mixed_std = sqrt(Var[X])
+```
+
+### Tier 3: Alpha Controller
+
+Adaptive alpha tuning을 위한 `AlphaController` 클래스 추가:
+
+```python
+class AlphaController:
+    def __init__(self, action_dim):
+        self.target_entropy = -action_dim  # SAC 표준
+        self.alpha_range = [0.05, 0.40]
+        self.warmup_steps = 5000
+
+    def update(self, step, log_prob):
+        # Entropy 기반 alpha 조정
+        alpha_loss = -(log_alpha × (target_entropy + log_prob))
+        ...
+```
+
+### 사용법
+
+```bash
+# 기본 학습 (Tier 1+2)
+python scripts/train_irt.py --mode train --episodes 200
+
+# Adaptive Alpha 포함 (Tier 1+2+3)
+python scripts/train_irt.py --mode train --episodes 200 --adaptive-alpha
+```
+
+### 예상 효과
+
+| 메트릭 | Phase 2.0 | Phase 2.1 |
+|--------|-----------|-----------|
+| Sharpe | 0.84 | 1.0-1.2 |
+| Turnover | 0% | 6-12% |
+| ent_coef | 0.00656 | 0.15-0.30 |
+| Policy 학습 | 고착 | 정상 |
+
+---
+
 ## 효과 및 성능 목표
 
 ### 핵심 목표

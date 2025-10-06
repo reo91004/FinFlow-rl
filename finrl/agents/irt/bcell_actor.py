@@ -230,9 +230,17 @@ class BCellIRTActor(nn.Module):
         log_stds = torch.clamp(log_stds, self.log_std_min, self.log_std_max)
         stds = log_stds.exp()
 
-        # IRT 가중치로 혼합
+        # ===== Fix: Gaussian Mixture Variance (Law of Total Variance) =====
+        # 올바른 분산 계산: Var[X] = E[Var[X|Y]] + Var[E[X|Y]]
+        # = Σw_i·σ_i² + Σw_i·μ_i² - (Σw_i·μ_i)²
         mixed_mu = torch.einsum('bm,bma->ba', w, mus)      # [B, A]
-        mixed_std = torch.einsum('bm,bma->ba', w, stds)    # [B, A]
+
+        # E[X²] = Σw_i·(σ_i² + μ_i²)
+        ex2 = torch.einsum('bm,bma->ba', w, stds**2 + mus**2)  # [B, A]
+
+        # Var[X] = E[X²] - E[X]²
+        mixed_var = ex2 - mixed_mu**2
+        mixed_std = torch.sqrt(torch.clamp(mixed_var, min=1e-6))  # [B, A]
 
         # Gaussian 샘플링
         if deterministic:
@@ -282,6 +290,7 @@ class BCellIRTActor(nn.Module):
             'w_ot': irt_debug['w_ot'].detach(),    # [B, M] - OT 출력
             'cost_matrix': irt_debug['cost_matrix'].detach(),  # [B, m, M]
             'eta': irt_debug['eta'].detach(),       # [B, 1] - Crisis learning rate
+            'adaptive_alpha': irt_debug.get('adaptive_alpha', torch.tensor(self.irt.alpha)).detach(),  # [B, 1] - Hybrid mixing ratio
             # Gaussian policy 정보
             'mu': mixed_mu.detach(),  # [B, A] - 혼합된 mean
             'std': mixed_std.detach(),  # [B, A] - 혼합된 std

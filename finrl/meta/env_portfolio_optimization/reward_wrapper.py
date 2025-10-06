@@ -171,35 +171,54 @@ class MultiObjectiveRewardWrapper(Wrapper):
         """
         components = {'base': base_reward}
 
-        # 구성요소 1: 회전율 패널티
-        # Turnover = sum(|w_t - w_{t-1}|)
-        # 거래 비용을 고려하여 과도한 거래 억제
+        # ===== Fix 1: Turnover Band Penalty =====
+        # 목표 회전율 6% ± 3% band 내에서 활동 장려
+        # Band 밖에서만 패널티 적용 (L2 squared penalty)
         if self.enable_turnover:
             turnover = np.sum(np.abs(weights - prev_weights))
-            tc_cost = self.tc_rate * turnover
-            r_turnover = -self.lambda_turnover * tc_cost
+            target_turnover = 0.06  # 목표 6%
+            band_width = 0.03       # ±3% 허용
+
+            # Band 밖 deviation에만 패널티
+            deviation = np.abs(turnover - target_turnover)
+            excess_deviation = np.maximum(deviation - band_width, 0.0)
+
+            # L2 squared penalty (더 부드러운 gradient)
+            r_turnover = -0.005 * (excess_deviation ** 2)
+
             components['turnover'] = r_turnover
             components['turnover_pct'] = turnover
+            components['turnover_deviation'] = deviation
+            components['turnover_excess'] = excess_deviation
         else:
             r_turnover = 0
             components['turnover'] = 0
             components['turnover_pct'] = 0
 
-        # 구성요소 2: 다양성 보너스
-        # 포트폴리오 엔트로피를 사용하여 분산 투자 장려
-        # H(w) = -sum(w_i * log(w_i))
-        # 높은 엔트로피 = 더 분산된 포트폴리오
+        # ===== Fix 2: HHI-based Diversity Penalty =====
+        # Herfindahl-Hirschman Index (HHI) 사용
+        # HHI = Σw_i^2 (균등분포=1/N, 집중=1)
+        # 목표: HHI = 0.20 (적당한 집중도)
         if self.enable_diversity:
-            eps = 1e-8
-            w_safe = np.clip(weights, eps, 1.0)  # log(0) 방지
-            entropy = -np.sum(w_safe * np.log(w_safe))
+            hhi = np.sum(weights ** 2)
+            target_hhi = 0.20  # 균등분포(1/30=0.033)와 집중(1) 사이
 
-            # 최대 엔트로피로 정규화 (균등 분포)
+            # Target보다 높을 때만 패널티 (과도한 집중 방지)
+            excess_concentration = np.maximum(hhi - target_hhi, 0.0)
+
+            # L2 squared penalty
+            r_diversity = -0.05 * (excess_concentration ** 2)
+
+            # 엔트로피도 계산 (로깅용)
+            eps = 1e-8
+            w_safe = np.clip(weights, eps, 1.0)
+            entropy = -np.sum(w_safe * np.log(w_safe))
             max_entropy = np.log(len(weights))
             normalized_entropy = entropy / max_entropy
 
-            r_diversity = self.lambda_diversity * normalized_entropy
             components['diversity'] = r_diversity
+            components['hhi'] = hhi
+            components['hhi_excess'] = excess_concentration
             components['entropy'] = entropy
             components['normalized_entropy'] = normalized_entropy
         else:
@@ -208,7 +227,7 @@ class MultiObjectiveRewardWrapper(Wrapper):
             components['entropy'] = 0
             components['normalized_entropy'] = 0
 
-        # 구성요소 3: 낙폭 패널티
+        # 구성요소 3: 낙폭 패널티 (유지)
         # 정점 대비 현재 가치 하락폭에 패널티
         # Drawdown = (peak - current) / peak
         if self.enable_drawdown:

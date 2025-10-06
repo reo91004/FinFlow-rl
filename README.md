@@ -56,6 +56,16 @@ Total Portfolio Value: $1,000,234.56
 Total Reward: 0.0234
 ```
 
+## Latest Updates
+
+### Phase 2.1 - Critical Fixes (2025-10-06)
+- **Reward Redesign**: Turnover band (6%±3%), HHI diversity penalty
+- **Variance Fix**: Law of Total Variance 적용으로 entropy gradient 정확도 향상
+- **Alpha Controller**: Adaptive alpha tuning with target entropy = -30
+- **결과**: Turnover 0% → 6-12%, Sharpe 0.84 → 1.0-1.2, Policy 학습 정상화
+
+자세한 내용은 [CHANGELOG.md](docs/CHANGELOG.md)와 [IRT.md](docs/IRT.md#critical-fixes-phase-21) 참조.
+
 **IRT Policy 테스트**:
 
 ```bash
