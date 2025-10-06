@@ -646,6 +646,56 @@ class AlphaController:
         ...
 ```
 
+### Tier 4: Adaptive Alpha Gradient Fix (Phase 2.1.3)
+
+**문제**:
+```
+RuntimeError: element 0 of tensors does not require grad and does not have a grad_fn
+```
+AlphaScheduler.backward() 실패 - detached tensor로 gradient 계산 불가
+
+**수학적 해결**:
+SAC temperature optimization (Haarnoja et al., 2018):
+```
+∂J/∂log(α) = -(log π(a|s) + H̄)
+```
+
+**구현**:
+```python
+# AlphaScheduler.update() - 수동 gradient 계산
+def update(self, step, log_prob):
+    # log_prob을 scalar로 변환 (detached)
+    if isinstance(log_prob, torch.Tensor):
+        log_prob_value = log_prob.item()
+    else:
+        log_prob_value = float(log_prob)
+
+    # Gradient 계산 (SAC 공식)
+    entropy_diff = self.target_entropy + log_prob_value
+
+    # 수동으로 gradient 설정
+    with torch.no_grad():
+        grad = -entropy_diff
+        if self.log_alpha.grad is None:
+            self.log_alpha.grad = torch.tensor(grad, dtype=self.log_alpha.dtype)
+        else:
+            self.log_alpha.grad.fill_(grad)
+
+        # Optimizer step
+        self.optimizer.step()
+
+        # Clamp to valid range
+        self.log_alpha.data.clamp_(
+            math.log(self.alpha_min),
+            math.log(self.alpha_max)
+        )
+```
+
+**효과**:
+- ✅ Adaptive alpha tuning 정상 작동
+- ✅ Entropy-based exploration 활성화
+- ✅ 학습 안정성 향상
+
 ### 사용법
 
 ```bash

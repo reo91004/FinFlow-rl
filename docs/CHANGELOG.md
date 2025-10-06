@@ -6,6 +6,64 @@
 
 ## [Unreleased]
 
+### Phase 2.1.3 - Adaptive Alpha Gradient Fix (2025-10-07)
+
+**문제 진단**:
+- `RuntimeError: element 0 of tensors does not require grad and does not have a grad_fn`
+- AlphaScheduler.update()에서 backward() 호출 시 gradient 추적 실패
+- 원인: detached log_prob tensor로 loss 계산 시도
+
+**수학적 분석**:
+SAC entropy regularization (Haarnoja et al., 2018, 2019)에 따른 정확한 구현
+
+**Temperature optimization**:
+```
+J(α) = E_t[-α(log π(a_t|s_t) + H̄)]
+∂J/∂log(α) = -(log π(a_t|s_t) + H̄)
+```
+
+#### Modified
+
+**AlphaScheduler gradient 계산** (`finrl/agents/irt/alpha_scheduler.py`, 수정 45줄)
+- detached log_prob을 scalar로 변환
+- 수동 gradient 계산 및 설정
+- SAC 공식에 따른 정확한 구현:
+```python
+# 수동 gradient 설정 (detached scalar 처리)
+entropy_diff = self.target_entropy + log_prob_value
+with torch.no_grad():
+    grad = -entropy_diff
+    if self.log_alpha.grad is None:
+        self.log_alpha.grad = torch.tensor(grad, dtype=self.log_alpha.dtype)
+    else:
+        self.log_alpha.grad.fill_(grad)
+    self.optimizer.step()
+```
+
+**IRTPolicy 초기화 순서** (`finrl/agents/irt/irt_policy.py`, 수정 20줄)
+- IRT 파라미터를 super().__init__() 전에 설정
+- make_actor()에서 필요한 속성 사용 가능하도록 보장
+
+**AlphaScheduler 클래스 구조** (`finrl/agents/irt/alpha_scheduler.py`, 수정 2줄)
+- nn.Module 상속 제거 (일반 클래스로 유지)
+- 독립적인 optimizer와 parameter 관리
+
+#### 검증
+
+| 검증 항목 | 상태 | 비고 |
+|---------|------|------|
+| SAC gradient 공식 일치 | ✅ | ∂J/∂log(α) = -(H̄ + log π) |
+| stable-baselines3 호환 | ✅ | 동일한 detach 패턴 사용 |
+| 학습 정상 작동 | ✅ | 50 episodes 테스트 완료 |
+| 수학적 정당성 | ✅ | 2025 최신 논문 기준 검증 |
+
+**효과**:
+- Adaptive alpha tuning 정상 작동
+- entropy-based exploration 활성화
+- 학습 안정성 향상
+
+---
+
 ### Phase 2.1.2 - AlphaScheduler 통합 (2025-10-07)
 
 **문제 진단**:

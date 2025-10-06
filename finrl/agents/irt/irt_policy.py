@@ -208,12 +208,13 @@ class IRTActorWrapper(Actor):
                 # Increment step count
                 policy.step_count += obs.size(0)  # Batch size만큼 증가
 
-                # Update alpha with real log_prob
-                # log_prob is [B, 1], we need to detach and take mean for entropy estimation
-                log_prob_mean = log_prob.detach().mean()  # Scalar tensor
+                # Update alpha with real log_prob (detached for entropy estimation)
+                # We detach because alpha update only needs the entropy value, not gradients
+                # log_prob shape: [batch_size, 1] → scalar mean
+                log_prob_detached = log_prob.detach().mean()
                 new_alpha, alpha_loss = policy.alpha_scheduler.update(
                     policy.step_count,
-                    log_prob_mean
+                    log_prob_detached  # Pass detached tensor (will be converted to scalar internally)
                 )
 
                 # Apply updated alpha to IRT operator
@@ -291,6 +292,7 @@ class IRTPolicy(SACPolicy):
             alpha_scheduler: Optional AlphaScheduler for adaptive alpha tuning
         """
         # IRT 파라미터 저장
+        # IRT 파라미터를 먼저 저장 (make_actor에서 사용됨)
         self.emb_dim = emb_dim
         self.m_tokens = m_tokens
         self.M_proto = M_proto

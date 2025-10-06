@@ -35,7 +35,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from typing import Literal, Optional, Tuple
+from typing import Literal, Optional, Tuple, Union
 
 
 class AlphaScheduler:
@@ -108,7 +108,8 @@ class AlphaScheduler:
 
             # Log-space alpha parameter (SAC style)
             initial_log_alpha = math.log(0.3)  # log(0.3) ≈ -1.204
-            self.log_alpha = torch.nn.Parameter(torch.tensor(initial_log_alpha, dtype=torch.float32))
+            # Use regular tensor with requires_grad instead of nn.Parameter
+            self.log_alpha = torch.tensor(initial_log_alpha, dtype=torch.float32, requires_grad=True)
             self.optimizer = torch.optim.Adam([self.log_alpha], lr=lr)
 
         else:
@@ -162,17 +163,17 @@ class AlphaScheduler:
 
         return float(alpha)
 
-    def update(self, step: int, log_prob: torch.Tensor) -> Tuple[torch.Tensor, float]:
+    def update(self, step: int, log_prob: Union[torch.Tensor, float]) -> Tuple[torch.Tensor, float]:
         """
         Update alpha based on policy entropy (adaptive mode only).
 
         Args:
             step: Current training step
-            log_prob: Log probability from policy (scalar tensor, already detached)
+            log_prob: Log probability from policy (detached tensor or scalar value)
 
         Returns:
-            alpha: Current alpha value
-            alpha_loss: Alpha optimization loss
+            alpha: Current alpha value (detached tensor)
+            alpha_loss: Alpha optimization loss (scalar float)
         """
         if self.schedule_type != 'adaptive':
             raise RuntimeError("update() method only available in adaptive mode")
@@ -181,21 +182,49 @@ class AlphaScheduler:
         if step < self.warmup_steps:
             return self.alpha.detach(), 0.0
 
-        # Ensure log_prob is a scalar tensor
-        if log_prob.numel() > 1:
-            log_prob = log_prob.mean()
+        # Convert log_prob to scalar value (already detached from IRTPolicy)
+        if isinstance(log_prob, torch.Tensor):
+            log_prob_value = log_prob.mean().item() if log_prob.numel() > 1 else log_prob.item()
+        else:
+            log_prob_value = float(log_prob)
 
-        # Compute alpha loss (maximize entropy)
-        # Note: log_prob is already detached, no need to detach again
-        # The gradient flows only through self.log_alpha
-        alpha_loss = -(self.log_alpha * (self.target_entropy + log_prob))
+        # Compute alpha loss
+        # SAC formula: L = -log(α) * (H_target - H_current)
+        # where H_current = -E[log π(a|s)] ≈ -log_prob_value
+        # Since log_prob is negative, adding it to target_entropy gives us the difference
 
-        # Optimize alpha
-        self.optimizer.zero_grad()
-        alpha_loss.backward()
-        self.optimizer.step()
+        # Compute entropy difference
+        entropy_diff = self.target_entropy + log_prob_value  # Both are scalars
 
-        return self.alpha.detach(), alpha_loss.item()
+        # Since log_prob_value is a scalar and self.log_alpha needs gradient,
+        # we manually compute the gradient instead of using backward()
+        # Gradient of -log_alpha * entropy_diff w.r.t log_alpha is -entropy_diff
+        with torch.no_grad():
+            # Manually compute gradient
+            grad = -entropy_diff
+
+            # Clear previous gradients
+            self.optimizer.zero_grad()
+
+            # Set gradient manually
+            if self.log_alpha.grad is None:
+                self.log_alpha.grad = torch.tensor(grad, dtype=self.log_alpha.dtype)
+            else:
+                self.log_alpha.grad.fill_(grad)
+
+            # Optimizer step
+            self.optimizer.step()
+
+            # Clamp log_alpha to valid range
+            self.log_alpha.data.clamp_(
+                math.log(self.alpha_min),
+                math.log(self.alpha_max)
+            )
+
+        # Compute loss for logging
+        alpha_loss_value = -(self.log_alpha.item() * entropy_diff)
+
+        return self.alpha.detach(), alpha_loss_value
 
     def plot_schedule(self, save_path: str = None):
         """
