@@ -445,6 +445,167 @@ Performance Metrics
 
 ---
 
+## scripts/irt_experiments.py
+
+Grid search, ablation study, 3-way comparison 등 모든 실험을 하나의 파일로 수행하는 통합 IRT 실험 스크립트.
+
+### 사용법
+
+```bash
+python scripts/irt_experiments.py [COMMAND] [OPTIONS]
+```
+
+### 명령어
+
+| Command | 설명 |
+|---------|------|
+| `grid-search` | Reward 파라미터 grid search (3×3×3 = 27 조합) |
+| `comparison` | 3-way comparison (Baseline SAC, SAC+MultiObj, IRT+MultiObj) |
+| `ablation` | Ablation studies (M={4,6,8}, Decoder, T-Cell) |
+| `visualization` | 시각화 도구 (alpha transition, prototype 분석) |
+| `all` | 모든 실험 순차 실행 |
+
+### Grid Search
+
+**목적**: Multi-objective reward의 최적 λ 값 탐색
+
+```bash
+python scripts/irt_experiments.py grid-search \
+  --episodes 50 \
+  --output logs/grid_search
+```
+
+**테스트하는 파라미터**:
+- λ_turnover: [0.002, 0.003, 0.004]
+- λ_diversity: [0.02, 0.03, 0.04]
+- λ_drawdown: [0.05, 0.07, 0.09]
+
+**출력**: 가장 높은 성능을 보이는 구성 선택
+
+### 3-Way Comparison
+
+**목적**: Architecture와 Reward design의 기여도 분리
+
+```bash
+python scripts/irt_experiments.py comparison \
+  --episodes 200 \
+  --output logs/comparison
+```
+
+**구성**:
+1. Baseline SAC (단순 reward)
+2. SAC + Multi-objective
+3. IRT + Multi-objective
+
+**분석**:
+- Architecture 기여도 = (IRT+MO) - (SAC+MO)
+- Reward 기여도 = (SAC+MO) - (Baseline)
+
+### Ablation Study
+
+**목적**: 각 구성요소의 필요성 검증
+
+```bash
+python scripts/irt_experiments.py ablation \
+  --study prototype \
+  --values 4,6,8 \
+  --episodes 100
+```
+
+**연구 항목**:
+- `prototype`: M={4,6,8} prototype 개수
+- `decoder`: Separate vs Shared decoder
+- `tcell`: T-Cell 유무
+
+### 시각화
+
+**목적**: Crisis transition 및 prototype 분석 시각화
+
+```bash
+python scripts/irt_experiments.py visualization \
+  --type alpha-transition \
+  --output logs/visualizations
+```
+
+**시각화 타입**:
+- `alpha-transition`: Hard vs Smooth crisis transition
+- `prototype-usage`: Prototype 활성화 패턴
+- `crisis-detection`: 시간에 따른 T-Cell crisis level
+
+### 전체 실험
+
+**목적**: 모든 실험을 순차적으로 실행
+
+```bash
+python scripts/irt_experiments.py all \
+  --episodes 100 \
+  --output logs/experiments
+```
+
+**실행 순서**:
+1. Grid search (최적 파라미터 탐색)
+2. 3-way comparison (기여도 분석)
+3. Ablation studies (구성요소 검증)
+4. Visualizations (분석 플롯)
+
+---
+
+## 실험 스크립트 (Bash)
+
+### scripts/grid_search_reward.sh
+
+Reward 파라미터를 위한 자동 grid search.
+
+```bash
+#!/bin/bash
+# Reward 파라미터의 최적값 탐색
+./scripts/grid_search_reward.sh
+```
+
+### scripts/run_comparison.sh
+
+3-way comparison 실험 자동화.
+
+```bash
+#!/bin/bash
+# 3-way comparison 실행
+./scripts/run_comparison.sh
+```
+
+### scripts/run_ablation.sh
+
+Ablation study 자동화.
+
+```bash
+#!/bin/bash
+# 모든 ablation study 실행
+./scripts/run_ablation.sh
+```
+
+### 분석 스크립트 (Python)
+
+**scripts/analyze_grid_search.py**:
+```bash
+python scripts/analyze_grid_search.py --input logs/grid_search
+```
+
+**scripts/analyze_comparison.py**:
+```bash
+python scripts/analyze_comparison.py --input logs/comparison
+```
+
+**scripts/analyze_ablation.py**:
+```bash
+python scripts/analyze_ablation.py --input logs/ablation
+```
+
+**scripts/visualize_alpha_transition.py**:
+```bash
+python scripts/visualize_alpha_transition.py --output logs/plots
+```
+
+---
+
 ## 스크립트 비교
 
 ### 4개 스크립트 상세 비교

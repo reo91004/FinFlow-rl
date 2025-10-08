@@ -43,9 +43,9 @@ class TCellMinimal(nn.Module):
         self.emb_dim = emb_dim
         self.momentum = momentum
 
-        # ===== Phase 1.9 Tier 3: Crisis Logging =====
+        # ===== Phase 1.9 Tier 3: 위기 로깅 =====
         self._debug_counter = 0
-        self._debug_interval = 5000  # 5000 step마다 출력 (Optional: 빈도 감소)
+        self._debug_interval = 5000  # 5000 step마다 출력 (선택사항: 빈도 감소)
 
         # 단일 인코더 (효율성)
         self.encoder = nn.Sequential(

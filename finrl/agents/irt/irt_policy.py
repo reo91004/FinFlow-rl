@@ -200,6 +200,20 @@ class IRTActorWrapper(Actor):
         # 마지막 IRT info 저장 (평가/시각화용)
         self._last_irt_info = info
 
+        # XAI regularization 계산 (training 시에만)
+        if self.training and hasattr(self.irt_actor, 'last_irt_info'):
+            irt_info = self.irt_actor.last_irt_info
+            if irt_info is not None and self._policy_ref is not None:
+                policy = self._policy_ref()
+                if policy is not None and hasattr(policy, '_compute_xai_regularization'):
+                    xai_loss = policy._compute_xai_regularization(irt_info)
+                    # XAI loss를 policy에 저장
+                    policy._xai_loss = xai_loss
+
+                    # Diversity loss도 함께 저장 (BCellIRTActor에서 계산됨)
+                    diversity_loss = irt_info.get('diversity_loss', 0.0)
+                    policy._diversity_loss = diversity_loss
+
         # Alpha scheduler 업데이트 (adaptive mode에서 실제 log_prob 사용)
         policy = self._policy_ref() if self._policy_ref is not None else None
         if policy is not None and hasattr(policy, 'alpha_scheduler') and policy.alpha_scheduler is not None:
@@ -271,6 +285,8 @@ class IRTPolicy(SACPolicy):
         eta_0: float = 0.05,
         eta_1: float = 0.15,
         alpha_scheduler: Optional[Any] = None,  # AlphaScheduler instance (adaptive mode)
+        xai_reg_weight: float = 0.01,  # XAI regularization weight
+        use_shared_decoder: bool = False,  # Use shared decoder (ablation study)
     ):
         """
         Args:
@@ -305,7 +321,10 @@ class IRTPolicy(SACPolicy):
         self.eta_0 = eta_0
         self.eta_1 = eta_1
         self.alpha_scheduler = alpha_scheduler
+        self.xai_reg_weight = xai_reg_weight
+        self.use_shared_decoder = use_shared_decoder
         self.step_count = 0  # Track steps for alpha scheduler
+        self._xai_loss = 0.0  # Initialize XAI loss
 
         # SACPolicy 초기화
         super().__init__(
@@ -354,6 +373,7 @@ class IRTPolicy(SACPolicy):
             market_feature_dim=self.market_feature_dim,
             log_std_min=self.log_std_min,
             log_std_max=self.log_std_max,
+            use_shared_decoder=self.use_shared_decoder,
             eps=self.eps,
             eta_0=self.eta_0,
             eta_1=self.eta_1,
@@ -408,6 +428,112 @@ class IRTPolicy(SACPolicy):
         if hasattr(self, "actor") and hasattr(self.actor, "_last_irt_info"):
             return self.actor._last_irt_info
         return None
+
+    def _compute_xai_regularization(self, irt_info: dict) -> torch.Tensor:
+        """
+        XAI regularization loss
+
+        목표:
+        1. w_rep, w_ot 모두 다양한 프로토타입 활용 (entropy 최대화)
+        2. Crisis 시 Adaptive 메커니즘이 특정 프로토타입에 집중 (HHI 조정)
+
+        Args:
+            irt_info: BCellIRTActor.forward() 반환 정보
+                - w_rep: [B, M] Adaptive mechanism (Replicator) 출력
+                - w_ot: [B, M] Exploratory mechanism (OT) 출력
+                - crisis_level: [B, 1]
+
+        Returns:
+            loss: scalar
+        """
+        w_rep = irt_info['w_rep']  # [B, M]
+        w_ot = irt_info['w_ot']    # [B, M]
+        crisis_level = irt_info['crisis_level']  # [B, 1]
+
+        eps = 1e-8
+
+        # 1. Diversity: Entropy 최대화 (collapse 방지)
+        entropy_rep = -(w_rep * torch.log(w_rep + eps)).sum(dim=-1).mean()
+        entropy_ot = -(w_ot * torch.log(w_ot + eps)).sum(dim=-1).mean()
+
+        # 2. Crisis-adaptive specialization
+        # HHI: 집중도 측정 (균등 분포 = 1/M, 완전 집중 = 1)
+        hhi_rep = (w_rep ** 2).sum(dim=-1)  # [B]
+
+        # Target HHI: 평시 0.3 (분산), 위기 0.7 (집중)
+        target_hhi = 0.3 + 0.4 * crisis_level.squeeze(-1)  # [B]
+        hhi_loss = ((hhi_rep - target_hhi) ** 2).mean()
+
+        # 3. Total loss
+        # Entropy는 최대화 → 부호 반전
+        # HHI는 target에 근접 → L2 loss
+        loss = (
+            -0.01 * entropy_rep      # Adaptive diversity
+            -0.01 * entropy_ot       # Exploratory diversity
+            + 0.05 * hhi_loss        # Crisis-adaptive concentration
+        )
+
+        return loss
+
+    def forward_actor(self, obs: torch.Tensor, deterministic: bool = False) -> torch.Tensor:
+        """
+        Forward pass in the actor network with XAI losses computation
+
+        This is called during training to get actions and compute losses.
+        We override this to add XAI and diversity losses to the computation graph.
+        """
+        # Get action from actor
+        mean_actions, log_std, kwargs = self.get_distribution(obs)
+
+        # Get action distribution
+        distribution = self.action_dist.proba_distribution(mean_actions, log_std)
+        actions = distribution.get_actions(deterministic=deterministic)
+        log_prob = distribution.log_prob(actions)
+
+        # Compute XAI and diversity losses if in training mode
+        if self.training and hasattr(self, 'actor') and hasattr(self.actor, 'irt_actor'):
+            if hasattr(self.actor.irt_actor, 'last_irt_info'):
+                irt_info = self.actor.irt_actor.last_irt_info
+                if irt_info is not None:
+                    # Store losses for later use in actor optimization
+                    self._current_xai_loss = self._compute_xai_regularization(irt_info)
+                    diversity_loss = irt_info.get('diversity_loss', 0.0)
+                    if not isinstance(diversity_loss, torch.Tensor):
+                        diversity_loss = torch.tensor(diversity_loss, device=obs.device)
+                    self._current_diversity_loss = diversity_loss
+                else:
+                    self._current_xai_loss = torch.tensor(0.0, device=obs.device)
+                    self._current_diversity_loss = torch.tensor(0.0, device=obs.device)
+            else:
+                self._current_xai_loss = torch.tensor(0.0, device=obs.device)
+                self._current_diversity_loss = torch.tensor(0.0, device=obs.device)
+        else:
+            self._current_xai_loss = torch.tensor(0.0, device=obs.device) if torch.is_tensor(obs) else 0.0
+            self._current_diversity_loss = torch.tensor(0.0, device=obs.device) if torch.is_tensor(obs) else 0.0
+
+        return actions, log_prob
+
+    def compute_actor_loss(self, log_prob: torch.Tensor, q_value: torch.Tensor) -> torch.Tensor:
+        """
+        Compute actor loss with XAI/Diversity regularization
+
+        This method computes the standard SAC actor loss and adds our custom losses.
+        It's designed to be called within the SAC training loop.
+        """
+        # Standard SAC actor loss
+        if self.ent_coef_tensor is not None:
+            # Entropy regularization
+            actor_loss = (self.ent_coef_tensor * log_prob - q_value).mean()
+        else:
+            # No entropy regularization
+            actor_loss = -q_value.mean()
+
+        # Add XAI and diversity losses
+        if hasattr(self, '_current_xai_loss') and hasattr(self, '_current_diversity_loss'):
+            total_regularization = self._current_xai_loss + self._current_diversity_loss
+            actor_loss = actor_loss + self.xai_reg_weight * total_regularization
+
+        return actor_loss
 
 
 class IRTActorCriticPolicy(IRTPolicy):

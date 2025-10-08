@@ -6,6 +6,88 @@
 
 ## [Unreleased]
 
+### Phase 2.1.4 - IRT 개선 로드맵 (2025-10-09)
+
+**개요**:
+최소 침습성과 학술적 엄밀성을 유지하면서 성능 개선을 위한 종합적인 Tier 기반 개선 계획.
+
+**개선 Tier**:
+
+#### Tier 0: Critical (즉시, 1주차)
+학술적 정당성 및 성능에 필수적
+
+**0-1. Crisis Threshold Smooth Transition** ⭐⭐⭐⭐⭐
+- 문제: Hard threshold (crisis > 0.5)는 불연속적이고 gradient-unfriendly
+- 해결책: Smooth cosine interpolation
+- 수학적 근거: `α(c) = α_normal + (α_crisis - α_normal) * (1 - cos(πc)) / 2`
+- 파일: `finrl/agents/irt/irt_operator.py` (15줄)
+
+**0-2. 학습 중 XAI 통합** ⭐⭐⭐⭐⭐
+- 문제: XAI가 사후 분석에만 사용됨
+- 해결책: 학습 중 auxiliary loss로 해석가능성 통합
+- Loss: `L_xai = -λ₁H(w_rep) - λ₂H(w_ot) + λ₃||HHI(w_rep) - target(c)||²`
+- 파일: `finrl/agents/irt/irt_policy.py` (50줄), `bcell_actor.py` (10줄)
+
+**0-3. Reward Fine-Tuning** ⭐⭐⭐⭐
+- 문제: Multi-objective reward의 휴리스틱 λ 값
+- 해결책: Grid search 최적화 (3×3×3 = 27 조합)
+- 파라미터: λ_turnover: 0.005→0.003, λ_diversity: 0.05→0.03, λ_drawdown: 0.05→0.07
+- 파일: `reward_wrapper.py` (파라미터 변경), 새 grid search 스크립트
+
+#### Tier 1: High Priority (2주차)
+
+**1-1. Prototype Diversity Regularization** ⭐⭐⭐
+- Batch 엔트로피 최대화를 통한 prototype collapse 방지
+- Loss: `L_div = -H(E[w]) + λ*Var(w)`
+- 파일: `bcell_actor.py` (30줄)
+
+**1-2. 3-Way Comparison 실험** ⭐⭐⭐
+- Architecture vs reward 기여도 분리
+- 구성: Baseline SAC, SAC+MultiObj, IRT+MultiObj
+- 스크립트: `run_comparison.sh`, `analyze_comparison.py`
+
+#### Tier 2: Medium Priority (3-4주차)
+
+**2-1. Ablation Studies** ⭐⭐
+- Prototype 개수 (M=4,6,8)
+- Decoder 구조 (Separate vs Shared)
+- T-Cell 유무 (With vs Without)
+- 스크립트: `run_ablation.sh`, `analyze_ablation.py`
+
+**2-2. 용어 정정** ⭐⭐
+- Replicator: "과거 경험" → "Adaptive (현재 fitness gradient)"
+- OT: "구조적 매칭" → "Exploratory (fitness 무관)"
+- 파일: `docs/IRT.md`, 코드 주석
+
+#### Tier 3: Future Work
+
+**3-1. Learnable Alpha Mixer** ⭐⭐⭐⭐⭐ (Novel)
+- End-to-end 학습 가능한 mixing: `α(c,s) = σ(f_θ([c,s]))`
+- Crisis + market features를 고려하는 2-layer MLP
+
+#### 새로운 도구 및 스크립트
+
+**통합 실험 Suite** (`scripts/irt_experiments.py`, 33KB)
+- 모든 실험 스크립트를 하나의 파일로 통합
+- 함수: `run_grid_search()`, `run_3way_comparison()`, `run_ablation_study()`
+- 시각화 및 분석 통합
+
+**Grid Search 스크립트**:
+- `grid_search_reward.sh`: 자동 파라미터 탐색
+- `analyze_grid_search.py`: 결과 분석 및 최적 선택
+- `visualize_alpha_transition.py`: Crisis transition 시각화
+
+#### 구현 일정
+
+- **1주차**: Tier 0 (Critical) - Smooth transition, XAI, reward 튜닝
+- **2주차**: Tier 1 (High Priority) - Diversity, 3-way comparison
+- **3-4주차**: Tier 2 (Medium) - Ablation, 용어 정정
+- **Future**: Tier 3 - Learnable mixer
+
+전체 세부사항: `docs/IMPROVEMENTS.md` 참조
+
+---
+
 ### Phase 2.1.3 - Adaptive Alpha Gradient Fix (2025-10-07)
 
 **문제 진단**:

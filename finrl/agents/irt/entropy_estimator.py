@@ -8,12 +8,12 @@ Policy Entropy Estimator for Projected Distributions
 - Ahmed et al. (2019): Adaptive target entropy for automatic tuning
 
 Projected distribution의 entropy 문제:
-- Gaussian policy: z ~ N(μ, σ²)
-- Projected policy: a = proj_simplex(z)
-- True entropy: H(a) = H(z) - E[log |det J_proj|]
+- Gaussian 정책: z ~ N(μ, σ²)
+- Projected 정책: a = proj_simplex(z)
+- 실제 엔트로피: H(a) = H(z) - E[log |det J_proj|]
 - 현재 구현: log p(a) ≈ log p(z) (Jacobian 무시)
 
-해결책: Empirical estimation
+해결책: 경험적 추정
 1. 여러 state 샘플링
 2. 각 state에서 여러 action 샘플링
 3. H ≈ -E[log p(a|s)] 추정
@@ -24,7 +24,7 @@ Projected distribution의 entropy 문제:
     estimator = PolicyEntropyEstimator(n_states=100, n_samples_per_state=20)
     mean_entropy, std_entropy = estimator.estimate(policy, env)
 
-    target_entropy = 0.7 * mean_entropy  # Conservative target
+    target_entropy = 0.7 * mean_entropy  # 보수적 타겟
 """
 
 import torch

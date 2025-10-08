@@ -15,17 +15,17 @@ Alpha의 의미:
 - α=0.7 (OT 70%): 구조적 매칭 (exploration)
 
 Schedule types:
-- 'linear': Linear interpolation
-- 'cosine': Smooth transition (fast early, slow late)
-- 'exponential': Very fast early transition
-- 'adaptive': Entropy-based automatic tuning (SAC style)
+- 'linear': 선형 보간
+- 'cosine': 부드러운 전이 (초기 빠름, 후기 느림)
+- 'exponential': 초기 매우 빠른 전이
+- 'adaptive': 엔트로피 기반 자동 조정 (SAC 스타일)
 
 사용법:
-    # Step-based scheduling
+    # 스텝 기반 스케줄링
     scheduler = AlphaScheduler(schedule_type='cosine', alpha_start=0.3, alpha_end=0.7)
     alpha = scheduler.get_alpha(step)
 
-    # Adaptive (entropy-based) tuning
+    # 적응형 (엔트로피 기반) 튜닝
     scheduler = AlphaScheduler(schedule_type='adaptive', action_dim=30)
     new_alpha, alpha_loss = scheduler.update(step, log_prob)
 """

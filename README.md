@@ -6,23 +6,38 @@ IRT (Immune Replicator Transport) Operator를 FinRL 환경에서 검증하는 �
 
 본 프로젝트는 면역학적 메커니즘에서 영감을 받은 IRT Operator를 검증된 강화학습 환경인 FinRL에 통합하여, 시장 위기 상황에서의 포트폴리오 관리 성능을 입증하는 것을 목표로 한다.
 
-### Core Innovation: IRT Operator
+### 핵심 혁신: IRT Operator
 
 ```
 w_t = (1-α)·Replicator(w_{t-1}, f_t) + α·Transport(E_t, K, C_t)
 ```
 
-- **Optimal Transport**: 현재 상태와 프로토타입 전략 간 구조적 매칭
-- **Replicator Dynamics**: 과거 성공 전략에 대한 시간 메모리
+- **Optimal Transport (탐색적 메커니즘)**: 구조적 유사성 기반 탐색적 매칭, fitness와 무관
+- **Replicator Dynamics (적응적 메커니즘)**: 현재 fitness gradient 기반의 빠른 적응
 - **Immunological Cost**: 도메인 지식이 내장된 비용 함수
+- **Smooth Crisis-Adaptive Mixing**: Cosine interpolation으로 gradient-friendly한 전환 구현
+- **XAI-Guided Learning**: 해석가능성을 학습 중 auxiliary loss로 통합
 
-## Features
+## 프로젝트 로드맵
+
+### 개발 일정 (4주 계획)
+
+- **1주차 (Tier 0)**: Smooth transition, XAI 통합, reward 튜닝
+- **2주차 (Tier 1)**: Prototype diversity, 3-way comparison
+- **3-4주차 (Tier 2)**: Ablation studies, 용어 정정
+- **Future**: Learnable alpha mixer, meta-learning 접근법
+
+세부 구현 사항: [IMPROVEMENTS.md](docs/IMPROVEMENTS.md) 참조
+
+## 주요 기능
 
 - ✅ **IRT Operator** - OT + Replicator Dynamics 결합
 - ✅ **SAC + Custom Policy** - Stable Baselines3 기반
 - ✅ **Crisis Adaptation** - T-Cell 위기 감지 메커니즘
 - ✅ **XAI Visualization** - 12개 해석 가능성 플롯
 - ✅ **FinRL Integration** - 검증된 환경 활용
+- 🚧 **Tier 0 개선사항** - 진행 중 (1주차)
+- 📋 **Tier 1-2 개선사항** - 계획됨 (2-4주차)
 
 ## Quick Start
 
@@ -139,6 +154,28 @@ python scripts/evaluate.py \
 - `evaluation_results.json` - 메트릭 (Sharpe, Calmar, Max Drawdown 등)
 - `evaluation_plots/` - 시각화 (Portfolio Value, Drawdown, Returns Distribution)
 
+### 5. 실험 도구
+
+#### 최적 파라미터를 위한 Grid Search
+
+```bash
+python scripts/irt_experiments.py grid-search --episodes 50
+```
+
+#### 3-Way Comparison (Architecture vs Reward 기여도 분리)
+
+```bash
+python scripts/irt_experiments.py comparison --episodes 200
+```
+
+#### Ablation Studies
+
+```bash
+python scripts/irt_experiments.py ablation --study prototype --values 4,6,8
+```
+
+자세한 사용법: [SCRIPTS.md](docs/SCRIPTS.md#scriptsirt_experimentspy) 참조
+
 ## Project Structure
 
 ```
@@ -158,7 +195,11 @@ FinFlow-rl/
 │   ├── train.py            # 일반 RL 알고리즘 (SB3 직접 사용)
 │   ├── train_irt.py        # IRT Policy 학습
 │   ├── train_finrl_standard.py  # FinRL 표준 (DRLAgent)
-│   └── evaluate.py         # 평가 (두 가지 방식 지원)
+│   ├── evaluate.py         # 평가 (두 가지 방식 지원)
+│   ├── irt_experiments.py  # 통합 실험 suite (grid search, ablation, comparison)
+│   ├── grid_search_reward.sh  # Reward parameter optimization
+│   ├── run_comparison.sh   # 3-way comparison experiment
+│   └── run_ablation.sh     # Ablation studies
 ├── tests/                  # 테스트
 │   ├── test_irt_policy.py  # IRT Policy 단위 테스트
 │   └── test_finrl_minimal.py  # FinRL 환경 테스트

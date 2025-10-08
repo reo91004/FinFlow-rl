@@ -40,11 +40,14 @@ class MultiObjectiveRewardWrapper(Wrapper):
     def __init__(
         self,
         env,
-        lambda_turnover: float = 0.01,
-        lambda_diversity: float = 0.1,
-        lambda_drawdown: float = 0.05,
+        lambda_turnover: float = 0.003,  # Fine-tuned (was 0.01)
+        lambda_diversity: float = 0.03,  # Fine-tuned (was 0.1)
+        lambda_drawdown: float = 0.07,   # Fine-tuned (was 0.05)
         tc_rate: float = 0.001,
         min_cash: float = 0.02,
+        target_turnover: float = 0.08,   # Target turnover (8%)
+        turnover_band: float = 0.04,     # Turnover tolerance band (±4%)
+        target_hhi: float = 0.25,        # Target HHI for diversity
         enable_turnover: bool = True,
         enable_diversity: bool = True,
         enable_drawdown: bool = True
@@ -57,6 +60,9 @@ class MultiObjectiveRewardWrapper(Wrapper):
             lambda_drawdown: 낙폭 패널티 가중치
             tc_rate: 거래 비용률 (0.001 = 0.1%)
             min_cash: 최소 현금 보유 비율
+            target_turnover: 목표 회전율 (기본값: 8%)
+            turnover_band: 회전율 허용 범위 (기본값: ±4%)
+            target_hhi: 목표 HHI for diversity (기본값: 0.25)
             enable_turnover: 회전율 패널티 활성화 여부
             enable_diversity: 다양성 보너스 활성화 여부
             enable_drawdown: 낙폭 패널티 활성화 여부
@@ -68,6 +74,9 @@ class MultiObjectiveRewardWrapper(Wrapper):
         self.lambda_drawdown = lambda_drawdown
         self.tc_rate = tc_rate
         self.min_cash = min_cash
+        self.target_turnover = target_turnover
+        self.turnover_band = turnover_band
+        self.target_hhi = target_hhi
 
         # Ablation study용 활성화 플래그
         self.enable_turnover = enable_turnover
@@ -172,19 +181,17 @@ class MultiObjectiveRewardWrapper(Wrapper):
         components = {'base': base_reward}
 
         # ===== Fix 1: Turnover Band Penalty =====
-        # 목표 회전율 6% ± 3% band 내에서 활동 장려
+        # 목표 회전율 target_turnover ± turnover_band 내에서 활동 장려
         # Band 밖에서만 패널티 적용 (L2 squared penalty)
         if self.enable_turnover:
             turnover = np.sum(np.abs(weights - prev_weights))
-            target_turnover = 0.06  # 목표 6%
-            band_width = 0.03       # ±3% 허용
 
             # Band 밖 deviation에만 패널티
-            deviation = np.abs(turnover - target_turnover)
-            excess_deviation = np.maximum(deviation - band_width, 0.0)
+            deviation = np.abs(turnover - self.target_turnover)
+            excess_deviation = np.maximum(deviation - self.turnover_band, 0.0)
 
             # L2 squared penalty (더 부드러운 gradient)
-            r_turnover = -0.005 * (excess_deviation ** 2)
+            r_turnover = -self.lambda_turnover * (excess_deviation ** 2)
 
             components['turnover'] = r_turnover
             components['turnover_pct'] = turnover
@@ -198,16 +205,15 @@ class MultiObjectiveRewardWrapper(Wrapper):
         # ===== Fix 2: HHI-based Diversity Penalty =====
         # Herfindahl-Hirschman Index (HHI) 사용
         # HHI = Σw_i^2 (균등분포=1/N, 집중=1)
-        # 목표: HHI = 0.20 (적당한 집중도)
+        # 목표: HHI = target_hhi (적당한 집중도)
         if self.enable_diversity:
             hhi = np.sum(weights ** 2)
-            target_hhi = 0.20  # 균등분포(1/30=0.033)와 집중(1) 사이
 
             # Target보다 높을 때만 패널티 (과도한 집중 방지)
-            excess_concentration = np.maximum(hhi - target_hhi, 0.0)
+            excess_concentration = np.maximum(hhi - self.target_hhi, 0.0)
 
             # L2 squared penalty
-            r_diversity = -0.05 * (excess_concentration ** 2)
+            r_diversity = -self.lambda_diversity * (excess_concentration ** 2)
 
             # 엔트로피도 계산 (로깅용)
             eps = 1e-8

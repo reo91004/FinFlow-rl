@@ -434,48 +434,61 @@ SAC의 policy gradient는 projection을 통과한 action에 대해 계산되지�
 
 ## IRT의 3가지 핵심 메커니즘
 
-### 1. Optimal Transport (OT)
+### 1. Optimal Transport (Exploratory Mechanism)
 
-**개념**: 현재 상태(에피토프)와 전문가 전략(프로토타입) 간의 **최적 매칭**을 찾는다.
+**개념**: 현재 상태(에피토프)와 전문가 전략(프로토타입) 간의 **구조적 유사성 기반 탐색적 매칭**
 
 **수학적 배경**:
 - Cuturi (2013)의 엔트로피 정규화 최적수송
 - Sinkhorn 알고리즘으로 효율적 계산 (O(1/ε) 수렴)
+- Villani (2008) Optimal Transport theory
 
 **동작 방식**:
 ```
 1. 현재 시장 상태 → 6개 에피토프 토큰 (E_t)
 2. 8개 프로토타입 전략 (K)
-3. 비용 행렬 계산: C_ij = d(E_i, K_j) - 면역학적 조정
+3. 비용 행렬 계산: C_ij = distance(E_i, K_j) - immunological_adjustment
 4. Sinkhorn으로 최적 수송 계획 P* 계산
 5. 프로토타입별 수송 질량 → w_ot
 ```
 
+**핵심 특성**:
+- **Fitness 무관**: 현재 성과와 독립적
+- **구조적 매칭**: 상태 유사성만 고려
+- **Exploratory**: 다양한 프로토타입 탐색
+
 **직관**:
-- 위기 상황 → 위기 신호와 정렬된 프로토타입의 비용 ↓
-- OT가 자동으로 위기 대응 전략 선택
+- 현재 시장이 "고변동성 + 상관관계 붕괴" 상태
+- → 구조적으로 유사한 프로토타입 선택 (성과 무관)
+- → 새로운 패턴 학습 및 다양성 확보
 
-### 2. Replicator Dynamics
+### 2. Replicator Dynamics (Adaptive Mechanism)
 
-**개념**: 과거에 성공한 전략을 **선호**하는 메커니즘 (진화 게임 이론)
+**개념**: **현재 성과 기반 적응적 재배치** 메커니즘 (진화 게임 이론)
 
 **수학적 배경**:
 - Hofbauer & Sigmund (1998)의 복제자 동역학
+- 2024-2025 MARL 연구: "temporal evolution of strategies"
 - 균형점은 Nash 균형, 안정점은 ESS
 
 **동작 방식**:
 ```
-1. 이전 가중치 w_{t-1} 기억
+1. 이전 가중치 w_{t-1} 기억 (시간 메모리)
 2. 각 프로토타입의 적합도 f_j 계산 (Critic Q-value 기반)
 3. Advantage: A_j = f_j - 평균 적합도
 4. 위기 가열: η(c) = η_0 + η_1·crisis_level
 5. 업데이트: w_rep ∝ w_{t-1}·exp(η·A)
 ```
 
+**핵심 특성**:
+- **현재 fitness gradient 추종**: Q-value 높은 프로토타입으로 빠르게 이동
+- **위기 시 빠른 적응**: η ↑ → advantage에 극도로 민감
+- **Adaptive**: 성과에 따라 aggressive하게 전략 변경
+
 **직관**:
-- 성공한 프로토타입 → 가중치 ↑
-- 위기 시 → η ↑ (빠른 적응)
-- 시간 메모리 → 일관성 유지
+- 현재 Q-value 높은 프로토타입 → 가중치 급증
+- "잘 되는 것을 더 많이" (빠른 적응)
+- 위기 시 → η ↑ (즉각적 대응)
 
 ### 3. 면역학적 비용 함수
 
@@ -532,16 +545,16 @@ w = (1 - adaptive_alpha) * w_rep + adaptive_alpha * w_ot
 ### 핵심 아이디어
 
 **위기 시 (crisis_level > 0.5)**:
-- **Replicator 우선** (94%)
-- 과거 성공 경험에 의존
-- 빠른 적응과 안정성
-- 검증된 전략 재사용
+- **Adaptive 우선** (Replicator 94%)
+- 현재 Q-value 높은 프로토타입으로 즉시 shift
+- η(crisis) ↑ → advantage에 극도로 민감
+- 빠른 적응 필요
 
 **평시 (crisis_level ≤ 0.5)**:
-- **OT 비중 증가** (30%)
-- 현재 상태 최적 매칭
-- 새로운 기회 탐색
-- 구조적 유사성 활용
+- **Exploratory 보조** (OT 30%)
+- 현재 상태와 구조적으로 유사한 프로토타입 매칭
+- Fitness 무관 → 다양한 패턴 학습
+- 탐색 여유 있음
 
 ### 수학적 정의
 
@@ -717,20 +730,50 @@ python scripts/train_irt.py --mode train --episodes 200 --adaptive-alpha
 
 ---
 
-## 효과 및 성능 목표
+## 개선 계획 및 목표
 
-### 핵심 목표
+### Tier 기반 개선사항 (Phase 2.1.4)
 
-| 메트릭 | SAC Baseline | IRT 목표 (Phase 1.4) | 개선율 |
-|--------|--------------|---------------------|--------|
-| **Sharpe Ratio** | 1.0-1.2 | 1.3-1.5 | **+15-20%** |
-| **전체 Max Drawdown** | -30~-35% | -18~-23% | **-25-35%** |
-| **위기 구간 MDD** | -40~-45% | -22~-27% | **-35-45%** |
+IRT 아키텍처의 성능과 학술적 정당성을 개선하기 위한 단계별 계획이다.
 
-**Phase 1.4 개선사항 반영**:
-- Replicator 완전 활성화 (0% → 70%)
-- TCell 위기 감지 정확도 향상 (시장 통계 + Tech indicators)
-- Train-Eval 일관성 확보
+#### Tier 0: Critical (1주차, 즉시 실행)
+학술적 정당성 확보 및 기본 성능 개선에 필수적인 항목들:
+
+1. **Smooth Crisis Transition**:
+   - Hard threshold를 cosine interpolation으로 교체
+   - Gradient-friendly하고 연속적인 전환 구현
+
+2. **학습 중 XAI 통합**:
+   - 사후 분석만 하던 XAI를 학습 중 auxiliary loss로 통합
+   - 해석가능성을 활용한 성능 개선
+
+3. **Reward Fine-tuning**:
+   - Grid search를 통한 체계적인 파라미터 최적화
+   - 휴리스틱 값에서 데이터 기반 최적값으로 전환
+
+#### Tier 1: High Priority (2주차)
+성능 향상 및 논문 기여도 강화:
+
+1. **Prototype Diversity**:
+   - Batch 엔트로피 최대화로 prototype collapse 방지
+   - 다양한 전략 학습 보장
+
+2. **3-Way Comparison**:
+   - Architecture vs Reward 기여도를 명확히 분리
+   - IRT의 독립적 가치 검증
+
+#### Tier 2: Medium Priority (3-4주차)
+추가 검증 및 개선:
+
+1. **Ablation Studies**:
+   - Prototype 개수 (M={4,6,8}) 최적화
+   - Decoder 구조, T-Cell 필요성 검증
+
+2. **용어 정정**:
+   - Adaptive/Exploratory 메커니즘으로 학술적 정확성 확보
+   - 문서 및 코드 주석 일관성 개선
+
+전체 구현 세부사항: `docs/IMPROVEMENTS.md` 참조
 
 ### 위기 구간 집중
 

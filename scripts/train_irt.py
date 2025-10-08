@@ -39,21 +39,21 @@ from stable_baselines3.common.monitor import Monitor
 # Import IRT Policy
 from finrl.agents.irt import IRTPolicy
 
-# ===== Phase 1.9: Tier 0 - Adaptive Target Entropy =====
+# ===== Phase 1.9: Tier 0 - 적응형 타겟 엔트로피 =====
 from finrl.agents.irt.entropy_estimator import PolicyEntropyEstimator
 
-# ===== Phase 1.9: Tier 2 - Dynamic Alpha Scheduler =====
+# ===== Phase 1.9: Tier 2 - 동적 Alpha 스케줄러 =====
 from finrl.agents.irt.alpha_scheduler import AlphaScheduler
 
-# ===== Multi-Objective Reward Wrapper =====
+# ===== 다목표 보상 래퍼 =====
 from finrl.meta.env_portfolio_optimization.reward_wrapper import MultiObjectiveRewardWrapper
 
 
-# ===== Tier 3: SAC with Global Gradient Clipping =====
+# ===== Tier 3: 전역 경사 클리핑을 적용한 SAC =====
 
 class SACWithGradClip(SAC):
     """
-    SAC with global gradient clipping for numerical stability.
+    수치 안정성을 위한 전역 경사 클리핑을 적용한 SAC.
 
     References:
     - Neptune.ai (2025): "Gradient clipping is especially beneficial in RL"
@@ -64,49 +64,49 @@ class SACWithGradClip(SAC):
     def __init__(self, *args, max_grad_norm=10.0, **kwargs):
         """
         Args:
-            max_grad_norm: Maximum gradient norm (default: 10.0)
+            max_grad_norm: 최대 경사 노름 (기본값: 10.0)
         """
         self.max_grad_norm = max_grad_norm
         super().__init__(*args, **kwargs)
 
     def _setup_model(self):
-        """Override to add gradient clipping to optimizers"""
+        """옵티마이저에 경사 클리핑을 추가하도록 오버라이드"""
         super()._setup_model()
 
-        # Wrap actor and critic optimizers with gradient clipping
+        # actor와 critic 옵티마이저를 경사 클리핑으로 래핑
         self._add_grad_clip_to_optimizer(self.policy.actor.optimizer)
         self._add_grad_clip_to_optimizer(self.policy.critic.optimizer)
 
     def _add_grad_clip_to_optimizer(self, optimizer):
-        """Wrap optimizer.step() to clip gradients before parameter update"""
+        """파라미터 업데이트 전에 경사를 클리핑하도록 optimizer.step()을 래핑"""
         original_step = optimizer.step
         max_norm = self.max_grad_norm
 
         def step_with_clip(closure=None):
-            # Clip gradients before optimizer step
+            # 옵티마이저 스텝 전에 경사 클리핑
             if max_norm is not None:
                 params = []
                 for param_group in optimizer.param_groups:
                     params.extend(param_group['params'])
                 torch.nn.utils.clip_grad_norm_(params, max_norm)
 
-            # Call original optimizer step
+            # 원래 옵티마이저 스텝 호출
             return original_step(closure)
 
         optimizer.step = step_with_clip
 
 
-# ===== Phase 1.9 Tier 2: Alpha Update Callback =====
+# ===== Phase 1.9 Tier 2: Alpha 업데이트 콜백 =====
 
 from stable_baselines3.common.callbacks import BaseCallback
 
 class AlphaUpdateCallback(BaseCallback):
     """
-    Callback to update IRT alpha during training.
+    학습 중 IRT alpha를 업데이트하는 콜백.
 
-    Alpha schedule: 0.3 → 0.7 (Replicator → OT)
-    - Early training: Replicator dominant (빠른 수렴)
-    - Late training: OT dominant (구조적 매칭)
+    Alpha 스케줄: 0.3 → 0.7 (Replicator → OT)
+    - 초기 학습: Replicator 지배적 (빠른 수렴)
+    - 후기 학습: OT 지배적 (구조적 매칭)
     """
 
     def __init__(self, scheduler: AlphaScheduler, verbose: int = 0):
@@ -114,25 +114,25 @@ class AlphaUpdateCallback(BaseCallback):
         self.scheduler = scheduler
 
     def _on_step(self) -> bool:
-        """Update alpha at each step."""
-        # Get current alpha
+        """각 스텝에서 alpha 업데이트."""
+        # 현재 alpha 가져오기
         alpha = self.scheduler.get_alpha(self.num_timesteps)
 
-        # Update IRT operator
-        # Path: model.policy.actor.irt_actor.irt.alpha
+        # IRT 연산자 업데이트
+        # 경로: model.policy.actor.irt_actor.irt.alpha
         self.model.policy.actor.irt_actor.irt.alpha = alpha
 
-        # Log to tensorboard
+        # 텐서보드에 기록
         self.logger.record("train/alpha", alpha)
 
-        # Periodic logging
+        # 주기적 로깅
         if self.verbose > 0 and self.num_timesteps % 5000 == 0:
             print(f"  [Alpha] Step {self.num_timesteps}: α = {alpha:.3f}")
 
         return True
 
 
-# Import metrics for evaluation
+# 평가용 메트릭 임포트
 from finrl.evaluation.metrics import (
     calculate_sharpe_ratio,
     calculate_sortino_ratio,
@@ -187,7 +187,7 @@ def train_irt(args):
     print(f"  Episodes: {args.episodes}")
     print(f"  Output: {log_dir}")
 
-    # 1. Download data
+    # 1. 데이터 다운로드
     print(f"\n[1/5] Downloading data...")
     df = YahooDownloader(
         start_date=args.train_start,
@@ -196,7 +196,7 @@ def train_irt(args):
     ).fetch_data()
     print(f"  Downloaded: {df.shape[0]} rows")
 
-    # 2. Feature Engineering
+    # 2. 특성 엔지니어링
     print(f"\n[2/5] Feature Engineering...")
     fe = FeatureEngineer(
         use_technical_indicator=True,
@@ -207,14 +207,14 @@ def train_irt(args):
     df_processed = fe.preprocess_data(df)
     print(f"  Features: {df_processed.shape[1]} columns")
 
-    # 3. Train/Test Split
+    # 3. 학습/테스트 분할
     print(f"\n[3/5] Splitting data...")
     train_df = data_split(df_processed, args.train_start, args.train_end)
     test_df = data_split(df_processed, args.test_start, args.test_end)
     print(f"  Train: {len(train_df)} rows")
     print(f"  Test: {len(test_df)} rows")
 
-    # 4. Create environments
+    # 4. 환경 생성
     print(f"\n[4/5] Creating environments...")
     stock_dim = len(train_df.tic.unique())
 
@@ -261,10 +261,10 @@ def train_irt(args):
     print(f"  State space: {train_env.state_space}")
     print(f"  Action space: {train_env.action_space}")
 
-    # 5. Train IRT model
+    # 5. IRT 모델 학습
     print(f"\n[5/5] Training SAC + IRT Policy...")
 
-    # Callbacks
+    # 콜백 설정
     checkpoint_callback = CheckpointCallback(
         save_freq=10000,
         save_path=os.path.join(log_dir, "checkpoints"),
@@ -280,7 +280,7 @@ def train_irt(args):
         render=False
     )
 
-    # IRT Policy kwargs
+    # IRT Policy 인자
     policy_kwargs = {
         "emb_dim": args.emb_dim,
         "m_tokens": args.m_tokens,
@@ -290,12 +290,15 @@ def train_irt(args):
         "eta_0": args.eta_0,
         "eta_1": args.eta_1,
         "market_feature_dim": args.market_feature_dim,
-        # Gaussian policy parameters
+        "xai_reg_weight": args.xai_reg_weight,
+        # Gaussian 정책 파라미터
         "log_std_min": -20,
         "log_std_max": 2,
+        # 절제 연구 옵션
+        "use_shared_decoder": args.shared_decoder,
     }
 
-    # SAC parameters
+    # SAC 파라미터
     sac_params = SAC_PARAMS.copy()
     if 'ent_coef' in sac_params and isinstance(sac_params['ent_coef'], str):
         sac_params['ent_coef'] = 'auto'
@@ -303,10 +306,10 @@ def train_irt(args):
     print(f"  SAC params (initial): {sac_params}")
     print(f"  IRT params: {policy_kwargs}")
 
-    # ===== Phase 1.9 Tier 0: Adaptive Target Entropy =====
+    # ===== Phase 1.9 Tier 0: 적응형 타겟 엔트로피 =====
     print(f"\n[Tier 0] Estimating empirical policy entropy...")
 
-    # Step 1: Create initial model (for entropy estimation)
+    # 단계 1: 초기 모델 생성 (엔트로피 추정용)
     model_temp = SACWithGradClip(
         policy=IRTPolicy,
         env=train_env,
@@ -317,40 +320,40 @@ def train_irt(args):
         tensorboard_log=None
     )
 
-    # Step 2: Estimate entropy empirically
+    # 단계 2: 경험적 엔트로피 추정
     estimator = PolicyEntropyEstimator(n_states=100, n_samples_per_state=20)
     mean_entropy, std_entropy = estimator.estimate(model_temp.policy, train_env)
 
     print(f"  Empirical entropy: {mean_entropy:.3f} ± {std_entropy:.3f} nats")
 
-    # Step 3: Set target entropy (70% of empirical, following Ahmed et al. 2019)
+    # 단계 3: 타겟 엔트로피 설정 (경험적 값의 70%, Ahmed et al. 2019 따름)
     target_entropy = 0.7 * mean_entropy
 
     print(f"  Target entropy: {target_entropy:.3f} nats (70% of empirical)")
 
-    # Previous method comparison
+    # 이전 방법과 비교
     n_stocks = train_env.action_space.shape[0]
     old_target = -0.5 * np.log(n_stocks)
     print(f"  Previous method: -0.5 * log(N) = {old_target:.3f} nats")
     print(f"  Improvement: {target_entropy - old_target:+.3f} nats")
 
-    # Step 4: Override SAC target entropy
+    # 단계 4: SAC 타겟 엔트로피 오버라이드
     sac_params['target_entropy'] = target_entropy
 
-    # Clean up temporary model
+    # 임시 모델 정리
     del model_temp
 
-    # Total timesteps
+    # 전체 타임스텝
     total_timesteps = 250 * args.episodes
     print(f"  Total timesteps: {total_timesteps}")
 
-    # ===== Phase 1.9 Tier 2: Dynamic Alpha Scheduler =====
+    # ===== Phase 1.9 Tier 2: 동적 Alpha 스케줄러 =====
     print(f"\n[Tier 2] Setting up alpha scheduler...")
 
-    # Callback list
+    # 콜백 리스트
     callbacks = [checkpoint_callback, eval_callback]
 
-    # Check if adaptive alpha is enabled
+    # 적응형 alpha 활성화 확인
     if args.adaptive_alpha:
         print(f"  Using Adaptive Alpha (Tier 3 - Entropy-based)")
         stock_dim = len(train_df.tic.unique())
@@ -712,6 +715,14 @@ def main():
     # Tier 3: Adaptive Alpha
     parser.add_argument("--adaptive-alpha", action="store_true",
                         help="Enable Adaptive Alpha Controller (Tier 3)")
+
+    # Ablation study options
+    parser.add_argument("--shared-decoder", action="store_true",
+                        help="Use shared decoder with prototype conditioning (ablation study)")
+    parser.add_argument("--no-tcell", action="store_true",
+                        help="Disable T-Cell crisis detection (ablation study)")
+    parser.add_argument("--xai-reg-weight", type=float, default=0.01,
+                        help="XAI regularization weight (default: 0.01)")
 
     # Evaluation only
     parser.add_argument("--checkpoint", type=str, default=None,

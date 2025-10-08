@@ -36,10 +36,11 @@ class BCellIRTActor(nn.Module):
                  market_feature_dim: int = 12,
                  log_std_min: float = -20,
                  log_std_max: float = 2,
+                 use_shared_decoder: bool = False,
                  **irt_kwargs):
         """
         Args:
-            state_dim: 상태 차원 (예: 181 for Dow 30)
+            state_dim: 상태 차원 (예: Dow 30의 경우 181)
             action_dim: 행동 차원 (예: 30)
             emb_dim: 임베딩 차원
             m_tokens: 에피토프 토큰 수
@@ -47,8 +48,8 @@ class BCellIRTActor(nn.Module):
             alpha: OT-Replicator 결합 비율
             ema_beta: EMA 메모리 계수
             market_feature_dim: 시장 특성 차원 (T-Cell 입력, 기본 12)
-            log_std_min: Log standard deviation minimum (Gaussian policy)
-            log_std_max: Log standard deviation maximum (Gaussian policy)
+            log_std_min: 로그 표준편차 최솟값 (Gaussian 정책)
+            log_std_max: 로그 표준편차 최댓값 (Gaussian 정책)
             **irt_kwargs: IRT 파라미터 (eps, eta_0, eta_1 등)
         """
         super().__init__()
@@ -62,6 +63,7 @@ class BCellIRTActor(nn.Module):
         self.log_std_min = log_std_min
         self.log_std_max = log_std_max
         self.market_feature_dim = market_feature_dim
+        self.use_shared_decoder = use_shared_decoder
 
         # ===== 에피토프 인코더 =====
         self.epitope_encoder = nn.Sequential(
@@ -80,27 +82,43 @@ class BCellIRTActor(nn.Module):
 
         # ===== 프로토타입별 Gaussian 디코더 =====
         # 각 프로토타입은 독립적인 정책 (전문가)
-        # μ decoders (mean)
-        self.mu_decoders = nn.ModuleList([
-            nn.Sequential(
-                nn.Linear(emb_dim, 128),
+        if use_shared_decoder:
+            # 프로토타입 조건부 공유 디코더
+            # 입력: [proto_representation, proto_one_hot]
+            self.shared_decoder = nn.Sequential(
+                nn.Linear(emb_dim + M_proto, 128),  # +M_proto는 원-핫 인코딩용
                 nn.ReLU(),
                 nn.Dropout(0.1),
-                nn.Linear(128, action_dim)
+                nn.Linear(128, action_dim * 2)  # mu와 log_std 모두 출력
             )
-            for _ in range(M_proto)
-        ])
+            # 호환성을 위한 플레이스홀더
+            self.mu_decoders = None
+            self.log_std_decoders = None
+        else:
+            # 분리된 디코더 (기본값)
+            # μ 디코더 (평균)
+            self.mu_decoders = nn.ModuleList([
+                nn.Sequential(
+                    nn.Linear(emb_dim, 128),
+                    nn.ReLU(),
+                    nn.Dropout(0.1),
+                    nn.Linear(128, action_dim)
+                )
+                for _ in range(M_proto)
+            ])
 
-        # log_std decoders (standard deviation)
-        self.log_std_decoders = nn.ModuleList([
-            nn.Sequential(
-                nn.Linear(emb_dim, 128),
-                nn.ReLU(),
-                nn.Dropout(0.1),
-                nn.Linear(128, action_dim)
-            )
-            for _ in range(M_proto)
-        ])
+            # log_std 디코더 (표준편차)
+            self.log_std_decoders = nn.ModuleList([
+                nn.Sequential(
+                    nn.Linear(emb_dim, 128),
+                    nn.ReLU(),
+                    nn.Dropout(0.1),
+                    nn.Linear(128, action_dim)
+                )
+                for _ in range(M_proto)
+            ])
+            # 호환성을 위한 플레이스홀더
+            self.shared_decoder = None
 
         # ===== IRT 연산자 =====
         self.irt = IRT(
@@ -120,7 +138,7 @@ class BCellIRTActor(nn.Module):
         # ===== 이전 가중치 (EMA) =====
         self.register_buffer('w_prev', torch.full((1, M_proto), 1.0/M_proto))
 
-        # ===== Phase 1.9 Recommended: Logging 속성 명시적 초기화 =====
+        # ===== Phase 1.9 권장: 로깅 속성 명시적 초기화 =====
         self._market_logged = False
 
     def forward(self,
@@ -130,7 +148,7 @@ class BCellIRTActor(nn.Module):
         """
         Args:
             state: [B, S]
-            fitness: 프로토타입 적합도 [B, M] (optional, 없으면 균등)
+            fitness: 프로토타입 적합도 [B, M] (선택사항, 없으면 균등)
             deterministic: 결정적 행동 (평가 시)
 
         Returns:
@@ -139,14 +157,14 @@ class BCellIRTActor(nn.Module):
         """
         B = state.size(0)
 
-        # ===== Step 1: T-Cell 위기 감지 =====
-        # FinRL state 구조: [balance(1), prices(30), shares(30), tech_indicators(240)]
-        # Tech indicators: [macd*30, boll_ub*30, boll_lb*30, rsi_30*30,
-        #                   cci_30*30, dx_30*30, close_30_sma*30, close_60_sma*30]
+        # ===== 단계 1: T-Cell 위기 감지 =====
+        # FinRL 상태 구조: [balance(1), prices(30), shares(30), tech_indicators(240)]
+        # 기술적 지표: [macd*30, boll_ub*30, boll_lb*30, rsi_30*30,
+        #               cci_30*30, dx_30*30, close_30_sma*30, close_60_sma*30]
 
-        # Market features 추출 (12차원):
+        # 시장 특성 추출 (12차원):
         # 1. 시장 전체 특성 (4개): balance, price_mean, price_std, cash_ratio
-        # 2. Technical indicators 대표값 (8개): 각 indicator의 첫 번째 주식 값
+        # 2. 기술적 지표 대표값 (8개): 각 지표의 첫 번째 주식 값
 
         balance = state[:, 0:1]  # [B, 1]
         prices = state[:, 1:31]  # [B, 30]
@@ -217,15 +235,49 @@ class BCellIRTActor(nn.Module):
             proto_conf=None
         )
 
+        # ===== NEW: Prototype Diversity Regularization =====
+        if self.training:
+            diversity_loss = self._compute_diversity_loss(w)
+            self._diversity_loss = diversity_loss
+        else:
+            self._diversity_loss = 0.0
+
         # ===== Step 6: Projected Gaussian Policy =====
         # 각 프로토타입의 Gaussian 파라미터 계산
-        mus = torch.stack([
-            self.mu_decoders[j](K[:, j, :]) for j in range(self.M)
-        ], dim=1)  # [B, M, A]
+        if self.use_shared_decoder:
+            # Shared decoder with prototype conditioning
+            mus = []
+            log_stds = []
 
-        log_stds = torch.stack([
-            self.log_std_decoders[j](K[:, j, :]) for j in range(self.M)
-        ], dim=1)  # [B, M, A]
+            for j in range(self.M):
+                # Create one-hot encoding for prototype j
+                proto_onehot = torch.zeros(B, self.M, device=state.device)
+                proto_onehot[:, j] = 1.0
+
+                # Concatenate prototype representation with one-hot
+                decoder_input = torch.cat([K[:, j, :], proto_onehot], dim=-1)
+
+                # Get output from shared decoder
+                output = self.shared_decoder(decoder_input)  # [B, action_dim * 2]
+
+                # Split into mu and log_std
+                mu_j = output[:, :self.action_dim]
+                log_std_j = output[:, self.action_dim:]
+
+                mus.append(mu_j)
+                log_stds.append(log_std_j)
+
+            mus = torch.stack(mus, dim=1)  # [B, M, A]
+            log_stds = torch.stack(log_stds, dim=1)  # [B, M, A]
+        else:
+            # Separate decoders (default)
+            mus = torch.stack([
+                self.mu_decoders[j](K[:, j, :]) for j in range(self.M)
+            ], dim=1)  # [B, M, A]
+
+            log_stds = torch.stack([
+                self.log_std_decoders[j](K[:, j, :]) for j in range(self.M)
+            ], dim=1)  # [B, M, A]
 
         log_stds = torch.clamp(log_stds, self.log_std_min, self.log_std_max)
         stds = log_stds.exp()
@@ -295,12 +347,25 @@ class BCellIRTActor(nn.Module):
             'mu': mixed_mu.detach(),  # [B, A] - 혼합된 mean
             'std': mixed_std.detach(),  # [B, A] - 혼합된 std
             'z': z.detach(),  # [B, A] - Gaussian 샘플
+            # Diversity regularization
+            'diversity_loss': getattr(self, '_diversity_loss', 0.0)
         }
 
         # Log prob 정보 (deterministic=False일 때만)
         if log_prob is not None:
             info['log_prob'] = log_prob.detach()
             info['log_prob_gaussian'] = log_prob_gaussian.detach()
+
+        # Store for XAI integration in IRTPolicy
+        self.last_irt_info = {
+            'w': w.detach(),
+            'w_rep': irt_debug['w_rep'].detach(),
+            'w_ot': irt_debug['w_ot'].detach(),
+            'crisis_level': crisis_level.detach(),
+            'adaptive_alpha': irt_debug.get('adaptive_alpha', torch.tensor(self.irt.alpha)).detach(),
+            'fitness': fitness.detach() if fitness is not None else None,
+            'diversity_loss': getattr(self, '_diversity_loss', 0.0)
+        }
 
         return action, log_prob, info
 
@@ -362,3 +427,33 @@ class BCellIRTActor(nn.Module):
         w_final = w_final / w_final.sum(dim=-1, keepdim=True)
 
         return w_final
+
+    def _compute_diversity_loss(self, w: torch.Tensor) -> torch.Tensor:
+        """
+        Prototype diversity regularization
+
+        목표:
+        1. Batch 평균에서 모든 프로토타입 균등 사용
+        2. 개별 state에서는 상황에 맞는 프로토타입 선택
+
+        Args:
+            w: [B, M] Prototype weights
+
+        Returns:
+            loss: scalar
+        """
+        eps = 1e-8
+        M = w.shape[1]
+        target_entropy = np.log(M)  # Uniform distribution entropy
+
+        # 1. Batch average entropy (균등 분포 장려)
+        w_mean = w.mean(dim=0)  # [M]
+        entropy_mean = -(w_mean * torch.log(w_mean + eps)).sum()
+        entropy_loss = (target_entropy - entropy_mean) ** 2
+
+        # 2. Individual variance (다양성 장려)
+        # Across prototypes, then batch
+        w_var = w.var(dim=1).mean()
+        var_penalty = -0.01 * w_var  # Negative to maximize variance
+
+        return entropy_loss + var_penalty

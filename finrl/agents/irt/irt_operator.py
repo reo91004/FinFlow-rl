@@ -235,7 +235,9 @@ class IRT(nn.Module):
         B, m, D = E.shape
         M = K.shape[1]
 
-        # ===== Step 1: Optimal Transport 매칭 =====
+        # ===== Step 1: Exploratory Mechanism (Optimal Transport) =====
+        # 구조적 유사성 기반 매칭 (fitness 무관)
+        # 현재 상태와 프로토타입의 구조적 패턴 매칭
         u = torch.full((B, m, 1), 1.0/m, device=E.device)
         v = torch.full((B, 1, M), 1.0/M, device=E.device)
 
@@ -245,7 +247,9 @@ class IRT(nn.Module):
         # OT 마진 (프로토타입별 수송 질량)
         p_mass = P.sum(dim=1)  # [B, M]
 
-        # ===== Step 2: Replicator 업데이트 =====
+        # ===== Step 2: Adaptive Mechanism (Replicator Dynamics) =====
+        # 현재 fitness gradient 추종 (빠른 적응)
+        # Q-value 높은 프로토타입으로 aggressive하게 이동
         # Advantage 계산
         baseline = (w_prev * fitness).sum(dim=-1, keepdim=True)  # [B, 1]
         advantage = fitness - baseline  # [B, M]
@@ -276,16 +280,26 @@ class IRT(nn.Module):
 
         tilde_w = F.softmax(log_tilde_w, dim=-1)  # [B, M]
 
-        # ===== Step 3: Hybrid Approach (Crisis-Adaptive Mixing) =====
-        # 위기 시 Replicator 우선, 평시 OT 우선
-        # crisis_level > 0.5: alpha → 0 (Replicator 100%)
-        # crisis_level < 0.5: alpha → 기본값 (OT 비중 증가)
-        crisis_threshold = 0.5
-        adaptive_alpha = torch.where(
-            crisis_level > crisis_threshold,
-            torch.zeros_like(crisis_level) * self.alpha * 0.2,  # 위기: alpha를 20%로 감소
-            torch.ones_like(crisis_level) * self.alpha  # 평시: 기본 alpha
-        )
+        # ===== Step 3: Crisis-Adaptive Mixing =====
+        # 위기 시: Adaptive mechanism 우선 (빠른 대응)
+        # 평시: Exploratory mechanism 보조 (탐색)
+        # Smooth cosine interpolation for gradient-friendly transition
+        # Crisis level 0 → alpha=0.30 (평시, Exploratory 30%)
+        # Crisis level 1 → alpha=0.06 (위기, Exploratory 6%, Adaptive 94%)
+
+        # Smooth transition parameters
+        alpha_normal = 0.30  # 평시 Exploratory mechanism 비중
+        alpha_crisis = 0.06  # 위기 시 Exploratory mechanism 비중 (Adaptive 우선)
+        pi = torch.tensor(3.14159265, device=crisis_level.device, dtype=crisis_level.dtype)
+
+        # Cosine interpolation: α(c) = α_n + (α_c - α_n) * (1 - cos(πc)) / 2
+        # c=0 → α=0.30 (평시), c=1 → α=0.06 (위기)
+        # Smooth and differentiable transition
+        smooth_alpha = alpha_normal + (alpha_crisis - alpha_normal) * \
+                       (1 - torch.cos(pi * crisis_level)) / 2
+
+        # Safety clipping to ensure valid range
+        adaptive_alpha = torch.clamp(smooth_alpha, min=alpha_crisis, max=alpha_normal)
 
         w = (1 - adaptive_alpha) * tilde_w + adaptive_alpha * p_mass
 
@@ -297,11 +311,11 @@ class IRT(nn.Module):
 
         # ===== Step 4: 디버그 정보 (시각화용) =====
         debug_info = {
-            'w_rep': tilde_w,  # [B, M] - Replicator 출력
-            'w_ot': p_mass,    # [B, M] - OT 출력
+            'w_rep': tilde_w,  # [B, M] - Adaptive mechanism (Replicator) 출력
+            'w_ot': p_mass,    # [B, M] - Exploratory mechanism (OT) 출력
             'cost_matrix': C,  # [B, m, M] - Immunological cost
             'eta': eta,        # [B, 1] - Crisis-adaptive learning rate
-            'adaptive_alpha': adaptive_alpha  # [B, 1] - Hybrid mixing ratio
+            'adaptive_alpha': adaptive_alpha  # [B, 1] - Crisis-adaptive mixing ratio
         }
 
         return w, P, debug_info
