@@ -38,6 +38,11 @@ from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv
 
+# Import evaluation function
+import sys
+sys.path.insert(0, os.path.dirname(__file__))
+from evaluate import evaluate_model
+
 
 # 모델 클래스 및 파라미터 매핑
 MODEL_CLASSES = {
@@ -291,74 +296,22 @@ def test_model(args, model_path=None):
     print(f"  학습 시 사용된 주식: {len(train_tickers)}개")
     print(f"  주식 목록: {train_tickers[:5]}... (생략)")
 
-    # 1. 데이터 준비
-    print(f"\n[1/4] Downloading test data...")
-    df = YahooDownloader(
-        start_date=args.test_start,
-        end_date=args.test_end,
-        ticker_list=DOW_30_TICKER
-    ).fetch_data()
-    print(f"  Downloaded: {df.shape[0]} rows, {df.tic.nunique()}개 종목")
-
-    # 학습 시 사용된 ticker로 필터링 (중요!)
-    df = df[df['tic'].isin(train_tickers)]
-    print(f"  필터링 후: {df.shape[0]} rows, {df.tic.nunique()}개 종목")
-
-    if df.tic.nunique() != len(train_tickers):
-        missing = set(train_tickers) - set(df.tic.unique())
-        print(f"  ⚠️  경고: 평가 기간에 데이터가 없는 종목: {missing}")
-
-    # 2. Feature Engineering
-    print(f"\n[2/4] Feature Engineering...")
-    fe = FeatureEngineer(
-        use_technical_indicator=True,
-        tech_indicator_list=INDICATORS,
-        use_turbulence=False,
-        user_defined_feature=False
+    # evaluate.py의 evaluate_model() 재사용
+    portfolio_values, irt_data, metrics = evaluate_model(
+        model_path=model_path,
+        model_class=MODEL_CLASSES[args.model],
+        test_start=args.test_start,
+        test_end=args.test_end,
+        stock_tickers=train_tickers,  # 학습 시 사용된 ticker만
+        tech_indicators=INDICATORS,
+        initial_amount=1000000,
+        verbose=True
     )
-    df_processed = fe.preprocess_data(df)
-    test_df = data_split(df_processed, args.test_start, args.test_end)
-    print(f"  Test rows: {len(test_df)}")
 
-    # 3. 환경 및 모델 로드
-    print(f"\n[3/4] Loading model...")
-    stock_dim = len(test_df.tic.unique())
-    print(f"  실제 주식 수: {stock_dim}")
-    test_env = create_env(test_df, stock_dim, INDICATORS)
-
-    model_class = MODEL_CLASSES[args.model]
-    model = model_class.load(model_path, env=test_env)
-    print(f"  Model loaded successfully")
-
-    # 4. 평가 실행
-    print(f"\n[4/4] Running evaluation...")
-    obs, _ = test_env.reset()
-    done = False
-    portfolio_values = [1000000]
-    total_reward = 0
-
-    step = 0
-    while not done:
-        action, _ = model.predict(obs, deterministic=True)
-        obs, reward, done, truncated, info = test_env.step(action)
-        total_reward += reward
-        done = done or truncated
-
-        # Portfolio value 계산
-        state = np.array(test_env.state)
-        cash = state[0]
-        prices = state[1:stock_dim+1]
-        holdings = state[stock_dim+1:2*stock_dim+1]
-        pv = cash + np.sum(prices * holdings)
-        portfolio_values.append(pv)
-
-        step += 1
-
-    print(f"  Evaluation completed: {step} steps")
-
-    # 5. 결과 출력
+    # 결과 추출
     final_value = portfolio_values[-1]
-    total_return = (final_value - 1000000) / 1000000
+    total_return = metrics['total_return']
+    step = metrics['n_steps']
 
     print(f"\n" + "=" * 70)
     print(f"Evaluation Results")
@@ -368,11 +321,23 @@ def test_model(args, model_path=None):
     print(f"  End: {args.test_end}")
     print(f"  Steps: {step}")
 
-    print(f"\n[Performance]")
-    print(f"  Initial value: $1,000,000.00")
-    print(f"  Final value: ${final_value:,.2f}")
-    print(f"  Total return: {total_return*100:.2f}%")
-    print(f"  Total reward: {total_reward:.4f}")
+    print(f"\n[Returns]")
+    print(f"  Total Return: {total_return*100:.2f}%")
+    print(f"  Annualized Return: {metrics['annualized_return']*100:.2f}%")
+
+    print(f"\n[Risk Metrics]")
+    print(f"  Volatility (annualized): {metrics['volatility']*100:.2f}%")
+    print(f"  Maximum Drawdown: {metrics['max_drawdown']*100:.2f}%")
+
+    print(f"\n[Risk-Adjusted Returns]")
+    print(f"  Sharpe Ratio: {metrics['sharpe_ratio']:.3f}")
+    print(f"  Sortino Ratio: {metrics['sortino_ratio']:.3f}")
+    print(f"  Calmar Ratio: {metrics['calmar_ratio']:.3f}")
+
+    print(f"\n[Portfolio Value]")
+    print(f"  Initial: $1,000,000.00")
+    print(f"  Final: ${final_value:,.2f}")
+    print(f"  Profit/Loss: ${final_value - 1000000:,.2f}")
 
     print(f"\n" + "=" * 70)
 
@@ -380,7 +345,7 @@ def test_model(args, model_path=None):
         'portfolio_values': portfolio_values,
         'final_value': final_value,
         'total_return': total_return,
-        'total_reward': total_reward,
+        'metrics': metrics,
         'steps': step
     }
 

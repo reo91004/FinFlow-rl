@@ -185,49 +185,81 @@ def detect_model_type(model_path):
         )
 
 
-def evaluate_direct(args, model_name, model_class):
-    """Direct 방식: SB3 모델 직접 사용"""
+def evaluate_model(model_path,
+                   model_class,
+                   test_start,
+                   test_end,
+                   stock_tickers=DOW_30_TICKER,
+                   tech_indicators=INDICATORS,
+                   initial_amount=1000000,
+                   verbose=True):
+    """
+    범용 모델 평가 함수
 
-    print(f"\n[Method: Direct - SB3 predict()]")
+    Args:
+        model_path: 모델 파일 경로 (.zip)
+        model_class: SB3 모델 클래스 (SAC, PPO 등)
+        test_start: 테스트 시작 날짜 (YYYY-MM-DD)
+        test_end: 테스트 종료 날짜 (YYYY-MM-DD)
+        stock_tickers: 주식 티커 리스트
+        tech_indicators: 기술 지표 리스트
+        initial_amount: 초기 자본
+        verbose: 진행 상황 출력 여부
+
+    Returns:
+        portfolio_values: 포트폴리오 가치 배열
+        irt_data: IRT 중간 데이터 (IRT 모델인 경우, 아니면 None)
+        metrics: 성능 지표 딕셔너리
+    """
+    if verbose:
+        print(f"\n[Method: Direct - SB3 predict()]")
 
     # 1. 데이터 준비
-    print(f"\n[1/4] Downloading test data...")
+    if verbose:
+        print(f"\n[1/4] Downloading test data...")
     df = YahooDownloader(
-        start_date=args.test_start,
-        end_date=args.test_end,
-        ticker_list=DOW_30_TICKER
+        start_date=test_start,
+        end_date=test_end,
+        ticker_list=stock_tickers
     ).fetch_data()
-    print(f"  Downloaded: {df.shape[0]} rows")
+    if verbose:
+        print(f"  Downloaded: {df.shape[0]} rows")
 
     # 2. Feature Engineering
-    print(f"\n[2/4] Feature Engineering...")
+    if verbose:
+        print(f"\n[2/4] Feature Engineering...")
     fe = FeatureEngineer(
         use_technical_indicator=True,
-        tech_indicator_list=INDICATORS,
+        tech_indicator_list=tech_indicators,
         use_turbulence=False,
         user_defined_feature=False
     )
     df_processed = fe.preprocess_data(df)
-    test_df = data_split(df_processed, args.test_start, args.test_end)
-    print(f"  Test rows: {len(test_df)}")
+    test_df = data_split(df_processed, test_start, test_end)
+    if verbose:
+        print(f"  Test rows: {len(test_df)}")
 
     # 3. 환경 및 모델 로드
-    print(f"\n[3/4] Loading model...")
+    if verbose:
+        print(f"\n[3/4] Loading model...")
     stock_dim = len(test_df.tic.unique())
-    print(f"  실제 주식 수: {stock_dim}")
-    test_env = create_env(test_df, stock_dim, INDICATORS)
+    if verbose:
+        print(f"  실제 주식 수: {stock_dim}")
+    test_env = create_env(test_df, stock_dim, tech_indicators)
 
-    model = model_class.load(args.model, env=test_env)
-    print(f"  Model loaded successfully")
+    model = model_class.load(model_path, env=test_env)
+    if verbose:
+        print(f"  Model loaded successfully")
 
     # 4. 평가 실행
-    print(f"\n[4/4] Running evaluation...")
+    if verbose:
+        print(f"\n[4/4] Running evaluation...")
     obs, _ = test_env.reset()
     done = False
-    portfolio_values = [1000000]
+    portfolio_values = [initial_amount]
 
     # IRT 모델 감지
-    is_irt = 'irt' in args.model.lower()
+    is_irt = 'irt' in model_path.lower()
 
     # IRT 데이터 수집 준비
     if is_irt:
@@ -238,7 +270,8 @@ def evaluate_direct(args, model_name, model_class):
             'crisis_levels': [],
             'crisis_types': [],
             'cost_matrices': [],
-            'weights': []
+            'weights': [],
+            'eta': []
         }
 
     step = 0
@@ -256,6 +289,7 @@ def evaluate_direct(args, model_name, model_class):
                 irt_data_list['crisis_levels'].append(info_dict['crisis_level'][0].cpu().numpy())
                 irt_data_list['crisis_types'].append(info_dict['crisis_types'][0].cpu().numpy())
                 irt_data_list['cost_matrices'].append(info_dict['cost_matrix'][0].cpu().numpy())
+                irt_data_list['eta'].append(info_dict['eta'][0].cpu().numpy())
 
                 # Action을 weight로 변환 (simplex 정규화)
                 weights = action / (action.sum() + 1e-8)
@@ -274,7 +308,8 @@ def evaluate_direct(args, model_name, model_class):
 
         step += 1
 
-    print(f"  Evaluation completed: {step} steps")
+    if verbose:
+        print(f"  Evaluation completed: {step} steps")
 
     # IRT 데이터 변환
     irt_data = None
@@ -287,11 +322,35 @@ def evaluate_direct(args, model_name, model_class):
             'crisis_types': np.array(irt_data_list['crisis_types']),  # [T, K]
             'prototype_weights': np.array(irt_data_list['w']),  # [T, M]
             'cost_matrices': np.array(irt_data_list['cost_matrices']),  # [T, m, M]
-            'symbols': DOW_30_TICKER[:stock_dim],  # 실제 주식 수만큼
-            'metrics': None  # main()에서 calculate_metrics()로 계산
+            'eta': np.array(irt_data_list['eta']).squeeze(),  # [T]
+            'symbols': stock_tickers[:stock_dim],  # 실제 주식 수만큼
+            'metrics': None  # 호출자가 calculate_metrics()로 계산
         }
 
-    return portfolio_values, irt_data
+    # 성능 지표 계산
+    weights_history = irt_data['weights'] if irt_data else None
+    metrics = calculate_metrics(portfolio_values, initial_amount, weights_history)
+
+    # IRT 데이터에 metrics 추가
+    if irt_data is not None:
+        irt_data['metrics'] = metrics
+
+    return portfolio_values, irt_data, metrics
+
+
+def evaluate_direct(args, model_name, model_class):
+    """Direct 방식: SB3 모델 직접 사용 (args 객체 wrapper)"""
+
+    return evaluate_model(
+        model_path=args.model,
+        model_class=model_class,
+        test_start=args.test_start,
+        test_end=args.test_end,
+        stock_tickers=DOW_30_TICKER,
+        tech_indicators=INDICATORS,
+        initial_amount=1000000,
+        verbose=True
+    )
 
 
 def evaluate_drlagent(args, model_name, model_class):
@@ -386,18 +445,15 @@ def main(args):
 
     # 평가 방식 선택
     if args.method == "direct":
-        portfolio_values, irt_data = evaluate_direct(args, model_name, model_class)
+        portfolio_values, irt_data, metrics = evaluate_direct(args, model_name, model_class)
     elif args.method == "drlagent":
         portfolio_values, irt_data = evaluate_drlagent(args, model_name, model_class)
+        # DRLAgent 방식은 metrics 계산 필요
+        metrics = calculate_metrics(portfolio_values)
+        if irt_data is not None:
+            irt_data['metrics'] = metrics
     else:
         raise ValueError(f"Unknown method: {args.method}")
-
-    # 지표 계산
-    metrics = calculate_metrics(portfolio_values)
-
-    # IRT 데이터에 metrics 추가
-    if irt_data is not None:
-        irt_data['metrics'] = metrics
 
     # 6. 결과 출력
     print(f"\n" + "=" * 70)
@@ -459,7 +515,7 @@ def main(args):
                 'prototype_weights': irt_data['prototype_weights'],
                 'w_rep': irt_data['w_rep'],
                 'w_ot': irt_data['w_ot'],
-                'eta': np.zeros(len(returns)),  # TODO: eta 정보 수집
+                'eta': irt_data['eta'],
                 'cost_matrices': irt_data['cost_matrices'],
                 'symbols': irt_data['symbols'],
                 'metrics': metrics

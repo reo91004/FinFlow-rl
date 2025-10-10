@@ -38,16 +38,10 @@ from stable_baselines3.common.monitor import Monitor
 # Import IRT Policy
 from finrl.agents.irt import IRTPolicy
 
-# Import metrics for evaluation
-from finrl.evaluation.metrics import (
-    calculate_sharpe_ratio,
-    calculate_sortino_ratio,
-    calculate_calmar_ratio,
-    calculate_max_drawdown,
-    calculate_var,
-    calculate_cvar,
-    calculate_turnover
-)
+# Import evaluation function
+import sys
+sys.path.insert(0, os.path.dirname(__file__))
+from evaluate import evaluate_model
 
 
 def create_env(df, stock_dim, tech_indicators):
@@ -229,115 +223,22 @@ def test_irt(args, model_path=None):
     print(f"  Model: {model_path}")
     print(f"  Test: {args.test_start} ~ {args.test_end}")
 
-    # 1. Prepare data
-    print(f"\n[1/4] Downloading test data...")
-    df = YahooDownloader(
-        start_date=args.test_start,
-        end_date=args.test_end,
-        ticker_list=DOW_30_TICKER
-    ).fetch_data()
-    print(f"  Downloaded: {df.shape[0]} rows")
-
-    # 2. Feature Engineering
-    print(f"\n[2/4] Feature Engineering...")
-    fe = FeatureEngineer(
-        use_technical_indicator=True,
-        tech_indicator_list=INDICATORS,
-        use_turbulence=False,
-        user_defined_feature=False
+    # evaluate.py의 evaluate_model() 재사용
+    portfolio_values, irt_data, metrics = evaluate_model(
+        model_path=model_path,
+        model_class=SAC,
+        test_start=args.test_start,
+        test_end=args.test_end,
+        stock_tickers=DOW_30_TICKER,
+        tech_indicators=INDICATORS,
+        initial_amount=1000000,
+        verbose=True
     )
-    df_processed = fe.preprocess_data(df)
-    test_df = data_split(df_processed, args.test_start, args.test_end)
-    print(f"  Test rows: {len(test_df)}")
 
-    # 3. Load environment and model
-    print(f"\n[3/4] Loading model...")
-    stock_dim = len(test_df.tic.unique())
-    print(f"  실제 주식 수: {stock_dim}")
-    test_env = create_env(test_df, stock_dim, INDICATORS)
-
-    model = SAC.load(model_path, env=test_env)
-    print(f"  Model loaded successfully")
-
-    # 4. Run evaluation
-    print(f"\n[4/4] Running evaluation...")
-    obs, _ = test_env.reset()
-    done = False
-    portfolio_values = [1000000]
-    total_reward = 0
-
-    # IRT 데이터 수집 준비
-    irt_data_list = {
-        'w': [],
-        'w_rep': [],
-        'w_ot': [],
-        'crisis_levels': [],
-        'crisis_types': [],
-        'cost_matrices': [],
-        'weights': []
-    }
-
-    step = 0
-    while not done:
-        action, _ = model.predict(obs, deterministic=True)
-
-        # IRT info 수집
-        if hasattr(model.policy, 'get_irt_info'):
-            info_dict = model.policy.get_irt_info()
-            if info_dict is not None:
-                # Batch=1이므로 [0] 인덱스로 추출
-                irt_data_list['w'].append(info_dict['w'][0].cpu().numpy())
-                irt_data_list['w_rep'].append(info_dict['w_rep'][0].cpu().numpy())
-                irt_data_list['w_ot'].append(info_dict['w_ot'][0].cpu().numpy())
-                irt_data_list['crisis_levels'].append(info_dict['crisis_level'][0].cpu().numpy())
-                irt_data_list['crisis_types'].append(info_dict['crisis_types'][0].cpu().numpy())
-                irt_data_list['cost_matrices'].append(info_dict['cost_matrix'][0].cpu().numpy())
-
-                # Action을 weight로 변환 (simplex 정규화)
-                weights = action / (action.sum() + 1e-8)
-                irt_data_list['weights'].append(weights)
-
-        obs, reward, done, truncated, info = test_env.step(action)
-        total_reward += reward
-        done = done or truncated
-
-        # Portfolio value
-        state = np.array(test_env.state)
-        cash = state[0]
-        prices = state[1:stock_dim+1]
-        holdings = state[stock_dim+1:2*stock_dim+1]
-        pv = cash + np.sum(prices * holdings)
-        portfolio_values.append(pv)
-
-        step += 1
-
-    print(f"  Evaluation completed: {step} steps")
-
-    # IRT 데이터 NumPy 배열로 변환
-    if irt_data_list['w']:
-        irt_data = {
-            'w_rep': np.array(irt_data_list['w_rep']),  # [T, M]
-            'w_ot': np.array(irt_data_list['w_ot']),    # [T, M]
-            'weights': np.array(irt_data_list['weights']),  # [T, N]
-            'crisis_levels': np.array(irt_data_list['crisis_levels']).squeeze(),  # [T]
-            'crisis_types': np.array(irt_data_list['crisis_types']),  # [T, K]
-            'prototype_weights': np.array(irt_data_list['w']),  # [T, M]
-            'cost_matrices': np.array(irt_data_list['cost_matrices']),  # [T, m, M]
-            'symbols': DOW_30_TICKER[:stock_dim],  # 실제 주식 수만큼
-            'metrics': {
-                'sharpe_ratio': 0,  # calculate_metrics() 필요
-                'sortino_ratio': 0,
-                'max_drawdown': 0,
-                'volatility': 0
-            }
-        }
-    else:
-        print("  Warning: No IRT data collected")
-        irt_data = None
-
-    # 5. Results
+    # 결과 추출
     final_value = portfolio_values[-1]
-    total_return = (final_value - 1000000) / 1000000
+    total_return = metrics['total_return']
+    step = metrics['n_steps']
 
     print(f"\n" + "=" * 70)
     print(f"Evaluation Results")
@@ -347,11 +248,23 @@ def test_irt(args, model_path=None):
     print(f"  End: {args.test_end}")
     print(f"  Steps: {step}")
 
-    print(f"\n[Performance]")
-    print(f"  Initial value: $1,000,000.00")
-    print(f"  Final value: ${final_value:,.2f}")
-    print(f"  Total return: {total_return*100:.2f}%")
-    print(f"  Total reward: {total_reward:.4f}")
+    print(f"\n[Returns]")
+    print(f"  Total Return: {total_return*100:.2f}%")
+    print(f"  Annualized Return: {metrics['annualized_return']*100:.2f}%")
+
+    print(f"\n[Risk Metrics]")
+    print(f"  Volatility (annualized): {metrics['volatility']*100:.2f}%")
+    print(f"  Maximum Drawdown: {metrics['max_drawdown']*100:.2f}%")
+
+    print(f"\n[Risk-Adjusted Returns]")
+    print(f"  Sharpe Ratio: {metrics['sharpe_ratio']:.3f}")
+    print(f"  Sortino Ratio: {metrics['sortino_ratio']:.3f}")
+    print(f"  Calmar Ratio: {metrics['calmar_ratio']:.3f}")
+
+    print(f"\n[Portfolio Value]")
+    print(f"  Initial: $1,000,000.00")
+    print(f"  Final: ${final_value:,.2f}")
+    print(f"  Profit/Loss: ${final_value - 1000000:,.2f}")
 
     print(f"\n" + "=" * 70)
 
@@ -394,33 +307,17 @@ def test_irt(args, model_path=None):
 
         # evaluation_results 구조 구축
         returns = np.diff(portfolio_values) / portfolio_values[:-1]
-        pv = np.array(portfolio_values)
-
-        # Metrics 실제 계산
-        downside_returns = returns[returns < 0]
-
-        metrics = {
-            'total_return': float(total_return),
-            'sharpe_ratio': float(calculate_sharpe_ratio(returns, risk_free_rate=0.02, periods_per_year=252)),
-            'sortino_ratio': float(calculate_sortino_ratio(returns, target_return=0.02, periods_per_year=252)),
-            'calmar_ratio': float(calculate_calmar_ratio(returns, periods_per_year=252)),
-            'max_drawdown': float(calculate_max_drawdown(pv)),
-            'var_5': float(calculate_var(returns, alpha=0.05)),
-            'cvar_5': float(calculate_cvar(returns, alpha=0.05)),
-            'downside_deviation': float(np.std(downside_returns) * np.sqrt(252)) if len(downside_returns) > 0 else 0.0,
-            'avg_turnover': float(calculate_turnover(irt_data['weights'])) if len(irt_data['weights']) > 1 else 0.0
-        }
 
         results = {
             'returns': returns,
-            'values': pv,
+            'values': np.array(portfolio_values),
             'weights': irt_data['weights'],
             'crisis_levels': irt_data['crisis_levels'],
             'crisis_types': irt_data['crisis_types'],
             'prototype_weights': irt_data['prototype_weights'],
             'w_rep': irt_data['w_rep'],
             'w_ot': irt_data['w_ot'],
-            'eta': np.zeros(len(returns)),  # eta 정보가 있다면 사용
+            'eta': irt_data['eta'],
             'cost_matrices': irt_data['cost_matrices'],
             'symbols': irt_data['symbols'],
             'metrics': metrics
@@ -441,7 +338,7 @@ def test_irt(args, model_path=None):
         'portfolio_values': portfolio_values,
         'final_value': final_value,
         'total_return': total_return,
-        'total_reward': total_reward,
+        'metrics': metrics,
         'steps': step
     }
 
