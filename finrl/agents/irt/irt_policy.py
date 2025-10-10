@@ -243,11 +243,13 @@ class IRTPolicy(SACPolicy):
         m_tokens: int = 6,
         M_proto: int = 8,
         alpha: float = 0.3,
-        ema_beta: float = 0.9,
+        ema_beta: float = 0.85,
         market_feature_dim: int = 12,
         dirichlet_min: float = 0.5,
         dirichlet_max: float = 50.0,
-        eps: float = 0.10,
+        eps: float = 0.05,
+        max_iters: int = 30,
+        replicator_temp: float = 0.7,
         eta_0: float = 0.05,
         eta_1: float = 0.15,
     ):
@@ -279,6 +281,8 @@ class IRTPolicy(SACPolicy):
         self.dirichlet_min = dirichlet_min
         self.dirichlet_max = dirichlet_max
         self.eps = eps
+        self.max_iters = max_iters
+        self.replicator_temp = replicator_temp
         self.eta_0 = eta_0
         self.eta_1 = eta_1
 
@@ -328,6 +332,8 @@ class IRTPolicy(SACPolicy):
             dirichlet_min=self.dirichlet_min,
             dirichlet_max=self.dirichlet_max,
             eps=self.eps,
+            max_iters=self.max_iters,
+            replicator_temp=self.replicator_temp,
             eta_0=self.eta_0,
             eta_1=self.eta_1
         )
@@ -356,6 +362,8 @@ class IRTPolicy(SACPolicy):
                 dirichlet_min=self.dirichlet_min,
                 dirichlet_max=self.dirichlet_max,
                 eps=self.eps,
+                max_iters=self.max_iters,
+                replicator_temp=self.replicator_temp,
                 eta_0=self.eta_0,
                 eta_1=self.eta_1,
             )

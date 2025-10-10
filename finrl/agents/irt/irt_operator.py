@@ -97,7 +97,7 @@ class IRT(nn.Module):
                  emb_dim: int,
                  m_tokens: int = 6,
                  M_proto: int = 8,
-                 eps: float = 0.10,
+                 eps: float = 0.05,
                  alpha: float = 0.3,
                  gamma: float = 0.5,
                  lambda_tol: float = 2.0,
@@ -107,8 +107,9 @@ class IRT(nn.Module):
                  kappa: float = 1.0,
                  eps_tol: float = 0.1,
                  n_self_sigs: int = 4,
-                 max_iters: int = 10,
-                 tol: float = 1e-3):
+                 max_iters: int = 30,
+                 tol: float = 1e-3,
+                 replicator_temp: float = 0.7):
         super().__init__()
 
         self.emb_dim = emb_dim
@@ -126,6 +127,9 @@ class IRT(nn.Module):
         # 위기 가열 메커니즘
         self.eta_0 = eta_0          # 기본 학습률
         self.eta_1 = eta_1          # 위기 시 증가량
+
+        # Replicator 온도 (균등 혼합 고착 해제)
+        self.replicator_temp = replicator_temp
 
         # 학습 가능한 마할라노비스 메트릭
         # M = L^T L (positive definite 보장)
@@ -265,7 +269,8 @@ class IRT(nn.Module):
         log_w_prev = torch.log(w_prev + 1e-8)
         log_tilde_w = log_w_prev + eta * advantage - r_penalty
 
-        tilde_w = F.softmax(log_tilde_w, dim=-1)  # [B, M]
+        # Temperature softmax (τ < 1: 뾰족하게, 균등 혼합 고착 해제)
+        tilde_w = F.softmax(log_tilde_w / self.replicator_temp, dim=-1)  # [B, M]
 
         # ===== Step 3: 이중 결합 (OT ∘ Replicator) =====
         w = (1 - self.alpha) * tilde_w + self.alpha * p_mass

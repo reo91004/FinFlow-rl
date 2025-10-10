@@ -156,7 +156,10 @@ def train_irt(args):
         "m_tokens": args.m_tokens,
         "M_proto": args.M_proto,
         "alpha": args.alpha,
+        "ema_beta": args.ema_beta,
         "eps": args.eps,
+        "max_iters": args.max_iters,
+        "replicator_temp": args.replicator_temp,
         "eta_0": args.eta_0,
         "eta_1": args.eta_1,
         "market_feature_dim": args.market_feature_dim
@@ -376,8 +379,14 @@ def main():
                         help="Number of prototypes (default: 8)")
     parser.add_argument("--alpha", type=float, default=0.3,
                         help="OT-Replicator mixing ratio (default: 0.3)")
-    parser.add_argument("--eps", type=float, default=0.10,
-                        help="Sinkhorn entropy (default: 0.10)")
+    parser.add_argument("--ema-beta", type=float, default=0.85,
+                        help="EMA memory coefficient (default: 0.85)")
+    parser.add_argument("--eps", type=float, default=0.05,
+                        help="Sinkhorn entropy (default: 0.05, Phase 1)")
+    parser.add_argument("--max-iters", type=int, default=30,
+                        help="Sinkhorn max iterations (default: 30, Phase 1)")
+    parser.add_argument("--replicator-temp", type=float, default=0.7,
+                        help="Replicator softmax temperature (default: 0.7, Phase 1)")
     parser.add_argument("--eta-0", type=float, default=0.05,
                         help="Base learning rate (Replicator) (default: 0.05)")
     parser.add_argument("--eta-1", type=float, default=0.15,

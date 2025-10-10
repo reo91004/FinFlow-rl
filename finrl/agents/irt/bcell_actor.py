@@ -31,7 +31,7 @@ class BCellIRTActor(nn.Module):
                  m_tokens: int = 6,
                  M_proto: int = 8,
                  alpha: float = 0.3,
-                 ema_beta: float = 0.9,
+                 ema_beta: float = 0.85,
                  market_feature_dim: int = 12,
                  dirichlet_min: float = 0.5,
                  dirichlet_max: float = 50.0,
