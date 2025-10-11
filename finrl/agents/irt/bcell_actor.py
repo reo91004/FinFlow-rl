@@ -31,6 +31,8 @@ class BCellIRTActor(nn.Module):
                  m_tokens: int = 6,
                  M_proto: int = 8,
                  alpha: float = 0.3,
+                 alpha_min: float = 0.06,
+                 alpha_max: Optional[float] = None,
                  ema_beta: float = 0.85,
                  market_feature_dim: int = 12,
                  dirichlet_min: float = 0.5,
@@ -43,7 +45,9 @@ class BCellIRTActor(nn.Module):
             emb_dim: 임베딩 차원
             m_tokens: 에피토프 토큰 수
             M_proto: 프로토타입 수
-            alpha: OT-Replicator 결합 비율
+            alpha: OT-Replicator 결합 비율 (후진 호환, alpha_max로 사용됨)
+            alpha_min: 위기 시 최소 α (default: 0.06, Replicator 가중)
+            alpha_max: 평시 최대 α (default: None → alpha 사용, OT 가중)
             ema_beta: EMA 메모리 계수
             market_feature_dim: 시장 특성 차원 (T-Cell 입력, 기본 12)
             dirichlet_min: Dirichlet concentration minimum (핸드오버: 0.5)
@@ -96,6 +100,8 @@ class BCellIRTActor(nn.Module):
             m_tokens=m_tokens,
             M_proto=M_proto,
             alpha=alpha,
+            alpha_min=alpha_min,
+            alpha_max=alpha_max,
             **irt_kwargs
         )
 
@@ -229,6 +235,7 @@ class BCellIRTActor(nn.Module):
             'w_ot': irt_debug['w_ot'].detach(),    # [B, M] - OT 출력
             'cost_matrix': irt_debug['cost_matrix'].detach(),  # [B, m, M]
             'eta': irt_debug['eta'].detach(),       # [B, 1] - Crisis learning rate
+            'alpha_c': irt_debug['alpha_c'].detach(),  # [B, 1] - Dynamic OT-Replicator mixing ratio
             # Dirichlet 정보 (log_prob 계산용)
             'concentrations': concentrations.detach(),  # [B, M, A] - 프로토타입별 concentration
             'mixed_conc': mixed_conc.detach(),  # [B, A] - 혼합된 concentration

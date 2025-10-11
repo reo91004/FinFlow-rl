@@ -271,7 +271,8 @@ def evaluate_model(model_path,
             'crisis_types': [],
             'cost_matrices': [],
             'weights': [],
-            'eta': []
+            'eta': [],
+            'alpha_c': []
         }
 
     step = 0
@@ -290,6 +291,7 @@ def evaluate_model(model_path,
                 irt_data_list['crisis_types'].append(info_dict['crisis_types'][0].cpu().numpy())
                 irt_data_list['cost_matrices'].append(info_dict['cost_matrix'][0].cpu().numpy())
                 irt_data_list['eta'].append(info_dict['eta'][0].cpu().numpy())
+                irt_data_list['alpha_c'].append(info_dict['alpha_c'][0].cpu().numpy())
 
                 # Action을 weight로 변환 (simplex 정규화)
                 weights = action / (action.sum() + 1e-8)
@@ -323,6 +325,7 @@ def evaluate_model(model_path,
             'prototype_weights': np.array(irt_data_list['w']),  # [T, M]
             'cost_matrices': np.array(irt_data_list['cost_matrices']),  # [T, m, M]
             'eta': np.array(irt_data_list['eta']).squeeze(),  # [T]
+            'alpha_c': np.array(irt_data_list['alpha_c']).squeeze(),  # [T]
             'symbols': stock_tickers[:stock_dim],  # 실제 주식 수만큼
             'metrics': None  # 호출자가 calculate_metrics()로 계산
         }
@@ -516,6 +519,7 @@ def main(args):
                 'w_rep': irt_data['w_rep'],
                 'w_ot': irt_data['w_ot'],
                 'eta': irt_data['eta'],
+                'alpha_c': irt_data['alpha_c'],
                 'cost_matrices': irt_data['cost_matrices'],
                 'symbols': irt_data['symbols'],
                 'metrics': metrics

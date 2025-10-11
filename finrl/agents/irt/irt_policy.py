@@ -243,6 +243,8 @@ class IRTPolicy(SACPolicy):
         m_tokens: int = 6,
         M_proto: int = 8,
         alpha: float = 0.3,
+        alpha_min: float = 0.06,
+        alpha_max: Optional[float] = None,
         ema_beta: float = 0.85,
         market_feature_dim: int = 12,
         dirichlet_min: float = 0.5,
@@ -251,7 +253,8 @@ class IRTPolicy(SACPolicy):
         max_iters: int = 30,
         replicator_temp: float = 0.7,
         eta_0: float = 0.05,
-        eta_1: float = 0.15,
+        eta_1: float = 0.18,
+        gamma: float = 0.8,
     ):
         """
         Args:
@@ -262,7 +265,9 @@ class IRTPolicy(SACPolicy):
             emb_dim: IRT 임베딩 차원
             m_tokens: 에피토프 토큰 수
             M_proto: 프로토타입 수
-            alpha: OT-Replicator 혼합 비율
+            alpha: OT-Replicator 혼합 비율 (후진 호환)
+            alpha_min: 위기 시 최소 α
+            alpha_max: 평시 최대 α
             ema_beta: EMA 메모리 계수
             market_feature_dim: 시장 특성 차원
             dirichlet_min: Dirichlet concentration minimum
@@ -270,12 +275,15 @@ class IRTPolicy(SACPolicy):
             eps: Sinkhorn 엔트로피
             eta_0: 기본 학습률 (Replicator)
             eta_1: 위기 증가량 (Replicator)
+            gamma: 공자극 가중치 (OT 비용 함수)
         """
         # IRT 파라미터 저장
         self.emb_dim = emb_dim
         self.m_tokens = m_tokens
         self.M_proto = M_proto
         self.alpha_irt = alpha
+        self.alpha_min = alpha_min
+        self.alpha_max = alpha_max
         self.ema_beta = ema_beta
         self.market_feature_dim = market_feature_dim
         self.dirichlet_min = dirichlet_min
@@ -285,6 +293,7 @@ class IRTPolicy(SACPolicy):
         self.replicator_temp = replicator_temp
         self.eta_0 = eta_0
         self.eta_1 = eta_1
+        self.gamma = gamma
 
         # SACPolicy 초기화
         super().__init__(
@@ -327,6 +336,8 @@ class IRTPolicy(SACPolicy):
             m_tokens=self.m_tokens,
             M_proto=self.M_proto,
             alpha=self.alpha_irt,
+            alpha_min=self.alpha_min,
+            alpha_max=self.alpha_max,
             ema_beta=self.ema_beta,
             market_feature_dim=self.market_feature_dim,
             dirichlet_min=self.dirichlet_min,
@@ -335,7 +346,8 @@ class IRTPolicy(SACPolicy):
             max_iters=self.max_iters,
             replicator_temp=self.replicator_temp,
             eta_0=self.eta_0,
-            eta_1=self.eta_1
+            eta_1=self.eta_1,
+            gamma=self.gamma
         )
 
         # Wrapper로 감싸기 (self 전달: Critic 참조용)
@@ -357,6 +369,8 @@ class IRTPolicy(SACPolicy):
                 m_tokens=self.m_tokens,
                 M_proto=self.M_proto,
                 alpha=self.alpha_irt,
+                alpha_min=self.alpha_min,
+                alpha_max=self.alpha_max,
                 ema_beta=self.ema_beta,
                 market_feature_dim=self.market_feature_dim,
                 dirichlet_min=self.dirichlet_min,
@@ -366,6 +380,7 @@ class IRTPolicy(SACPolicy):
                 replicator_temp=self.replicator_temp,
                 eta_0=self.eta_0,
                 eta_1=self.eta_1,
+                gamma=self.gamma,
             )
         )
         return data
@@ -384,6 +399,8 @@ class IRTPolicy(SACPolicy):
                 - cost_matrix: [B, m, M] - Immunological cost
                 - P: [B, m, M] - 수송 계획
                 - fitness: [B, M] - 프로토타입 적합도
+                - eta: [B, 1] - Crisis-adaptive learning rate
+                - alpha_c: [B, 1] - Dynamic OT-Replicator mixing ratio
             None: IRTPolicy가 아니거나 아직 forward 안 함
         """
         if hasattr(self, 'actor') and hasattr(self.actor, '_last_irt_info'):

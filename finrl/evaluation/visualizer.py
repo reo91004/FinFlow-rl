@@ -900,6 +900,7 @@ def _generate_insights(results: dict, config: dict = None) -> dict:
     w_rep = np.array(results.get('w_rep', []))
     w_ot = np.array(results.get('w_ot', []))
     eta_list = np.array(results.get('eta', []))
+    alpha_c_list = np.array(results.get('alpha_c', []))
     symbols = results.get('symbols', [])
     metrics = results.get('metrics', {})
 
@@ -977,7 +978,11 @@ def _generate_insights(results: dict, config: dict = None) -> dict:
         'correlation_w_rep_w_ot': float(np.corrcoef(w_rep.flatten(), w_ot.flatten())[0, 1]) if len(w_rep.flatten()) > 1 else 0.0,
         'avg_eta': float(eta_list.mean()) if len(eta_list) > 0 else 0.0,
         'max_eta': float(eta_list.max()) if len(eta_list) > 0 else 0.0,
-        'min_eta': float(eta_list.min()) if len(eta_list) > 0 else 0.0
+        'min_eta': float(eta_list.min()) if len(eta_list) > 0 else 0.0,
+        'avg_alpha_c': float(alpha_c_list.mean()) if len(alpha_c_list) > 0 else 0.0,
+        'std_alpha_c': float(alpha_c_list.std()) if len(alpha_c_list) > 0 else 0.0,
+        'max_alpha_c': float(alpha_c_list.max()) if len(alpha_c_list) > 0 else 0.0,
+        'min_alpha_c': float(alpha_c_list.min()) if len(alpha_c_list) > 0 else 0.0
     }
 
     # ===== 5. Prototype Analysis =====

@@ -99,11 +99,13 @@ class IRT(nn.Module):
                  M_proto: int = 8,
                  eps: float = 0.05,
                  alpha: float = 0.3,
-                 gamma: float = 0.5,
+                 alpha_min: float = 0.06,
+                 alpha_max: Optional[float] = None,
+                 gamma: float = 0.8,
                  lambda_tol: float = 2.0,
                  rho: float = 0.3,
                  eta_0: float = 0.05,
-                 eta_1: float = 0.15,
+                 eta_1: float = 0.18,
                  kappa: float = 1.0,
                  eps_tol: float = 0.1,
                  n_self_sigs: int = 4,
@@ -115,7 +117,9 @@ class IRT(nn.Module):
         self.emb_dim = emb_dim
         self.m = m_tokens
         self.M = M_proto
-        self.alpha = alpha
+        self.alpha = alpha  # 후진 호환
+        self.alpha_min = alpha_min
+        self.alpha_max = alpha_max if alpha_max is not None else alpha
 
         # 비용 함수 가중치
         self.gamma = gamma          # 공자극 가중치
@@ -272,8 +276,16 @@ class IRT(nn.Module):
         # Temperature softmax (τ < 1: 뾰족하게, 균등 혼합 고착 해제)
         tilde_w = F.softmax(log_tilde_w / self.replicator_temp, dim=-1)  # [B, M]
 
-        # ===== Step 3: 이중 결합 (OT ∘ Replicator) =====
-        w = (1 - self.alpha) * tilde_w + self.alpha * p_mass
+        # ===== Step 3: 동적 α(c) 계산 =====
+        # α(c) = α_max + (α_min - α_max) · (1 - cos(πc)) / 2
+        # c=0 (평시) → α(c)=α_max (OT 증가)
+        # c=1 (위기) → α(c)=α_min (Replicator 증가)
+        pi_c = torch.tensor(torch.pi, device=crisis_level_safe.device) * crisis_level_safe
+        alpha_c = self.alpha_max + (self.alpha_min - self.alpha_max) * (1 - torch.cos(pi_c)) / 2
+        # alpha_c: [B, 1]
+
+        # ===== Step 4: 이중 결합 (배치별 α) =====
+        w = (1 - alpha_c) * tilde_w + alpha_c * p_mass
 
         # 정규화 (수치 안정성, NaN 방어)
         w = torch.nan_to_num(w, nan=1.0/self.M)  # NaN 시 균등 분포
@@ -281,12 +293,13 @@ class IRT(nn.Module):
         w = torch.clamp(w, min=1e-6, max=1.0)
         w = w / w.sum(dim=-1, keepdim=True)  # 재정규화 (합=1)
 
-        # ===== Step 4: 디버그 정보 (시각화용) =====
+        # ===== Step 5: 디버그 정보 (시각화용) =====
         debug_info = {
             'w_rep': tilde_w,  # [B, M] - Replicator 출력
             'w_ot': p_mass,    # [B, M] - OT 출력
             'cost_matrix': C,  # [B, m, M] - Immunological cost
-            'eta': eta         # [B, 1] - Crisis-adaptive learning rate
+            'eta': eta,        # [B, 1] - Crisis-adaptive learning rate
+            'alpha_c': alpha_c # [B, 1] - Dynamic OT-Replicator mixing ratio
         }
 
         return w, P, debug_info
