@@ -32,8 +32,10 @@ from finrl.agents.stablebaselines3.models import DRLAgent
 from stable_baselines3 import SAC, PPO, A2C, TD3, DDPG
 
 
-def create_env(df, stock_dim, tech_indicators):
-    """환경 생성"""
+def create_env(df, stock_dim, tech_indicators, reward_type="basic", lambda_dsr=0.1, lambda_cvar=0.05):
+    """환경 생성 (Phase 3.5: reward_type 지원)"""
+    # State space: balance(1) + prices(N) + shares(N) + tech_indicators(K*N)
+    # Phase 3.5: reward_type='dsr_cvar'일 때 환경 내부에서 +2 (DSR/CVaR)
     state_space = 1 + (len(tech_indicators) + 2) * stock_dim
 
     env_kwargs = {
@@ -48,7 +50,11 @@ def create_env(df, stock_dim, tech_indicators):
         "state_space": state_space,
         "action_space": stock_dim,
         "tech_indicator_list": tech_indicators,
-        "print_verbosity": 500
+        "print_verbosity": 500,
+        # Phase 3.5: 리스크 민감 보상
+        "reward_type": reward_type,
+        "lambda_dsr": lambda_dsr,
+        "lambda_cvar": lambda_cvar,
     }
 
     return StockTradingEnv(**env_kwargs)
@@ -192,7 +198,10 @@ def evaluate_model(model_path,
                    stock_tickers=DOW_30_TICKER,
                    tech_indicators=INDICATORS,
                    initial_amount=1000000,
-                   verbose=True):
+                   verbose=True,
+                   reward_type="dsr_cvar",
+                   lambda_dsr=0.1,
+                   lambda_cvar=0.05):
     """
     범용 모델 평가 함수
 
@@ -205,6 +214,9 @@ def evaluate_model(model_path,
         tech_indicators: 기술 지표 리스트
         initial_amount: 초기 자본
         verbose: 진행 상황 출력 여부
+        reward_type: 보상 함수 타입 (basic/dsr_cvar)
+        lambda_dsr: DSR 보상 가중치
+        lambda_cvar: CVaR 보상 가중치
 
     Returns:
         portfolio_values: 포트폴리오 가치 배열
@@ -245,11 +257,21 @@ def evaluate_model(model_path,
     stock_dim = len(test_df.tic.unique())
     if verbose:
         print(f"  실제 주식 수: {stock_dim}")
-    test_env = create_env(test_df, stock_dim, tech_indicators)
+
+    # Phase 3.5: IRT 모델은 dsr_cvar 보상 사용
+    is_irt = 'irt' in model_path.lower()
+    env_reward_type = reward_type if is_irt else "basic"
+
+    test_env = create_env(test_df, stock_dim, tech_indicators,
+                         reward_type=env_reward_type,
+                         lambda_dsr=lambda_dsr,
+                         lambda_cvar=lambda_cvar)
 
     model = model_class.load(model_path, env=test_env)
     if verbose:
         print(f"  Model loaded successfully")
+        if is_irt:
+            print(f"  Reward type: {env_reward_type}")
 
     # 4. 평가 실행
     if verbose:
@@ -258,8 +280,7 @@ def evaluate_model(model_path,
     done = False
     portfolio_values = [initial_amount]
 
-    # IRT 모델 감지
-    is_irt = 'irt' in model_path.lower()
+    # IRT 모델 감지 (이미 위에서 설정됨, 중복 제거)
 
     # IRT 데이터 수집 준비
     if is_irt:
@@ -386,6 +407,13 @@ def evaluate_drlagent(args, model_name, model_class):
     print(f"\n[3/4] Loading model...")
     stock_dim = len(test_df.tic.unique())
     print(f"  실제 주식 수: {stock_dim}")
+
+    # Phase 3.5: IRT 모델은 dsr_cvar 보상 사용
+    is_irt = 'irt' in args.model.lower()
+    reward_type = "dsr_cvar" if is_irt else "basic"
+
+    # State space: balance(1) + prices(N) + shares(N) + tech_indicators(K*N)
+    # Phase 3.5: reward_type='dsr_cvar'일 때 환경 내부에서 +2 (DSR/CVaR)
     state_space = 1 + (len(INDICATORS) + 2) * stock_dim
 
     env_kwargs = {
@@ -400,13 +428,19 @@ def evaluate_drlagent(args, model_name, model_class):
         "state_space": state_space,
         "action_space": stock_dim,
         "tech_indicator_list": INDICATORS,
-        "print_verbosity": 500
+        "print_verbosity": 500,
+        # Phase 3.5: 리스크 민감 보상
+        "reward_type": reward_type,
+        "lambda_dsr": 0.1,
+        "lambda_cvar": 0.05,
     }
 
     e_test_gym = StockTradingEnv(**env_kwargs)
 
     model = model_class.load(args.model)
     print(f"  Model loaded successfully")
+    if is_irt:
+        print(f"  Reward type: {reward_type}")
 
     # 4. DRL_prediction 실행
     print(f"\n[4/4] Running DRL_prediction...")

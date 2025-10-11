@@ -55,6 +55,13 @@ class StockTradingEnv(gym.Env):
         model_name="",
         mode="",
         iteration="",
+        # Phase 3: DSR + CVaR 보상
+        reward_type: str = "basic",
+        lambda_dsr: float = 0.1,
+        lambda_cvar: float = 0.05,
+        dsr_beta: float = 0.99,
+        cvar_alpha: float = 0.05,
+        cvar_window: int = 50,
     ):
         self.day = day
         self.df = df
@@ -65,7 +72,13 @@ class StockTradingEnv(gym.Env):
         self.buy_cost_pct = buy_cost_pct
         self.sell_cost_pct = sell_cost_pct
         self.reward_scaling = reward_scaling
-        self.state_space = state_space
+
+        # Phase 3.5: state_space에 DSR/CVaR 2개 차원 추가
+        if reward_type == "dsr_cvar":
+            self.state_space = state_space + 2  # DSR/CVaR 신호 추가
+        else:
+            self.state_space = state_space
+
         self.action_space = action_space
         self.tech_indicator_list = tech_indicator_list
         self.action_space = spaces.Box(low=-1, high=1, shape=(self.action_space,))
@@ -83,7 +96,27 @@ class StockTradingEnv(gym.Env):
         self.model_name = model_name
         self.mode = mode
         self.iteration = iteration
-        # initalize state
+
+        # Phase 3: 리스크 민감 보상 함수 (state 초기화 전에 설정 필요)
+        self.reward_type = reward_type
+        if reward_type == "dsr_cvar":
+            from .reward_functions import RiskSensitiveReward
+
+            self.risk_reward = RiskSensitiveReward(
+                lambda_dsr=lambda_dsr,
+                lambda_cvar=lambda_cvar,
+                dsr_beta=dsr_beta,
+                cvar_alpha=cvar_alpha,
+                cvar_window=cvar_window,
+            )
+
+            # Phase 3.5: DSR/CVaR 값 버퍼 (state에 포함시킬 용도)
+            self.last_dsr = 0.0
+            self.last_cvar = 0.0
+        else:
+            self.risk_reward = None
+
+        # initalize state (reward_type 설정 후 호출)
         self.state = self._initiate_state()
 
         # initialize reward
@@ -357,9 +390,28 @@ class StockTradingEnv(gym.Env):
             )
             self.asset_memory.append(end_total_asset)
             self.date_memory.append(self._get_date())
-            self.reward = end_total_asset - begin_total_asset
+
+            # Phase 3: 리스크 민감 보상 계산
+            basic_reward = end_total_asset - begin_total_asset
+
+            if self.reward_type == "dsr_cvar" and self.risk_reward is not None:
+                # 로그수익 계산 (수치 안정성)
+                log_return = np.log(end_total_asset / (begin_total_asset + 1e-8))
+
+                # DSR + CVaR 혼합 보상
+                risk_reward, reward_info = self.risk_reward.compute(log_return)
+
+                # Phase 3.5: DSR/CVaR 버퍼 업데이트 (다음 state에 포함될 값)
+                self.last_dsr = float(reward_info["dsr_bonus"])
+                self.last_cvar = float(reward_info["cvar_value"])
+
+                # reward_scaling 적용
+                self.reward = risk_reward * self.reward_scaling
+            else:
+                # 기본 보상 (후진 호환)
+                self.reward = basic_reward * self.reward_scaling
+
             self.rewards_memory.append(self.reward)
-            self.reward = self.reward * self.reward_scaling
             self.state_memory.append(
                 self.state
             )  # add current state in state_recorder for each step
@@ -402,6 +454,14 @@ class StockTradingEnv(gym.Env):
         self.rewards_memory = []
         self.actions_memory = []
         self.date_memory = [self._get_date()]
+
+        # Phase 3: 리스크 민감 보상 함수 초기화
+        if self.risk_reward is not None:
+            self.risk_reward.reset()
+
+            # Phase 3.5: DSR/CVaR 버퍼 초기화
+            self.last_dsr = 0.0
+            self.last_cvar = 0.0
 
         self.episode += 1
 
@@ -463,6 +523,11 @@ class StockTradingEnv(gym.Env):
                     ]
                     + sum(([self.data[tech]] for tech in self.tech_indicator_list), [])
                 )
+
+        # Phase 3.5: DSR/CVaR 신호 추가 (초기값 0.0, 0.0)
+        if self.reward_type == "dsr_cvar":
+            state = state + [0.0, 0.0]
+
         return state
 
     def _update_state(self):
@@ -489,6 +554,10 @@ class StockTradingEnv(gym.Env):
                 + list(self.state[(self.stock_dim + 1) : (self.stock_dim * 2 + 1)])
                 + sum(([self.data[tech]] for tech in self.tech_indicator_list), [])
             )
+
+        # Phase 3.5: DSR/CVaR 신호 추가 (이전 step의 값)
+        if self.reward_type == "dsr_cvar":
+            state = state + [self.last_dsr, self.last_cvar]
 
         return state
 

@@ -37,6 +37,10 @@ class BCellIRTActor(nn.Module):
                  market_feature_dim: int = 12,
                  dirichlet_min: float = 0.5,
                  dirichlet_max: float = 50.0,
+                 # Phase 3.5 Step 2: 다중 신호 위기 감지
+                 w_r: float = 0.6,
+                 w_s: float = 0.25,
+                 w_c: float = 0.15,
                  **irt_kwargs):
         """
         Args:
@@ -52,6 +56,9 @@ class BCellIRTActor(nn.Module):
             market_feature_dim: 시장 특성 차원 (T-Cell 입력, 기본 12)
             dirichlet_min: Dirichlet concentration minimum (핸드오버: 0.5)
             dirichlet_max: Dirichlet concentration maximum (핸드오버: 50.0)
+            w_r: 시장 위기 신호 가중치 (T-Cell 출력)
+            w_s: Sharpe 신호 가중치 (DSR bonus)
+            w_c: CVaR 신호 가중치
             **irt_kwargs: IRT 파라미터 (eps, eta_0, eta_1 등)
         """
         super().__init__()
@@ -65,6 +72,11 @@ class BCellIRTActor(nn.Module):
         self.dirichlet_min = dirichlet_min
         self.dirichlet_max = dirichlet_max
         self.market_feature_dim = market_feature_dim
+
+        # Phase 3.5 Step 2: 위기 신호 가중치
+        self.w_r = w_r
+        self.w_s = w_s
+        self.w_c = w_c
 
         # ===== 에피토프 인코더 =====
         self.epitope_encoder = nn.Sequential(
@@ -162,10 +174,36 @@ class BCellIRTActor(nn.Module):
             tech_features      # [B, 8] - 기술적 지표들
         ], dim=1)  # [B, 12]
 
-        z, danger_embed, crisis_level = self.t_cell(
+        z, danger_embed, crisis_base = self.t_cell(
             market_features,
             update_stats=self.training
         )
+
+        # Phase 3.5 Step 2: DSR/CVaR 신호 추출 및 위기 레벨 결합
+        # state 마지막 2개 차원: [dsr_bonus, cvar_value]
+        # state_dim은 reward_type='dsr_cvar'일 때 +2 되어 있음
+        # 따라서 항상 마지막 2개 차원을 시도하되, 존재하지 않으면 0으로 처리
+        if state.size(1) >= self.state_dim - 2:
+            # DSR/CVaR가 state에 포함된 경우
+            delta_sharpe = state[:, -2:-1]  # [B, 1] - DSR bonus (원본 스케일 ~0.1)
+            cvar = state[:, -1:]  # [B, 1] - CVaR value (원본 스케일 ~0.01)
+
+            # 각 신호를 [0, 1] 범위로 스케일링
+            # crisis_base는 이미 sigmoid 통과 → [0, 1]
+            # DSR: 10배 증폭 후 sigmoid (0.1 → ~0.73)
+            delta_sharpe_scaled = torch.sigmoid(delta_sharpe * 10.0)
+            # CVaR: 절댓값 + 50배 증폭 후 sigmoid (0.01 → ~0.62)
+            cvar_scaled = torch.sigmoid(torch.abs(cvar) * 50.0)
+
+            # 3개 신호 가중 평균 (w_r + w_s + w_c = 1.0 → 출력도 [0, 1])
+            crisis_level = (
+                self.w_r * crisis_base
+                + self.w_s * delta_sharpe_scaled
+                + self.w_c * cvar_scaled
+            )  # [B, 1]
+        else:
+            # 후진 호환: DSR/CVaR 없으면 T-Cell 출력만 사용
+            crisis_level = crisis_base
 
         # ===== Step 2: 에피토프 인코딩 =====
         E = self.epitope_encoder(state).view(B, self.m, self.emb_dim)  # [B, m, D]
@@ -239,7 +277,11 @@ class BCellIRTActor(nn.Module):
             # Dirichlet 정보 (log_prob 계산용)
             'concentrations': concentrations.detach(),  # [B, M, A] - 프로토타입별 concentration
             'mixed_conc': mixed_conc.detach(),  # [B, A] - 혼합된 concentration
-            'mixed_conc_clamped': mixed_conc_clamped if not deterministic else mixed_conc.detach()  # [B, A]
+            'mixed_conc_clamped': mixed_conc_clamped if not deterministic else mixed_conc.detach(),  # [B, A]
+            # Phase 3.5 Step 2: 다중 신호 위기 감지 정보
+            'crisis_base': crisis_base.detach(),  # [B, 1] - T-Cell 기본 위기 신호
+            'delta_sharpe': delta_sharpe.detach() if state.size(1) >= self.state_dim - 2 else torch.zeros(B, 1, device=state.device),
+            'cvar': cvar.detach() if state.size(1) >= self.state_dim - 2 else torch.zeros(B, 1, device=state.device),
         }
 
         return action, info

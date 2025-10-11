@@ -47,9 +47,11 @@ sys.path.insert(0, os.path.dirname(__file__))
 from evaluate import evaluate_model
 
 
-def create_env(df, stock_dim, tech_indicators):
-    """StockTradingEnv 생성"""
+def create_env(df, stock_dim, tech_indicators, reward_type="basic", lambda_dsr=0.1, lambda_cvar=0.05):
+    """StockTradingEnv 생성 (Phase 3: DSR + CVaR 보상 지원)"""
 
+    # State space: balance(1) + prices(N) + shares(N) + tech_indicators(K*N)
+    # Phase 3.5: reward_type='dsr_cvar'일 때 환경 내부에서 +2 (DSR/CVaR)
     state_space = 1 + (len(tech_indicators) + 2) * stock_dim
 
     env_kwargs = {
@@ -65,6 +67,10 @@ def create_env(df, stock_dim, tech_indicators):
         "action_space": stock_dim,
         "tech_indicator_list": tech_indicators,
         "print_verbosity": 500,
+        # Phase 3: 리스크 민감 보상
+        "reward_type": reward_type,
+        "lambda_dsr": lambda_dsr,
+        "lambda_cvar": lambda_cvar,
     }
 
     return StockTradingEnv(**env_kwargs)
@@ -127,13 +133,34 @@ def train_irt(args):
         print(f"      (2008년 초 데이터가 없는 종목: Visa (V) 등)")
 
     print(f"  실제 주식 수: {stock_dim}")
-    train_env = create_env(train_df, stock_dim, INDICATORS)
-    test_env = create_env(test_df, stock_dim, INDICATORS)
+
+    # Phase 3: 리스크 민감 보상 환경 생성
+    train_env = create_env(
+        train_df, stock_dim, INDICATORS,
+        reward_type=args.reward_type,
+        lambda_dsr=args.lambda_dsr,
+        lambda_cvar=args.lambda_cvar
+    )
+    test_env = create_env(
+        test_df, stock_dim, INDICATORS,
+        reward_type=args.reward_type,
+        lambda_dsr=args.lambda_dsr,
+        lambda_cvar=args.lambda_cvar
+    )
+
     print(f"  State space: {train_env.state_space}")
     print(f"  Action space: {train_env.action_space}")
+    print(f"  Reward type: {args.reward_type}")
+    if args.reward_type == "dsr_cvar":
+        print(f"    λ_dsr: {args.lambda_dsr}, λ_cvar: {args.lambda_cvar}")
 
     # 5. Train IRT model
     print(f"\n[5/5] Training SAC + IRT Policy...")
+
+    # Callback 디렉토리 미리 생성 (FileNotFoundError 방지)
+    os.makedirs(os.path.join(log_dir, "checkpoints"), exist_ok=True)
+    os.makedirs(os.path.join(log_dir, "best_model"), exist_ok=True)
+    os.makedirs(os.path.join(log_dir, "eval"), exist_ok=True)
 
     # Callbacks
     checkpoint_callback = CheckpointCallback(
@@ -167,6 +194,10 @@ def train_irt(args):
         "eta_1": args.eta_1,
         "gamma": args.gamma,
         "market_feature_dim": args.market_feature_dim,
+        # Phase 3.5 Step 2: 다중 신호 위기 감지
+        "w_r": args.w_r,
+        "w_s": args.w_s,
+        "w_c": args.w_c,
     }
 
     # SAC parameters (Phase 2.5: 안정화)
@@ -349,6 +380,10 @@ def test_irt(args, model_path=None):
                 "eta_0": args.eta_0,
                 "eta_1": args.eta_1,
                 "gamma": args.gamma,
+                # Phase 3.5 Step 2
+                "w_r": args.w_r,
+                "w_s": args.w_s,
+                "w_c": args.w_c,
             }
         }
 
@@ -489,6 +524,47 @@ def main():
         type=int,
         default=12,
         help="Market feature dimension (default: 12)",
+    )
+
+    # Phase 3: DSR + CVaR 보상 파라미터
+    parser.add_argument(
+        "--reward-type",
+        type=str,
+        default="dsr_cvar",
+        choices=["basic", "dsr_cvar"],
+        help="Reward function type (default: dsr_cvar)",
+    )
+    parser.add_argument(
+        "--lambda-dsr",
+        type=float,
+        default=0.1,
+        help="DSR bonus weight (default: 0.1, Phase 3)",
+    )
+    parser.add_argument(
+        "--lambda-cvar",
+        type=float,
+        default=0.05,
+        help="CVaR penalty weight (default: 0.05, Phase 3)",
+    )
+
+    # Phase 3.5 Step 2: 다중 신호 위기 감지
+    parser.add_argument(
+        "--w-r",
+        type=float,
+        default=0.6,
+        help="Market crisis signal weight (T-Cell output) (default: 0.6, Phase 3.5)",
+    )
+    parser.add_argument(
+        "--w-s",
+        type=float,
+        default=0.25,
+        help="Sharpe signal weight (DSR bonus) (default: 0.25, Phase 3.5)",
+    )
+    parser.add_argument(
+        "--w-c",
+        type=float,
+        default=0.15,
+        help="CVaR signal weight (default: 0.15, Phase 3.5)",
     )
 
     # Evaluation only

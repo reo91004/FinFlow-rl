@@ -255,6 +255,10 @@ class IRTPolicy(SACPolicy):
         eta_0: float = 0.05,
         eta_1: float = 0.18,
         gamma: float = 0.8,
+        # Phase 3.5 Step 2: 다중 신호 위기 감지
+        w_r: float = 0.6,
+        w_s: float = 0.25,
+        w_c: float = 0.15,
     ):
         """
         Args:
@@ -276,6 +280,9 @@ class IRTPolicy(SACPolicy):
             eta_0: 기본 학습률 (Replicator)
             eta_1: 위기 증가량 (Replicator)
             gamma: 공자극 가중치 (OT 비용 함수)
+            w_r: 시장 위기 신호 가중치 (T-Cell 출력)
+            w_s: Sharpe 신호 가중치 (DSR bonus)
+            w_c: CVaR 신호 가중치
         """
         # IRT 파라미터 저장
         self.emb_dim = emb_dim
@@ -294,6 +301,9 @@ class IRTPolicy(SACPolicy):
         self.eta_0 = eta_0
         self.eta_1 = eta_1
         self.gamma = gamma
+        self.w_r = w_r
+        self.w_s = w_s
+        self.w_c = w_c
 
         # SACPolicy 초기화
         super().__init__(
@@ -347,7 +357,10 @@ class IRTPolicy(SACPolicy):
             replicator_temp=self.replicator_temp,
             eta_0=self.eta_0,
             eta_1=self.eta_1,
-            gamma=self.gamma
+            gamma=self.gamma,
+            w_r=self.w_r,
+            w_s=self.w_s,
+            w_c=self.w_c
         )
 
         # Wrapper로 감싸기 (self 전달: Critic 참조용)
@@ -381,6 +394,9 @@ class IRTPolicy(SACPolicy):
                 eta_0=self.eta_0,
                 eta_1=self.eta_1,
                 gamma=self.gamma,
+                w_r=self.w_r,
+                w_s=self.w_s,
+                w_c=self.w_c,
             )
         )
         return data
