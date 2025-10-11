@@ -98,8 +98,8 @@ class IRT(nn.Module):
                  m_tokens: int = 6,
                  M_proto: int = 8,
                  eps: float = 0.05,
-                 alpha: float = 0.3,
-                 alpha_min: float = 0.10,
+                 alpha: float = 0.45,  # Phase F: alpha_max 기본값으로 사용
+                 alpha_min: float = 0.08,  # Phase F: 0.10 → 0.08 (Rep 경로 확보)
                  alpha_max: Optional[float] = None,
                  gamma: float = 0.85,  # Phase E: 0.6 → 0.85 (평활화 증가)
                  lambda_tol: float = 2.0,
@@ -111,7 +111,7 @@ class IRT(nn.Module):
                  n_self_sigs: int = 4,
                  max_iters: int = 30,
                  tol: float = 1e-3,
-                 replicator_temp: float = 0.9):
+                 replicator_temp: float = 1.4):  # Phase F: 0.9 → 1.4 (분포 평탄화)
         super().__init__()
 
         self.emb_dim = emb_dim
@@ -119,12 +119,12 @@ class IRT(nn.Module):
         self.M = M_proto
         self.alpha = alpha  # 후진 호환
 
-        # Phase A: alpha_min 런타임 강제 (>= 0.10)
-        self.alpha_min = max(alpha_min, 0.10)
+        # Phase F: alpha_min 하한 완화 (0.10 → 0.06)
+        self.alpha_min = max(alpha_min, 0.06)
         self.alpha_max = alpha_max if alpha_max is not None else alpha
 
-        if alpha_min < 0.10:
-            print(f"[IRT] Warning: alpha_min {alpha_min:.3f} < 0.10, enforcing alpha_min=0.10")
+        if alpha_min < 0.06:
+            print(f"[IRT] Warning: alpha_min {alpha_min:.3f} < 0.06, enforcing alpha_min=0.06")
 
         # 비용 함수 가중치
         self.gamma = gamma          # 공자극 가중치

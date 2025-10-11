@@ -242,8 +242,8 @@ class IRTPolicy(SACPolicy):
         emb_dim: int = 128,
         m_tokens: int = 6,
         M_proto: int = 8,
-        alpha: float = 0.3,
-        alpha_min: float = 0.10,
+        alpha: float = 0.45,  # Phase F: alpha_max 기본값
+        alpha_min: float = 0.08,  # Phase F: Rep 경로 확보
         alpha_max: Optional[float] = None,
         ema_beta: float = 0.85,
         market_feature_dim: int = 12,
@@ -251,7 +251,7 @@ class IRTPolicy(SACPolicy):
         dirichlet_max: float = 50.0,
         eps: float = 0.05,
         max_iters: int = 30,
-        replicator_temp: float = 0.9,
+        replicator_temp: float = 1.4,  # Phase F: 분포 평탄화
         eta_0: float = 0.05,
         eta_1: float = 0.12,  # Phase E: 민감도 완화
         gamma: float = 0.85,  # Phase E: 평활화 증가
@@ -270,20 +270,21 @@ class IRTPolicy(SACPolicy):
             emb_dim: IRT 임베딩 차원
             m_tokens: 에피토프 토큰 수
             M_proto: 프로토타입 수
-            alpha: OT-Replicator 혼합 비율 (후진 호환)
-            alpha_min: 위기 시 최소 α
-            alpha_max: 평시 최대 α
+            alpha: OT-Replicator 혼합 비율 (후진 호환, alpha_max 기본값)
+            alpha_min: 위기 시 최소 α (Phase F: 0.08)
+            alpha_max: 평시 최대 α (Phase F: 0.45)
             ema_beta: EMA 메모리 계수
             market_feature_dim: 시장 특성 차원
             dirichlet_min: Dirichlet concentration minimum
             dirichlet_max: Dirichlet concentration maximum
             eps: Sinkhorn 엔트로피
+            replicator_temp: Replicator softmax 온도 (Phase F: 1.4, >1이면 평탄화)
             eta_0: 기본 학습률 (Replicator)
-            eta_1: 위기 증가량 (Replicator)
-            gamma: 공자극 가중치 (OT 비용 함수)
-            w_r: 시장 위기 신호 가중치 (T-Cell 출력)
-            w_s: Sharpe 신호 가중치 (DSR bonus)
-            w_c: CVaR 신호 가중치
+            eta_1: 위기 증가량 (Replicator, Phase E: 0.12)
+            gamma: 공자극 가중치 (OT 비용 함수, Phase E: 0.85)
+            w_r: 시장 위기 신호 가중치 (T-Cell 출력, Phase E: 0.8)
+            w_s: Sharpe 신호 가중치 (DSR bonus, Phase E: 0.15)
+            w_c: CVaR 신호 가중치 (Phase E: 0.05)
             eta_b: 바이어스 학습률 (crisis_regime_pct 중립화용)
         """
         # IRT 파라미터 저장

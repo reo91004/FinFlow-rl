@@ -562,20 +562,20 @@ def main():
     parser.add_argument(
         "--alpha",
         type=float,
-        default=0.3,
-        help="Base OT-Replicator mixing ratio (default: 0.3)",
+        default=0.45,
+        help="Base OT-Replicator mixing ratio (default: 0.45, Phase F)",
     )
     parser.add_argument(
         "--alpha-min",
         type=float,
-        default=0.10,
-        help="Crisis minimum alpha (default: 0.10, Phase A)",
+        default=0.08,
+        help="Crisis minimum alpha (default: 0.08, Phase F)",
     )
     parser.add_argument(
         "--alpha-max",
         type=float,
         default=None,
-        help="Normal maximum alpha (default: --alpha value)",
+        help="Normal maximum alpha (default: --alpha value, Phase F: 0.45)",
     )
     parser.add_argument(
         "--ema-beta",
@@ -598,8 +598,8 @@ def main():
     parser.add_argument(
         "--replicator-temp",
         type=float,
-        default=0.9,
-        help="Replicator softmax temperature (default: 0.9, Phase C)",
+        default=1.4,
+        help="Replicator softmax temperature (default: 1.4, Phase F, >1 for diversity)",
     )
     parser.add_argument(
         "--eta-0",
