@@ -99,7 +99,7 @@ class IRT(nn.Module):
                  M_proto: int = 8,
                  eps: float = 0.05,
                  alpha: float = 0.3,
-                 alpha_min: float = 0.06,
+                 alpha_min: float = 0.10,
                  alpha_max: Optional[float] = None,
                  gamma: float = 0.8,
                  lambda_tol: float = 2.0,
@@ -222,6 +222,7 @@ class IRT(nn.Module):
                 w_prev: torch.Tensor,
                 fitness: torch.Tensor,
                 crisis_level: torch.Tensor,
+                delta_sharpe: torch.Tensor,
                 proto_conf: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, Dict]:
         """
         IRT 연산자 forward pass
@@ -233,6 +234,7 @@ class IRT(nn.Module):
             w_prev: 이전 혼합 가중치 [B, M]
             fitness: 프로토타입 적합도 [B, M]
             crisis_level: 위기 레벨 [B, 1]
+            delta_sharpe: DSR bonus [B, 1] (Sharpe gradient feedback용)
             proto_conf: 프로토타입 과신도 [B, 1, M]
 
         Returns:
@@ -282,6 +284,13 @@ class IRT(nn.Module):
         # c=1 (위기) → α(c)=α_min (Replicator 증가)
         pi_c = torch.tensor(torch.pi, device=crisis_level_safe.device) * crisis_level_safe
         alpha_c = self.alpha_max + (self.alpha_min - self.alpha_max) * (1 - torch.cos(pi_c)) / 2
+
+        # ===== Step 3.5: Sharpe gradient feedback =====
+        # delta_sharpe > 0 (상승) → alpha_c 증가 → OT 기여 ↑
+        # delta_sharpe < 0 (하락) → alpha_c 감소 → Rep 기여 ↑
+        delta_sharpe_safe = torch.nan_to_num(delta_sharpe, nan=0.0)  # [B, 1]
+        alpha_c = alpha_c * (1 + 0.3 * torch.tanh(delta_sharpe_safe))
+        alpha_c = torch.clamp(alpha_c, min=self.alpha_min, max=self.alpha_max)
         # alpha_c: [B, 1]
 
         # ===== Step 4: 이중 결합 (배치별 α) =====

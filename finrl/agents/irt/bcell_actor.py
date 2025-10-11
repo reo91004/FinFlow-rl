@@ -219,6 +219,9 @@ class BCellIRTActor(nn.Module):
         # ===== Step 5: IRT 연산 =====
         w_prev_batch = self.w_prev.expand(B, -1)  # [B, M]
 
+        # delta_sharpe 추출 (IRT Sharpe feedback용)
+        delta_sharpe_tensor = delta_sharpe if state.size(1) >= self.state_dim - 2 else torch.zeros(B, 1, device=state.device)
+
         w, P, irt_debug = self.irt(
             E=E,
             K=K,
@@ -226,6 +229,7 @@ class BCellIRTActor(nn.Module):
             w_prev=w_prev_batch,
             fitness=fitness,
             crisis_level=crisis_level,
+            delta_sharpe=delta_sharpe_tensor,
             proto_conf=None
         )
 

@@ -243,7 +243,7 @@ class IRTPolicy(SACPolicy):
         m_tokens: int = 6,
         M_proto: int = 8,
         alpha: float = 0.3,
-        alpha_min: float = 0.06,
+        alpha_min: float = 0.10,
         alpha_max: Optional[float] = None,
         ema_beta: float = 0.85,
         market_feature_dim: int = 12,
@@ -255,10 +255,10 @@ class IRTPolicy(SACPolicy):
         eta_0: float = 0.05,
         eta_1: float = 0.18,
         gamma: float = 0.8,
-        # Phase 3.5 Step 2: 다중 신호 위기 감지
-        w_r: float = 0.6,
-        w_s: float = 0.25,
-        w_c: float = 0.15,
+        # Phase 3.5 Step 3: 위기 균형 복원
+        w_r: float = 0.7,
+        w_s: float = 0.2,
+        w_c: float = 0.1,
     ):
         """
         Args:
