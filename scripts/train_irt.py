@@ -34,8 +34,9 @@ from finrl.meta.preprocessor.yahoodownloader import YahooDownloader
 from finrl.meta.preprocessor.preprocessors import FeatureEngineer, data_split
 from finrl.meta.env_stock_trading.env_stocktrading import StockTradingEnv
 from stable_baselines3 import SAC
-from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
+from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback, EvalCallback
 from stable_baselines3.common.monitor import Monitor
+import torch
 
 # Import IRT Policy
 from finrl.agents.irt import IRTPolicy
@@ -45,6 +46,53 @@ import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
 from evaluate import evaluate_model
+
+
+class IRTLoggingCallback(BaseCallback):
+    """
+    Phase A: IRT 중간 변수 텐서보드 로깅
+
+    100 스텝마다 IRT 내부 변수를 기록:
+    - crisis_level: 위기 감지 레벨
+    - alpha_c: 동적 OT-Replicator 혼합 비율
+    - w_rep, w_ot: Replicator/OT 기여도
+    - entropy: 프로토타입 혼합 다양성
+    """
+
+    def __init__(self, verbose: int = 0, log_freq: int = 100):
+        super().__init__(verbose)
+        self.log_freq = log_freq
+
+    def _on_step(self) -> bool:
+        if self.n_calls % self.log_freq == 0:
+            # IRT info 가져오기
+            info = self.model.policy.get_irt_info()
+            if info is not None:
+                # 위기 레벨
+                self.logger.record("irt/avg_crisis_level", info['crisis_level'].mean().item())
+
+                # alpha_c (OT-Replicator 혼합 비율)
+                self.logger.record("irt/avg_alpha_c", info['alpha_c'].mean().item())
+                # std 계산 (배치=1 대비, unbiased=False)
+                if info['alpha_c'].numel() > 1:
+                    self.logger.record("irt/std_alpha_c", info['alpha_c'].std(unbiased=False).item())
+                else:
+                    self.logger.record("irt/std_alpha_c", 0.0)
+
+                # Replicator vs OT 기여도
+                self.logger.record("irt/avg_w_rep", info['w_rep'].mean().item())
+                self.logger.record("irt/avg_w_ot", info['w_ot'].mean().item())
+
+                # 프로토타입 혼합 엔트로피
+                w = info['w']  # [B, M]
+                entropy = -torch.sum(w * torch.log(w + 1e-8), dim=-1).mean().item()
+                self.logger.record("irt/avg_entropy", entropy)
+
+                # 프로토타입 최대 가중치 (collapse 지표)
+                max_proto_weight = w.max(dim=-1)[0].mean().item()
+                self.logger.record("irt/max_proto_weight", max_proto_weight)
+
+        return True
 
 
 def create_env(df, stock_dim, tech_indicators, reward_type="basic", lambda_dsr=0.1, lambda_cvar=0.05):
@@ -178,6 +226,9 @@ def train_irt(args):
         render=False,
     )
 
+    # Phase A: IRT 계측 callback
+    irt_logging_callback = IRTLoggingCallback(verbose=0, log_freq=100)
+
     # IRT Policy kwargs
     policy_kwargs = {
         "emb_dim": args.emb_dim,
@@ -231,7 +282,7 @@ def train_irt(args):
     # Train
     model.learn(
         total_timesteps=total_timesteps,
-        callback=[checkpoint_callback, eval_callback],
+        callback=[checkpoint_callback, eval_callback, irt_logging_callback],
         progress_bar=True,
     )
 
@@ -468,8 +519,8 @@ def main():
     parser.add_argument(
         "--alpha-min",
         type=float,
-        default=0.06,
-        help="Crisis minimum alpha (default: 0.06)",
+        default=0.10,
+        help="Crisis minimum alpha (default: 0.10, Phase A)",
     )
     parser.add_argument(
         "--alpha-max",
@@ -547,24 +598,24 @@ def main():
         help="CVaR penalty weight (default: 0.05, Phase 3)",
     )
 
-    # Phase 3.5 Step 2: 다중 신호 위기 감지
+    # Phase A: 위기 균형 복원
     parser.add_argument(
         "--w-r",
         type=float,
-        default=0.6,
-        help="Market crisis signal weight (T-Cell output) (default: 0.6, Phase 3.5)",
+        default=0.7,
+        help="Market crisis signal weight (T-Cell output) (default: 0.7, Phase A)",
     )
     parser.add_argument(
         "--w-s",
         type=float,
-        default=0.25,
-        help="Sharpe signal weight (DSR bonus) (default: 0.25, Phase 3.5)",
+        default=0.2,
+        help="Sharpe signal weight (DSR bonus) (default: 0.2, Phase A)",
     )
     parser.add_argument(
         "--w-c",
         type=float,
-        default=0.15,
-        help="CVaR signal weight (default: 0.15, Phase 3.5)",
+        default=0.1,
+        help="CVaR signal weight (default: 0.1, Phase A)",
     )
 
     # Evaluation only

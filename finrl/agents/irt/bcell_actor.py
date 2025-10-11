@@ -203,6 +203,8 @@ class BCellIRTActor(nn.Module):
             )  # [B, 1]
         else:
             # 후진 호환: DSR/CVaR 없으면 T-Cell 출력만 사용
+            delta_sharpe = torch.zeros(B, 1, device=state.device)
+            cvar = torch.zeros(B, 1, device=state.device)
             crisis_level = crisis_base
 
         # ===== Step 2: 에피토프 인코딩 =====
@@ -219,8 +221,8 @@ class BCellIRTActor(nn.Module):
         # ===== Step 5: IRT 연산 =====
         w_prev_batch = self.w_prev.expand(B, -1)  # [B, M]
 
-        # delta_sharpe 추출 (IRT Sharpe feedback용)
-        delta_sharpe_tensor = delta_sharpe if state.size(1) >= self.state_dim - 2 else torch.zeros(B, 1, device=state.device)
+        # Phase A: delta_sharpe 전달 보증 (이미 line 186-207에서 추출됨)
+        delta_sharpe_tensor = delta_sharpe
 
         w, P, irt_debug = self.irt(
             E=E,

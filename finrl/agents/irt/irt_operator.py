@@ -118,8 +118,13 @@ class IRT(nn.Module):
         self.m = m_tokens
         self.M = M_proto
         self.alpha = alpha  # 후진 호환
-        self.alpha_min = alpha_min
+
+        # Phase A: alpha_min 런타임 강제 (>= 0.10)
+        self.alpha_min = max(alpha_min, 0.10)
         self.alpha_max = alpha_max if alpha_max is not None else alpha
+
+        if alpha_min < 0.10:
+            print(f"[IRT] Warning: alpha_min {alpha_min:.3f} < 0.10, enforcing alpha_min=0.10")
 
         # 비용 함수 가중치
         self.gamma = gamma          # 공자극 가중치
