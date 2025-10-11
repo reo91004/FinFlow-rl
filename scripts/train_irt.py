@@ -24,8 +24,10 @@ import numpy as np
 from finrl.config import (
     INDICATORS,
     SAC_PARAMS,
-    TRAIN_START_DATE, TRAIN_END_DATE,
-    TEST_START_DATE, TEST_END_DATE
+    TRAIN_START_DATE,
+    TRAIN_END_DATE,
+    TEST_START_DATE,
+    TEST_END_DATE,
 )
 from finrl.config_tickers import DOW_30_TICKER
 from finrl.meta.preprocessor.yahoodownloader import YahooDownloader
@@ -40,6 +42,7 @@ from finrl.agents.irt import IRTPolicy
 
 # Import evaluation function
 import sys
+
 sys.path.insert(0, os.path.dirname(__file__))
 from evaluate import evaluate_model
 
@@ -61,7 +64,7 @@ def create_env(df, stock_dim, tech_indicators):
         "state_space": state_space,
         "action_space": stock_dim,
         "tech_indicator_list": tech_indicators,
-        "print_verbosity": 500
+        "print_verbosity": 500,
     }
 
     return StockTradingEnv(**env_kwargs)
@@ -91,9 +94,7 @@ def train_irt(args):
     # 1. Download data
     print(f"\n[1/5] Downloading data...")
     df = YahooDownloader(
-        start_date=args.train_start,
-        end_date=args.test_end,
-        ticker_list=DOW_30_TICKER
+        start_date=args.train_start, end_date=args.test_end, ticker_list=DOW_30_TICKER
     ).fetch_data()
     print(f"  Downloaded: {df.shape[0]} rows")
 
@@ -103,7 +104,7 @@ def train_irt(args):
         use_technical_indicator=True,
         tech_indicator_list=INDICATORS,
         use_turbulence=False,
-        user_defined_feature=False
+        user_defined_feature=False,
     )
     df_processed = fe.preprocess_data(df)
     print(f"  Features: {df_processed.shape[1]} columns")
@@ -138,7 +139,7 @@ def train_irt(args):
     checkpoint_callback = CheckpointCallback(
         save_freq=10000,
         save_path=os.path.join(log_dir, "checkpoints"),
-        name_prefix="irt_model"
+        name_prefix="irt_model",
     )
 
     eval_callback = EvalCallback(
@@ -147,7 +148,7 @@ def train_irt(args):
         log_path=os.path.join(log_dir, "eval"),
         eval_freq=5000,
         deterministic=True,
-        render=False
+        render=False,
     )
 
     # IRT Policy kwargs
@@ -165,13 +166,18 @@ def train_irt(args):
         "eta_0": args.eta_0,
         "eta_1": args.eta_1,
         "gamma": args.gamma,
-        "market_feature_dim": args.market_feature_dim
+        "market_feature_dim": args.market_feature_dim,
     }
 
-    # SAC parameters
+    # SAC parameters (Phase 2.5: 안정화)
     sac_params = SAC_PARAMS.copy()
-    if 'ent_coef' in sac_params and isinstance(sac_params['ent_coef'], str):
-        sac_params['ent_coef'] = 'auto'
+
+    # if 'ent_coef' in sac_params and isinstance(sac_params['ent_coef'], str):
+    #     sac_params['ent_coef'] = 'auto'
+
+    # 온도 폭주 방지: 고정 온도 사용
+    sac_params["ent_coef"] = 0.05  # 'auto' 대신 고정 값
+    sac_params["learning_starts"] = 5000  # 100 → 5000 (웜업 증가)
 
     print(f"  SAC params: {sac_params}")
     print(f"  IRT params: {policy_kwargs}")
@@ -183,7 +189,7 @@ def train_irt(args):
         policy_kwargs=policy_kwargs,
         **sac_params,
         verbose=1,
-        tensorboard_log=os.path.join(log_dir, "tensorboard")
+        tensorboard_log=os.path.join(log_dir, "tensorboard"),
     )
 
     # Total timesteps
@@ -195,7 +201,7 @@ def train_irt(args):
     model.learn(
         total_timesteps=total_timesteps,
         callback=[checkpoint_callback, eval_callback],
-        progress_bar=True
+        progress_bar=True,
     )
 
     # Save final model
@@ -238,13 +244,13 @@ def test_irt(args, model_path=None):
         stock_tickers=DOW_30_TICKER,
         tech_indicators=INDICATORS,
         initial_amount=1000000,
-        verbose=True
+        verbose=True,
     )
 
     # 결과 추출
     final_value = portfolio_values[-1]
-    total_return = metrics['total_return']
-    step = metrics['n_steps']
+    total_return = metrics["total_return"]
+    step = metrics["n_steps"]
 
     print(f"\n" + "=" * 70)
     print(f"Evaluation Results")
@@ -295,7 +301,7 @@ def test_irt(args, model_path=None):
             portfolio_values=np.array(portfolio_values),
             dates=None,
             output_dir=output_dir,
-            irt_data=irt_data
+            irt_data=irt_data,
         )
 
     # 7. JSON 저장 (기본 활성화)
@@ -315,34 +321,34 @@ def test_irt(args, model_path=None):
         returns = np.diff(portfolio_values) / portfolio_values[:-1]
 
         results = {
-            'returns': returns,
-            'values': np.array(portfolio_values),
-            'weights': irt_data['weights'],
-            'crisis_levels': irt_data['crisis_levels'],
-            'crisis_types': irt_data['crisis_types'],
-            'prototype_weights': irt_data['prototype_weights'],
-            'w_rep': irt_data['w_rep'],
-            'w_ot': irt_data['w_ot'],
-            'eta': irt_data['eta'],
-            'alpha_c': irt_data['alpha_c'],
-            'cost_matrices': irt_data['cost_matrices'],
-            'symbols': irt_data['symbols'],
-            'metrics': metrics
+            "returns": returns,
+            "values": np.array(portfolio_values),
+            "weights": irt_data["weights"],
+            "crisis_levels": irt_data["crisis_levels"],
+            "crisis_types": irt_data["crisis_types"],
+            "prototype_weights": irt_data["prototype_weights"],
+            "w_rep": irt_data["w_rep"],
+            "w_ot": irt_data["w_ot"],
+            "eta": irt_data["eta"],
+            "alpha_c": irt_data["alpha_c"],
+            "cost_matrices": irt_data["cost_matrices"],
+            "symbols": irt_data["symbols"],
+            "metrics": metrics,
         }
 
         # Config (IRT 파라미터 포함)
         config = {
-            'irt': {
-                'alpha': args.alpha,
-                'alpha_min': args.alpha_min,
-                'alpha_max': args.alpha_max if args.alpha_max else args.alpha,
-                'eps': args.eps,
-                'max_iters': args.max_iters,
-                'replicator_temp': args.replicator_temp,
-                'ema_beta': args.ema_beta,
-                'eta_0': args.eta_0,
-                'eta_1': args.eta_1,
-                'gamma': args.gamma
+            "irt": {
+                "alpha": args.alpha,
+                "alpha_min": args.alpha_min,
+                "alpha_max": args.alpha_max if args.alpha_max else args.alpha,
+                "eps": args.eps,
+                "max_iters": args.max_iters,
+                "replicator_temp": args.replicator_temp,
+                "ema_beta": args.ema_beta,
+                "eta_0": args.eta_0,
+                "eta_1": args.eta_1,
+                "gamma": args.gamma,
             }
         }
 
@@ -351,11 +357,11 @@ def test_irt(args, model_path=None):
         save_evaluation_results(results, Path(log_dir), config)
 
     return {
-        'portfolio_values': portfolio_values,
-        'final_value': final_value,
-        'total_return': total_return,
-        'metrics': metrics,
-        'steps': step
+        "portfolio_values": portfolio_values,
+        "final_value": final_value,
+        "total_return": total_return,
+        "metrics": metrics,
+        "steps": step,
     }
 
 
@@ -363,67 +369,153 @@ def main():
     parser = argparse.ArgumentParser(description="IRT Policy Training/Evaluation")
 
     # Mode
-    parser.add_argument("--mode", type=str, default="both",
-                        choices=['train', 'test', 'both'],
-                        help="Execution mode (default: both)")
+    parser.add_argument(
+        "--mode",
+        type=str,
+        default="both",
+        choices=["train", "test", "both"],
+        help="Execution mode (default: both)",
+    )
 
     # Data period (defaults from config.py)
-    parser.add_argument("--train-start", type=str, default=TRAIN_START_DATE,
-                        help=f"Training start date (default: {TRAIN_START_DATE})")
-    parser.add_argument("--train-end", type=str, default=TRAIN_END_DATE,
-                        help=f"Training end date (default: {TRAIN_END_DATE})")
-    parser.add_argument("--test-start", type=str, default=TEST_START_DATE,
-                        help=f"Test start date (default: {TEST_START_DATE})")
-    parser.add_argument("--test-end", type=str, default=TEST_END_DATE,
-                        help=f"Test end date (default: {TEST_END_DATE})")
+    parser.add_argument(
+        "--train-start",
+        type=str,
+        default=TRAIN_START_DATE,
+        help=f"Training start date (default: {TRAIN_START_DATE})",
+    )
+    parser.add_argument(
+        "--train-end",
+        type=str,
+        default=TRAIN_END_DATE,
+        help=f"Training end date (default: {TRAIN_END_DATE})",
+    )
+    parser.add_argument(
+        "--test-start",
+        type=str,
+        default=TEST_START_DATE,
+        help=f"Test start date (default: {TEST_START_DATE})",
+    )
+    parser.add_argument(
+        "--test-end",
+        type=str,
+        default=TEST_END_DATE,
+        help=f"Test end date (default: {TEST_END_DATE})",
+    )
 
     # Training settings
-    parser.add_argument("--episodes", type=int, default=200,
-                        help="Number of episodes (default: 200)")
-    parser.add_argument("--output", type=str, default="logs",
-                        help="Output directory (default: logs)")
+    parser.add_argument(
+        "--episodes", type=int, default=200, help="Number of episodes (default: 200)"
+    )
+    parser.add_argument(
+        "--output", type=str, default="logs", help="Output directory (default: logs)"
+    )
 
     # IRT parameters
-    parser.add_argument("--emb-dim", type=int, default=128,
-                        help="IRT embedding dimension (default: 128)")
-    parser.add_argument("--m-tokens", type=int, default=6,
-                        help="Number of epitope tokens (default: 6)")
-    parser.add_argument("--M-proto", type=int, default=8,
-                        help="Number of prototypes (default: 8)")
-    parser.add_argument("--alpha", type=float, default=0.3,
-                        help="Base OT-Replicator mixing ratio (default: 0.3)")
-    parser.add_argument("--alpha-min", type=float, default=0.06,
-                        help="Crisis minimum alpha (default: 0.06)")
-    parser.add_argument("--alpha-max", type=float, default=None,
-                        help="Normal maximum alpha (default: --alpha value)")
-    parser.add_argument("--ema-beta", type=float, default=0.85,
-                        help="EMA memory coefficient (default: 0.85)")
-    parser.add_argument("--eps", type=float, default=0.05,
-                        help="Sinkhorn entropy (default: 0.05, Phase 1)")
-    parser.add_argument("--max-iters", type=int, default=30,
-                        help="Sinkhorn max iterations (default: 30, Phase 1)")
-    parser.add_argument("--replicator-temp", type=float, default=0.7,
-                        help="Replicator softmax temperature (default: 0.7, Phase 1)")
-    parser.add_argument("--eta-0", type=float, default=0.05,
-                        help="Base learning rate (Replicator) (default: 0.05)")
-    parser.add_argument("--eta-1", type=float, default=0.18,
-                        help="Crisis increase (Replicator) (default: 0.18)")
-    parser.add_argument("--gamma", type=float, default=0.8,
-                        help="Co-stimulation weight in cost function (default: 0.8)")
-    parser.add_argument("--market-feature-dim", type=int, default=12,
-                        help="Market feature dimension (default: 12)")
+    parser.add_argument(
+        "--emb-dim",
+        type=int,
+        default=128,
+        help="IRT embedding dimension (default: 128)",
+    )
+    parser.add_argument(
+        "--m-tokens", type=int, default=6, help="Number of epitope tokens (default: 6)"
+    )
+    parser.add_argument(
+        "--M-proto", type=int, default=8, help="Number of prototypes (default: 8)"
+    )
+    parser.add_argument(
+        "--alpha",
+        type=float,
+        default=0.3,
+        help="Base OT-Replicator mixing ratio (default: 0.3)",
+    )
+    parser.add_argument(
+        "--alpha-min",
+        type=float,
+        default=0.06,
+        help="Crisis minimum alpha (default: 0.06)",
+    )
+    parser.add_argument(
+        "--alpha-max",
+        type=float,
+        default=None,
+        help="Normal maximum alpha (default: --alpha value)",
+    )
+    parser.add_argument(
+        "--ema-beta",
+        type=float,
+        default=0.85,
+        help="EMA memory coefficient (default: 0.85)",
+    )
+    parser.add_argument(
+        "--eps",
+        type=float,
+        default=0.05,
+        help="Sinkhorn entropy (default: 0.05, Phase 1)",
+    )
+    parser.add_argument(
+        "--max-iters",
+        type=int,
+        default=30,
+        help="Sinkhorn max iterations (default: 30, Phase 1)",
+    )
+    parser.add_argument(
+        "--replicator-temp",
+        type=float,
+        default=0.7,
+        help="Replicator softmax temperature (default: 0.7, Phase 1)",
+    )
+    parser.add_argument(
+        "--eta-0",
+        type=float,
+        default=0.05,
+        help="Base learning rate (Replicator) (default: 0.05)",
+    )
+    parser.add_argument(
+        "--eta-1",
+        type=float,
+        default=0.18,
+        help="Crisis increase (Replicator) (default: 0.18)",
+    )
+    parser.add_argument(
+        "--gamma",
+        type=float,
+        default=0.8,
+        help="Co-stimulation weight in cost function (default: 0.8)",
+    )
+    parser.add_argument(
+        "--market-feature-dim",
+        type=int,
+        default=12,
+        help="Market feature dimension (default: 12)",
+    )
 
     # Evaluation only
-    parser.add_argument("--checkpoint", type=str, default=None,
-                        help="Checkpoint path for evaluation (required for --mode test)")
+    parser.add_argument(
+        "--checkpoint",
+        type=str,
+        default=None,
+        help="Checkpoint path for evaluation (required for --mode test)",
+    )
 
     # Visualization (기본값: 모두 저장)
-    parser.add_argument("--no-plot", action="store_true",
-                        help="Disable saving evaluation plots (default: enabled)")
-    parser.add_argument("--output-plot", type=str, default=None,
-                        help="Plot output directory (default: log_dir/evaluation_plots)")
-    parser.add_argument("--no-json", action="store_true",
-                        help="Disable saving evaluation results as JSON (default: enabled)")
+    parser.add_argument(
+        "--no-plot",
+        action="store_true",
+        help="Disable saving evaluation plots (default: enabled)",
+    )
+    parser.add_argument(
+        "--output-plot",
+        type=str,
+        default=None,
+        help="Plot output directory (default: log_dir/evaluation_plots)",
+    )
+    parser.add_argument(
+        "--no-json",
+        action="store_true",
+        help="Disable saving evaluation results as JSON (default: enabled)",
+    )
 
     args = parser.parse_args()
 
