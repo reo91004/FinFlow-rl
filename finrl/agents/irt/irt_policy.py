@@ -251,14 +251,15 @@ class IRTPolicy(SACPolicy):
         dirichlet_max: float = 50.0,
         eps: float = 0.05,
         max_iters: int = 30,
-        replicator_temp: float = 0.7,
+        replicator_temp: float = 0.9,
         eta_0: float = 0.05,
-        eta_1: float = 0.18,
-        gamma: float = 0.8,
-        # Phase 3.5 Step 3: 위기 균형 복원
-        w_r: float = 0.7,
-        w_s: float = 0.2,
-        w_c: float = 0.1,
+        eta_1: float = 0.25,
+        gamma: float = 0.6,
+        # Phase B: 위기 중립점 보정
+        w_r: float = 0.6,
+        w_s: float = 0.25,
+        w_c: float = 0.15,
+        eta_b: float = 2e-3,
     ):
         """
         Args:
@@ -283,6 +284,7 @@ class IRTPolicy(SACPolicy):
             w_r: 시장 위기 신호 가중치 (T-Cell 출력)
             w_s: Sharpe 신호 가중치 (DSR bonus)
             w_c: CVaR 신호 가중치
+            eta_b: 바이어스 학습률 (crisis_regime_pct 중립화용)
         """
         # IRT 파라미터 저장
         self.emb_dim = emb_dim
@@ -304,6 +306,7 @@ class IRTPolicy(SACPolicy):
         self.w_r = w_r
         self.w_s = w_s
         self.w_c = w_c
+        self.eta_b = eta_b
 
         # SACPolicy 초기화
         super().__init__(
@@ -360,7 +363,8 @@ class IRTPolicy(SACPolicy):
             gamma=self.gamma,
             w_r=self.w_r,
             w_s=self.w_s,
-            w_c=self.w_c
+            w_c=self.w_c,
+            eta_b=self.eta_b
         )
 
         # Wrapper로 감싸기 (self 전달: Critic 참조용)
@@ -397,6 +401,7 @@ class IRTPolicy(SACPolicy):
                 w_r=self.w_r,
                 w_s=self.w_s,
                 w_c=self.w_c,
+                eta_b=self.eta_b,
             )
         )
         return data

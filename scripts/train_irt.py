@@ -249,6 +249,8 @@ def train_irt(args):
         "w_r": args.w_r,
         "w_s": args.w_s,
         "w_c": args.w_c,
+        # Phase B: 바이어스 EMA 보정
+        "eta_b": args.eta_b,
     }
 
     # SAC parameters (Phase 2.5: 안정화)
@@ -431,10 +433,11 @@ def test_irt(args, model_path=None):
                 "eta_0": args.eta_0,
                 "eta_1": args.eta_1,
                 "gamma": args.gamma,
-                # Phase 3.5 Step 2
+                # Phase B
                 "w_r": args.w_r,
                 "w_s": args.w_s,
                 "w_c": args.w_c,
+                "eta_b": args.eta_b,
             }
         }
 
@@ -549,8 +552,8 @@ def main():
     parser.add_argument(
         "--replicator-temp",
         type=float,
-        default=0.7,
-        help="Replicator softmax temperature (default: 0.7, Phase 1)",
+        default=0.9,
+        help="Replicator softmax temperature (default: 0.9, Phase C)",
     )
     parser.add_argument(
         "--eta-0",
@@ -561,14 +564,14 @@ def main():
     parser.add_argument(
         "--eta-1",
         type=float,
-        default=0.18,
-        help="Crisis increase (Replicator) (default: 0.18)",
+        default=0.25,
+        help="Crisis increase (Replicator) (default: 0.25, Phase C)",
     )
     parser.add_argument(
         "--gamma",
         type=float,
-        default=0.8,
-        help="Co-stimulation weight in cost function (default: 0.8)",
+        default=0.6,
+        help="Co-stimulation weight in cost function (default: 0.6, Phase C)",
     )
     parser.add_argument(
         "--market-feature-dim",
@@ -588,8 +591,8 @@ def main():
     parser.add_argument(
         "--lambda-dsr",
         type=float,
-        default=0.1,
-        help="DSR bonus weight (default: 0.1, Phase 3)",
+        default=0.15,
+        help="DSR bonus weight (default: 0.15, Phase C)",
     )
     parser.add_argument(
         "--lambda-cvar",
@@ -598,24 +601,30 @@ def main():
         help="CVaR penalty weight (default: 0.05, Phase 3)",
     )
 
-    # Phase A: 위기 균형 복원
+    # Phase B: 위기 중립점 보정
     parser.add_argument(
         "--w-r",
         type=float,
-        default=0.7,
-        help="Market crisis signal weight (T-Cell output) (default: 0.7, Phase A)",
+        default=0.6,
+        help="Market crisis signal weight (T-Cell output) (default: 0.6, Phase B)",
     )
     parser.add_argument(
         "--w-s",
         type=float,
-        default=0.2,
-        help="Sharpe signal weight (DSR bonus) (default: 0.2, Phase A)",
+        default=0.25,
+        help="Sharpe signal weight (DSR bonus) (default: 0.25, Phase B)",
     )
     parser.add_argument(
         "--w-c",
         type=float,
-        default=0.1,
-        help="CVaR signal weight (default: 0.1, Phase A)",
+        default=0.15,
+        help="CVaR signal weight (default: 0.15, Phase B)",
+    )
+    parser.add_argument(
+        "--eta-b",
+        type=float,
+        default=2e-3,
+        help="Bias learning rate for crisis neutralization (default: 2e-3, Phase B)",
     )
 
     # Evaluation only

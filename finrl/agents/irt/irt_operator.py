@@ -101,17 +101,17 @@ class IRT(nn.Module):
                  alpha: float = 0.3,
                  alpha_min: float = 0.10,
                  alpha_max: Optional[float] = None,
-                 gamma: float = 0.8,
+                 gamma: float = 0.6,
                  lambda_tol: float = 2.0,
                  rho: float = 0.3,
                  eta_0: float = 0.05,
-                 eta_1: float = 0.18,
+                 eta_1: float = 0.25,
                  kappa: float = 1.0,
                  eps_tol: float = 0.1,
                  n_self_sigs: int = 4,
                  max_iters: int = 30,
                  tol: float = 1e-3,
-                 replicator_temp: float = 0.7):
+                 replicator_temp: float = 0.9):
         super().__init__()
 
         self.emb_dim = emb_dim
@@ -290,11 +290,13 @@ class IRT(nn.Module):
         pi_c = torch.tensor(torch.pi, device=crisis_level_safe.device) * crisis_level_safe
         alpha_c = self.alpha_max + (self.alpha_min - self.alpha_max) * (1 - torch.cos(pi_c)) / 2
 
-        # ===== Step 3.5: Sharpe gradient feedback =====
+        # ===== Step 3.5: Sharpe gradient feedback (Phase C: 이득 증폭) =====
         # delta_sharpe > 0 (상승) → alpha_c 증가 → OT 기여 ↑
         # delta_sharpe < 0 (하락) → alpha_c 감소 → Rep 기여 ↑
+        # 곱셈(0.6) + 가법(+0.07): 저α 영역에서도 feedback 효과 유지
         delta_sharpe_safe = torch.nan_to_num(delta_sharpe, nan=0.0)  # [B, 1]
-        alpha_c = alpha_c * (1 + 0.3 * torch.tanh(delta_sharpe_safe))
+        delta_tanh = torch.tanh(delta_sharpe_safe)
+        alpha_c = alpha_c * (1 + 0.6 * delta_tanh) + 0.07 * delta_tanh
         alpha_c = torch.clamp(alpha_c, min=self.alpha_min, max=self.alpha_max)
         # alpha_c: [B, 1]
 

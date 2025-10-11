@@ -41,6 +41,8 @@ class BCellIRTActor(nn.Module):
                  w_r: float = 0.6,
                  w_s: float = 0.25,
                  w_c: float = 0.15,
+                 # Phase B: 바이어스 EMA 보정
+                 eta_b: float = 2e-3,
                  **irt_kwargs):
         """
         Args:
@@ -59,6 +61,7 @@ class BCellIRTActor(nn.Module):
             w_r: 시장 위기 신호 가중치 (T-Cell 출력)
             w_s: Sharpe 신호 가중치 (DSR bonus)
             w_c: CVaR 신호 가중치
+            eta_b: 바이어스 학습률 (crisis_regime_pct 중립화용)
             **irt_kwargs: IRT 파라미터 (eps, eta_0, eta_1 등)
         """
         super().__init__()
@@ -77,6 +80,10 @@ class BCellIRTActor(nn.Module):
         self.w_r = w_r
         self.w_s = w_s
         self.w_c = w_c
+
+        # Phase B: 바이어스 EMA 보정
+        self.eta_b = eta_b
+        self.register_buffer('crisis_bias', torch.zeros(1))
 
         # ===== 에피토프 인코더 =====
         self.epitope_encoder = nn.Sequential(
@@ -196,16 +203,25 @@ class BCellIRTActor(nn.Module):
             cvar_scaled = torch.sigmoid(torch.abs(cvar) * 50.0)
 
             # 3개 신호 가중 평균 (w_r + w_s + w_c = 1.0 → 출력도 [0, 1])
-            crisis_level = (
+            crisis_level_raw = (
                 self.w_r * crisis_base
                 + self.w_s * delta_sharpe_scaled
                 + self.w_c * cvar_scaled
             )  # [B, 1]
+
+            # Phase B: 바이어스 보정 (crisis_regime_pct → 0.5)
+            crisis_level = crisis_level_raw + self.crisis_bias.to(state.device)
+
+            # 학습 중 바이어스 EMA 업데이트
+            if self.training and B > 1:
+                with torch.no_grad():
+                    p = (crisis_level > 0.5).float().mean()
+                    self.crisis_bias = self.crisis_bias - self.eta_b * (p - 0.5)
         else:
             # 후진 호환: DSR/CVaR 없으면 T-Cell 출력만 사용
             delta_sharpe = torch.zeros(B, 1, device=state.device)
             cvar = torch.zeros(B, 1, device=state.device)
-            crisis_level = crisis_base
+            crisis_level = crisis_base + self.crisis_bias.to(state.device)
 
         # ===== Step 2: 에피토프 인코딩 =====
         E = self.epitope_encoder(state).view(B, self.m, self.emb_dim)  # [B, m, D]
