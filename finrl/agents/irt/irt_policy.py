@@ -253,12 +253,12 @@ class IRTPolicy(SACPolicy):
         max_iters: int = 30,
         replicator_temp: float = 0.9,
         eta_0: float = 0.05,
-        eta_1: float = 0.25,
-        gamma: float = 0.6,
-        # Phase B: 위기 중립점 보정
-        w_r: float = 0.6,
-        w_s: float = 0.25,
-        w_c: float = 0.15,
+        eta_1: float = 0.12,  # Phase E: 민감도 완화
+        gamma: float = 0.85,  # Phase E: 평활화 증가
+        # Phase E: 위기신호 가중 재균형 (log-return 기반 위기 신호 우선)
+        w_r: float = 0.8,  # 시장 위기 신호 (T-Cell) 가중 증가
+        w_s: float = 0.15,  # Sharpe 신호 (DSR) 가중 감소
+        w_c: float = 0.05,  # CVaR 신호 가중 감소
         eta_b: float = 2e-3,
     ):
         """

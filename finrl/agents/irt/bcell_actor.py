@@ -212,8 +212,9 @@ class BCellIRTActor(nn.Module):
             # Phase B: 바이어스 보정 (crisis_regime_pct → 0.5)
             crisis_level = crisis_level_raw + self.crisis_bias.to(state.device)
 
-            # 학습 중 바이어스 EMA 업데이트
-            if self.training and B > 1:
+            # Phase E: 버그 픽스 - B=1(DummyVecEnv)에서도 바이어스 업데이트
+            # 학습 중 바이어스 EMA 업데이트 (배치 크기 무관)
+            if self.training:
                 with torch.no_grad():
                     p = (crisis_level > 0.5).float().mean()
                     self.crisis_bias = self.crisis_bias - self.eta_b * (p - 0.5)

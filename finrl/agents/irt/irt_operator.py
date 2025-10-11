@@ -101,11 +101,11 @@ class IRT(nn.Module):
                  alpha: float = 0.3,
                  alpha_min: float = 0.10,
                  alpha_max: Optional[float] = None,
-                 gamma: float = 0.6,
+                 gamma: float = 0.85,  # Phase E: 0.6 → 0.85 (평활화 증가)
                  lambda_tol: float = 2.0,
                  rho: float = 0.3,
                  eta_0: float = 0.05,
-                 eta_1: float = 0.25,
+                 eta_1: float = 0.12,  # Phase E: 0.25 → 0.12 (민감도 완화)
                  kappa: float = 1.0,
                  eps_tol: float = 0.1,
                  n_self_sigs: int = 4,

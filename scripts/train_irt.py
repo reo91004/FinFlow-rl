@@ -50,47 +50,93 @@ from evaluate import evaluate_model
 
 class IRTLoggingCallback(BaseCallback):
     """
-    Phase A: IRT 중간 변수 텐서보드 로깅
+    Phase D: IRT 중간 변수 텐서보드 로깅 (교정)
 
     100 스텝마다 IRT 내부 변수를 기록:
     - crisis_level: 위기 감지 레벨
     - alpha_c: 동적 OT-Replicator 혼합 비율
-    - w_rep, w_ot: Replicator/OT 기여도
+    - rep_contribution/ot_contribution: 혼합 후 실제 기여도
     - entropy: 프로토타입 혼합 다양성
+    - prototype_max_weight: 프로토타입 과점 지표
+
+    Phase D 교정 사항:
+    1. rep_contribution = (1 - alpha_c).mean() (프로토타입 축 평균 금지)
+    2. ot_contribution = alpha_c.mean()
+    3. std_alpha_c: 타임축 EMA 분산 (B=1 가드 제거)
+    4. prototype_avg_weights의 max/entropy 추가
     """
 
-    def __init__(self, verbose: int = 0, log_freq: int = 100):
+    def __init__(self, verbose: int = 0, log_freq: int = 100, ema_beta: float = 0.95):
         super().__init__(verbose)
         self.log_freq = log_freq
+        self.ema_beta = ema_beta
+
+        # 타임축 통계 추적 (EMA)
+        self.alpha_c_ema_mean = None  # EMA(alpha_c)
+        self.alpha_c_ema_var = None   # EMA((alpha_c - mean)^2)
 
     def _on_step(self) -> bool:
         if self.n_calls % self.log_freq == 0:
             # IRT info 가져오기
             info = self.model.policy.get_irt_info()
             if info is not None:
-                # 위기 레벨
+                # ===== 위기 레벨 =====
                 self.logger.record("irt/avg_crisis_level", info['crisis_level'].mean().item())
 
-                # alpha_c (OT-Replicator 혼합 비율)
-                self.logger.record("irt/avg_alpha_c", info['alpha_c'].mean().item())
-                # std 계산 (배치=1 대비, unbiased=False)
-                if info['alpha_c'].numel() > 1:
-                    self.logger.record("irt/std_alpha_c", info['alpha_c'].std(unbiased=False).item())
+                # ===== alpha_c (OT-Replicator 혼합 비율) =====
+                alpha_c_val = info['alpha_c'].mean().item()
+                self.logger.record("irt/avg_alpha_c", alpha_c_val)
+
+                # Phase D: 타임축 EMA 분산 (B=1 가드 제거)
+                if self.alpha_c_ema_mean is None:
+                    # 초기화
+                    self.alpha_c_ema_mean = alpha_c_val
+                    self.alpha_c_ema_var = 0.0
                 else:
-                    self.logger.record("irt/std_alpha_c", 0.0)
+                    # EMA 업데이트
+                    delta = alpha_c_val - self.alpha_c_ema_mean
+                    self.alpha_c_ema_mean = self.ema_beta * self.alpha_c_ema_mean + (1 - self.ema_beta) * alpha_c_val
+                    self.alpha_c_ema_var = self.ema_beta * self.alpha_c_ema_var + (1 - self.ema_beta) * (delta ** 2)
 
-                # Replicator vs OT 기여도
-                self.logger.record("irt/avg_w_rep", info['w_rep'].mean().item())
-                self.logger.record("irt/avg_w_ot", info['w_ot'].mean().item())
+                std_alpha_c = self.alpha_c_ema_var ** 0.5 if self.alpha_c_ema_var is not None else 0.0
+                self.logger.record("irt/std_alpha_c", std_alpha_c)
 
-                # 프로토타입 혼합 엔트로피
+                # ===== Phase D 교정: Replicator vs OT 실제 기여도 =====
+                # w = (1 - alpha_c) * tilde_w + alpha_c * p_mass
+                # 따라서 혼합 후 기여도는:
+                # rep_contribution = (1 - alpha_c).mean()
+                # ot_contribution = alpha_c.mean()
+                alpha_c_tensor = info['alpha_c']  # [B, 1]
+                rep_contribution = (1 - alpha_c_tensor).mean().item()
+                ot_contribution = alpha_c_tensor.mean().item()
+
+                self.logger.record("irt/rep_contribution", rep_contribution)
+                self.logger.record("irt/ot_contribution", ot_contribution)
+
+                # 검증: rep + ot ≈ 1.0
+                contribution_sum = rep_contribution + ot_contribution
+                self.logger.record("irt/contribution_sum", contribution_sum)
+
+                # ===== 프로토타입 혼합 통계 =====
                 w = info['w']  # [B, M]
+
+                # 엔트로피 (다양성 지표)
                 entropy = -torch.sum(w * torch.log(w + 1e-8), dim=-1).mean().item()
                 self.logger.record("irt/avg_entropy", entropy)
 
-                # 프로토타입 최대 가중치 (collapse 지표)
+                # Phase D: 프로토타입 과점 지표
+                # 평균 최대 가중치 (배치 평균)
                 max_proto_weight = w.max(dim=-1)[0].mean().item()
                 self.logger.record("irt/max_proto_weight", max_proto_weight)
+
+                # 프로토타입별 평균 가중치 (M개 프로토타입)
+                prototype_avg_weights = w.mean(dim=0)  # [M]
+                prototype_max_weight_value = prototype_avg_weights.max().item()
+                self.logger.record("irt/prototype_max_weight", prototype_max_weight_value)
+
+                # 프로토타입 가중치 엔트로피 (프로토타입 축 다양성)
+                prototype_entropy = -torch.sum(prototype_avg_weights * torch.log(prototype_avg_weights + 1e-8)).item()
+                self.logger.record("irt/prototype_entropy", prototype_entropy)
 
         return True
 
@@ -564,14 +610,14 @@ def main():
     parser.add_argument(
         "--eta-1",
         type=float,
-        default=0.25,
-        help="Crisis increase (Replicator) (default: 0.25, Phase C)",
+        default=0.12,
+        help="Crisis increase (Replicator) (default: 0.12, Phase E)",
     )
     parser.add_argument(
         "--gamma",
         type=float,
-        default=0.6,
-        help="Co-stimulation weight in cost function (default: 0.6, Phase C)",
+        default=0.85,
+        help="Co-stimulation weight in cost function (default: 0.85, Phase E)",
     )
     parser.add_argument(
         "--market-feature-dim",
@@ -601,24 +647,24 @@ def main():
         help="CVaR penalty weight (default: 0.05, Phase 3)",
     )
 
-    # Phase B: 위기 중립점 보정
+    # Phase E: 위기신호 가중 재균형
     parser.add_argument(
         "--w-r",
         type=float,
-        default=0.6,
-        help="Market crisis signal weight (T-Cell output) (default: 0.6, Phase B)",
+        default=0.8,
+        help="Market crisis signal weight (T-Cell output) (default: 0.8, Phase E)",
     )
     parser.add_argument(
         "--w-s",
         type=float,
-        default=0.25,
-        help="Sharpe signal weight (DSR bonus) (default: 0.25, Phase B)",
+        default=0.15,
+        help="Sharpe signal weight (DSR bonus) (default: 0.15, Phase E)",
     )
     parser.add_argument(
         "--w-c",
         type=float,
-        default=0.15,
-        help="CVaR signal weight (default: 0.15, Phase B)",
+        default=0.05,
+        help="CVaR signal weight (default: 0.05, Phase E)",
     )
     parser.add_argument(
         "--eta-b",

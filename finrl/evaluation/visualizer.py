@@ -964,17 +964,28 @@ def _generate_insights(results: dict, config: dict = None) -> dict:
     }
 
     # ===== 4. IRT Decomposition =====
-    alpha = config.get('irt', {}).get('alpha', 0.3) if config else 0.3
-    w_rep_norm = np.linalg.norm(w_rep, axis=1) if len(w_rep.shape) > 1 else np.array([0])
-    w_ot_norm = np.linalg.norm(w_ot, axis=1) if len(w_ot.shape) > 1 else np.array([0])
+    # Phase D 교정: 동적 alpha_c를 사용한 실제 기여도 계산
+    # w = (1 - alpha_c) * tilde_w + alpha_c * p_mass
+    # rep_contribution = (1 - alpha_c).mean()
+    # ot_contribution = alpha_c.mean()
 
-    w_rep_contrib = (1 - alpha) * w_rep_norm.mean() if len(w_rep_norm) > 0 else 0.0
-    w_ot_contrib = alpha * w_ot_norm.mean() if len(w_ot_norm) > 0 else 0.0
-    total_contrib = w_rep_contrib + w_ot_contrib
+    if len(alpha_c_list) > 0:
+        # 동적 alpha_c 기반 기여도 (혼합 후 실제 기여도)
+        rep_contribution = (1 - alpha_c_list).mean()
+        ot_contribution = alpha_c_list.mean()
+    else:
+        # alpha_c 없으면 후진 호환 (config의 고정 alpha 사용)
+        alpha = config.get('irt', {}).get('alpha', 0.3) if config else 0.3
+        rep_contribution = 1 - alpha
+        ot_contribution = alpha
+
+    # 정규화 검증: rep + ot ≈ 1.0
+    total_contrib = rep_contribution + ot_contribution
 
     irt_decomposition = {
-        'avg_w_rep_contribution': float(w_rep_contrib / total_contrib) if total_contrib > 0 else 0.0,
-        'avg_w_ot_contribution': float(w_ot_contrib / total_contrib) if total_contrib > 0 else 0.0,
+        'avg_w_rep_contribution': float(rep_contribution),
+        'avg_w_ot_contribution': float(ot_contribution),
+        'contribution_sum': float(total_contrib),
         'correlation_w_rep_w_ot': float(np.corrcoef(w_rep.flatten(), w_ot.flatten())[0, 1]) if len(w_rep.flatten()) > 1 else 0.0,
         'avg_eta': float(eta_list.mean()) if len(eta_list) > 0 else 0.0,
         'max_eta': float(eta_list.max()) if len(eta_list) > 0 else 0.0,
