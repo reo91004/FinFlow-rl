@@ -493,11 +493,12 @@ def train_irt(args):
     # SAC parameters
     sac_params = SAC_PARAMS.copy()
 
-    # Phase 2.1: Fixed entropy coefficient (NOT auto for simplex actions!)
-    # Simplex entropy H ∈ [0, log(30)] = [0, 3.40] (positive!)
-    # SAC's "auto" uses negative target (for continuous Box actions)
-    # This causes explosion with simplex → use fixed value
-    sac_params["ent_coef"] = 0.3  # Fixed, 6x higher than Phase 1 (0.05)
+    # Phase 2.2a: Increase entropy coefficient for exploration
+    # Simplex entropy H ∈ [0, log(30)] = [0, 3.40]
+    # Portfolio allocation requires higher exploration than typical continuous control
+    # 0.3 (Phase 2.1) was too conservative → uniform freeze
+    # 0.5 balances exploration and stability (comparable to portfolio RL literature)
+    sac_params["ent_coef"] = 0.5  # Phase 2.2a: 0.3 → 0.5 (enable diversity)
     sac_params["learning_starts"] = 1000  # Phase 2: 5000 → 1000 (faster warmup)
 
     # Phase-H1: Critic learning rate 상향 (adaptive_risk 전용)

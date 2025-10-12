@@ -33,7 +33,7 @@ class BCellIRTActor(nn.Module):
                  alpha: float = 0.3,
                  alpha_min: float = 0.06,
                  alpha_max: Optional[float] = None,
-                 ema_beta: float = 0.65,  # Phase 3.5: 0.70 → 0.65 (반응성 35%)
+                 ema_beta: float = 0.5,  # Phase 2.2a: 0.65 → 0.5 (faster adaptation to fitness signals)
                  market_feature_dim: int = 12,
                  dirichlet_min: float = 0.1,  # Phase 2: 0.8 → 0.1 (allow sparsity for exploration)
                  dirichlet_max: float = 5.0,  # Phase 2: keep 5.0 (Dirichlet stochastic path)
@@ -112,16 +112,26 @@ class BCellIRTActor(nn.Module):
 
         # ===== 프로토타입별 Dirichlet 디코더 =====
         # 각 프로토타입은 독립적인 정책 (전문가)
+        # Phase 3.1: Tanh transformation to allow prototype suppression
         self.decoders = nn.ModuleList([
             nn.Sequential(
                 nn.Linear(emb_dim, 128),
                 nn.ReLU(),
                 nn.Dropout(0.1),
                 nn.Linear(128, action_dim),
-                nn.Softplus()  # 양수 concentration 보장
+                nn.Tanh(),  # [-1, 1] allows both positive and negative logits
             )
             for _ in range(M_proto)
         ])
+        
+        # Phase 3.1: Initialize with diversity (keep from 2.2a)
+        for decoder_idx, decoder in enumerate(self.decoders):
+            # decoder[-2] is the final Linear(128, action_dim) layer before Tanh
+            final_linear = decoder[-2]
+            # Initialize with variance to break symmetry
+            torch.nn.init.normal_(final_linear.bias, mean=0.0, std=0.5)
+            # Offset each prototype differently
+            final_linear.bias.data += (decoder_idx - self.M / 2) * 0.2
 
         # ===== IRT 연산자 =====
         self.irt = IRT(
@@ -274,27 +284,31 @@ class BCellIRTActor(nn.Module):
 
         # ===== Step 6: Dirichlet 혼합 정책 =====
         # 각 프로토타입의 concentration 계산
-        concentrations = torch.stack([
+        # Phase 3.1: Tanh output [-1, 1] → scale to [-5, 10] → clamp [0.01, 10]
+        concentrations_raw = torch.stack([
             self.decoders[j](K[:, j, :]) for j in range(self.M)
-        ], dim=1)  # [B, M, A]
+        ], dim=1)  # [B, M, A] with Tanh output ∈ [-1, 1]
+        
+        # Transform: [-1, 1] → [-5, 10] allows true suppression
+        # x * 7.5 + 2.5: -1 → -5, 0 → 2.5, 1 → 10
+        concentrations = concentrations_raw * 7.5 + 2.5  # [B, M, A]
+        concentrations = torch.clamp(concentrations, min=0.01)  # Ensure positive for Dirichlet
 
         # IRT 가중치로 혼합
-        # Phase 2: Remove +1.0 bias to allow negative logits → wider dynamic range
         mixed_conc = torch.einsum('bm,bma->ba', w, concentrations)  # [B, A]
 
         if deterministic:
             # 결정적: softmax with temperature (logit-based, NOT Dirichlet)
-            # Phase 2: Use mixed_conc as logits directly
+            # Phase 3.1: mixed_conc ∈ [0.01, 10] can be used as logits
             # Lower temp → sharper (amplifies differences)
             # Higher temp → flatter (smooths differences)
             action = F.softmax(mixed_conc / self.action_temp, dim=-1)
         else:
             # 확률적: Dirichlet 샘플 (probability-based, different from deterministic!)
-            # Phase 2: Use abs(mixed_conc) as Dirichlet α (must be positive)
+            # Phase 3.1: mixed_conc already positive after clamp, use directly as α
             # α < 1: Sparse (corners), α = 1: Uniform, α > 1: Peaked near uniform
-            # Clamp to [0.1, 5.0] allows sparsity exploration
-            mixed_conc_positive = torch.abs(mixed_conc) + 0.1  # Ensure positive + minimum
-            mixed_conc_clamped = torch.clamp(mixed_conc_positive, min=self.dirichlet_min, max=self.dirichlet_max)
+            # Clamp to [dirichlet_min, dirichlet_max] for numerical stability
+            mixed_conc_clamped = torch.clamp(mixed_conc, min=self.dirichlet_min, max=self.dirichlet_max)
             dist = torch.distributions.Dirichlet(mixed_conc_clamped)
             action = dist.sample()
 
