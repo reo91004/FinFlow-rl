@@ -17,6 +17,7 @@ IRT Policy 학습 스크립트
 """
 
 import argparse
+import json
 import os
 from datetime import datetime
 import numpy as np
@@ -46,6 +47,26 @@ import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
 from evaluate import evaluate_model
+
+
+def _unwrap_env(env):
+    """
+    Recursively unwrap VecEnv/Gym wrappers to obtain the base environment.
+    """
+    env_ref = env
+    visited = set()
+    while True:
+        if id(env_ref) in visited:
+            break
+        visited.add(id(env_ref))
+        if hasattr(env_ref, "envs") and len(getattr(env_ref, "envs")) > 0:
+            env_ref = env_ref.envs[0]
+            continue
+        if hasattr(env_ref, "env"):
+            env_ref = env_ref.env
+            continue
+        break
+    return env_ref
 
 
 class IRTLoggingCallback(BaseCallback):
@@ -204,43 +225,80 @@ class CrisisBridgeCallback(BaseCallback):
     - IRT Policy 사용 시 필수
     """
 
-    def __init__(self, verbose: int = 0):
+    def __init__(self, learning_starts: int = 5000, verbose: int = 0):
         super().__init__(verbose)
+        self.learning_starts = learning_starts
         self._warned_once = False
+        self._connected_once = False
 
     def _on_step(self) -> bool:
-        # Policy에서 IRT info 추출
-        info = self.model.policy.get_irt_info()
-        if info is None:
+        if self.model is None:
+            return True
+
+        # learning_starts 이전에는 policy가 충분히 warm-up되지 않았으므로 skip
+        if getattr(self.model, "num_timesteps", 0) < self.learning_starts:
+            return True
+
+        info = None
+        try:
+            policy = getattr(self.model, "policy", None)
+            if policy is not None and hasattr(policy, "get_irt_info"):
+                info = policy.get_irt_info()
+        except Exception as exc:
+            if not self._warned_once:
+                print(f"⚠️  CrisisBridgeCallback: Failed to fetch IRT info ({exc})")
+                self._warned_once = True
+            return True
+
+        if not info or "crisis_level" not in info:
             if not self._warned_once:
                 print("⚠️  CrisisBridgeCallback: IRT info not available, skipping")
                 self._warned_once = True
             return True
 
-        # Crisis level 추출 (batch=1 가정)
-        crisis_level = info['crisis_level'][0].item()
+        crisis_tensor = info["crisis_level"]
+        if isinstance(crisis_tensor, torch.Tensor):
+            crisis_level = float(crisis_tensor.detach().cpu().mean().item())
+        elif isinstance(crisis_tensor, (np.ndarray, list)):
+            crisis_level = float(np.mean(crisis_tensor))
+        else:
+            crisis_level = float(crisis_tensor)
 
-        # Environment에 전달 (DummyVecEnv wrapper를 통해 접근)
         try:
-            # DummyVecEnv의 경우 envs[0]로 접근
-            if hasattr(self.training_env, 'envs'):
-                env = self.training_env.envs[0]
-            else:
-                env = self.training_env
+            base_env = _unwrap_env(self.model.get_env())
+            setattr(base_env, "_crisis_level", crisis_level)
 
-            # AdaptiveRiskReward가 있으면 업데이트
-            if hasattr(env, 'risk_reward') and env.risk_reward is not None:
-                if hasattr(env.risk_reward, 'set_crisis_level'):
-                    env.risk_reward.set_crisis_level(crisis_level)
-        except Exception as e:
+            risk_reward = getattr(base_env, "risk_reward", None)
+            if risk_reward is not None and hasattr(risk_reward, "set_crisis_level"):
+                risk_reward.set_crisis_level(crisis_level)
+
+            if hasattr(base_env, "_crisis_history"):
+                base_env._crisis_history.append((int(self.model.num_timesteps), crisis_level))
+
+            if not self._connected_once:
+                print(f"✅ CrisisBridgeCallback: Successfully connected (t={self.model.num_timesteps})")
+                self._connected_once = True
+                self._warned_once = False
+        except Exception as exc:
             if not self._warned_once:
-                print(f"⚠️  CrisisBridgeCallback: Failed to update crisis level: {e}")
+                print(f"⚠️  CrisisBridgeCallback: Failed to update crisis level ({exc})")
                 self._warned_once = True
 
         return True
 
 
-def create_env(df, stock_dim, tech_indicators, reward_type="basic", lambda_dsr=0.1, lambda_cvar=0.05):
+def create_env(
+    df,
+    stock_dim,
+    tech_indicators,
+    reward_type="basic",
+    lambda_dsr=0.1,
+    lambda_cvar=0.05,
+    use_weighted_action: bool = True,
+    weight_slippage: float = 0.001,
+    weight_transaction_cost: float = 0.0005,
+    reward_scaling: float = 1e-4,
+):
     """StockTradingEnv 생성 (Phase 3: DSR + CVaR 보상 지원)"""
 
     # State space: balance(1) + prices(N) + shares(N) + tech_indicators(K*N)
@@ -255,7 +313,7 @@ def create_env(df, stock_dim, tech_indicators, reward_type="basic", lambda_dsr=0
         "num_stock_shares": [0] * stock_dim,
         "buy_cost_pct": [0.001] * stock_dim,
         "sell_cost_pct": [0.001] * stock_dim,
-        "reward_scaling": 1e-4,
+        "reward_scaling": reward_scaling,
         "state_space": state_space,
         "action_space": stock_dim,
         "tech_indicator_list": tech_indicators,
@@ -264,6 +322,9 @@ def create_env(df, stock_dim, tech_indicators, reward_type="basic", lambda_dsr=0
         "reward_type": reward_type,
         "lambda_dsr": lambda_dsr,
         "lambda_cvar": lambda_cvar,
+        "use_weighted_action": use_weighted_action,
+        "weight_slippage": weight_slippage,
+        "weight_transaction_cost": weight_transaction_cost,
     }
 
     return StockTradingEnv(**env_kwargs)
@@ -332,14 +393,35 @@ def train_irt(args):
         train_df, stock_dim, INDICATORS,
         reward_type=args.reward_type,
         lambda_dsr=args.lambda_dsr,
-        lambda_cvar=args.lambda_cvar
+        lambda_cvar=args.lambda_cvar,
+        reward_scaling=args.reward_scale,
+    )
+    print(
+        f"  Train env: reward_scale={train_env.reward_scaling}, "
+        f"use_weighted_action={getattr(train_env, 'use_weighted_action', False)}, "
+        f"slippage={getattr(train_env, 'weight_slippage', None)}, "
+        f"tx_cost={getattr(train_env, 'weight_transaction_cost', None)}"
     )
     test_env = create_env(
         test_df, stock_dim, INDICATORS,
         reward_type=args.reward_type,
         lambda_dsr=args.lambda_dsr,
-        lambda_cvar=args.lambda_cvar
+        lambda_cvar=args.lambda_cvar,
+        reward_scaling=args.reward_scale,
     )
+    print(
+        f"  Test env:  reward_scale={test_env.reward_scaling}, "
+        f"use_weighted_action={getattr(test_env, 'use_weighted_action', False)}, "
+        f"slippage={getattr(test_env, 'weight_slippage', None)}, "
+        f"tx_cost={getattr(test_env, 'weight_transaction_cost', None)}"
+    )
+
+    train_obs_dim = train_env.observation_space.shape[0]
+    test_obs_dim = test_env.observation_space.shape[0]
+    if train_obs_dim != test_obs_dim:
+        raise ValueError(
+            f"Train/Test observation space mismatch: train={train_obs_dim}, test={test_obs_dim}"
+        )
 
     print(f"  State space: {train_env.state_space}")
     print(f"  Action space: {train_env.action_space}")
@@ -376,12 +458,6 @@ def train_irt(args):
 
     # Phase A: IRT 계측 callback
     irt_logging_callback = IRTLoggingCallback(verbose=0, log_freq=100)
-
-    # Phase-H1: Crisis Bridge callback (adaptive_risk 전용)
-    crisis_bridge_callback = None
-    if args.reward_type == "adaptive_risk":
-        crisis_bridge_callback = CrisisBridgeCallback(verbose=0)
-        print("  Phase-H1: CrisisBridgeCallback enabled (Policy→Env crisis signal)")
 
     # IRT Policy kwargs
     policy_kwargs = {
@@ -433,6 +509,15 @@ def train_irt(args):
     print(f"  SAC params: {sac_params}")
     print(f"  IRT params: {policy_kwargs}")
 
+    # Phase-H1: Crisis Bridge callback (adaptive_risk 전용)
+    crisis_bridge_callback = None
+    if args.reward_type == "adaptive_risk":
+        crisis_bridge_callback = CrisisBridgeCallback(
+            learning_starts=sac_params.get("learning_starts", 0),
+            verbose=0,
+        )
+        print("  Phase-H1: CrisisBridgeCallback enabled (Policy→Env crisis signal)")
+
     # Create SAC model with IRT Policy
     model = SAC(
         policy=IRTPolicy,
@@ -470,6 +555,24 @@ def train_irt(args):
     print(f"  Best model: {os.path.join(log_dir, 'best_model', 'best_model.zip')}")
     print(f"  Logs: {log_dir}")
 
+    env_meta = {
+        "obs_dim": int(train_obs_dim),
+        "action_dim": int(train_env.action_space.shape[0]),
+        "feature_columns": df_processed.columns.tolist(),
+        "tech_indicators": list(INDICATORS),
+        "reward_type": args.reward_type,
+        "use_weighted_action": getattr(train_env, "use_weighted_action", True),
+        "weight_slippage": getattr(train_env, "weight_slippage", 0.001),
+        "weight_transaction_cost": getattr(train_env, "weight_transaction_cost", 0.0005),
+        "reward_scaling": args.reward_scale,
+        "train_start": args.train_start,
+        "train_end": args.train_end,
+        "test_start": args.test_start,
+        "test_end": args.test_end,
+    }
+    with open(os.path.join(log_dir, "env_meta.json"), "w") as meta_fp:
+        json.dump(env_meta, meta_fp, indent=2)
+
     return log_dir, final_model_path
 
 
@@ -490,6 +593,25 @@ def test_irt(args, model_path=None):
     print(f"  Model: {model_path}")
     print(f"  Test: {args.test_start} ~ {args.test_end}")
 
+    # 메타데이터 로드 (관측 공간 검증 및 설정 유지)
+    env_meta = {}
+    expected_obs_dim = None
+    use_weighted_action = True
+    weight_slippage = 0.001
+    weight_transaction_cost = 0.0005
+    reward_scaling = args.reward_scale
+    meta_path = os.path.join(os.path.dirname(model_path), "env_meta.json")
+    if os.path.exists(meta_path):
+        with open(meta_path, "r") as meta_fp:
+            env_meta = json.load(meta_fp)
+        expected_obs_dim = env_meta.get("obs_dim")
+        use_weighted_action = env_meta.get("use_weighted_action", use_weighted_action)
+        weight_slippage = env_meta.get("weight_slippage", weight_slippage)
+        weight_transaction_cost = env_meta.get("weight_transaction_cost", weight_transaction_cost)
+        reward_scaling = env_meta.get("reward_scaling", reward_scaling)
+        if env_meta.get("reward_type") and args.reward_type is None:
+            args.reward_type = env_meta["reward_type"]
+
     # evaluate.py의 evaluate_model() 재사용
     portfolio_values, irt_data, metrics = evaluate_model(
         model_path=model_path,
@@ -503,6 +625,11 @@ def test_irt(args, model_path=None):
         reward_type=args.reward_type,  # Phase-H1: reward_type 전달
         lambda_dsr=args.lambda_dsr,
         lambda_cvar=args.lambda_cvar,
+        expected_obs_dim=expected_obs_dim,
+        use_weighted_action=use_weighted_action,
+        weight_slippage=weight_slippage,
+        weight_transaction_cost=weight_transaction_cost,
+        reward_scaling=reward_scaling,
     )
 
     # 결과 추출
@@ -673,6 +800,12 @@ def main():
     )
     parser.add_argument(
         "--output", type=str, default="logs", help="Output directory (default: logs)"
+    )
+    parser.add_argument(
+        "--reward-scale",
+        type=float,
+        default=1e-4,
+        help="Reward scaling factor applied inside the trading environment (default: 1e-4)",
     )
 
     # IRT parameters

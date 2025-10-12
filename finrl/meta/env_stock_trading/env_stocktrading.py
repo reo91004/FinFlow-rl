@@ -62,6 +62,9 @@ class StockTradingEnv(gym.Env):
         dsr_beta: float = 0.99,
         cvar_alpha: float = 0.05,
         cvar_window: int = 50,
+        use_weighted_action: bool = False,
+        weight_slippage: float = 0.001,
+        weight_transaction_cost: float = 0.0005,
     ):
         self.day = day
         self.df = df
@@ -72,6 +75,18 @@ class StockTradingEnv(gym.Env):
         self.buy_cost_pct = buy_cost_pct
         self.sell_cost_pct = sell_cost_pct
         self.reward_scaling = reward_scaling
+        self.use_weighted_action = use_weighted_action
+        self.weight_slippage = weight_slippage
+        self.weight_transaction_cost = weight_transaction_cost
+        self.weights_memory: list[np.ndarray] = []
+        self.executed_weights_memory: list[np.ndarray] = []
+        self.turnover_memory: list[float] = []
+        self._last_turnover: float = 0.0
+        self._last_tc: float = 0.0
+        self._last_turnover_executed: float = 0.0
+        self._crisis_level: float = 0.5
+        self._last_bridge_step: int = -1
+        self._crisis_history: list[tuple[int, float]] = []
 
         # Phase 3.5: state_space에 DSR/CVaR 2개 차원 추가
         if reward_type == "dsr_cvar":
@@ -282,182 +297,276 @@ class StockTradingEnv(gym.Env):
     def step(self, actions):
         self.terminal = self.day >= len(self.df.index.unique()) - 1
         if self.terminal:
-            # print(f"Episode: {self.episode}")
-            if self.make_plots:
-                self._make_plot()
-            end_total_asset = self.state[0] + sum(
+            return self._step_terminal()
+
+        if self.use_weighted_action:
+            return self._step_weight_actions(actions)
+
+        return self._step_share_actions(actions)
+
+    def _step_terminal(self):
+        if self.make_plots:
+            self._make_plot()
+        end_total_asset = self.state[0] + sum(
+            np.array(self.state[1 : (self.stock_dim + 1)])
+            * np.array(self.state[(self.stock_dim + 1) : (self.stock_dim * 2 + 1)])
+        )
+        df_total_value = pd.DataFrame(self.asset_memory)
+        tot_reward = (
+            self.state[0]
+            + sum(
                 np.array(self.state[1 : (self.stock_dim + 1)])
                 * np.array(self.state[(self.stock_dim + 1) : (self.stock_dim * 2 + 1)])
             )
-            df_total_value = pd.DataFrame(self.asset_memory)
-            tot_reward = (
-                self.state[0]
-                + sum(
-                    np.array(self.state[1 : (self.stock_dim + 1)])
-                    * np.array(
-                        self.state[(self.stock_dim + 1) : (self.stock_dim * 2 + 1)]
-                    )
-                )
-                - self.asset_memory[0]
-            )  # initial_amount is only cash part of our initial asset
-            df_total_value.columns = ["account_value"]
-            df_total_value["date"] = self.date_memory
-            df_total_value["daily_return"] = df_total_value["account_value"].pct_change(
-                1
+            - self.asset_memory[0]
+        )
+        df_total_value.columns = ["account_value"]
+        df_total_value["date"] = self.date_memory
+        df_total_value["daily_return"] = df_total_value["account_value"].pct_change(1)
+        sharpe = None
+        if df_total_value["daily_return"].std() != 0:
+            sharpe = (
+                (252**0.5)
+                * df_total_value["daily_return"].mean()
+                / df_total_value["daily_return"].std()
             )
-            if df_total_value["daily_return"].std() != 0:
-                sharpe = (
-                    (252**0.5)
-                    * df_total_value["daily_return"].mean()
-                    / df_total_value["daily_return"].std()
-                )
-            df_rewards = pd.DataFrame(self.rewards_memory)
-            df_rewards.columns = ["account_rewards"]
-            df_rewards["date"] = self.date_memory[:-1]
-            if self.episode % self.print_verbosity == 0:
-                print(f"day: {self.day}, episode: {self.episode}")
-                print(f"begin_total_asset: {self.asset_memory[0]:0.2f}")
-                print(f"end_total_asset: {end_total_asset:0.2f}")
-                print(f"total_reward: {tot_reward:0.2f}")
-                print(f"total_cost: {self.cost:0.2f}")
-                print(f"total_trades: {self.trades}")
-                if df_total_value["daily_return"].std() != 0:
-                    print(f"Sharpe: {sharpe:0.3f}")
-                print("=================================")
+        df_rewards = pd.DataFrame(self.rewards_memory)
+        df_rewards.columns = ["account_rewards"]
+        df_rewards["date"] = self.date_memory[:-1]
+        if self.episode % self.print_verbosity == 0:
+            print(f"day: {self.day}, episode: {self.episode}")
+            print(f"begin_total_asset: {self.asset_memory[0]:0.2f}")
+            print(f"end_total_asset: {end_total_asset:0.2f}")
+            print(f"total_reward: {tot_reward:0.2f}")
+            print(f"total_cost: {self.cost:0.2f}")
+            print(f"total_trades: {self.trades}")
+            if sharpe is not None:
+                print(f"Sharpe: {sharpe:0.3f}")
+            print("=================================")
 
-            if (self.model_name != "") and (self.mode != ""):
-                df_actions = self.save_action_memory()
-                df_actions.to_csv(
-                    "results/actions_{}_{}_{}.csv".format(
-                        self.mode, self.model_name, self.iteration
-                    )
+        if (self.model_name != "") and (self.mode != ""):
+            df_actions = self.save_action_memory()
+            df_actions.to_csv(
+                "results/actions_{}_{}_{}.csv".format(
+                    self.mode, self.model_name, self.iteration
                 )
-                df_total_value.to_csv(
-                    "results/account_value_{}_{}_{}.csv".format(
-                        self.mode, self.model_name, self.iteration
-                    ),
-                    index=False,
+            )
+            df_total_value.to_csv(
+                "results/account_value_{}_{}_{}.csv".format(
+                    self.mode, self.model_name, self.iteration
+                ),
+                index=False,
+            )
+            df_rewards.to_csv(
+                "results/account_rewards_{}_{}_{}.csv".format(
+                    self.mode, self.model_name, self.iteration
+                ),
+                index=False,
+            )
+            plt.plot(self.asset_memory, "r")
+            plt.savefig(
+                "results/account_value_{}_{}_{}.png".format(
+                    self.mode, self.model_name, self.iteration
                 )
-                df_rewards.to_csv(
-                    "results/account_rewards_{}_{}_{}.csv".format(
-                        self.mode, self.model_name, self.iteration
-                    ),
-                    index=False,
-                )
-                plt.plot(self.asset_memory, "r")
-                plt.savefig(
-                    "results/account_value_{}_{}_{}.png".format(
-                        self.mode, self.model_name, self.iteration
-                    )
-                )
-                plt.close()
+            )
+            plt.close()
 
-            # Add outputs to logger interface
-            # logger.record("environment/portfolio_value", end_total_asset)
-            # logger.record("environment/total_reward", tot_reward)
-            # logger.record("environment/total_reward_pct", (tot_reward / (end_total_asset - tot_reward)) * 100)
-            # logger.record("environment/total_cost", self.cost)
-            # logger.record("environment/total_trades", self.trades)
+        info = {
+            "turnover_target": 0.0,
+            "turnover_executed": 0.0,
+            "turnover": self._last_turnover,
+            "transaction_cost": self._last_tc,
+        }
+        return self.state, self.reward, self.terminal, False, info
 
-            return self.state, self.reward, self.terminal, False, {}
+    def _step_share_actions(self, actions):
+        self._last_turnover = 0.0
+        self._last_tc = 0.0
+        self._last_turnover_executed = 0.0
+        actions = actions * self.hmax  # actions initially is scaled between 0 to 1
+        actions = actions.astype(
+            int
+        )  # convert into integer because we can't by fraction of shares
+        if self.turbulence_threshold is not None:
+            if self.turbulence >= self.turbulence_threshold:
+                actions = np.array([-self.hmax] * self.stock_dim)
+        begin_total_asset = self.state[0] + sum(
+            np.array(self.state[1 : (self.stock_dim + 1)])
+            * np.array(self.state[(self.stock_dim + 1) : (self.stock_dim * 2 + 1)])
+        )
+
+        argsort_actions = np.argsort(actions)
+        sell_index = argsort_actions[: np.where(actions < 0)[0].shape[0]]
+        buy_index = argsort_actions[::-1][: np.where(actions > 0)[0].shape[0]]
+
+        for index in sell_index:
+            actions[index] = self._sell_stock(index, actions[index]) * (-1)
+
+        for index in buy_index:
+            actions[index] = self._buy_stock(index, actions[index])
+
+        self.actions_memory.append(actions)
+
+        # state: s -> s+1
+        self.day += 1
+        self.data = self.df.loc[self.day, :]
+        if self.turbulence_threshold is not None:
+            if len(self.df.tic.unique()) == 1:
+                self.turbulence = self.data[self.risk_indicator_col]
+            elif len(self.df.tic.unique()) > 1:
+                self.turbulence = self.data[self.risk_indicator_col].values[0]
+        self.state = self._update_state()
+
+        end_total_asset = self.state[0] + sum(
+            np.array(self.state[1 : (self.stock_dim + 1)])
+            * np.array(self.state[(self.stock_dim + 1) : (self.stock_dim * 2 + 1)])
+        )
+        self.asset_memory.append(end_total_asset)
+        self.date_memory.append(self._get_date())
+
+        # Phase 3: 리스크 민감 보상 계산
+        basic_reward = end_total_asset - begin_total_asset
+
+        if self.reward_type == "dsr_cvar" and self.risk_reward is not None:
+            log_return = np.log(end_total_asset / (begin_total_asset + 1e-8))
+            risk_reward, reward_info = self.risk_reward.compute(log_return)
+            self.last_dsr = float(reward_info["dsr_bonus"])
+            self.last_cvar = float(reward_info["cvar_value"])
+            self.reward = risk_reward * self.reward_scaling
+
+        elif self.reward_type == "adaptive_risk" and self.risk_reward is not None:
+            log_return = np.log(end_total_asset / (begin_total_asset + 1e-8))
+            prices = np.array(self.state[1:(self.stock_dim + 1)])
+            holdings = np.array(self.state[(self.stock_dim + 1):(self.stock_dim * 2 + 1)])
+            portfolio_value = end_total_asset + 1e-8
+            current_weights = (prices * holdings) / portfolio_value
+
+            risk_reward, reward_info = self.risk_reward.compute(log_return, current_weights)
+            self.last_crisis_level = float(reward_info["crisis_level"])
+            self.last_kappa = float(reward_info["kappa"])
+            self.last_delta_sharpe = float(reward_info["delta_sharpe"])
+            self.reward = risk_reward * self.reward_scaling
 
         else:
-            actions = actions * self.hmax  # actions initially is scaled between 0 to 1
-            actions = actions.astype(
-                int
-            )  # convert into integer because we can't by fraction of shares
-            if self.turbulence_threshold is not None:
-                if self.turbulence >= self.turbulence_threshold:
-                    actions = np.array([-self.hmax] * self.stock_dim)
-            begin_total_asset = self.state[0] + sum(
-                np.array(self.state[1 : (self.stock_dim + 1)])
-                * np.array(self.state[(self.stock_dim + 1) : (self.stock_dim * 2 + 1)])
+            self.reward = basic_reward * self.reward_scaling
+
+        self.rewards_memory.append(self.reward)
+        self.state_memory.append(self.state)
+
+        info = {
+            "turnover_target": getattr(self, "_last_turnover", 0.0),
+            "turnover_executed": getattr(self, "_last_turnover_executed", 0.0),
+            "turnover": self._last_turnover,
+            "transaction_cost": self._last_tc,
+        }
+        return self.state, self.reward, self.terminal, False, info
+
+    def _step_weight_actions(self, actions):
+        action_vector = np.asarray(actions, dtype=np.float64).flatten()
+        if action_vector.size != self.stock_dim:
+            raise ValueError(
+                f"Expected action dimension {self.stock_dim}, received {action_vector.size}"
             )
-            # print("begin_total_asset:{}".format(begin_total_asset))
+        action_vector = np.clip(action_vector, 0.0, np.inf)
+        if action_vector.sum() <= 0:
+            target_weights = np.ones_like(action_vector) / len(action_vector)
+        else:
+            target_weights = action_vector / action_vector.sum()
+        if not np.all(np.isfinite(target_weights)):
+            target_weights = np.ones_like(action_vector) / len(action_vector)
 
-            argsort_actions = np.argsort(actions)
-            sell_index = argsort_actions[: np.where(actions < 0)[0].shape[0]]
-            buy_index = argsort_actions[::-1][: np.where(actions > 0)[0].shape[0]]
+        if self.executed_weights_memory:
+            prev_weights = np.asarray(self.executed_weights_memory[-1], dtype=np.float64)
+        else:
+            prev_weights = np.ones(self.stock_dim, dtype=np.float64) / self.stock_dim
 
-            for index in sell_index:
-                # print(f"Num shares before: {self.state[index+self.stock_dim+1]}")
-                # print(f'take sell action before : {actions[index]}')
-                actions[index] = self._sell_stock(index, actions[index]) * (-1)
-                # print(f'take sell action after : {actions[index]}')
-                # print(f"Num shares after: {self.state[index+self.stock_dim+1]}")
+        delta = target_weights - prev_weights
+        turnover_target = 0.5 * float(np.sum(np.abs(delta)))
+        executed_weights = prev_weights + (1.0 - self.weight_slippage) * delta
+        executed_weights = np.clip(executed_weights, 0.0, np.inf)
+        sum_executed = executed_weights.sum()
+        if sum_executed <= 0 or not np.isfinite(sum_executed):
+            executed_weights = np.ones_like(executed_weights) / len(executed_weights)
+        else:
+            executed_weights /= sum_executed
+        if not np.all(np.isfinite(executed_weights)):
+            executed_weights = np.ones_like(executed_weights) / len(executed_weights)
 
-            for index in buy_index:
-                # print('take buy action: {}'.format(actions[index]))
-                actions[index] = self._buy_stock(index, actions[index])
+        actual_turnover = 0.5 * float(np.sum(np.abs(executed_weights - prev_weights)))
+        self.weights_memory.append(target_weights.copy())
+        self.executed_weights_memory.append(executed_weights.copy())
+        self.turnover_memory.append(turnover_target)
+        self._last_turnover = turnover_target
+        self._last_turnover_executed = actual_turnover
 
-            self.actions_memory.append(actions)
+        prices = np.array(self.state[1:(self.stock_dim + 1)], dtype=np.float64)
+        holdings = np.array(
+            self.state[(self.stock_dim + 1):(self.stock_dim * 2 + 1)],
+            dtype=np.float64,
+        )
+        begin_total_asset = float(self.state[0] + np.dot(prices, holdings))
+        portfolio_value = max(begin_total_asset, 1e-8)
 
-            # state: s -> s+1
-            self.day += 1
-            self.data = self.df.loc[self.day, :]
-            if self.turbulence_threshold is not None:
-                if len(self.df.tic.unique()) == 1:
-                    self.turbulence = self.data[self.risk_indicator_col]
-                elif len(self.df.tic.unique()) > 1:
-                    self.turbulence = self.data[self.risk_indicator_col].values[0]
-            self.state = self._update_state()
+        tc_value = self.weight_transaction_cost * turnover_target * portfolio_value
+        self.cost += tc_value
+        self._last_tc = tc_value
+        self.state[0] = max(self.state[0] - tc_value, 0.0)
 
-            end_total_asset = self.state[0] + sum(
-                np.array(self.state[1 : (self.stock_dim + 1)])
-                * np.array(self.state[(self.stock_dim + 1) : (self.stock_dim * 2 + 1)])
+        investable_value = max(portfolio_value - tc_value, 1e-8)
+        new_holdings = (executed_weights * investable_value) / (prices + 1e-8)
+        self.state[(self.stock_dim + 1):(self.stock_dim * 2 + 1)] = new_holdings.tolist()
+        spent = float(np.dot(prices, new_holdings))
+        self.state[0] = max(investable_value - spent, 0.0)
+        self.actions_memory.append(executed_weights.copy())
+        self.trades += int(np.sum(np.abs(delta) > 1e-6))
+
+        # state: s -> s+1
+        self.day += 1
+        self.data = self.df.loc[self.day, :]
+        if self.turbulence_threshold is not None:
+            if len(self.df.tic.unique()) == 1:
+                self.turbulence = self.data[self.risk_indicator_col]
+            elif len(self.df.tic.unique()) > 1:
+                self.turbulence = self.data[self.risk_indicator_col].values[0]
+        self.state = self._update_state()
+
+        end_total_asset = self.state[0] + sum(
+            np.array(self.state[1 : (self.stock_dim + 1)])
+            * np.array(self.state[(self.stock_dim + 1) : (self.stock_dim * 2 + 1)])
+        )
+        self.asset_memory.append(end_total_asset)
+        self.date_memory.append(self._get_date())
+
+        log_return = np.log((end_total_asset + 1e-8) / (begin_total_asset + 1e-8))
+        if self.reward_type == "dsr_cvar" and self.risk_reward is not None:
+            risk_reward, reward_info = self.risk_reward.compute(log_return)
+            self.last_dsr = float(reward_info["dsr_bonus"])
+            self.last_cvar = float(reward_info["cvar_value"])
+            self.reward = risk_reward * self.reward_scaling
+        elif self.reward_type == "adaptive_risk" and self.risk_reward is not None:
+            risk_reward, reward_info = self.risk_reward.compute(
+                log_return, executed_weights
             )
-            self.asset_memory.append(end_total_asset)
-            self.date_memory.append(self._get_date())
-
-            # Phase 3: 리스크 민감 보상 계산
+            self.last_crisis_level = float(reward_info["crisis_level"])
+            self.last_kappa = float(reward_info["kappa"])
+            self.last_delta_sharpe = float(reward_info["delta_sharpe"])
+            self.reward = risk_reward * self.reward_scaling
+        else:
             basic_reward = end_total_asset - begin_total_asset
+            self.reward = basic_reward * self.reward_scaling
 
-            if self.reward_type == "dsr_cvar" and self.risk_reward is not None:
-                # 로그수익 계산 (수치 안정성)
-                log_return = np.log(end_total_asset / (begin_total_asset + 1e-8))
+        self.rewards_memory.append(self.reward)
+        self.state_memory.append(self.state)
 
-                # DSR + CVaR 혼합 보상
-                risk_reward, reward_info = self.risk_reward.compute(log_return)
-
-                # Phase 3.5: DSR/CVaR 버퍼 업데이트 (다음 state에 포함될 값)
-                self.last_dsr = float(reward_info["dsr_bonus"])
-                self.last_cvar = float(reward_info["cvar_value"])
-
-                # reward_scaling 적용
-                self.reward = risk_reward * self.reward_scaling
-
-            elif self.reward_type == "adaptive_risk" and self.risk_reward is not None:
-                # Phase-H1: Adaptive Risk-Aware Reward
-                # 로그수익 계산
-                log_return = np.log(end_total_asset / (begin_total_asset + 1e-8))
-
-                # 현재 포트폴리오 가중치 계산 (simplex 정규화)
-                prices = np.array(self.state[1:(self.stock_dim + 1)])
-                holdings = np.array(self.state[(self.stock_dim + 1):(self.stock_dim * 2 + 1)])
-                portfolio_value = end_total_asset + 1e-8
-                current_weights = (prices * holdings) / portfolio_value
-
-                # Adaptive Risk Reward 계산
-                risk_reward, reward_info = self.risk_reward.compute(log_return, current_weights)
-
-                # Phase-H1: 디버깅 정보 저장
-                self.last_crisis_level = float(reward_info["crisis_level"])
-                self.last_kappa = float(reward_info["kappa"])
-                self.last_delta_sharpe = float(reward_info["delta_sharpe"])
-
-                # reward_scaling 적용
-                self.reward = risk_reward * self.reward_scaling
-
-            else:
-                # 기본 보상 (후진 호환)
-                self.reward = basic_reward * self.reward_scaling
-
-            self.rewards_memory.append(self.reward)
-            self.state_memory.append(
-                self.state
-            )  # add current state in state_recorder for each step
-
-        return self.state, self.reward, self.terminal, False, {}
+        info = {
+            "target_weights": target_weights,
+            "executed_weights": executed_weights,
+            "turnover_target": turnover_target,
+            "turnover_executed": self._last_turnover_executed,
+            "turnover": self._last_turnover,
+            "transaction_cost": self._last_tc,
+        }
+        return self.state, self.reward, self.terminal, False, info
 
     def reset(
         self,
@@ -495,6 +604,15 @@ class StockTradingEnv(gym.Env):
         self.rewards_memory = []
         self.actions_memory = []
         self.date_memory = [self._get_date()]
+        self.weights_memory = []
+        self.executed_weights_memory = []
+        self.turnover_memory = []
+        self._last_turnover = 0.0
+        self._last_tc = 0.0
+        self._last_turnover_executed = 0.0
+        self._crisis_level = 0.5
+        self._last_bridge_step = -1
+        self._crisis_history.clear()
 
         # Phase 3: 리스크 민감 보상 함수 초기화
         if self.risk_reward is not None:

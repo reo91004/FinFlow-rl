@@ -30,9 +30,21 @@ from finrl.meta.preprocessor.preprocessors import FeatureEngineer, data_split
 from finrl.meta.env_stock_trading.env_stocktrading import StockTradingEnv
 from finrl.agents.stablebaselines3.models import DRLAgent
 from stable_baselines3 import SAC, PPO, A2C, TD3, DDPG
+from sb3_contrib.tqc import TQC
 
 
-def create_env(df, stock_dim, tech_indicators, reward_type="basic", lambda_dsr=0.1, lambda_cvar=0.05):
+def create_env(
+    df,
+    stock_dim,
+    tech_indicators,
+    reward_type="basic",
+    lambda_dsr=0.1,
+    lambda_cvar=0.05,
+    use_weighted_action: bool = True,
+    weight_slippage: float = 0.001,
+    weight_transaction_cost: float = 0.0005,
+    reward_scaling: float = 1e-4,
+):
     """환경 생성 (Phase 3.5: reward_type 지원)"""
     # State space: balance(1) + prices(N) + shares(N) + tech_indicators(K*N)
     # Phase 3.5: reward_type='dsr_cvar'일 때 환경 내부에서 +2 (DSR/CVaR)
@@ -46,7 +58,7 @@ def create_env(df, stock_dim, tech_indicators, reward_type="basic", lambda_dsr=0
         "num_stock_shares": [0] * stock_dim,
         "buy_cost_pct": [0.001] * stock_dim,
         "sell_cost_pct": [0.001] * stock_dim,
-        "reward_scaling": 1e-4,
+        "reward_scaling": reward_scaling,
         "state_space": state_space,
         "action_space": stock_dim,
         "tech_indicator_list": tech_indicators,
@@ -55,6 +67,9 @@ def create_env(df, stock_dim, tech_indicators, reward_type="basic", lambda_dsr=0
         "reward_type": reward_type,
         "lambda_dsr": lambda_dsr,
         "lambda_cvar": lambda_cvar,
+        "use_weighted_action": use_weighted_action,
+        "weight_slippage": weight_slippage,
+        "weight_transaction_cost": weight_transaction_cost,
     }
 
     return StockTradingEnv(**env_kwargs)
@@ -168,6 +183,8 @@ def detect_model_type(model_path):
 
     filename = os.path.basename(model_path).lower()
 
+    if 'tqc' in filename:
+        return 'tqc', TQC
     if 'sac' in filename:
         return 'sac', SAC
     elif 'ppo' in filename:
@@ -181,13 +198,14 @@ def detect_model_type(model_path):
     else:
         # 경로에서 찾기
         path_lower = model_path.lower()
-        for name in ['sac', 'ppo', 'a2c', 'td3', 'ddpg']:
+        order = [('tqc', TQC), ('sac', SAC), ('ppo', PPO), ('a2c', A2C), ('td3', TD3), ('ddpg', DDPG)]
+        for name, cls in order:
             if name in path_lower:
-                return name, {'sac': SAC, 'ppo': PPO, 'a2c': A2C, 'td3': TD3, 'ddpg': DDPG}[name]
+                return name, cls
 
         raise ValueError(
             f"모델 타입을 자동 감지할 수 없습니다: {model_path}\n"
-            f"파일명 또는 경로에 모델명(sac/ppo/a2c/td3/ddpg)을 포함하거나 --model-type 인자를 명시하세요."
+            f"파일명 또는 경로에 모델명(tqc/sac/ppo/a2c/td3/ddpg)을 포함하거나 --model-type 인자를 명시하세요."
         )
 
 
@@ -201,7 +219,12 @@ def evaluate_model(model_path,
                    verbose=True,
                    reward_type="dsr_cvar",
                    lambda_dsr=0.1,
-                   lambda_cvar=0.05):
+                   lambda_cvar=0.05,
+                   expected_obs_dim=None,
+                   use_weighted_action: bool = True,
+                   weight_slippage: float = 0.001,
+                   weight_transaction_cost: float = 0.0005,
+                   reward_scaling: float = 1e-4):
     """
     범용 모델 평가 함수
 
@@ -217,6 +240,11 @@ def evaluate_model(model_path,
         reward_type: 보상 함수 타입 (basic/dsr_cvar/adaptive_risk). IRT 모델은 자동 감지.
         lambda_dsr: DSR 보상 가중치
         lambda_cvar: CVaR 보상 가중치
+        expected_obs_dim: 학습 시점 관측 공간 차원 (검증용)
+        use_weighted_action: 가중치 기반 행동 모드 사용 여부
+        weight_slippage: 가중치 슬리피지 계수
+        weight_transaction_cost: 가중치 거래 비용 계수
+        reward_scaling: 환경 보상 스케일링 계수
 
     Returns:
         portfolio_values: 포트폴리오 가치 배열
@@ -277,6 +305,7 @@ def evaluate_model(model_path,
     test_env = None
     env_reward_type = None
     load_error = None
+    mismatch_reasons: list[str] = []
 
     for candidate_reward_type in candidate_reward_types:
         env_candidate = create_env(
@@ -286,7 +315,26 @@ def evaluate_model(model_path,
             reward_type=candidate_reward_type,
             lambda_dsr=lambda_dsr,
             lambda_cvar=lambda_cvar,
+            use_weighted_action=use_weighted_action,
+            weight_slippage=weight_slippage,
+            weight_transaction_cost=weight_transaction_cost,
+            reward_scaling=reward_scaling,
         )
+        if expected_obs_dim is not None:
+            obs_dim = env_candidate.observation_space.shape[0]
+            if obs_dim != expected_obs_dim:
+                reason = (
+                    f"reward_type={candidate_reward_type}: observation dimension mismatch"
+                    f" (expected {expected_obs_dim}, got {obs_dim})"
+                )
+                mismatch_reasons.append(reason)
+                load_error = ValueError(reason)
+                if hasattr(env_candidate, "close"):
+                    try:
+                        env_candidate.close()
+                    except Exception:
+                        pass
+                continue
         try:
             model = model_class.load(model_path, env=env_candidate)
             test_env = env_candidate
@@ -303,8 +351,10 @@ def evaluate_model(model_path,
                 except Exception:
                     pass
     if model is None or test_env is None or env_reward_type is None:
+        detail = "\n".join(mismatch_reasons) if mismatch_reasons else "<none>"
         raise load_error if load_error is not None else ValueError(
             "Failed to load model with any compatible reward type."
+            f"\nTried reward types: {candidate_reward_types}\nReasons:\n{detail}"
         )
 
     if verbose:
@@ -317,6 +367,12 @@ def evaluate_model(model_path,
                 )
             else:
                 print(f"  Reward type: {env_reward_type}")
+        print(
+            f"  Env settings → reward_scale={test_env.reward_scaling}, "
+            f"use_weighted_action={getattr(test_env, 'use_weighted_action', False)}, "
+            f"slippage={getattr(test_env, 'weight_slippage', None)}, "
+            f"tx_cost={getattr(test_env, 'weight_transaction_cost', None)}"
+        )
 
     # 4. 평가 실행
     if verbose:

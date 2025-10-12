@@ -89,6 +89,7 @@ class BCellIRTActor(nn.Module):
         # Phase B: 바이어스 EMA 보정
         self.eta_b = eta_b
         self.register_buffer('crisis_bias', torch.zeros(1))
+        self._crisis_initialized = False
 
         # T-Cell 가드
         self.crisis_target = crisis_target
@@ -157,6 +158,11 @@ class BCellIRTActor(nn.Module):
             info: 해석 정보 (w, P, crisis 등)
         """
         B = state.size(0)
+
+        if not self._crisis_initialized:
+            if hasattr(self, "crisis_bias"):
+                self.crisis_bias.data.zero_()
+            self._crisis_initialized = True
 
         # ===== Step 1: T-Cell 위기 감지 =====
         # FinRL state 구조: [balance(1), prices(30), shares(30), tech_indicators(240)]
