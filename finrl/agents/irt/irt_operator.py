@@ -99,9 +99,9 @@ class IRT(nn.Module):
                  M_proto: int = 8,
                  eps: float = 0.03,  # Phase-F2': 0.05 → 0.03 (OT 평탄화 완화)
                  alpha: float = 0.45,  # Phase F: alpha_max 기본값으로 사용
-                 alpha_min: float = 0.08,  # Phase F: 0.10 → 0.08 (Rep 경로 확보)
-                 alpha_max: Optional[float] = None,
-                 gamma: float = 0.85,  # Phase E: 0.6 → 0.85 (평활화 증가)
+                 alpha_min: float = 0.05,  # Phase 3.5: 0.08 → 0.05 (Rep 경로 확장)
+                 alpha_max: Optional[float] = 0.55,  # Phase 3.5: OT 상한 확장
+                 gamma: float = 0.65,  # Phase 3.5: 0.85 → 0.65 (crisis decay 완화, 반응성 증가)
                  lambda_tol: float = 2.0,
                  rho: float = 0.3,
                  eta_0: float = 0.05,
@@ -119,12 +119,13 @@ class IRT(nn.Module):
         self.M = M_proto
         self.alpha = alpha  # 후진 호환
 
-        # Phase F: alpha_min 하한 완화 (0.10 → 0.06)
-        self.alpha_min = max(alpha_min, 0.06)
+        # Phase 3.5: alpha_min 하한 제거 (0.05 허용)
+        self.alpha_min = alpha_min
         self.alpha_max = alpha_max if alpha_max is not None else alpha
 
-        if alpha_min < 0.06:
-            print(f"[IRT] Warning: alpha_min {alpha_min:.3f} < 0.06, enforcing alpha_min=0.06")
+        # 경고만 표시 (강제하지 않음)
+        if alpha_min < 0.03:
+            print(f"[IRT] Warning: alpha_min {alpha_min:.3f} is very low (< 0.03), may cause instability")
 
         # 비용 함수 가중치
         self.gamma = gamma          # 공자극 가중치
@@ -296,8 +297,14 @@ class IRT(nn.Module):
         # 곱셈(0.6) + 가법(+0.07): 저α 영역에서도 feedback 효과 유지
         delta_sharpe_safe = torch.nan_to_num(delta_sharpe, nan=0.0)  # [B, 1]
         delta_tanh = torch.tanh(delta_sharpe_safe)
-        alpha_c = alpha_c * (1 + 0.6 * delta_tanh) + 0.07 * delta_tanh
-        alpha_c = torch.clamp(alpha_c, min=self.alpha_min, max=self.alpha_max)
+        alpha_c_raw = alpha_c * (1 + 0.6 * delta_tanh) + 0.07 * delta_tanh
+
+        # Phase 3.5: Clamp 검증용 raw 값 저장
+        alpha_c = torch.clamp(alpha_c_raw, min=self.alpha_min, max=self.alpha_max)
+
+        # Clamp 통계 (검증용)
+        pct_clamped_min = (alpha_c_raw < self.alpha_min).float().mean()
+        pct_clamped_max = (alpha_c_raw > self.alpha_max).float().mean()
         # alpha_c: [B, 1]
 
         # ===== Step 4: 이중 결합 (배치별 α) =====
@@ -315,7 +322,11 @@ class IRT(nn.Module):
             'w_ot': p_mass,    # [B, M] - OT 출력
             'cost_matrix': C,  # [B, m, M] - Immunological cost
             'eta': eta,        # [B, 1] - Crisis-adaptive learning rate
-            'alpha_c': alpha_c # [B, 1] - Dynamic OT-Replicator mixing ratio
+            'alpha_c': alpha_c,  # [B, 1] - Dynamic OT-Replicator mixing ratio (clamped)
+            # Phase 3.5: Clamp 검증
+            'alpha_c_raw': alpha_c_raw,  # [B, 1] - Raw alpha before clamp
+            'pct_clamped_min': pct_clamped_min,  # scalar - % samples clamped to min
+            'pct_clamped_max': pct_clamped_max,  # scalar - % samples clamped to max
         }
 
         return w, P, debug_info

@@ -33,11 +33,11 @@ class BCellIRTActor(nn.Module):
                  alpha: float = 0.3,
                  alpha_min: float = 0.06,
                  alpha_max: Optional[float] = None,
-                 ema_beta: float = 0.70,  # Phase-3: 0.85 → 0.70 (전달 감쇠 완화)
+                 ema_beta: float = 0.65,  # Phase 3.5: 0.70 → 0.65 (반응성 35%)
                  market_feature_dim: int = 12,
-                 dirichlet_min: float = 1.0,  # Phase-F2': 0.5 → 1.0 (균등 흡인 완화)
+                 dirichlet_min: float = 0.8,  # Phase 3.5: 1.0 → 0.8 (균등 흡인 완화)
                  dirichlet_max: float = 20.0,  # Phase-F2': 50.0 → 20.0 (과도 흡인 방지)
-                 action_temp: float = 0.8,  # Phase-2: softmax 온도 (민감도 확보)
+                 action_temp: float = 0.7,  # Phase 3.5: 0.8 → 0.7 (민감도 14% 증가)
                  # Phase 3.5 Step 2: 다중 신호 위기 감지
                  w_r: float = 0.6,
                  w_s: float = 0.25,
@@ -277,12 +277,14 @@ class BCellIRTActor(nn.Module):
 
         if deterministic:
             # 결정적: Dirichlet 평균 (mode)
-            # Phase-2: softmax 온도로 민감도 확보
+            # Phase 3.5: softmax 온도로 민감도 확보
             # temp < 1: 차이 증폭, temp > 1: 평탄화
             action = F.softmax(mixed_conc / self.action_temp, dim=-1)
         else:
             # 확률적: Dirichlet 샘플
-            mixed_conc_clamped = torch.clamp(mixed_conc, min=self.dirichlet_min, max=self.dirichlet_max)
+            # Phase 3.5: action_temp를 확률적 경로에도 적용 (학습 중 민감도 향상)
+            mixed_conc_scaled = mixed_conc / self.action_temp  # 온도 스케일링
+            mixed_conc_clamped = torch.clamp(mixed_conc_scaled, min=self.dirichlet_min, max=self.dirichlet_max)
             dist = torch.distributions.Dirichlet(mixed_conc_clamped)
             action = dist.sample()
 
@@ -313,8 +315,8 @@ class BCellIRTActor(nn.Module):
             'alpha_c': irt_debug['alpha_c'].detach(),  # [B, 1] - Dynamic OT-Replicator mixing ratio
             # Dirichlet 정보 (log_prob 계산용)
             'concentrations': concentrations.detach(),  # [B, M, A] - 프로토타입별 concentration
-            'mixed_conc': mixed_conc.detach(),  # [B, A] - 혼합된 concentration
-            'mixed_conc_clamped': mixed_conc_clamped if not deterministic else mixed_conc.detach(),  # [B, A]
+            'mixed_conc': mixed_conc.detach(),  # [B, A] - 혼합된 concentration (raw)
+            'mixed_conc_clamped': mixed_conc_clamped.detach() if not deterministic else mixed_conc.detach(),  # [B, A]
             # Phase 3.5 Step 2: 다중 신호 위기 감지 정보
             'crisis_base': crisis_base.detach(),  # [B, 1] - T-Cell 기본 위기 신호
             'delta_sharpe': delta_sharpe.detach() if state.size(1) >= self.state_dim - 2 else torch.zeros(B, 1, device=state.device),

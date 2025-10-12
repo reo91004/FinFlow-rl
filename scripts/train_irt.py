@@ -59,11 +59,10 @@ class IRTLoggingCallback(BaseCallback):
     - entropy: 프로토타입 혼합 다양성
     - prototype_max_weight: 프로토타입 과점 지표
 
-    Phase D 교정 사항:
-    1. rep_contribution = (1 - alpha_c).mean() (프로토타입 축 평균 금지)
-    2. ot_contribution = alpha_c.mean()
-    3. std_alpha_c: 타임축 EMA 분산 (B=1 가드 제거)
-    4. prototype_avg_weights의 max/entropy 추가
+    Phase 3.5 추가:
+    - alpha_c_raw, pct_clamped_min/max: α clamp 검증
+    - action_temp, ema_beta: 하이퍼파라미터 확인
+    - turnover 관련 메트릭 (구현 예정)
     """
 
     def __init__(self, verbose: int = 0, log_freq: int = 100, ema_beta: float = 0.95):
@@ -74,6 +73,9 @@ class IRTLoggingCallback(BaseCallback):
         # 타임축 통계 추적 (EMA)
         self.alpha_c_ema_mean = None  # EMA(alpha_c)
         self.alpha_c_ema_var = None   # EMA((alpha_c - mean)^2)
+
+        # Phase 3.5: 이전 action 저장 (turnover 계산용)
+        self.prev_action = None
 
     def _on_step(self) -> bool:
         if self.n_calls % self.log_freq == 0:
@@ -137,6 +139,51 @@ class IRTLoggingCallback(BaseCallback):
                 # 프로토타입 가중치 엔트로피 (프로토타입 축 다양성)
                 prototype_entropy = -torch.sum(prototype_avg_weights * torch.log(prototype_avg_weights + 1e-8)).item()
                 self.logger.record("irt/prototype_entropy", prototype_entropy)
+
+                # ===== Phase 3.5: α clamp 검증 =====
+                if 'alpha_c_raw' in info:
+                    alpha_c_raw_val = info['alpha_c_raw'].mean().item()
+                    self.logger.record("irt/alpha_c_raw", alpha_c_raw_val)
+
+                    pct_clamped_min = info['pct_clamped_min'].item() if isinstance(info['pct_clamped_min'], torch.Tensor) else info['pct_clamped_min']
+                    pct_clamped_max = info['pct_clamped_max'].item() if isinstance(info['pct_clamped_max'], torch.Tensor) else info['pct_clamped_max']
+
+                    self.logger.record("irt/pct_clamped_min", pct_clamped_min)
+                    self.logger.record("irt/pct_clamped_max", pct_clamped_max)
+
+                # ===== Phase 3.5: 정책 하이퍼파라미터 확인 =====
+                try:
+                    actor = self.model.policy.actor
+                    if hasattr(actor, 'action_temp'):
+                        self.logger.record("policy/action_temp", actor.action_temp)
+                    if hasattr(actor, 'ema_beta'):
+                        self.logger.record("policy/ema_beta", actor.ema_beta)
+                except Exception:
+                    pass  # IRTPolicy 구조에 따라 실패 가능
+
+                # ===== Phase 3.5: Turnover 메트릭 (목표 가중치 기준) =====
+                # 현재 action은 self.locals에 저장되어 있음
+                if 'actions' in self.locals and self.prev_action is not None:
+                    current_action = self.locals['actions']
+                    if isinstance(current_action, torch.Tensor):
+                        current_action_np = current_action.detach().cpu().numpy()
+                    else:
+                        current_action_np = current_action
+
+                    # Turnover = 0.5 * sum(|w_t - w_{t-1}|) (metrics.py와 동일)
+                    # current_action_np shape: [B, N] (B=1 for DummyVecEnv)
+                    turnover_target = 0.5 * np.sum(np.abs(current_action_np - self.prev_action))
+                    self.logger.record("irt/turnover_target", turnover_target)
+
+                    # 업데이트
+                    self.prev_action = current_action_np
+                elif 'actions' in self.locals:
+                    # 첫 스텝: 초기화
+                    current_action = self.locals['actions']
+                    if isinstance(current_action, torch.Tensor):
+                        self.prev_action = current_action.detach().cpu().numpy()
+                    else:
+                        self.prev_action = current_action
 
         return True
 
@@ -284,13 +331,18 @@ def train_irt(args):
         "alpha_min": args.alpha_min,
         "alpha_max": args.alpha_max if args.alpha_max else args.alpha,
         "ema_beta": args.ema_beta,
+        "market_feature_dim": args.market_feature_dim,
+        # Phase 3.5: Dirichlet 및 온도 파라미터 (훈련 경로 전달 필수)
+        "dirichlet_min": args.dirichlet_min,
+        "dirichlet_max": args.dirichlet_max,
+        "action_temp": args.action_temp,
+        # IRT Operator 파라미터
         "eps": args.eps,
         "max_iters": args.max_iters,
         "replicator_temp": args.replicator_temp,
         "eta_0": args.eta_0,
         "eta_1": args.eta_1,
         "gamma": args.gamma,
-        "market_feature_dim": args.market_feature_dim,
         # Phase 3.5 Step 2: 다중 신호 위기 감지
         "w_r": args.w_r,
         "w_s": args.w_s,
@@ -541,7 +593,7 @@ def main():
 
     # Training settings
     parser.add_argument(
-        "--episodes", type=int, default=200, help="Number of episodes (default: 200)"
+        "--episodes", type=int, default=600, help="Number of episodes (default: 600, Phase 3.5: 150k steps)"
     )
     parser.add_argument(
         "--output", type=str, default="logs", help="Output directory (default: logs)"
@@ -569,20 +621,20 @@ def main():
     parser.add_argument(
         "--alpha-min",
         type=float,
-        default=0.08,
-        help="Crisis minimum alpha (default: 0.08, Phase F)",
+        default=0.05,
+        help="Crisis minimum alpha (default: 0.05, Phase 3.5)",
     )
     parser.add_argument(
         "--alpha-max",
         type=float,
-        default=None,
-        help="Normal maximum alpha (default: --alpha value, Phase F: 0.45)",
+        default=0.55,
+        help="Normal maximum alpha (default: 0.55, Phase 3.5)",
     )
     parser.add_argument(
         "--ema-beta",
         type=float,
-        default=0.85,
-        help="EMA memory coefficient (default: 0.85)",
+        default=0.65,
+        help="EMA memory coefficient (default: 0.65, Phase 3.5)",
     )
     parser.add_argument(
         "--eps",
@@ -617,14 +669,33 @@ def main():
     parser.add_argument(
         "--gamma",
         type=float,
-        default=0.85,
-        help="Co-stimulation weight in cost function (default: 0.85, Phase E)",
+        default=0.65,
+        help="Co-stimulation weight in cost function (default: 0.65, Phase 3.5)",
     )
     parser.add_argument(
         "--market-feature-dim",
         type=int,
         default=12,
         help="Market feature dimension (default: 12)",
+    )
+    # Phase 3.5: Dirichlet 및 온도 파라미터
+    parser.add_argument(
+        "--dirichlet-min",
+        type=float,
+        default=0.8,
+        help="Dirichlet concentration minimum (default: 0.8, Phase 3.5)",
+    )
+    parser.add_argument(
+        "--dirichlet-max",
+        type=float,
+        default=20.0,
+        help="Dirichlet concentration maximum (default: 20.0)",
+    )
+    parser.add_argument(
+        "--action-temp",
+        type=float,
+        default=0.7,
+        help="Action softmax temperature (default: 0.7, Phase 3.5, <1 for sharper actions)",
     )
 
     # Phase 3: DSR + CVaR 보상 파라미터

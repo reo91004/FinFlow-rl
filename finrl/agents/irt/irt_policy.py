@@ -247,7 +247,7 @@ class IRTPolicy(SACPolicy):
         alpha_max: Optional[float] = None,
         ema_beta: float = 0.70,  # Phase-3: 0.85 → 0.70 (전달 감쇠 완화)
         market_feature_dim: int = 12,
-        dirichlet_min: float = 1.0,  # Phase-F2': 0.5 → 1.0 (균등 흡인 완화)
+        dirichlet_min: float = 0.8,  # Phase 3.5: 1.0 → 0.8 (균등 흡인 완화)
         dirichlet_max: float = 20.0,  # Phase-F2': 50.0 → 20.0 (과도 흡인 방지)
         action_temp: float = 0.8,  # Phase-2: softmax 온도 (민감도 확보)
         eps: float = 0.03,  # Phase-F2': 0.05 → 0.03 (OT 평탄화 완화)
