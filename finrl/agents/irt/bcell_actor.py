@@ -33,16 +33,20 @@ class BCellIRTActor(nn.Module):
                  alpha: float = 0.3,
                  alpha_min: float = 0.06,
                  alpha_max: Optional[float] = None,
-                 ema_beta: float = 0.85,
+                 ema_beta: float = 0.70,  # Phase-3: 0.85 → 0.70 (전달 감쇠 완화)
                  market_feature_dim: int = 12,
-                 dirichlet_min: float = 0.5,
-                 dirichlet_max: float = 50.0,
+                 dirichlet_min: float = 1.0,  # Phase-F2': 0.5 → 1.0 (균등 흡인 완화)
+                 dirichlet_max: float = 20.0,  # Phase-F2': 50.0 → 20.0 (과도 흡인 방지)
+                 action_temp: float = 0.8,  # Phase-2: softmax 온도 (민감도 확보)
                  # Phase 3.5 Step 2: 다중 신호 위기 감지
                  w_r: float = 0.6,
                  w_s: float = 0.25,
                  w_c: float = 0.15,
                  # Phase B: 바이어스 EMA 보정
                  eta_b: float = 2e-3,
+                 # T-Cell 가드
+                 crisis_target: float = 0.5,  # 목표 crisis_regime_pct
+                 crisis_guard_rate: float = 0.05,  # 과민 억제 비율
                  **irt_kwargs):
         """
         Args:
@@ -74,6 +78,7 @@ class BCellIRTActor(nn.Module):
         self.ema_beta = ema_beta
         self.dirichlet_min = dirichlet_min
         self.dirichlet_max = dirichlet_max
+        self.action_temp = action_temp  # Phase-2
         self.market_feature_dim = market_feature_dim
 
         # Phase 3.5 Step 2: 위기 신호 가중치
@@ -84,6 +89,10 @@ class BCellIRTActor(nn.Module):
         # Phase B: 바이어스 EMA 보정
         self.eta_b = eta_b
         self.register_buffer('crisis_bias', torch.zeros(1))
+
+        # T-Cell 가드
+        self.crisis_target = crisis_target
+        self.crisis_guard_rate = crisis_guard_rate
 
         # ===== 에피토프 인코더 =====
         self.epitope_encoder = nn.Sequential(
@@ -212,6 +221,11 @@ class BCellIRTActor(nn.Module):
             # Phase B: 바이어스 보정 (crisis_regime_pct → 0.5)
             crisis_level = crisis_level_raw + self.crisis_bias.to(state.device)
 
+            # T-Cell 가드: 과민 억제 (crisis_level이 높으면 하향 조정)
+            # crisis_level > crisis_target이면 억제, < crisis_target이면 증폭
+            crisis_adjustment = -self.crisis_guard_rate * (crisis_level - self.crisis_target)
+            crisis_level = torch.clamp(crisis_level + crisis_adjustment, min=0.0, max=1.0)
+
             # Phase E: 버그 픽스 - B=1(DummyVecEnv)에서도 바이어스 업데이트
             # 학습 중 바이어스 EMA 업데이트 (배치 크기 무관)
             if self.training:
@@ -263,9 +277,9 @@ class BCellIRTActor(nn.Module):
 
         if deterministic:
             # 결정적: Dirichlet 평균 (mode)
-            # mode = (α - 1) / (Σα - K) for α > 1
-            # 안전한 계산: softmax
-            action = F.softmax(mixed_conc, dim=-1)
+            # Phase-2: softmax 온도로 민감도 확보
+            # temp < 1: 차이 증폭, temp > 1: 평탄화
+            action = F.softmax(mixed_conc / self.action_temp, dim=-1)
         else:
             # 확률적: Dirichlet 샘플
             mixed_conc_clamped = torch.clamp(mixed_conc, min=self.dirichlet_min, max=self.dirichlet_max)

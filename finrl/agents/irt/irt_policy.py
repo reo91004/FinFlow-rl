@@ -245,11 +245,12 @@ class IRTPolicy(SACPolicy):
         alpha: float = 0.45,  # Phase F: alpha_max 기본값
         alpha_min: float = 0.08,  # Phase F: Rep 경로 확보
         alpha_max: Optional[float] = None,
-        ema_beta: float = 0.85,
+        ema_beta: float = 0.70,  # Phase-3: 0.85 → 0.70 (전달 감쇠 완화)
         market_feature_dim: int = 12,
-        dirichlet_min: float = 0.5,
-        dirichlet_max: float = 50.0,
-        eps: float = 0.05,
+        dirichlet_min: float = 1.0,  # Phase-F2': 0.5 → 1.0 (균등 흡인 완화)
+        dirichlet_max: float = 20.0,  # Phase-F2': 50.0 → 20.0 (과도 흡인 방지)
+        action_temp: float = 0.8,  # Phase-2: softmax 온도 (민감도 확보)
+        eps: float = 0.03,  # Phase-F2': 0.05 → 0.03 (OT 평탄화 완화)
         max_iters: int = 30,
         replicator_temp: float = 1.4,  # Phase F: 분포 평탄화
         eta_0: float = 0.05,
@@ -260,6 +261,9 @@ class IRTPolicy(SACPolicy):
         w_s: float = 0.15,  # Sharpe 신호 (DSR) 가중 감소
         w_c: float = 0.05,  # CVaR 신호 가중 감소
         eta_b: float = 2e-3,
+        # T-Cell 가드
+        crisis_target: float = 0.5,  # 목표 crisis_regime_pct
+        crisis_guard_rate: float = 0.05,  # 과민 억제 비율
     ):
         """
         Args:
@@ -298,6 +302,7 @@ class IRTPolicy(SACPolicy):
         self.market_feature_dim = market_feature_dim
         self.dirichlet_min = dirichlet_min
         self.dirichlet_max = dirichlet_max
+        self.action_temp = action_temp  # Phase-2
         self.eps = eps
         self.max_iters = max_iters
         self.replicator_temp = replicator_temp
@@ -308,6 +313,8 @@ class IRTPolicy(SACPolicy):
         self.w_s = w_s
         self.w_c = w_c
         self.eta_b = eta_b
+        self.crisis_target = crisis_target  # T-Cell 가드
+        self.crisis_guard_rate = crisis_guard_rate  # T-Cell 가드
 
         # SACPolicy 초기화
         super().__init__(
@@ -356,6 +363,7 @@ class IRTPolicy(SACPolicy):
             market_feature_dim=self.market_feature_dim,
             dirichlet_min=self.dirichlet_min,
             dirichlet_max=self.dirichlet_max,
+            action_temp=self.action_temp,  # Phase-2
             eps=self.eps,
             max_iters=self.max_iters,
             replicator_temp=self.replicator_temp,
@@ -365,7 +373,9 @@ class IRTPolicy(SACPolicy):
             w_r=self.w_r,
             w_s=self.w_s,
             w_c=self.w_c,
-            eta_b=self.eta_b
+            eta_b=self.eta_b,
+            crisis_target=self.crisis_target,  # T-Cell 가드
+            crisis_guard_rate=self.crisis_guard_rate  # T-Cell 가드
         )
 
         # Wrapper로 감싸기 (self 전달: Critic 참조용)
@@ -393,6 +403,7 @@ class IRTPolicy(SACPolicy):
                 market_feature_dim=self.market_feature_dim,
                 dirichlet_min=self.dirichlet_min,
                 dirichlet_max=self.dirichlet_max,
+                action_temp=self.action_temp,
                 eps=self.eps,
                 max_iters=self.max_iters,
                 replicator_temp=self.replicator_temp,
@@ -403,6 +414,8 @@ class IRTPolicy(SACPolicy):
                 w_s=self.w_s,
                 w_c=self.w_c,
                 eta_b=self.eta_b,
+                crisis_target=self.crisis_target,
+                crisis_guard_rate=self.crisis_guard_rate,
             )
         )
         return data

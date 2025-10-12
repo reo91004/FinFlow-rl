@@ -453,7 +453,8 @@ def test_irt(args, model_path=None):
         results = {
             "returns": returns,
             "values": np.array(portfolio_values),
-            "weights": irt_data["weights"],
+            "weights": irt_data["weights"],  # 목표가중
+            "actual_weights": irt_data["actual_weights"],  # Phase-1: 실행가중
             "crisis_levels": irt_data["crisis_levels"],
             "crisis_types": irt_data["crisis_types"],
             "prototype_weights": irt_data["prototype_weights"],

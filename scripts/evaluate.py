@@ -292,6 +292,7 @@ def evaluate_model(model_path,
             'crisis_types': [],
             'cost_matrices': [],
             'weights': [],
+            'actual_weights': [],  # Phase-1: 실행가중 기록
             'eta': [],
             'alpha_c': []
         }
@@ -329,6 +330,13 @@ def evaluate_model(model_path,
         pv = cash + np.sum(prices * holdings)
         portfolio_values.append(pv)
 
+        # Phase-1: 실행가중(actual_weights) 계산 및 기록
+        if is_irt:
+            # w^{exec}_t = (p_t ⊙ h_t) / (cash_t + Σ p_{t,i} h_{t,i} + ε)
+            total_equity = pv + 1e-8
+            actual_weights = (prices * holdings) / total_equity
+            irt_data_list['actual_weights'].append(actual_weights)
+
         step += 1
 
     if verbose:
@@ -340,7 +348,8 @@ def evaluate_model(model_path,
         irt_data = {
             'w_rep': np.array(irt_data_list['w_rep']),  # [T, M]
             'w_ot': np.array(irt_data_list['w_ot']),    # [T, M]
-            'weights': np.array(irt_data_list['weights']),  # [T, N]
+            'weights': np.array(irt_data_list['weights']),  # [T, N] 목표가중
+            'actual_weights': np.array(irt_data_list['actual_weights']),  # [T, N] Phase-1: 실행가중
             'crisis_levels': np.array(irt_data_list['crisis_levels']).squeeze(),  # [T]
             'crisis_types': np.array(irt_data_list['crisis_types']),  # [T, K]
             'prototype_weights': np.array(irt_data_list['w']),  # [T, M]
@@ -546,7 +555,8 @@ def main(args):
             results = {
                 'returns': returns,
                 'values': np.array(portfolio_values),
-                'weights': irt_data['weights'],
+                'weights': irt_data['weights'],  # 목표가중
+                'actual_weights': irt_data['actual_weights'],  # Phase-1: 실행가중
                 'crisis_levels': irt_data['crisis_levels'],
                 'crisis_types': irt_data['crisis_types'],
                 'prototype_weights': irt_data['prototype_weights'],

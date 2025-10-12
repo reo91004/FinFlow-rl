@@ -97,7 +97,7 @@ class IRT(nn.Module):
                  emb_dim: int,
                  m_tokens: int = 6,
                  M_proto: int = 8,
-                 eps: float = 0.05,
+                 eps: float = 0.03,  # Phase-F2': 0.05 → 0.03 (OT 평탄화 완화)
                  alpha: float = 0.45,  # Phase F: alpha_max 기본값으로 사용
                  alpha_min: float = 0.08,  # Phase F: 0.10 → 0.08 (Rep 경로 확보)
                  alpha_max: Optional[float] = None,

@@ -893,7 +893,8 @@ def _generate_insights(results: dict, config: dict = None) -> dict:
         insights: 구조화된 해석 정보
     """
     returns = np.array(results.get('returns', []))
-    weights = np.array(results.get('weights', []))
+    weights = np.array(results.get('weights', []))  # 목표가중
+    actual_weights = np.array(results.get('actual_weights', []))  # Phase-1: 실행가중
     crisis_levels = np.array(results.get('crisis_levels', []))
     crisis_types = np.array(results.get('crisis_types', []))
     proto_weights = np.array(results.get('prototype_weights', []))
@@ -1012,11 +1013,65 @@ def _generate_insights(results: dict, config: dict = None) -> dict:
     }
 
     # ===== 6. Risk Metrics =====
+    # Phase-1: Turnover 분해 (목표 vs 실행)
+    from finrl.evaluation.metrics import calculate_turnover
+
+    turnover_target = 0.0
+    turnover_actual = 0.0
+    turnover_execution_gap = 0.0
+
+    if len(weights) >= 2:
+        turnover_target = calculate_turnover(weights)
+
+    if len(actual_weights) >= 2:
+        turnover_actual = calculate_turnover(actual_weights)
+
+    if len(weights) >= 2 and len(actual_weights) >= 2:
+        turnover_execution_gap = abs(turnover_target - turnover_actual)
+
+    # Phase-F2': 균등 이탈도 (L1 distance from uniform)
+    # d^{(1)}(w, U) = 0.5 * Σ|w_i - 1/N|
+    def l1_from_uniform(w_array):
+        if len(w_array) == 0 or len(w_array.shape) < 2:
+            return 0.0
+        N = w_array.shape[1]
+        uniform = 1.0 / N
+        distances = 0.5 * np.sum(np.abs(w_array - uniform), axis=1)
+        return float(distances.mean())
+
+    target_l1_from_uniform = l1_from_uniform(weights)
+    actual_l1_from_uniform = l1_from_uniform(actual_weights)
+
+    # Phase-F2': 목표-실행 정합도 (delta correlation)
+    # corr(Δw_target, Δw_actual)
+    def delta_corr(ws_a, ws_b):
+        if len(ws_a) < 2 or len(ws_b) < 2:
+            return 0.0
+        A = np.diff(ws_a, axis=0)
+        B = np.diff(ws_b, axis=0)
+        v1 = A.reshape(-1)
+        v2 = B.reshape(-1)
+        if len(v1) < 2 or len(v2) < 2:
+            return 0.0
+        corr_matrix = np.corrcoef(v1, v2)
+        if corr_matrix.shape == (2, 2):
+            return float(corr_matrix[0, 1])
+        return 0.0
+
+    target_actual_delta_correlation = delta_corr(weights, actual_weights)
+
     risk_metrics = {
         'VaR_5': float(metrics.get('var_5', 0.0)),
         'CVaR_5': float(metrics.get('cvar_5', 0.0)),
         'downside_deviation': float(metrics.get('downside_deviation', 0.0)),
-        'avg_turnover': float(metrics.get('avg_turnover', 0.0))
+        'avg_turnover': float(metrics.get('avg_turnover', 0.0)),  # 후진 호환 (목표가중 기반)
+        'turnover_target': float(turnover_target),  # Phase-1: 목표가중 기반 turnover
+        'turnover_actual': float(turnover_actual),  # Phase-1: 실행가중 기반 turnover
+        'turnover_execution_gap': float(turnover_execution_gap),  # Phase-1: 목표 vs 실행 격차
+        'turnover_transmission_rate': float(turnover_actual / (turnover_target + 1e-8)),  # Phase-1: 전달률
+        'target_l1_from_uniform': target_l1_from_uniform,  # Phase-F2': 목표가중 균등 이탈도
+        'actual_l1_from_uniform': actual_l1_from_uniform,  # Phase-F2': 실행가중 균등 이탈도
+        'target_actual_delta_correlation': target_actual_delta_correlation  # Phase-F2': 목표-실행 정합도
     }
 
     # ===== 7. T-Cell Insights =====
