@@ -804,8 +804,8 @@ def main():
     parser.add_argument(
         "--reward-scale",
         type=float,
-        default=1e-4,
-        help="Reward scaling factor applied inside the trading environment (default: 1e-4)",
+        default=1.0,  # Phase 1: 1e-2 → 1.0 (100x increase for proper gradient flow)
+        help="Reward scaling factor applied inside the trading environment (default: 1.0)",
     )
 
     # IRT parameters
@@ -897,14 +897,14 @@ def main():
     parser.add_argument(
         "--dirichlet-max",
         type=float,
-        default=20.0,
-        help="Dirichlet concentration maximum (default: 20.0)",
+        default=2.0,  # Phase 1: 5.0 → 2.0 (sharper portfolio concentration)
+        help="Dirichlet concentration maximum (default: 2.0, Phase 1 fix)",
     )
     parser.add_argument(
         "--action-temp",
         type=float,
-        default=0.7,
-        help="Action softmax temperature (default: 0.7, Phase 3.5, <1 for sharper actions)",
+        default=0.9,  # Phase 1: 0.7 → 0.9 (better exploration)
+        help="Action softmax temperature (default: 0.9, Phase 1, higher for exploration)",
     )
 
     # Phase 3: DSR + CVaR 보상 파라미터

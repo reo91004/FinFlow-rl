@@ -29,11 +29,11 @@ class DifferentialSharpeRatio:
     - ΔS_t ≈ z_t - (S_{t-1}/2)·z_t², z_t = (R_t - μ_{t-1}) / σ_{t-1}
 
     Args:
-        beta: EMA 계수 (0.99 = 100 스텝 반감기)
+        beta: EMA 계수 (Phase 1: 0.95 for faster response to market changes)
         epsilon: 분모 안정화 (σ=0 방지)
     """
 
-    def __init__(self, beta: float = 0.99, epsilon: float = 1e-8):
+    def __init__(self, beta: float = 0.95, epsilon: float = 1e-8):  # Phase 1: 0.99 → 0.95
         self.beta = beta
         self.epsilon = epsilon
 
@@ -279,9 +279,9 @@ class AdaptiveRiskReward:
         lambda_cvar: CVaR penalty 가중치 (β, default: 0.5)
         lambda_turnover: Turnover penalty 가중치 (μ, default: 0.002)
         crisis_gain: Crisis에 의한 κ 증폭 계수 (default: 0.25)
-        dsr_beta: DSR 이동평균 계수 (default: 0.99)
+        dsr_beta: DSR 이동평균 계수 (default: 0.95)
         cvar_alpha: CVaR 분위수 (default: 0.05)
-        cvar_window: CVaR 추정 윈도우 (default: 40)
+        cvar_window: CVaR 추정 윈도우 (default: 20)
     """
 
     def __init__(
@@ -290,9 +290,9 @@ class AdaptiveRiskReward:
         lambda_cvar: float = 0.5,
         lambda_turnover: float = 0.002,
         crisis_gain: float = 0.25,
-        dsr_beta: float = 0.99,
+        dsr_beta: float = 0.95,
         cvar_alpha: float = 0.05,
-        cvar_window: int = 40,
+        cvar_window: int = 20,
     ):
         self.lambda_sharpe_base = lambda_sharpe
         self.lambda_cvar = lambda_cvar
@@ -342,12 +342,13 @@ class AdaptiveRiskReward:
 
         # 3. CVaR (꼬리 위험)
         cvar_value = self.cvar.update(basic_return)
+        cvar_penalty = abs(cvar_value) if cvar_value < 0 else 0.0
 
         # 4. Adaptive κ(c)
         kappa = self.lambda_sharpe_base + self.crisis_gain * self.crisis_level
 
         # 5. Risk bonus
-        risk_bonus = kappa * (delta_sharpe - self.lambda_cvar * cvar_value)
+        risk_bonus = kappa * (delta_sharpe - self.lambda_cvar * cvar_penalty)
 
         # 6. Turnover penalty
         turnover_penalty = 0.0
@@ -362,17 +363,24 @@ class AdaptiveRiskReward:
 
         # 7. 최종 보상
         reward = log_return + risk_bonus - turnover_penalty
+        
+        # Phase 1: Reward clipping for gradient stability
+        # Prevents exploding/vanishing gradients in Q-network
+        reward_pre_clip = reward
+        reward = np.clip(reward, -1.0, 1.0)
 
         # 디버깅 정보
         info = {
             "log_return": log_return,
             "delta_sharpe": delta_sharpe,
             "cvar_value": cvar_value,
+            "cvar_penalty": cvar_penalty,
             "crisis_level": self.crisis_level,
             "kappa": kappa,
             "risk_bonus": risk_bonus,
             "turnover_penalty": turnover_penalty,
             "sharpe_online": self.dsr.sharpe,
+            "reward_pre_clip": reward_pre_clip,  # Phase 1: clipping info
             "reward_total": reward,
         }
 

@@ -29,19 +29,23 @@ class TCellMinimal(nn.Module):
                  in_dim: int,
                  emb_dim: int = 128,
                  n_types: int = 4,
-                 momentum: float = 0.99):
+                 momentum: float = 0.99,
+                 crisis_guard_rate: float = 0.15):
         """
         Args:
             in_dim: 입력 차원 (시장 특성, 예: 12)
             emb_dim: 공자극 임베딩 차원
             n_types: 위기 타입 수 (변동성, 유동성, 상관관계, 시스템)
             momentum: 온라인 정규화 모멘텀
+            crisis_guard_rate: Crisis level 정규화 계수 (Phase 1: 0.15 = 15% pull towards 0.5)
         """
         super().__init__()
 
         self.n_types = n_types
         self.emb_dim = emb_dim
         self.momentum = momentum
+        self.crisis_guard_rate = crisis_guard_rate  # Phase 1: Crisis guard
+        self.crisis_target = 0.5  # Phase 1: Target crisis level
 
         # 단일 인코더 (효율성)
         self.encoder = nn.Sequential(
@@ -98,6 +102,11 @@ class TCellMinimal(nn.Module):
         c = torch.sigmoid(
             (z_std * alpha_norm).sum(dim=-1, keepdim=True)
         )  # [B, 1]
+        
+        # Phase 1: Crisis guard - soft clamp towards target
+        # Prevents 100% crisis regime by pulling towards 0.5
+        if self.training:
+            c = c + self.crisis_guard_rate * (self.crisis_target - c.detach())
 
         return z, d, c
 

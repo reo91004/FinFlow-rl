@@ -36,7 +36,7 @@ class BCellIRTActor(nn.Module):
                  ema_beta: float = 0.65,  # Phase 3.5: 0.70 → 0.65 (반응성 35%)
                  market_feature_dim: int = 12,
                  dirichlet_min: float = 0.8,  # Phase 3.5: 1.0 → 0.8 (균등 흡인 완화)
-                 dirichlet_max: float = 20.0,  # Phase-F2': 50.0 → 20.0 (과도 흡인 방지)
+                 dirichlet_max: float = 5.0,  # Phase-H2: 20.0 → 5.0 (과도 흡인 방지)
                  action_temp: float = 0.7,  # Phase 3.5: 0.8 → 0.7 (민감도 14% 증가)
                  # Phase 3.5 Step 2: 다중 신호 위기 감지
                  w_r: float = 0.6,
@@ -46,7 +46,7 @@ class BCellIRTActor(nn.Module):
                  eta_b: float = 2e-3,
                  # T-Cell 가드
                  crisis_target: float = 0.5,  # 목표 crisis_regime_pct
-                 crisis_guard_rate: float = 0.05,  # 과민 억제 비율
+                 crisis_guard_rate: float = 0.15,  # 과민 억제 비율 강화
                  **irt_kwargs):
         """
         Args:
@@ -61,7 +61,7 @@ class BCellIRTActor(nn.Module):
             ema_beta: EMA 메모리 계수
             market_feature_dim: 시장 특성 차원 (T-Cell 입력, 기본 12)
             dirichlet_min: Dirichlet concentration minimum (핸드오버: 0.5)
-            dirichlet_max: Dirichlet concentration maximum (핸드오버: 50.0)
+            dirichlet_max: Dirichlet concentration maximum (핸드오버: 5.0)
             w_r: 시장 위기 신호 가중치 (T-Cell 출력)
             w_s: Sharpe 신호 가중치 (DSR bonus)
             w_c: CVaR 신호 가중치
