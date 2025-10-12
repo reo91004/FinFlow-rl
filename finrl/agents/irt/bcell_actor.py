@@ -35,9 +35,9 @@ class BCellIRTActor(nn.Module):
                  alpha_max: Optional[float] = None,
                  ema_beta: float = 0.65,  # Phase 3.5: 0.70 → 0.65 (반응성 35%)
                  market_feature_dim: int = 12,
-                 dirichlet_min: float = 0.8,  # Phase 3.5: 1.0 → 0.8 (균등 흡인 완화)
-                 dirichlet_max: float = 5.0,  # Phase-H2: 20.0 → 5.0 (과도 흡인 방지)
-                 action_temp: float = 0.7,  # Phase 3.5: 0.8 → 0.7 (민감도 14% 증가)
+                 dirichlet_min: float = 0.1,  # Phase 2: 0.8 → 0.1 (allow sparsity for exploration)
+                 dirichlet_max: float = 5.0,  # Phase 2: keep 5.0 (Dirichlet stochastic path)
+                 action_temp: float = 0.3,  # Phase 2: 0.7 → 0.3 (sharper for concentration)
                  # Phase 3.5 Step 2: 다중 신호 위기 감지
                  w_r: float = 0.6,
                  w_s: float = 0.25,
@@ -279,18 +279,22 @@ class BCellIRTActor(nn.Module):
         ], dim=1)  # [B, M, A]
 
         # IRT 가중치로 혼합
-        mixed_conc = torch.einsum('bm,bma->ba', w, concentrations) + 1.0  # [B, A]
+        # Phase 2: Remove +1.0 bias to allow negative logits → wider dynamic range
+        mixed_conc = torch.einsum('bm,bma->ba', w, concentrations)  # [B, A]
 
         if deterministic:
-            # 결정적: Dirichlet 평균 (mode)
-            # Phase 3.5: softmax 온도로 민감도 확보
-            # temp < 1: 차이 증폭, temp > 1: 평탄화
+            # 결정적: softmax with temperature (logit-based, NOT Dirichlet)
+            # Phase 2: Use mixed_conc as logits directly
+            # Lower temp → sharper (amplifies differences)
+            # Higher temp → flatter (smooths differences)
             action = F.softmax(mixed_conc / self.action_temp, dim=-1)
         else:
-            # 확률적: Dirichlet 샘플
-            # Phase 3.5: action_temp를 확률적 경로에도 적용 (학습 중 민감도 향상)
-            mixed_conc_scaled = mixed_conc / self.action_temp  # 온도 스케일링
-            mixed_conc_clamped = torch.clamp(mixed_conc_scaled, min=self.dirichlet_min, max=self.dirichlet_max)
+            # 확률적: Dirichlet 샘플 (probability-based, different from deterministic!)
+            # Phase 2: Use abs(mixed_conc) as Dirichlet α (must be positive)
+            # α < 1: Sparse (corners), α = 1: Uniform, α > 1: Peaked near uniform
+            # Clamp to [0.1, 5.0] allows sparsity exploration
+            mixed_conc_positive = torch.abs(mixed_conc) + 0.1  # Ensure positive + minimum
+            mixed_conc_clamped = torch.clamp(mixed_conc_positive, min=self.dirichlet_min, max=self.dirichlet_max)
             dist = torch.distributions.Dirichlet(mixed_conc_clamped)
             action = dist.sample()
 

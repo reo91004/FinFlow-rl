@@ -235,9 +235,11 @@ class CrisisBridgeCallback(BaseCallback):
         if self.model is None:
             return True
 
-        # learning_starts 이전에는 policy가 충분히 warm-up되지 않았으므로 skip
-        if getattr(self.model, "num_timesteps", 0) < self.learning_starts:
-            return True
+        # Phase 2.1: Remove learning_starts check - connect immediately
+        # Policy outputs crisis_level from step 0, should sync immediately
+        # Old code (removed):
+        # if getattr(self.model, "num_timesteps", 0) < self.learning_starts:
+        #     return True
 
         info = None
         try:
@@ -488,23 +490,20 @@ def train_irt(args):
         "eta_b": args.eta_b,
     }
 
-    # SAC parameters (Phase 2.5: 안정화)
+    # SAC parameters
     sac_params = SAC_PARAMS.copy()
 
-    # if 'ent_coef' in sac_params and isinstance(sac_params['ent_coef'], str):
-    #     sac_params['ent_coef'] = 'auto'
-
-    # 온도 폭주 방지: 고정 온도 사용
-    sac_params["ent_coef"] = 0.05  # 'auto' 대신 고정 값
-    sac_params["learning_starts"] = 5000  # 100 → 5000 (웜업 증가)
+    # Phase 2.1: Fixed entropy coefficient (NOT auto for simplex actions!)
+    # Simplex entropy H ∈ [0, log(30)] = [0, 3.40] (positive!)
+    # SAC's "auto" uses negative target (for continuous Box actions)
+    # This causes explosion with simplex → use fixed value
+    sac_params["ent_coef"] = 0.3  # Fixed, 6x higher than Phase 1 (0.05)
+    sac_params["learning_starts"] = 1000  # Phase 2: 5000 → 1000 (faster warmup)
 
     # Phase-H1: Critic learning rate 상향 (adaptive_risk 전용)
     if args.reward_type == "adaptive_risk":
-        # Critic LR을 policy_kwargs 통해 설정
-        # SB3 SAC는 optimizer_class로 critic_lr 지정 가능
-        # 여기서는 learning_rate를 상향하여 gradient 증폭
         sac_params["learning_rate"] = 5e-4  # 1e-4 → 5e-4 (5배 증가)
-        print("  Phase-H1: SAC learning_rate increased to 5e-4 for gradient amplification")
+        print("  Phase-H1: SAC learning_rate=5e-4 for gradient amplification")
 
     print(f"  SAC params: {sac_params}")
     print(f"  IRT params: {policy_kwargs}")
@@ -513,8 +512,8 @@ def train_irt(args):
     crisis_bridge_callback = None
     if args.reward_type == "adaptive_risk":
         crisis_bridge_callback = CrisisBridgeCallback(
-            learning_starts=sac_params.get("learning_starts", 0),
-            verbose=0,
+            learning_starts=0,  # Phase 2.1: Start immediately (was: sac_params["learning_starts"])
+            verbose=1,  # Phase 2.1: Enable verbose logging
         )
         print("  Phase-H1: CrisisBridgeCallback enabled (Policy→Env crisis signal)")
 
@@ -836,8 +835,8 @@ def main():
     parser.add_argument(
         "--alpha-max",
         type=float,
-        default=0.55,
-        help="Normal maximum alpha (default: 0.55, Phase 3.5)",
+        default=0.75,  # Phase 2: 0.55 → 0.75 (allow more OT usage, prevent saturation)
+        help="Normal maximum alpha (Phase 2: increased for IRT flexibility)",
     )
     parser.add_argument(
         "--ema-beta",
@@ -887,24 +886,24 @@ def main():
         default=12,
         help="Market feature dimension (default: 12)",
     )
-    # Phase 3.5: Dirichlet 및 온도 파라미터
+    # Phase 2: Dirichlet 및 온도 파라미터
     parser.add_argument(
         "--dirichlet-min",
         type=float,
-        default=0.8,
-        help="Dirichlet concentration minimum (default: 0.8, Phase 3.5)",
+        default=0.1,  # Phase 2: 0.8 → 0.1 (allow sparsity for exploration)
+        help="Dirichlet concentration minimum (Phase 2: enables sparse exploration)"
     )
     parser.add_argument(
         "--dirichlet-max",
         type=float,
-        default=2.0,  # Phase 1: 5.0 → 2.0 (sharper portfolio concentration)
-        help="Dirichlet concentration maximum (default: 2.0, Phase 1 fix)",
+        default=5.0,  # Phase 2: 2.0 → 5.0 (keep current, only for stochastic)
+        help="Dirichlet concentration maximum (Phase 2: stochastic path only)"
     )
     parser.add_argument(
         "--action-temp",
         type=float,
-        default=0.9,  # Phase 1: 0.7 → 0.9 (better exploration)
-        help="Action softmax temperature (default: 0.9, Phase 1, higher for exploration)",
+        default=0.3,  # Phase 2: 0.9 → 0.3 (much sharper for concentrated portfolios)
+        help="Action softmax temperature (Phase 2: sharper = more concentration)"
     )
 
     # Phase 3: DSR + CVaR 보상 파라미터

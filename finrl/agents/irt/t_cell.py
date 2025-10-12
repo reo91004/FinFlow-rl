@@ -30,7 +30,7 @@ class TCellMinimal(nn.Module):
                  emb_dim: int = 128,
                  n_types: int = 4,
                  momentum: float = 0.99,
-                 crisis_guard_rate: float = 0.15):
+                 crisis_guard_rate: float = 0.25):  # Phase 2.1: 0.15 → 0.25 (stronger normalization)
         """
         Args:
             in_dim: 입력 차원 (시장 특성, 예: 12)
