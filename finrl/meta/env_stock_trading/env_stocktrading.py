@@ -113,6 +113,24 @@ class StockTradingEnv(gym.Env):
             # Phase 3.5: DSR/CVaR 값 버퍼 (state에 포함시킬 용도)
             self.last_dsr = 0.0
             self.last_cvar = 0.0
+        elif reward_type == "adaptive_risk":
+            # Phase-H1: Adaptive Risk-Aware Reward
+            from .reward_functions import AdaptiveRiskReward
+
+            self.risk_reward = AdaptiveRiskReward(
+                lambda_sharpe=0.15,
+                lambda_cvar=0.5,
+                lambda_turnover=0.002,
+                crisis_gain=0.25,
+                dsr_beta=dsr_beta,
+                cvar_alpha=cvar_alpha,
+                cvar_window=cvar_window,
+            )
+
+            # Phase-H1: crisis_level 및 디버깅 정보 저장
+            self.last_crisis_level = 0.5
+            self.last_kappa = 0.15
+            self.last_delta_sharpe = 0.0
         else:
             self.risk_reward = None
 
@@ -407,6 +425,29 @@ class StockTradingEnv(gym.Env):
 
                 # reward_scaling 적용
                 self.reward = risk_reward * self.reward_scaling
+
+            elif self.reward_type == "adaptive_risk" and self.risk_reward is not None:
+                # Phase-H1: Adaptive Risk-Aware Reward
+                # 로그수익 계산
+                log_return = np.log(end_total_asset / (begin_total_asset + 1e-8))
+
+                # 현재 포트폴리오 가중치 계산 (simplex 정규화)
+                prices = np.array(self.state[1:(self.stock_dim + 1)])
+                holdings = np.array(self.state[(self.stock_dim + 1):(self.stock_dim * 2 + 1)])
+                portfolio_value = end_total_asset + 1e-8
+                current_weights = (prices * holdings) / portfolio_value
+
+                # Adaptive Risk Reward 계산
+                risk_reward, reward_info = self.risk_reward.compute(log_return, current_weights)
+
+                # Phase-H1: 디버깅 정보 저장
+                self.last_crisis_level = float(reward_info["crisis_level"])
+                self.last_kappa = float(reward_info["kappa"])
+                self.last_delta_sharpe = float(reward_info["delta_sharpe"])
+
+                # reward_scaling 적용
+                self.reward = risk_reward * self.reward_scaling
+
             else:
                 # 기본 보상 (후진 호환)
                 self.reward = basic_reward * self.reward_scaling
@@ -460,8 +501,14 @@ class StockTradingEnv(gym.Env):
             self.risk_reward.reset()
 
             # Phase 3.5: DSR/CVaR 버퍼 초기화
-            self.last_dsr = 0.0
-            self.last_cvar = 0.0
+            if self.reward_type == "dsr_cvar":
+                self.last_dsr = 0.0
+                self.last_cvar = 0.0
+            # Phase-H1: Adaptive Risk 버퍼 초기화
+            elif self.reward_type == "adaptive_risk":
+                self.last_crisis_level = 0.5
+                self.last_kappa = 0.15
+                self.last_delta_sharpe = 0.0
 
         self.episode += 1
 

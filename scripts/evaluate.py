@@ -214,7 +214,7 @@ def evaluate_model(model_path,
         tech_indicators: 기술 지표 리스트
         initial_amount: 초기 자본
         verbose: 진행 상황 출력 여부
-        reward_type: 보상 함수 타입 (basic/dsr_cvar)
+        reward_type: 보상 함수 타입 (basic/dsr_cvar/adaptive_risk). IRT 모델은 자동 감지.
         lambda_dsr: DSR 보상 가중치
         lambda_cvar: CVaR 보상 가중치
 
@@ -258,20 +258,65 @@ def evaluate_model(model_path,
     if verbose:
         print(f"  실제 주식 수: {stock_dim}")
 
-    # Phase 3.5: IRT 모델은 dsr_cvar 보상 사용
+    # Phase 3.5 & H1: IRT 모델은 학습 시점 보상 타입을 그대로 사용해야 함
     is_irt = 'irt' in model_path.lower()
-    env_reward_type = reward_type if is_irt else "basic"
+    requested_reward_type = reward_type
 
-    test_env = create_env(test_df, stock_dim, tech_indicators,
-                         reward_type=env_reward_type,
-                         lambda_dsr=lambda_dsr,
-                         lambda_cvar=lambda_cvar)
+    # Auto-detect reward type when loading IRT models (fallback if mismatch occurs)
+    if is_irt:
+        candidate_reward_types = []
+        if requested_reward_type:
+            candidate_reward_types.append(requested_reward_type)
+        for candidate in ["adaptive_risk", "dsr_cvar", "basic"]:
+            if candidate not in candidate_reward_types:
+                candidate_reward_types.append(candidate)
+    else:
+        candidate_reward_types = [requested_reward_type or "basic"]
 
-    model = model_class.load(model_path, env=test_env)
+    model = None
+    test_env = None
+    env_reward_type = None
+    load_error = None
+
+    for candidate_reward_type in candidate_reward_types:
+        env_candidate = create_env(
+            test_df,
+            stock_dim,
+            tech_indicators,
+            reward_type=candidate_reward_type,
+            lambda_dsr=lambda_dsr,
+            lambda_cvar=lambda_cvar,
+        )
+        try:
+            model = model_class.load(model_path, env=env_candidate)
+            test_env = env_candidate
+            env_reward_type = candidate_reward_type
+            break
+        except ValueError as exc:
+            # Observation space mismatch → try next reward type
+            if "Observation spaces do not match" not in str(exc):
+                raise
+            load_error = exc
+            if hasattr(env_candidate, "close"):
+                try:
+                    env_candidate.close()
+                except Exception:
+                    pass
+    if model is None or test_env is None or env_reward_type is None:
+        raise load_error if load_error is not None else ValueError(
+            "Failed to load model with any compatible reward type."
+        )
+
     if verbose:
         print(f"  Model loaded successfully")
         if is_irt:
-            print(f"  Reward type: {env_reward_type}")
+            if env_reward_type != requested_reward_type:
+                print(
+                    f"  Detected reward type from model: {env_reward_type} "
+                    f"(requested: {requested_reward_type})"
+                )
+            else:
+                print(f"  Reward type: {env_reward_type}")
 
     # 4. 평가 실행
     if verbose:
@@ -296,11 +341,16 @@ def evaluate_model(model_path,
             'eta': [],
             'alpha_c': []
         }
+        if env_reward_type == "adaptive_risk":
+            irt_data_list['env_crisis_levels'] = []
+            irt_data_list['env_kappa'] = []
+            irt_data_list['env_delta_sharpe'] = []
 
     step = 0
     while not done:
         action, _ = model.predict(obs, deterministic=True)
 
+        info_dict = None
         # IRT info 수집
         if is_irt and hasattr(model.policy, 'get_irt_info'):
             info_dict = model.policy.get_irt_info()
@@ -322,6 +372,23 @@ def evaluate_model(model_path,
         obs, reward, done, truncated, info = test_env.step(action)
         done = done or truncated
 
+        # Phase-H1: Crisis bridge during evaluation (policy → env)
+        if (
+            is_irt
+            and env_reward_type == "adaptive_risk"
+            and info_dict is not None
+            and info_dict.get('crisis_level') is not None
+            and hasattr(test_env, 'risk_reward')
+            and hasattr(test_env.risk_reward, 'set_crisis_level')
+        ):
+            crisis_value = info_dict['crisis_level'][0]
+            if hasattr(crisis_value, "detach"):
+                crisis_value = crisis_value.detach()
+            if hasattr(crisis_value, "cpu"):
+                crisis_value = crisis_value.cpu()
+            crisis_level_scalar = float(np.array(crisis_value).item())
+            test_env.risk_reward.set_crisis_level(crisis_level_scalar)
+
         # Portfolio value 계산
         state = np.array(test_env.state)
         cash = state[0]
@@ -336,6 +403,10 @@ def evaluate_model(model_path,
             total_equity = pv + 1e-8
             actual_weights = (prices * holdings) / total_equity
             irt_data_list['actual_weights'].append(actual_weights)
+            if env_reward_type == "adaptive_risk":
+                irt_data_list['env_crisis_levels'].append(test_env.last_crisis_level)
+                irt_data_list['env_kappa'].append(test_env.last_kappa)
+                irt_data_list['env_delta_sharpe'].append(test_env.last_delta_sharpe)
 
         step += 1
 
@@ -359,6 +430,10 @@ def evaluate_model(model_path,
             'symbols': stock_tickers[:stock_dim],  # 실제 주식 수만큼
             'metrics': None  # 호출자가 calculate_metrics()로 계산
         }
+        if env_reward_type == "adaptive_risk" and irt_data_list.get('env_crisis_levels'):
+            irt_data['env_crisis_levels'] = np.array(irt_data_list['env_crisis_levels']).squeeze()
+            irt_data['env_kappa'] = np.array(irt_data_list['env_kappa']).squeeze()
+            irt_data['env_delta_sharpe'] = np.array(irt_data_list['env_delta_sharpe']).squeeze()
 
     # 성능 지표 계산
     weights_history = irt_data['weights'] if irt_data else None

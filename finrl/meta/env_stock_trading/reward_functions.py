@@ -249,3 +249,138 @@ class RiskSensitiveReward:
         self.log_return_ema = 1.0
         self.dsr_ema = 1.0
         self.cvar_ema = 1.0
+
+
+class AdaptiveRiskReward:
+    """
+    Phase-H1: Adaptive Risk-Aware Reward with Crisis Sensitivity
+
+    Log-return base + Adaptive risk bonus + Transaction cost penalty
+
+    수식:
+    r_t = log(V_t/V_{t-1}) + κ(c)·(ΔSharpe - β·CVaR) - μ·turnover
+
+    여기서:
+    - log(V_t/V_{t-1}): 항상 non-zero gradient를 보장하는 base return
+    - κ(c) = 0.15 + 0.25·c: crisis_level에 따라 adaptive한 risk bonus 가중치
+      * c=0 (평시): κ=0.15
+      * c=1 (위기): κ=0.40
+    - ΔSharpe: DSR (Differential Sharpe Ratio)
+    - CVaR: 꼬리 위험 (음수)
+    - turnover: 거래 비용 (실행가중 기반)
+
+    특징:
+    1. Base log-return이 항상 존재 → gradient vanishing 해결
+    2. Crisis-aware κ → 위기 시 자동으로 risk-averse 강화
+    3. Direct CVaR penalty → Risk-aware value learning
+
+    Args:
+        lambda_sharpe: ΔSharpe 기본 가중치 (κ_min, default: 0.15)
+        lambda_cvar: CVaR penalty 가중치 (β, default: 0.5)
+        lambda_turnover: Turnover penalty 가중치 (μ, default: 0.002)
+        crisis_gain: Crisis에 의한 κ 증폭 계수 (default: 0.25)
+        dsr_beta: DSR 이동평균 계수 (default: 0.99)
+        cvar_alpha: CVaR 분위수 (default: 0.05)
+        cvar_window: CVaR 추정 윈도우 (default: 40)
+    """
+
+    def __init__(
+        self,
+        lambda_sharpe: float = 0.15,
+        lambda_cvar: float = 0.5,
+        lambda_turnover: float = 0.002,
+        crisis_gain: float = 0.25,
+        dsr_beta: float = 0.99,
+        cvar_alpha: float = 0.05,
+        cvar_window: int = 40,
+    ):
+        self.lambda_sharpe_base = lambda_sharpe
+        self.lambda_cvar = lambda_cvar
+        self.lambda_turnover = lambda_turnover
+        self.crisis_gain = crisis_gain
+
+        # DSR and CVaR estimators
+        self.dsr = DifferentialSharpeRatio(beta=dsr_beta)
+        self.cvar = CVaREstimator(alpha=cvar_alpha, window=cvar_window)
+
+        # Crisis level (updated externally via callback)
+        self.crisis_level = 0.5  # Default: neutral
+
+        # Turnover tracking
+        self.prev_weights = None
+
+    def set_crisis_level(self, crisis_level: float):
+        """
+        Policy callback에서 crisis_level을 업데이트
+
+        Args:
+            crisis_level: 0 (평시) ~ 1 (위기)
+        """
+        self.crisis_level = np.clip(crisis_level, 0.0, 1.0)
+
+    def compute(
+        self,
+        basic_return: float,
+        current_weights: np.ndarray = None
+    ) -> tuple[float, dict]:
+        """
+        Phase-H1 Adaptive Risk-Aware Reward 계산
+
+        Args:
+            basic_return: log(V_t/V_{t-1})
+            current_weights: 현재 포트폴리오 가중치 (turnover 계산용, optional)
+
+        Returns:
+            reward: 최종 보상
+            info: 디버깅 정보
+        """
+        # 1. Base log-return (항상 non-zero gradient)
+        log_return = basic_return
+
+        # 2. ΔSharpe (DSR)
+        delta_sharpe = self.dsr.update(basic_return)
+
+        # 3. CVaR (꼬리 위험)
+        cvar_value = self.cvar.update(basic_return)
+
+        # 4. Adaptive κ(c)
+        kappa = self.lambda_sharpe_base + self.crisis_gain * self.crisis_level
+
+        # 5. Risk bonus
+        risk_bonus = kappa * (delta_sharpe - self.lambda_cvar * cvar_value)
+
+        # 6. Turnover penalty
+        turnover_penalty = 0.0
+        if current_weights is not None and self.prev_weights is not None:
+            # Turnover = 0.5 * Σ|w_t - w_{t-1}|
+            turnover = 0.5 * np.sum(np.abs(current_weights - self.prev_weights))
+            turnover_penalty = self.lambda_turnover * turnover
+
+        # Update prev_weights
+        if current_weights is not None:
+            self.prev_weights = current_weights.copy()
+
+        # 7. 최종 보상
+        reward = log_return + risk_bonus - turnover_penalty
+
+        # 디버깅 정보
+        info = {
+            "log_return": log_return,
+            "delta_sharpe": delta_sharpe,
+            "cvar_value": cvar_value,
+            "crisis_level": self.crisis_level,
+            "kappa": kappa,
+            "risk_bonus": risk_bonus,
+            "turnover_penalty": turnover_penalty,
+            "sharpe_online": self.dsr.sharpe,
+            "reward_total": reward,
+        }
+
+        return reward, info
+
+    def reset(self):
+        """에피소드 종료 시 상태 초기화"""
+        self.dsr.reset()
+        self.cvar.reset()
+        self.crisis_level = 0.5
+        self.prev_weights = None

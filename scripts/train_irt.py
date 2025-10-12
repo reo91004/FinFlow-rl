@@ -188,6 +188,58 @@ class IRTLoggingCallback(BaseCallback):
         return True
 
 
+class CrisisBridgeCallback(BaseCallback):
+    """
+    Phase-H1: Policy → Environment Crisis Level Bridge
+
+    IRT Policy에서 계산된 crisis_level을 환경의 AdaptiveRiskReward로 전달하는 브릿지.
+
+    동작:
+    1. Policy에서 get_irt_info()를 통해 crisis_level 추출
+    2. Environment의 risk_reward.set_crisis_level() 호출
+    3. Adaptive κ(c) 업데이트로 위기 반응성 향상
+
+    사용 조건:
+    - reward_type='adaptive_risk'인 환경에서만 작동
+    - IRT Policy 사용 시 필수
+    """
+
+    def __init__(self, verbose: int = 0):
+        super().__init__(verbose)
+        self._warned_once = False
+
+    def _on_step(self) -> bool:
+        # Policy에서 IRT info 추출
+        info = self.model.policy.get_irt_info()
+        if info is None:
+            if not self._warned_once:
+                print("⚠️  CrisisBridgeCallback: IRT info not available, skipping")
+                self._warned_once = True
+            return True
+
+        # Crisis level 추출 (batch=1 가정)
+        crisis_level = info['crisis_level'][0].item()
+
+        # Environment에 전달 (DummyVecEnv wrapper를 통해 접근)
+        try:
+            # DummyVecEnv의 경우 envs[0]로 접근
+            if hasattr(self.training_env, 'envs'):
+                env = self.training_env.envs[0]
+            else:
+                env = self.training_env
+
+            # AdaptiveRiskReward가 있으면 업데이트
+            if hasattr(env, 'risk_reward') and env.risk_reward is not None:
+                if hasattr(env.risk_reward, 'set_crisis_level'):
+                    env.risk_reward.set_crisis_level(crisis_level)
+        except Exception as e:
+            if not self._warned_once:
+                print(f"⚠️  CrisisBridgeCallback: Failed to update crisis level: {e}")
+                self._warned_once = True
+
+        return True
+
+
 def create_env(df, stock_dim, tech_indicators, reward_type="basic", lambda_dsr=0.1, lambda_cvar=0.05):
     """StockTradingEnv 생성 (Phase 3: DSR + CVaR 보상 지원)"""
 
@@ -294,6 +346,9 @@ def train_irt(args):
     print(f"  Reward type: {args.reward_type}")
     if args.reward_type == "dsr_cvar":
         print(f"    λ_dsr: {args.lambda_dsr}, λ_cvar: {args.lambda_cvar}")
+    elif args.reward_type == "adaptive_risk":
+        print(f"    Phase-H1: Adaptive Risk-Aware Reward")
+        print(f"    λ_sharpe: 0.15, λ_cvar: 0.5, λ_turnover: 0.002, crisis_gain: 0.25")
 
     # 5. Train IRT model
     print(f"\n[5/5] Training SAC + IRT Policy...")
@@ -321,6 +376,12 @@ def train_irt(args):
 
     # Phase A: IRT 계측 callback
     irt_logging_callback = IRTLoggingCallback(verbose=0, log_freq=100)
+
+    # Phase-H1: Crisis Bridge callback (adaptive_risk 전용)
+    crisis_bridge_callback = None
+    if args.reward_type == "adaptive_risk":
+        crisis_bridge_callback = CrisisBridgeCallback(verbose=0)
+        print("  Phase-H1: CrisisBridgeCallback enabled (Policy→Env crisis signal)")
 
     # IRT Policy kwargs
     policy_kwargs = {
@@ -361,6 +422,14 @@ def train_irt(args):
     sac_params["ent_coef"] = 0.05  # 'auto' 대신 고정 값
     sac_params["learning_starts"] = 5000  # 100 → 5000 (웜업 증가)
 
+    # Phase-H1: Critic learning rate 상향 (adaptive_risk 전용)
+    if args.reward_type == "adaptive_risk":
+        # Critic LR을 policy_kwargs 통해 설정
+        # SB3 SAC는 optimizer_class로 critic_lr 지정 가능
+        # 여기서는 learning_rate를 상향하여 gradient 증폭
+        sac_params["learning_rate"] = 5e-4  # 1e-4 → 5e-4 (5배 증가)
+        print("  Phase-H1: SAC learning_rate increased to 5e-4 for gradient amplification")
+
     print(f"  SAC params: {sac_params}")
     print(f"  IRT params: {policy_kwargs}")
 
@@ -380,9 +449,13 @@ def train_irt(args):
     print(f"  Starting training...")
 
     # Train
+    callbacks = [checkpoint_callback, eval_callback, irt_logging_callback]
+    if crisis_bridge_callback is not None:
+        callbacks.append(crisis_bridge_callback)
+
     model.learn(
         total_timesteps=total_timesteps,
-        callback=[checkpoint_callback, eval_callback, irt_logging_callback],
+        callback=callbacks,
         progress_bar=True,
     )
 
@@ -427,6 +500,9 @@ def test_irt(args, model_path=None):
         tech_indicators=INDICATORS,
         initial_amount=1000000,
         verbose=True,
+        reward_type=args.reward_type,  # Phase-H1: reward_type 전달
+        lambda_dsr=args.lambda_dsr,
+        lambda_cvar=args.lambda_cvar,
     )
 
     # 결과 추출
@@ -703,8 +779,8 @@ def main():
         "--reward-type",
         type=str,
         default="dsr_cvar",
-        choices=["basic", "dsr_cvar"],
-        help="Reward function type (default: dsr_cvar)",
+        choices=["basic", "dsr_cvar", "adaptive_risk"],
+        help="Reward function type (default: dsr_cvar, Phase-H1: adaptive_risk)",
     )
     parser.add_argument(
         "--lambda-dsr",
