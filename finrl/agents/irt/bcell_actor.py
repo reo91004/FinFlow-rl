@@ -58,13 +58,17 @@ class BCellIRTActor(nn.Module):
                  crisis_guard_warmup_steps: int = 10000,
                  hysteresis_up: float = 0.55,
                  hysteresis_down: float = 0.45,
+                 adaptive_hysteresis: bool = True,
+                 hysteresis_quantile: float = 0.85,
+                 hysteresis_min_gap: float = 0.1,
+                 crisis_history_len: int = 512,
                  crisis_guard_rate: Optional[float] = None,
                  k_s: float = 6.0,
                  k_c: float = 6.0,
                  k_b: float = 4.0,
                  p_star: float = 0.35,
-                 temperature_min: float = 0.9,
-                 temperature_max: float = 1.2,
+                 temperature_min: float = 0.7,
+                 temperature_max: float = 1.1,
                  stat_momentum: float = 0.95,
                  **irt_kwargs):
         """
@@ -145,6 +149,15 @@ class BCellIRTActor(nn.Module):
         self.crisis_guard_warmup_steps = crisis_guard_warmup_steps
         self.hysteresis_up = hysteresis_up
         self.hysteresis_down = hysteresis_down
+        self.adaptive_hysteresis = adaptive_hysteresis
+        self.hysteresis_quantile = float(max(min(hysteresis_quantile, 0.99), 0.5))
+        self.hysteresis_min_gap = float(max(hysteresis_min_gap, 0.01))
+        history_len = max(int(crisis_history_len), 64)
+        self.register_buffer("crisis_history", torch.zeros(history_len))
+        self.register_buffer("crisis_hist_ptr", torch.tensor(0, dtype=torch.long))
+        self.register_buffer("crisis_hist_count", torch.tensor(0, dtype=torch.long))
+        self.register_buffer("hysteresis_up_state", torch.tensor(float(hysteresis_up)))
+        self.register_buffer("hysteresis_down_state", torch.tensor(float(hysteresis_down)))
         if crisis_guard_rate is not None:
             self.crisis_guard_rate_init = float(crisis_guard_rate)
             self.crisis_guard_rate_final = float(crisis_guard_rate)
@@ -270,6 +283,35 @@ class BCellIRTActor(nn.Module):
         step = float(self.crisis_step.item())
         progress = min(max(step / float(self.crisis_guard_warmup_steps), 0.0), 1.0)
         return self.crisis_guard_rate_init + (self.crisis_guard_rate_final - self.crisis_guard_rate_init) * progress
+
+    def _update_hysteresis_thresholds(self, crisis_samples: torch.Tensor) -> None:
+        if not self.adaptive_hysteresis or not self.training:
+            return
+        value = float(crisis_samples.detach().mean().clamp(0.0, 1.0).item())
+        ptr = int(self.crisis_hist_ptr.item())
+        self.crisis_history[ptr] = value
+        ptr = (ptr + 1) % self.crisis_history.numel()
+        self.crisis_hist_ptr.fill_(ptr)
+        count = int(self.crisis_hist_count.item())
+        count = min(count + 1, self.crisis_history.numel())
+        self.crisis_hist_count.fill_(count)
+        if count < 32:
+            return
+        history = self.crisis_history[:count].to(crisis_samples.device)
+        quantile = torch.quantile(history, self.hysteresis_quantile).item()
+        up = max(min(quantile, 1.0), 0.0)
+        down = max(up - self.hysteresis_min_gap, 0.0)
+        self.hysteresis_up_state.fill_(up)
+        self.hysteresis_down_state.fill_(down)
+
+    def _current_hysteresis_thresholds(self) -> Tuple[float, float]:
+        if self.adaptive_hysteresis:
+            up = float(self.hysteresis_up_state.item())
+            down = float(self.hysteresis_down_state.item())
+        else:
+            up = self.hysteresis_up
+            down = self.hysteresis_down
+        return up, down
 
     def _verify_signal_orientation(self) -> None:
         if self._orientation_checked:
@@ -448,16 +490,21 @@ class BCellIRTActor(nn.Module):
             max=1.0
         )
 
+        self._update_hysteresis_thresholds(crisis_level_pre_guard)
+        hysteresis_up_val, hysteresis_down_val = self._current_hysteresis_thresholds()
+        hysteresis_up_tensor = crisis_level_pre_guard.new_tensor(hysteresis_up_val)
+        hysteresis_down_tensor = crisis_level_pre_guard.new_tensor(hysteresis_down_val)
+
         prev_regime_flag = (self.crisis_prev_regime > 0.5).float()
         if prev_regime_flag.item() >= 0.5:
             crisis_regime = torch.where(
-                crisis_level < self.hysteresis_down,
+                crisis_level < hysteresis_down_tensor,
                 torch.zeros_like(crisis_level),
                 torch.ones_like(crisis_level)
             )
         else:
             crisis_regime = torch.where(
-                crisis_level > self.hysteresis_up,
+                crisis_level > hysteresis_up_tensor,
                 torch.ones_like(crisis_level),
                 torch.zeros_like(crisis_level)
             )
@@ -557,6 +604,8 @@ class BCellIRTActor(nn.Module):
             'bias_warm_started': self.bias_warm_started.detach().clone(),
             'crisis_types': z.detach(),  # [B, K]
             'fitness': fitness.detach(),  # [B, M]
+            'hysteresis_up': torch.tensor(hysteresis_up_val, device=state.device),
+            'hysteresis_down': torch.tensor(hysteresis_down_val, device=state.device),
             # IRT 분해 정보 (시각화용)
             'w_rep': irt_debug['w_rep'].detach(),  # [B, M] - Replicator 출력
             'w_ot': irt_debug['w_ot'].detach(),    # [B, M] - OT 출력

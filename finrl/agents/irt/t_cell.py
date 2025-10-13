@@ -20,7 +20,7 @@ T-Cell: 경량 위기 감지 시스템
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Tuple, Dict
+from typing import Tuple
 
 class TCellMinimal(nn.Module):
     """경량 T-Cell: 위기 감지 + 공자극 임베딩"""
@@ -101,24 +101,3 @@ class TCellMinimal(nn.Module):
         crisis_base = torch.sigmoid(crisis_affine)  # [B, 1]
 
         return z, d, crisis_affine, crisis_base
-
-    def get_crisis_interpretation(self, z: torch.Tensor) -> Dict[str, float]:
-        """
-        위기 타입 해석 (시각화용)
-
-        Args:
-            z: 위기 타입 점수 [B, K]
-
-        Returns:
-            해석 딕셔너리
-        """
-        crisis_types = ['Volatility', 'Liquidity', 'Correlation', 'Systemic']
-
-        z_std = (z - self.mu) / (self.sigma + 1e-6)
-        z_prob = torch.sigmoid(z_std)  # [B, K]
-
-        interpretation = {}
-        for i, ctype in enumerate(crisis_types[:self.n_types]):
-            interpretation[ctype] = z_prob[:, i].mean().item()
-
-        return interpretation

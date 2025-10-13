@@ -70,19 +70,13 @@ def seed_environment(env, seed: int) -> None:
     Try to seed gym environments and their spaces if supported.
     """
     if hasattr(env, "seed"):
-        try:
-            env.seed(seed)
-        except TypeError:
-            env.seed()
-    elif hasattr(env, "_seed"):
+        env.seed(seed)
+    elif hasattr(env, "_seed"):  # legacy gym
         env._seed(seed)
 
     # Gymnasium style reset(seed=seed)
     if hasattr(env, "reset"):
-        try:
-            env.reset(seed=seed)
-        except TypeError:
-            env.reset()
+        env.reset(seed=seed)
 
     if hasattr(env, "action_space") and hasattr(env.action_space, "seed"):
         env.action_space.seed(seed)
@@ -235,14 +229,12 @@ class IRTLoggingCallback(BaseCallback):
                     self.logger.record("irt/pct_clamped_max", pct_clamped_max)
 
                 # ===== Phase 3.5: 정책 하이퍼파라미터 확인 =====
-                try:
-                    actor = self.model.policy.actor
+                actor = getattr(self.model.policy, "actor", None)
+                if actor is not None:
                     if hasattr(actor, 'action_temp'):
                         self.logger.record("policy/action_temp", actor.action_temp)
                     if hasattr(actor, 'ema_beta'):
                         self.logger.record("policy/ema_beta", actor.ema_beta)
-                except Exception:
-                    pass  # IRTPolicy 구조에 따라 실패 가능
 
                 # 위기 레벨 분포 요약
                 crisis_tensor = info['crisis_level'].detach()
@@ -255,30 +247,35 @@ class IRTLoggingCallback(BaseCallback):
                 self.logger.record("irt/crisis_level_p99", crisis_p99)
                 self.logger.record("irt/crisis_level_p90", crisis_p90)
                 self.logger.record("irt/crisis_level_median", crisis_median)
+                if 'hysteresis_up' in info:
+                    hyst_up = info['hysteresis_up']
+                    hyst_up_val = float(hyst_up.mean().item()) if isinstance(hyst_up, torch.Tensor) else float(hyst_up)
+                    self.logger.record("irt/hysteresis_up", hyst_up_val)
+                if 'hysteresis_down' in info:
+                    hyst_down = info['hysteresis_down']
+                    hyst_down_val = float(hyst_down.mean().item()) if isinstance(hyst_down, torch.Tensor) else float(hyst_down)
+                    self.logger.record("irt/hysteresis_down", hyst_down_val)
 
                 # ===== Phase 3.5: Turnover 메트릭 (목표 가중치 기준) =====
                 # 현재 action은 self.locals에 저장되어 있음
-                if 'actions' in self.locals and self.prev_action is not None:
+                if 'actions' in self.locals:
                     current_action = self.locals['actions']
                     if isinstance(current_action, torch.Tensor):
                         current_action_np = current_action.detach().cpu().numpy()
                     else:
-                        current_action_np = current_action
+                        current_action_np = np.asarray(current_action)
 
-                    # Turnover = 0.5 * sum(|w_t - w_{t-1}|) (metrics.py와 동일)
-                    # current_action_np shape: [B, N] (B=1 for DummyVecEnv)
-                    turnover_target = 0.5 * np.sum(np.abs(current_action_np - self.prev_action))
-                    self.logger.record("irt/turnover_target", turnover_target)
+                    if current_action_np.ndim == 1:
+                        current_action_np = current_action_np[np.newaxis, :]
 
-                    # 업데이트
-                    self.prev_action = current_action_np
-                elif 'actions' in self.locals:
-                    # 첫 스텝: 초기화
-                    current_action = self.locals['actions']
-                    if isinstance(current_action, torch.Tensor):
-                        self.prev_action = current_action.detach().cpu().numpy()
-                    else:
-                        self.prev_action = current_action
+                    current_clipped = np.maximum(current_action_np, 0.0)
+                    current_weights = current_clipped / (np.sum(current_clipped, axis=-1, keepdims=True) + 1e-8)
+
+                    if self.prev_action is not None:
+                        turnover_target = 0.5 * np.sum(np.abs(current_weights - self.prev_action))
+                        self.logger.record("irt/turnover_target", turnover_target)
+
+                    self.prev_action = current_weights
 
                 infos = self.locals.get('infos') if isinstance(self.locals, dict) else None
                 if infos:
@@ -335,15 +332,15 @@ class CrisisBridgeCallback(BaseCallback):
         #     return True
 
         info = None
-        try:
-            policy = getattr(self.model, "policy", None)
-            if policy is not None and hasattr(policy, "get_irt_info"):
+        policy = getattr(self.model, "policy", None)
+        if policy is not None and hasattr(policy, "get_irt_info"):
+            try:
                 info = policy.get_irt_info()
-        except Exception as exc:
-            if not self._warned_once:
-                print(f"⚠️  CrisisBridgeCallback: Failed to fetch IRT info ({exc})")
-                self._warned_once = True
-            return True
+            except AttributeError as exc:
+                if not self._warned_once:
+                    print(f"⚠️  CrisisBridgeCallback: Failed to fetch IRT info ({exc})")
+                    self._warned_once = True
+                return True
 
         if not info or "crisis_level" not in info:
             if not self._warned_once:
@@ -359,25 +356,26 @@ class CrisisBridgeCallback(BaseCallback):
         else:
             crisis_level = float(crisis_tensor)
 
-        try:
-            base_env = _unwrap_env(self.model.get_env())
-            setattr(base_env, "_crisis_level", crisis_level)
+        base_env = _unwrap_env(self.model.get_env())
+        setattr(base_env, "_crisis_level", crisis_level)
 
-            risk_reward = getattr(base_env, "risk_reward", None)
-            if risk_reward is not None and hasattr(risk_reward, "set_crisis_level"):
+        risk_reward = getattr(base_env, "risk_reward", None)
+        if risk_reward is not None and hasattr(risk_reward, "set_crisis_level"):
+            try:
                 risk_reward.set_crisis_level(crisis_level)
+            except (TypeError, ValueError) as exc:
+                if not self._warned_once:
+                    print(f"⚠️  CrisisBridgeCallback: Failed to update crisis level ({exc})")
+                    self._warned_once = True
+                return True
 
-            if hasattr(base_env, "_crisis_history"):
-                base_env._crisis_history.append((int(self.model.num_timesteps), crisis_level))
+        if hasattr(base_env, "_crisis_history"):
+            base_env._crisis_history.append((int(self.model.num_timesteps), crisis_level))
 
-            if not self._connected_once:
-                print(f"✅ CrisisBridgeCallback: Successfully connected (t={self.model.num_timesteps})")
-                self._connected_once = True
-                self._warned_once = False
-        except Exception as exc:
-            if not self._warned_once:
-                print(f"⚠️  CrisisBridgeCallback: Failed to update crisis level ({exc})")
-                self._warned_once = True
+        if not self._connected_once:
+            print(f"✅ CrisisBridgeCallback: Successfully connected (t={self.model.num_timesteps})")
+            self._connected_once = True
+            self._warned_once = False
 
         return True
 

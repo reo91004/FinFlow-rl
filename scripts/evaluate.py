@@ -361,10 +361,8 @@ def evaluate_model(model_path,
                 mismatch_reasons.append(reason)
                 load_error = ValueError(reason)
                 if hasattr(env_candidate, "close"):
-                    try:
+                    with contextlib.suppress(AttributeError):
                         env_candidate.close()
-                    except Exception:
-                        pass
                 continue
         try:
             model = model_class.load(model_path, env=env_candidate)
@@ -377,10 +375,8 @@ def evaluate_model(model_path,
                 raise
             load_error = exc
             if hasattr(env_candidate, "close"):
-                try:
+                with contextlib.suppress(AttributeError):
                     env_candidate.close()
-                except Exception:
-                    pass
     if model is None or test_env is None or env_reward_type is None:
         detail = "\n".join(mismatch_reasons) if mismatch_reasons else "<none>"
         raise load_error if load_error is not None else ValueError(
@@ -416,10 +412,8 @@ def evaluate_model(model_path,
 
         risk_reward = getattr(env_obj, "risk_reward", None)
         if risk_reward is not None and hasattr(risk_reward, "set_crisis_level"):
-            try:
+            with contextlib.suppress(TypeError, ValueError):
                 risk_reward.set_crisis_level(crisis_float)
-            except Exception:
-                pass
 
         if hasattr(env_obj, "_crisis_level"):
             env_obj._crisis_level = crisis_float
@@ -464,7 +458,11 @@ def evaluate_model(model_path,
             'weights': [],
             'actual_weights': [],  # Phase-1: 실행가중 기록
             'eta': [],
-            'alpha_c': []
+            'alpha_c': [],
+            'hysteresis_up': [],
+            'hysteresis_down': [],
+            'turnover_target': [],
+            'top_snapshots': []
         }
         if env_reward_type == "adaptive_risk":
             irt_data_list['env_crisis_levels'] = []
@@ -501,10 +499,14 @@ def evaluate_model(model_path,
                 irt_data_list['cost_matrices'].append(info_dict['cost_matrix'][0].cpu().numpy())
                 irt_data_list['eta'].append(info_dict['eta'][0].cpu().numpy())
                 irt_data_list['alpha_c'].append(info_dict['alpha_c'][0].cpu().numpy())
+                if 'hysteresis_up' in info_dict:
+                    irt_data_list['hysteresis_up'].append(float(np.array(info_dict['hysteresis_up']).item()))
+                if 'hysteresis_down' in info_dict:
+                    irt_data_list['hysteresis_down'].append(float(np.array(info_dict['hysteresis_down']).item()))
 
                 # Action을 weight로 변환 (simplex 정규화)
                 weights = action / (action.sum() + 1e-8)
-                irt_data_list['weights'].append(weights)
+                irt_data_list['weights'].append(weights.copy())
 
         next_obs, reward, done_step, truncated, info = test_env.step(action)
         done = done_step or truncated
@@ -541,6 +543,9 @@ def evaluate_model(model_path,
         if executed_weights is not None:
             executed_weights = np.asarray(executed_weights, dtype=np.float64).reshape(-1)
 
+        if is_irt:
+            irt_data_list['turnover_target'].append(float(info.get('turnover_target', 0.0) or 0.0))
+
         # Phase-1: 실행가중(actual_weights) 계산 및 기록
         actual_weights = None
         if is_irt:
@@ -552,6 +557,27 @@ def evaluate_model(model_path,
                 irt_data_list['env_crisis_levels'].append(test_env.last_crisis_level)
                 irt_data_list['env_kappa'].append(test_env.last_kappa)
                 irt_data_list['env_delta_sharpe'].append(test_env.last_delta_sharpe)
+
+            if len(irt_data_list['top_snapshots']) < 50 and actual_weights is not None:
+                sorted_idx = np.argsort(actual_weights)[::-1]
+                top_k = int(min(5, sorted_idx.size))
+                top_symbols = [stock_tickers[i] for i in sorted_idx[:top_k]]
+                top_exec_weights = actual_weights[sorted_idx[:top_k]].tolist()
+                target_slice = None
+                if irt_data_list['weights']:
+                    last_target = np.asarray(irt_data_list['weights'][-1])
+                    target_slice = last_target[sorted_idx[:top_k]].tolist()
+                current_date = None
+                if hasattr(test_env, "date_memory") and test_env.date_memory:
+                    current_date = test_env.date_memory[-1]
+                snapshot = {
+                    "step": step,
+                    "date": str(current_date) if current_date is not None else None,
+                    "tickers": top_symbols,
+                    "weights": top_exec_weights,
+                    "target_weights": target_slice,
+                }
+                irt_data_list['top_snapshots'].append(snapshot)
 
         tc_value = float(info.get('transaction_cost', 0.0) or 0.0)
         transaction_costs.append(tc_value)
@@ -594,6 +620,11 @@ def evaluate_model(model_path,
     value_returns_array = sanitize_returns(np.array(value_returns, dtype=np.float64))
     transaction_costs_array = np.array(transaction_costs, dtype=np.float64)
     turnover_executed_array = np.array(turnover_executed, dtype=np.float64)
+    turnover_target_array = (
+        np.array(irt_data_list['turnover_target'], dtype=np.float64)
+        if (is_irt and irt_data_list.get('turnover_target'))
+        else np.array([], dtype=np.float64)
+    )
 
     # IRT 데이터 변환
     irt_data = None
@@ -609,6 +640,8 @@ def evaluate_model(model_path,
             'cost_matrices': np.array(irt_data_list['cost_matrices']),  # [T, m, M]
             'eta': np.array(irt_data_list['eta']).squeeze(),  # [T]
             'alpha_c': np.array(irt_data_list['alpha_c']).squeeze(),  # [T]
+            'hysteresis_up': np.array(irt_data_list['hysteresis_up'], dtype=np.float64),
+            'hysteresis_down': np.array(irt_data_list['hysteresis_down'], dtype=np.float64),
             'symbols': stock_tickers[:stock_dim],  # 실제 주식 수만큼
             'metrics': None,  # 호출자가 calculate_metrics()로 계산
             'returns': execution_returns_array,
@@ -616,6 +649,8 @@ def evaluate_model(model_path,
             'returns_value': value_returns_array,
             'transaction_costs': transaction_costs_array,
             'turnover_executed': turnover_executed_array,
+            'turnover_target': np.array(irt_data_list['turnover_target'], dtype=np.float64),
+            'top_snapshots': irt_data_list['top_snapshots'],
         }
         if env_reward_type == "adaptive_risk" and irt_data_list.get('env_crisis_levels'):
             irt_data['env_crisis_levels'] = np.array(irt_data_list['env_crisis_levels']).squeeze()
@@ -646,7 +681,12 @@ def evaluate_model(model_path,
     metrics["turnover_executed_std"] = (
         float(np.std(turnover_executed_array)) if turnover_executed_array.size else 0.0
     )
-    avg_turnover_target = float(metrics.get("avg_turnover", 0.0) or 0.0)
+    if turnover_target_array.size:
+        avg_turnover_target = float(np.mean(turnover_target_array))
+        metrics["avg_turnover_target"] = avg_turnover_target
+        metrics["turnover_target_std"] = float(np.std(turnover_target_array))
+    else:
+        avg_turnover_target = float(metrics.get("avg_turnover", 0.0) or 0.0)
     metrics["turnover_transfer_ratio"] = (
         float(avg_turnover_exec / (avg_turnover_target + 1e-8))
         if avg_turnover_exec or avg_turnover_target
@@ -675,6 +715,12 @@ def evaluate_model(model_path,
             metrics["crisis_level_p99_eval"] = float(np.quantile(crisis_vals, 0.99))
             metrics["crisis_level_median_eval"] = float(np.median(crisis_vals))
             metrics["crisis_activation_rate"] = float(np.mean(crisis_vals >= 0.55))
+
+        hyst_up_vals = _safe_array('hysteresis_up')
+        hyst_down_vals = _safe_array('hysteresis_down')
+        if hyst_up_vals is not None and hyst_down_vals is not None:
+            metrics["hysteresis_up_mean"] = float(np.mean(hyst_up_vals))
+            metrics["hysteresis_down_mean"] = float(np.mean(hyst_down_vals))
 
         proto_weights = _safe_array('prototype_weights')
         if proto_weights is not None:

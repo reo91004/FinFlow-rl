@@ -247,14 +247,15 @@ class IRTPolicy(SACPolicy):
         alpha_max: Optional[float] = None,
         ema_beta: float = 0.70,  # Phase-3: 0.85 → 0.70 (전달 감쇠 완화)
         market_feature_dim: int = 12,
-        dirichlet_min: float = 0.8,  # Phase 3.5: 1.0 → 0.8 (균등 흡인 완화)
-        dirichlet_max: float = 20.0,  # Phase-F2': 50.0 → 20.0 (과도 흡인 방지)
-        action_temp: float = 0.8,  # Phase-2: softmax 온도 (민감도 확보)
+        dirichlet_min: float = 0.1,
+        dirichlet_max: float = 10.0,
+        action_temp: float = 0.6,
         eps: float = 0.03,  # Phase-F2': 0.05 → 0.03 (OT 평탄화 완화)
         max_iters: int = 30,
-        replicator_temp: float = 1.4,  # Phase F: 분포 평탄화
+        replicator_temp: float = 0.9,
         eta_0: float = 0.05,
         eta_1: float = 0.12,  # Phase E: 민감도 완화
+        alpha_update_rate: float = 0.25,
         gamma: float = 0.85,  # Phase E: 평활화 증가
         # Phase 1: Crisis calibration defaults
         w_r: float = 0.55,
@@ -265,8 +266,8 @@ class IRTPolicy(SACPolicy):
         eta_b_decay_steps: int = 30000,
         eta_T: float = 0.01,
         p_star: float = 0.35,
-        temperature_min: float = 0.9,
-        temperature_max: float = 1.2,
+        temperature_min: float = 0.7,
+        temperature_max: float = 1.1,
         stat_momentum: float = 0.95,
         eta_b_warmup_steps: int = 10000,
         eta_b_warmup_value: float = 0.05,
@@ -277,6 +278,10 @@ class IRTPolicy(SACPolicy):
         crisis_guard_warmup_steps: int = 10000,
         hysteresis_up: float = 0.55,
         hysteresis_down: float = 0.45,
+        adaptive_hysteresis: bool = True,
+        hysteresis_quantile: float = 0.85,
+        hysteresis_min_gap: float = 0.1,
+        crisis_history_len: int = 512,
         k_s: float = 6.0,
         k_c: float = 6.0,
         k_b: float = 4.0,
@@ -337,6 +342,7 @@ class IRTPolicy(SACPolicy):
         self.replicator_temp = replicator_temp
         self.eta_0 = eta_0
         self.eta_1 = eta_1
+        self.alpha_update_rate = alpha_update_rate
         self.gamma = gamma
         self.w_r = w_r
         self.w_s = w_s
@@ -357,6 +363,10 @@ class IRTPolicy(SACPolicy):
         self.crisis_guard_warmup_steps = crisis_guard_warmup_steps
         self.hysteresis_up = hysteresis_up
         self.hysteresis_down = hysteresis_down
+        self.adaptive_hysteresis = adaptive_hysteresis
+        self.hysteresis_quantile = hysteresis_quantile
+        self.hysteresis_min_gap = hysteresis_min_gap
+        self.crisis_history_len = crisis_history_len
         self.k_s = k_s
         self.k_c = k_c
         self.k_b = k_b
@@ -415,6 +425,7 @@ class IRTPolicy(SACPolicy):
             replicator_temp=self.replicator_temp,
             eta_0=self.eta_0,
             eta_1=self.eta_1,
+            alpha_update_rate=self.alpha_update_rate,
             gamma=self.gamma,
             w_r=self.w_r,
             w_s=self.w_s,
@@ -435,6 +446,10 @@ class IRTPolicy(SACPolicy):
             crisis_guard_warmup_steps=self.crisis_guard_warmup_steps,
             hysteresis_up=self.hysteresis_up,
             hysteresis_down=self.hysteresis_down,
+            adaptive_hysteresis=self.adaptive_hysteresis,
+            hysteresis_quantile=self.hysteresis_quantile,
+            hysteresis_min_gap=self.hysteresis_min_gap,
+            crisis_history_len=self.crisis_history_len,
             k_s=self.k_s,
             k_c=self.k_c,
             k_b=self.k_b,
@@ -472,6 +487,7 @@ class IRTPolicy(SACPolicy):
                 replicator_temp=self.replicator_temp,
                 eta_0=self.eta_0,
                 eta_1=self.eta_1,
+                alpha_update_rate=self.alpha_update_rate,
                 gamma=self.gamma,
                 w_r=self.w_r,
                 w_s=self.w_s,
@@ -492,6 +508,10 @@ class IRTPolicy(SACPolicy):
                 crisis_guard_warmup_steps=self.crisis_guard_warmup_steps,
                 hysteresis_up=self.hysteresis_up,
                 hysteresis_down=self.hysteresis_down,
+                adaptive_hysteresis=self.adaptive_hysteresis,
+                hysteresis_quantile=self.hysteresis_quantile,
+                hysteresis_min_gap=self.hysteresis_min_gap,
+                crisis_history_len=self.crisis_history_len,
                 k_s=self.k_s,
                 k_c=self.k_c,
                 k_b=self.k_b,

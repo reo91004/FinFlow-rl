@@ -106,6 +106,7 @@ class IRT(nn.Module):
                  rho: float = 0.3,
                  eta_0: float = 0.05,
                  eta_1: float = 0.12,  # Phase E: 0.25 → 0.12 (민감도 완화)
+                 alpha_update_rate: float = 0.25,
                  kappa: float = 1.0,
                  eps_tol: float = 0.1,
                  n_self_sigs: int = 4,
@@ -138,6 +139,8 @@ class IRT(nn.Module):
         self.eta_0 = eta_0          # 기본 학습률
         self.eta_1 = eta_1          # 위기 시 증가량
 
+        self.alpha_update_rate = float(alpha_update_rate)
+
         # Replicator 온도 (균등 혼합 고착 해제)
         self.replicator_temp = replicator_temp
 
@@ -150,6 +153,9 @@ class IRT(nn.Module):
 
         # Sinkhorn 알고리즘
         self.sinkhorn = Sinkhorn(max_iters=max_iters, eps=eps, tol=tol)
+
+        init_alpha = float(self.alpha_max)
+        self.register_buffer("alpha_state", torch.full((1, 1), init_alpha))
 
     def _mahalanobis_distance(self, E: torch.Tensor, K: torch.Tensor) -> torch.Tensor:
         """
@@ -299,12 +305,20 @@ class IRT(nn.Module):
         delta_tanh = torch.tanh(delta_sharpe_safe)
         alpha_c_raw = alpha_c * (1 + 0.6 * delta_tanh) + 0.07 * delta_tanh
 
-        # Phase 3.5: Clamp 검증용 raw 값 저장
-        alpha_c = torch.clamp(alpha_c_raw, min=self.alpha_min, max=self.alpha_max)
+        # 방향성 감쇠 기반 α 업데이트 (Phase 1.5)
+        alpha_star = torch.clamp(alpha_c_raw, min=self.alpha_min, max=self.alpha_max)
+        alpha_prev = self.alpha_state.to(alpha_star.device).expand(B, 1)
+        delta_raw = alpha_star - alpha_prev
+        delta = self.alpha_update_rate * delta_raw
+        alpha_candidate = alpha_prev + delta
+        alpha_c = torch.clamp(alpha_candidate, min=self.alpha_min, max=self.alpha_max)
 
-        # Clamp 통계 (검증용)
-        pct_clamped_min = (alpha_c_raw < self.alpha_min).float().mean()
-        pct_clamped_max = (alpha_c_raw > self.alpha_max).float().mean()
+        pct_clamped_min = (alpha_candidate < self.alpha_min).float().mean()
+        pct_clamped_max = (alpha_candidate > self.alpha_max).float().mean()
+
+        with torch.no_grad():
+            updated_state = alpha_c.mean(dim=0, keepdim=True)
+            self.alpha_state.copy_(updated_state.detach())
         # alpha_c: [B, 1]
 
         # ===== Step 4: 이중 결합 (배치별 α) =====
@@ -325,6 +339,7 @@ class IRT(nn.Module):
             'alpha_c': alpha_c,  # [B, 1] - Dynamic OT-Replicator mixing ratio (clamped)
             # Phase 3.5: Clamp 검증
             'alpha_c_raw': alpha_c_raw,  # [B, 1] - Raw alpha before clamp
+            'alpha_c_prev': alpha_prev.detach(),  # [B, 1]
             'pct_clamped_min': pct_clamped_min,  # scalar - % samples clamped to min
             'pct_clamped_max': pct_clamped_max,  # scalar - % samples clamped to max
         }
