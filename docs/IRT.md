@@ -274,7 +274,433 @@ IRT는 Stable Baselines3의 SAC 알고리즘과 완전히 통합되어 작동한
 
 ---
 
-### 용어 매핑: 논문 ↔ 코드베이스
+### 면역학적 아키텍처 비유 (Immunological Architecture Metaphor)
+
+IRT는 적응 면역계(adaptive immune system)에서 영감을 받았다. 다음은 생물학적 면역 반응과 IRT 컴포넌트 간의 대응 관계를 시각화한 것이다.
+
+#### 면역계 vs IRT 대응 구조
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    Adaptive Immune System                                │
+│                    (생물학적 영감)                                        │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    │ Inspiration
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         IRT Architecture                                 │
+│                      (강화학습 구현)                                      │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────┐           ┌──────────────────────────────────────────┐
+│  T-Cell          │           │  Crisis Detector (TCellMinimal)          │
+│  (T-림프구)      │  ────────>│  ───────────────────────────             │
+│                  │           │                                          │
+│  역할:           │           │  구현:                                   │
+│  - 병원체 감지   │           │  - 시장 위기 신호 탐지                   │
+│  - 면역 활성화   │           │  - 다중 신호 통합 (Market + DSR + CVaR) │
+│  - 위험 신호방출 │           │  - EMA 기반 Z-score 정규화               │
+│                  │           │  - 바이어스/온도 보정                    │
+│  출력:           │           │                                          │
+│  - 위험 수준     │           │  출력:                                   │
+│  - 사이토카인    │           │  - crisis_level c_t ∈ [0,1]             │
+│    (신호 분자)   │           │  - crisis_embedding h^c_t ∈ ℝ^D         │
+│                  │           │                                          │
+│                  │           │  코드: finrl/agents/irt/t_cell.py        │
+└──────────────────┘           └──────────────────────────────────────────┘
+
+
+┌──────────────────┐           ┌──────────────────────────────────────────┐
+│  Antigen         │           │  Market State (s_t)                      │
+│  (항원)          │  ────────>│  ──────────────                          │
+│                  │           │                                          │
+│  역할:           │           │  구성:                                   │
+│  - 외부 병원체   │           │  - Balance, Prices, Holdings             │
+│  - 복잡한 구조   │           │  - Technical Indicators (240-dim)        │
+│  - 다중 결정기   │           │  - Performance Signals (DSR, CVaR)       │
+│                  │           │                                          │
+│                  │           │  차원: s_t ∈ ℝ^181                       │
+└──────────────────┘           └──────────────────────────────────────────┘
+         │                                      │
+         │                                      │
+         ▼                                      ▼
+┌──────────────────┐           ┌──────────────────────────────────────────┐
+│  Epitope         │           │  State Representation (h^s_t)            │
+│  (에피토프)      │  ────────>│  ────────────────────────               │
+│                  │           │                                          │
+│  역할:           │           │  구현:                                   │
+│  - 항원 결정기   │           │  - State Encoder (ϕ_s)                  │
+│  - 인식 가능부위 │           │  - Multi-token representation            │
+│  - 다중 사이트   │           │  - MLP(s_t) → h^s_t                      │
+│    (6-8개)       │           │                                          │
+│                  │           │  출력: h^s_t ∈ ℝ^(m×D)                   │
+│                  │           │        (m=6 tokens, D=128)               │
+│                  │           │                                          │
+│                  │           │  코드: bcell_actor.py:epitope_encoder    │
+└──────────────────┘           └──────────────────────────────────────────┘
+
+
+┌──────────────────┐           ┌──────────────────────────────────────────┐
+│  B-Cell          │           │  IRT Actor (BCellIRTActor)               │
+│  (B-림프구)      │  ────────>│  ─────────────────────                   │
+│                  │           │                                          │
+│  역할:           │           │  구현:                                   │
+│  - 항체 생산     │           │  - 포트폴리오 정책 생성                  │
+│  - 항원 인식     │           │  - 전문가 전략 혼합                      │
+│  - 클론 선택     │           │  - 적응적 가중치 할당                    │
+│                  │           │                                          │
+│  메커니즘:       │           │  메커니즘:                               │
+│  1. 항원 인식    │           │  1. 상태 인코딩 (Epitope Encoder)        │
+│  2. 클론 확장    │           │  2. 전문가 선택 (IRT Operator)           │
+│  3. 항체 분비    │           │  3. 포트폴리오 생성 (Mixture Policy)     │
+│                  │           │                                          │
+│                  │           │  코드: bcell_actor.py:BCellIRTActor      │
+└──────────────────┘           └──────────────────────────────────────────┘
+
+
+┌──────────────────┐           ┌──────────────────────────────────────────┐
+│  Antibody        │           │  Expert Strategies {θ_j}                 │
+│  (항체)          │  ────────>│  ───────────────────────                 │
+│                  │           │                                          │
+│  역할:           │           │  구현:                                   │
+│  - 항원 중화     │           │  - 학습 가능한 전문가 파라미터           │
+│  - 특이적 결합   │           │  - 각 전문가는 특정 시장 조건 특화       │
+│  - 다양한 레퍼토리│           │  - M=8개 전문가 (다양성 확보)            │
+│    (클론)        │           │                                          │
+│                  │           │  표현: {θ_j}^M_j=1, θ_j ∈ ℝ^D           │
+│                  │           │                                          │
+│                  │           │  코드: bcell_actor.py:proto_keys         │
+└──────────────────┘           └──────────────────────────────────────────┘
+
+
+┌──────────────────┐           ┌──────────────────────────────────────────┐
+│  Affinity        │           │  Distance/Cost Matrix                    │
+│  (친화도)        │  ────────>│  ────────────────────                    │
+│                  │           │                                          │
+│  역할:           │           │  구현:                                   │
+│  - 항원-항체결합 │           │  - State-Expert 거리 측정                │
+│    강도 측정     │           │  - Mahalanobis distance d_M(h^s, θ)     │
+│  - 선택 기준     │           │  - Crisis signal alignment: -γ⟨h^s,h^c⟩ │
+│                  │           │  - Penalty terms (tolerance, checkpoint) │
+│  높은 친화도:    │           │                                          │
+│  → 클론 확장     │           │  낮은 비용:                              │
+│                  │           │  → 높은 전문가 가중치                    │
+│                  │           │                                          │
+│                  │           │  코드: irt_operator.py:_cost_matrix      │
+└──────────────────┘           └──────────────────────────────────────────┘
+
+
+┌──────────────────┐           ┌──────────────────────────────────────────┐
+│  Clonal Selection│           │  IRT Operator (Ψ_IRT)                    │
+│  (클론 선택)     │  ────────>│  ────────────────────                    │
+│                  │           │                                          │
+│  메커니즘:       │           │  메커니즘:                               │
+│                  │           │                                          │
+│  1. 항원 인식    │           │  1. Optimal Transport                    │
+│     고친화도선택 │           │     - Cost matrix 기반 매칭              │
+│                  │           │     - Sinkhorn algorithm                 │
+│  2. 클론 확장    │           │     - Structural matching                │
+│     증식률조절   │           │     → w_o (OT weights)                   │
+│                  │           │                                          │
+│  3. 기억 세포    │           │  2. Replicator Dynamics                  │
+│     장기 면역    │           │     - Q-value 기반 적합도                │
+│                  │           │     - Advantage computation              │
+│  결과:           │           │     - Temporal memory (w_prev)           │
+│  - 효과적 반응   │           │     → w_r (Replicator weights)           │
+│  - 빠른 재인식   │           │                                          │
+│                  │           │  3. Dynamic Mixing                       │
+│                  │           │     - Crisis-adaptive α(c)               │
+│                  │           │     - Sharpe gradient feedback           │
+│                  │           │     → w_t = (1-α')·w_r + α'·w_o          │
+│                  │           │                                          │
+│                  │           │  코드: irt_operator.py:IRT               │
+└──────────────────┘           └──────────────────────────────────────────┘
+
+
+┌──────────────────┐           ┌──────────────────────────────────────────┐
+│  Co-stimulation  │           │  Crisis Signal Integration               │
+│  (공자극)        │  ────────>│  ─────────────────────────               │
+│                  │           │                                          │
+│  역할:           │           │  구현:                                   │
+│  - T-Cell 활성화 │           │  - Crisis embedding h^c와 state h^s 내적│
+│  - 위험 신호     │           │  - Cost 감소: -γ⟨h^s, h^c⟩              │
+│  - 면역 증폭     │           │  - 위기 상황과 정렬된 전략 선호          │
+│                  │           │                                          │
+│  기능:           │           │  효과:                                   │
+│  - 자가면역방지  │           │  - 위기 대응 전략 우선 선택              │
+│  - 특이성 강화   │           │  - OT 비용 함수에 도메인 지식 반영       │
+│                  │           │                                          │
+│                  │           │  코드: irt_operator.py (γ parameter)     │
+└──────────────────┘           └──────────────────────────────────────────┘
+
+
+┌──────────────────┐           ┌──────────────────────────────────────────┐
+│  Self-tolerance  │           │  Tolerance Penalty                       │
+│  (자기내성)      │  ────────>│  ─────────────────                       │
+│                  │           │                                          │
+│  역할:           │           │  구현:                                   │
+│  - 자가항원무시  │           │  - 과거 실패 패턴 유사도 계산            │
+│  - 자가면역방지  │           │  - Self-signatures (학습 가능)           │
+│  - 음성 선택     │           │  - Penalty: λ·ReLU(κ·max_sim - ε_tol)   │
+│                  │           │                                          │
+│  기능:           │           │  효과:                                   │
+│  - 유해반응억제  │           │  - 반복 실수 억제                        │
+│  - 선택적 활성화 │           │  - 검증된 패턴 우선                      │
+│                  │           │                                          │
+│                  │           │  코드: irt_operator.py:self_sigs         │
+└──────────────────┘           └──────────────────────────────────────────┘
+
+
+┌──────────────────┐           ┌──────────────────────────────────────────┐
+│  Immune Checkpoint│          │  Checkpoint Penalty                      │
+│  (면역체크포인트)│  ────────>│  ──────────────────                      │
+│                  │           │                                          │
+│  역할:           │           │  구현:                                   │
+│  - 과도반응억제  │           │  - 과신 전문가 페널티                    │
+│  - 면역균형유지  │           │  - Penalty: ρ·confidence_score           │
+│  - 자가면역방지  │           │  - 과도한 집중 방지                      │
+│                  │           │                                          │
+│  예시:           │           │  효과:                                   │
+│  - PD-1/PD-L1    │           │  - 다양성 유지                           │
+│  - CTLA-4        │           │  - 위험 분산                             │
+│                  │           │                                          │
+│                  │           │  코드: irt_operator.py (ρ parameter)     │
+└──────────────────┘           └──────────────────────────────────────────┘
+```
+
+#### T-Cell (Crisis Detector) 상세 구조
+
+```
+Input: Market Features x^m ∈ ℝ^12
+├─ Market Statistics (4): balance, price_mean, price_std, cash_ratio
+└─ Technical Indicators (8): macd, boll_ub, boll_lb, rsi_30, cci_30, dx_30, sma_30, sma_60
+
+                              │
+                              ▼
+         ┌────────────────────────────────────────┐
+         │    T-Cell Network (TCellMinimal)       │
+         │    ────────────────────────            │
+         │                                        │
+         │    Encoder: MLP(12 → 128 → 4+D)       │
+         │      ├─ LayerNorm + ReLU + Dropout    │
+         │      └─ Linear projection             │
+         │                                        │
+         │    Split Output:                       │
+         │      ├─ z [4]: Crisis type scores      │
+         │      │   (Volatility, Liquidity,       │
+         │      │    Correlation, Systemic)       │
+         │      └─ h^c [D]: Crisis embedding      │
+         │                                        │
+         │    Online Normalization (EMA):         │
+         │      z_std = (z - μ) / σ               │
+         │      μ, σ ← momentum update            │
+         │                                        │
+         │    Crisis Aggregation:                 │
+         │      α = softmax(learnable_weights)    │
+         │      c_affine = Σ_k α_k · z_std_k      │
+         │      c_base = σ(c_affine)              │
+         └────────────────┬───────────────────────┘
+                          │
+                          ▼
+         ┌────────────────────────────────────────┐
+         │    Multi-Signal Integration            │
+         │    ──────────────────────              │
+         │                                        │
+         │    Additional Signals:                 │
+         │      - Sharpe gradient Δs (from state) │
+         │      - CVaR c_v (from state)           │
+         │                                        │
+         │    Z-Score Normalization (per signal): │
+         │      z_b = (c_base - μ_b) / σ_b        │
+         │      z_s = (Δs - μ_s) / σ_s            │
+         │      z_c = (c_v - μ_c) / σ_c           │
+         │                                        │
+         │    Weighted Fusion:                    │
+         │      c_raw = w_r · σ(k_b·z_b)          │
+         │            + w_s · σ(-k_s·z_s)  (음수) │
+         │            + w_c · σ(k_c·z_c)          │
+         │                                        │
+         │    Bias/Temperature Correction:        │
+         │      c_affine = (c_raw - bias) / T     │
+         │      c_pre = σ(c_affine)               │
+         │                                        │
+         │      EMA Adaptation (training):        │
+         │        bias += η_b · (p_hat - p_star)  │
+         │        T *= (1 + η_T · (p_hat-p_star)) │
+         │                                        │
+         │    Target-Driven Regularization:       │
+         │      c = c_pre + λ_g·(0.5 - c_pre)     │
+         │                                        │
+         │    Hysteresis Regime Detection:        │
+         │      if prev_regime == crisis:         │
+         │        regime = (c < 0.45) ? 0 : 1     │
+         │      else:                             │
+         │        regime = (c > 0.55) ? 1 : 0     │
+         └────────────────┬───────────────────────┘
+                          │
+                          ▼
+Output: crisis_level c_t ∈ [0,1], crisis_embedding h^c_t ∈ ℝ^D
+        crisis_regime ∈ {0,1}
+
+코드 위치:
+- TCellMinimal: finrl/agents/irt/t_cell.py:25-124
+- Multi-Signal Integration: bcell_actor.py:292-434
+```
+
+#### B-Cell (IRT Actor) 상세 구조
+
+```
+Input: state s_t ∈ ℝ^181, Q-values Q_t ∈ ℝ^M, crisis_level c_t ∈ [0,1]
+
+         ┌────────────────────────────────────────┐
+         │    B-Cell Receptor (BCR)               │
+         │    ───────────────────                 │
+         │                                        │
+         │    State Encoder (ϕ_s):                │
+         │      MLP(181 → 256 → m·D)              │
+         │        → reshape to [m=6, D=128]       │
+         │                                        │
+         │    Output: h^s_t ∈ ℝ^(m×D)             │
+         │      Multi-token representation        │
+         │      (6 different views of state)      │
+         │                                        │
+         │    코드: bcell_actor.py:147-153        │
+         └────────────────┬───────────────────────┘
+                          │
+         ┌────────────────┴───────────────────────┐
+         │                                        │
+         │    Expert Repertoire (Antibodies)      │
+         │    ────────────────────────────        │
+         │                                        │
+         │    Expert Strategies {θ_j}:            │
+         │      Learnable parameters [M×D]        │
+         │      M=8 experts, D=128                │
+         │                                        │
+         │    Initialization:                     │
+         │      Xavier: θ ~ N(0, 1/√D)            │
+         │      Diversity bias: offset per expert │
+         │                                        │
+         │    코드: bcell_actor.py:156-159        │
+         └────────────────┬───────────────────────┘
+                          │
+                          ▼
+         ┌────────────────────────────────────────┐
+         │    Clonal Selection (IRT Operator)     │
+         │    ─────────────────────────────       │
+         │                                        │
+         │    [A] Affinity Maturation (OT):       │
+         │      1. Distance/Cost Matrix:          │
+         │         C = d_M(h^s, θ)                │
+         │           - γ⟨h^s, h^c⟩  (co-stim)     │
+         │           + λ·R_tol      (tolerance)   │
+         │           + ρ·R_ckpt     (checkpoint)  │
+         │                                        │
+         │      2. Optimal Transport:             │
+         │         P* = Sinkhorn(C, ε)            │
+         │         w_o = P*^T 1_m                 │
+         │                                        │
+         │    [B] Memory Response (Replicator):   │
+         │      1. Adaptive Learning Rate:        │
+         │         η(c) = η_0 + η_1·c             │
+         │                                        │
+         │      2. Fitness-based Selection:       │
+         │         A = Q - w_prev^T Q             │
+         │         w̃ ∝ w_prev · exp(η·A)          │
+         │         w_r = softmax(w̃ / τ)           │
+         │                                        │
+         │    [C] Dynamic Integration:            │
+         │      α(c) = α_max + (α_min-α_max)·...  │
+         │      α'(Δs) = α·(1 + 0.6·tanh(Δs)) +...│
+         │      w_t = (1-α')·w_r + α'·w_o         │
+         │                                        │
+         │    코드: irt_operator.py:95-332        │
+         └────────────────┬───────────────────────┘
+                          │
+                          ▼
+         ┌────────────────────────────────────────┐
+         │    Antibody Secretion (Policy Output)  │
+         │    ─────────────────────────────────   │
+         │                                        │
+         │    Expert Policy Heads {MLP_j}:        │
+         │      ∀j: MLP_j(θ_j) → α_j ∈ ℝ^n       │
+         │        Tanh output → concentration     │
+         │        Transform: [−1,1] → [0.01,10]   │
+         │                                        │
+         │    Weighted Mixing:                    │
+         │      α_t = Σ_j w_{t,j} · α_j           │
+         │                                        │
+         │    Action Sampling:                    │
+         │      Training:   a ~ Dirichlet(α_t)    │
+         │      Inference:  a = softmax(α_t/τ)    │
+         │                                        │
+         │    코드: bcell_actor.py:164-183,       │
+         │          466-498                       │
+         └────────────────┬───────────────────────┘
+                          │
+                          ▼
+         ┌────────────────────────────────────────┐
+         │    Memory B-Cell (EMA Update)          │
+         │    ────────────────────────            │
+         │                                        │
+         │    if training:                        │
+         │      w_prev = β·w_prev                 │
+         │             + (1-β)·w_t.mean()         │
+         │                                        │
+         │      bias, temperature adaptation      │
+         │                                        │
+         │    코드: bcell_actor.py:501-507        │
+         └────────────────────────────────────────┘
+
+Output: action a_t ∈ Δ^30 (portfolio weights)
+        info: {w, w_rep, w_ot, crisis_level, ...}
+```
+
+#### 면역 반응 시나리오 예시
+
+**시나리오 1: 정상 시장 (Low Crisis)**
+
+```
+Market → T-Cell → c=0.2 (정상)
+              └─> h^c (약한 위기 신호)
+
+State → Epitope Encoder → h^s (6 tokens)
+
+IRT Operator:
+  - α(0.2) ≈ 0.40 (높은 OT 비중)
+  - η(0.2) = 0.054 (낮은 학습률)
+  - OT: 구조적 매칭 활성 (새로운 패턴 탐색)
+  - Replicator: 완만한 업데이트
+
+Result: w_t = 0.6·w_r + 0.4·w_o (균형잡힌 혼합)
+        → 탐색적 포트폴리오
+```
+
+**시나리오 2: 위기 발생 (High Crisis)**
+
+```
+Market → T-Cell → c=0.9 (위기!)
+              └─> h^c (강한 위기 신호)
+
+State → Epitope Encoder → h^s (6 tokens)
+
+IRT Operator:
+  - α(0.9) ≈ 0.10 (낮은 OT 비중)
+  - η(0.9) = 0.158 (높은 학습률)
+  - Co-stimulation: -γ⟨h^s,h^c⟩ (위기 대응 전략 선호)
+  - Replicator: 빠른 재할당 (높은 Q-value 전문가로)
+
+Result: w_t = 0.9·w_r + 0.1·w_o (Replicator 우세)
+        → 검증된 방어 전략
+```
+
+**생물학적 비유**:
+- 정상 시장 = 건강 상태: 다양한 항체 생성, 탐색적 면역
+- 위기 시장 = 감염 상태: 기억 세포 활성화, 빠른 특이적 반응
+- T-Cell = 센서: 위협 감지 및 B-Cell 활성화 신호
+- B-Cell = 실행자: 항체(포트폴리오) 생성 및 분비
+
+---
 
 본 문서에서는 논문 작성을 위해 formal한 용어를 사용하지만, 실제 코드베이스에서는 면역학적 비유를 사용한다. 다음은 용어 매핑표다:
 
