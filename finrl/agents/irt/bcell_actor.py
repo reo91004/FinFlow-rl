@@ -612,6 +612,10 @@ class BCellIRTActor(nn.Module):
             'cost_matrix': irt_debug['cost_matrix'].detach(),  # [B, m, M]
             'eta': irt_debug['eta'].detach(),       # [B, 1] - Crisis learning rate
             'alpha_c': irt_debug['alpha_c'].detach(),  # [B, 1] - Dynamic OT-Replicator mixing ratio
+            'alpha_c_raw': irt_debug.get('alpha_c_raw', irt_debug['alpha_c']).detach(),  # Phase 1.5: raw alpha
+            'alpha_c_prev': irt_debug.get('alpha_c_prev', irt_debug['alpha_c']).detach(),  # Phase 1.5: prev alpha
+            'pct_clamped_min': irt_debug.get('pct_clamped_min', 0.0),  # Phase 1.5: clamp 검증
+            'pct_clamped_max': irt_debug.get('pct_clamped_max', 0.0),  # Phase 1.5: clamp 검증
             # Dirichlet 정보 (log_prob 계산용)
             'concentrations': concentrations.detach(),  # [B, M, A] - 프로토타입별 concentration
             'mixed_conc': mixed_conc.detach(),  # [B, A] - 혼합된 concentration (raw)

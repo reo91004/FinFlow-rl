@@ -295,6 +295,24 @@ class IRTLoggingCallback(BaseCallback):
                                 "irt/turnover_transfer_ratio",
                                 exec_mean / (target_mean + 1e-8),
                             )
+                
+                # Phase 1.5: Gradient norm 로깅 (prototype 경로 검증)
+                actor = getattr(self.model.policy, "actor", None)
+                if actor is not None and hasattr(actor, 'irt_actor'):
+                    irt_actor = actor.irt_actor
+                    if hasattr(irt_actor, 'decoders'):
+                        total_norm = 0.0
+                        param_count = 0
+                        for decoder in irt_actor.decoders:
+                            for p in decoder.parameters():
+                                if p.grad is not None:
+                                    param_norm = p.grad.data.norm(2)
+                                    total_norm += param_norm.item() ** 2
+                                    param_count += 1
+                        if param_count > 0:
+                            grad_norm = (total_norm ** 0.5)
+                            self.logger.record("irt/prototype_grad_norm", grad_norm)
+                            self.logger.record("irt/prototype_grad_param_count", param_count)
 
         return True
 
@@ -642,10 +660,32 @@ def train_irt(args):
         verbose=1,
         tensorboard_log=os.path.join(log_dir, "tensorboard"),
     )
+    
+    # Phase 1.5: 파라미터 그룹 검증 (프로토타입 포함 확인)
+    print("\n[Phase 1.5] Verifying optimizer parameter groups...")
+    actor_params = list(model.actor.parameters())
+    actor_param_count = sum(p.numel() for p in actor_params)
+    actor_requires_grad = sum(p.numel() for p in actor_params if p.requires_grad)
+    print(f"  Actor total params: {actor_param_count:,}")
+    print(f"  Actor trainable params: {actor_requires_grad:,}")
+    
+    # Prototype decoder 파라미터 확인
+    if hasattr(model.actor, 'irt_actor'):
+        irt_actor = model.actor.irt_actor
+        if hasattr(irt_actor, 'decoders'):
+            decoder_params = sum(p.numel() for d in irt_actor.decoders for p in d.parameters())
+            decoder_trainable = sum(p.numel() for d in irt_actor.decoders for p in d.parameters() if p.requires_grad)
+            print(f"  Prototype decoders: {decoder_params:,} params ({decoder_trainable:,} trainable)")
+            
+            # Gradient flow 검증용 플래그
+            if decoder_trainable == 0:
+                print("  WARNING: Prototype decoders have 0 trainable parameters!")
+            elif decoder_trainable < decoder_params:
+                print(f"  WARNING: Some prototype parameters are frozen ({decoder_params - decoder_trainable} params)")
 
     # Total timesteps
     total_timesteps = 250 * args.episodes
-    print(f"  Total timesteps: {total_timesteps}")
+    print(f"\n  Total timesteps: {total_timesteps}")
     print(f"  Starting training...")
 
     # Train

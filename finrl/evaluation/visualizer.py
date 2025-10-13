@@ -1082,9 +1082,17 @@ def _generate_insights(results: dict, config: dict = None) -> dict:
             })
 
     # ===== 3. Crisis vs Normal Analysis =====
-    crisis_threshold = 0.5
-    crisis_mask = crisis_levels > crisis_threshold if len(crisis_levels) > 0 else np.array([])
-    normal_mask = ~crisis_mask if len(crisis_mask) > 0 else np.array([])
+    # Phase 1.5: crisis_regime (히스테리시스 기반 이진 분류) 사용
+    crisis_regime = np.array(results.get('crisis_regime', []))
+    if len(crisis_regime) > 0:
+        # crisis_regime이 있으면 이를 사용 (0=평시, 1=위기)
+        crisis_mask = crisis_regime == 1
+        normal_mask = crisis_regime == 0
+    else:
+        # Fallback: crisis_level로 임계치 기반 분류
+        crisis_threshold = 0.5
+        crisis_mask = crisis_levels > crisis_threshold if len(crisis_levels) > 0 else np.array([])
+        normal_mask = ~crisis_mask if len(crisis_mask) > 0 else np.array([])
 
     crisis_returns = returns[crisis_mask] if crisis_mask.sum() > 0 else np.array([0])
     normal_returns = returns[normal_mask] if normal_mask.sum() > 0 else np.array([0])

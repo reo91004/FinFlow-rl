@@ -89,6 +89,9 @@ class StrictEvalCallback(EvalCallback):
             self.logger.record("eval/mean_reward", mean_reward)
             self.logger.record("eval/mean_ep_length", mean_ep_length)
             self.logger.record("eval/mean_reward_raw", mean_reward, exclude="tensorboard")
+            # Phase 1.5: 상세 로깅
+            self.logger.record("eval/std_reward", std_reward)
+            self.logger.record("eval/best_mean_reward", self.best_mean_reward)
 
             if len(self._is_success_buffer) > 0:
                 success_rate = float(np.mean(self._is_success_buffer))
@@ -104,9 +107,14 @@ class StrictEvalCallback(EvalCallback):
             self.logger.dump(self.num_timesteps)
 
             improved = mean_reward > (self.best_mean_reward + self.reward_improvement_epsilon)
+            # Phase 1.5: 상세 비교값 로깅
+            delta_from_best = mean_reward - self.best_mean_reward
+            self.logger.record("eval/delta_from_best", delta_from_best)
+            self.logger.record("eval/improvement_threshold", self.best_mean_reward + self.reward_improvement_epsilon)
+            
             if improved:
                 if self.verbose >= 1:
-                    print("New best mean reward!")
+                    print(f"New best mean reward! (delta: {delta_from_best:+.6f})")
                 if self.best_model_save_path is not None:
                     self.model.save(os.path.join(self.best_model_save_path, "best_model"))
                 self.best_mean_reward = float(mean_reward)
@@ -117,8 +125,8 @@ class StrictEvalCallback(EvalCallback):
                     print(
                         (
                             "[EvalCallback] No improvement: "
-                            f"mean_reward={mean_reward!r}, best={self.best_mean_reward!r}, "
-                            f"epsilon={self.reward_improvement_epsilon!r}"
+                            f"mean_reward={mean_reward:.6f}, best={self.best_mean_reward:.6f}, "
+                            f"delta={delta_from_best:+.6f}, epsilon={self.reward_improvement_epsilon:.6f}"
                         )
                     )
 

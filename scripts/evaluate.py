@@ -16,6 +16,7 @@ Usage:
 """
 
 import argparse
+import contextlib
 import os
 import json
 import numpy as np
@@ -75,10 +76,9 @@ def create_env(
     return StockTradingEnv(**env_kwargs)
 
 
-def calculate_metrics(portfolio_values,
-                      initial_amount=1000000,
-                      weights_history=None,
-                      returns=None):
+def calculate_metrics(
+    portfolio_values, initial_amount=1000000, weights_history=None, returns=None
+):
     """
     성능 지표 계산 (상세 메트릭 포함)
 
@@ -97,7 +97,7 @@ def calculate_metrics(portfolio_values,
         calculate_max_drawdown,
         calculate_var,
         calculate_cvar,
-        calculate_turnover
+        calculate_turnover,
     )
 
     pv = np.asarray(portfolio_values, dtype=np.float64).reshape(-1)
@@ -118,7 +118,7 @@ def calculate_metrics(portfolio_values,
                 returns = np.array([], dtype=np.float64)
             else:
                 returns = returns[-min_len:]
-                pv = pv[-(min_len + 1):]
+                pv = pv[-(min_len + 1) :]
         elif expected_len == 0:
             returns = np.array([], dtype=np.float64)
 
@@ -133,7 +133,9 @@ def calculate_metrics(portfolio_values,
     volatility = np.std(returns) * np.sqrt(252)
 
     # Sharpe Ratio (using detailed calculation from metrics.py)
-    sharpe_ratio = calculate_sharpe_ratio(returns, risk_free_rate=0.02, periods_per_year=252)
+    sharpe_ratio = calculate_sharpe_ratio(
+        returns, risk_free_rate=0.02, periods_per_year=252
+    )
 
     # Maximum Drawdown (using detailed calculation from metrics.py)
     max_drawdown = calculate_max_drawdown(pv)
@@ -142,7 +144,9 @@ def calculate_metrics(portfolio_values,
     calmar_ratio = calculate_calmar_ratio(returns, periods_per_year=252)
 
     # Sortino Ratio (using detailed calculation from metrics.py)
-    sortino_ratio = calculate_sortino_ratio(returns, target_return=0.02, periods_per_year=252)
+    sortino_ratio = calculate_sortino_ratio(
+        returns, target_return=0.02, periods_per_year=252
+    )
 
     # VaR and CVaR (5% level)
     var_5 = calculate_var(returns, alpha=0.05)
@@ -150,7 +154,9 @@ def calculate_metrics(portfolio_values,
 
     # Downside deviation
     downside_returns = returns[returns < 0]
-    downside_deviation = np.std(downside_returns) * np.sqrt(252) if len(downside_returns) > 0 else 0
+    downside_deviation = (
+        np.std(downside_returns) * np.sqrt(252) if len(downside_returns) > 0 else 0
+    )
 
     # Turnover (if weights history provided)
     avg_turnover = 0.0
@@ -170,17 +176,19 @@ def calculate_metrics(portfolio_values,
         "downside_deviation": downside_deviation,
         "avg_turnover": avg_turnover,
         "final_value": pv[-1],
-        "n_steps": n_days
+        "n_steps": n_days,
     }
 
 
-def plot_results(portfolio_values,
-                 returns,
-                 output_dir,
-                 model_name="Model",
-                 model_path=None,
-                 irt_data=None,
-                 cumulative_mode: str = "log"):
+def plot_results(
+    portfolio_values,
+    returns,
+    output_dir,
+    model_name="Model",
+    model_path=None,
+    irt_data=None,
+    cumulative_mode: str = "log",
+):
     """
     시각화 생성 (finrl.evaluation.visualizer 사용)
 
@@ -203,7 +211,7 @@ def plot_results(portfolio_values,
         output_dir=output_dir,
         irt_data=irt_data,
         returns=np.array(returns) if returns is not None else None,
-        cumulative_mode=cumulative_mode
+        cumulative_mode=cumulative_mode,
     )
 
 
@@ -212,22 +220,29 @@ def detect_model_type(model_path):
 
     filename = os.path.basename(model_path).lower()
 
-    if 'tqc' in filename:
-        return 'tqc', TQC
-    if 'sac' in filename:
-        return 'sac', SAC
-    elif 'ppo' in filename:
-        return 'ppo', PPO
-    elif 'a2c' in filename:
-        return 'a2c', A2C
-    elif 'td3' in filename:
-        return 'td3', TD3
-    elif 'ddpg' in filename:
-        return 'ddpg', DDPG
+    if "tqc" in filename:
+        return "tqc", TQC
+    if "sac" in filename:
+        return "sac", SAC
+    elif "ppo" in filename:
+        return "ppo", PPO
+    elif "a2c" in filename:
+        return "a2c", A2C
+    elif "td3" in filename:
+        return "td3", TD3
+    elif "ddpg" in filename:
+        return "ddpg", DDPG
     else:
         # 경로에서 찾기
         path_lower = model_path.lower()
-        order = [('tqc', TQC), ('sac', SAC), ('ppo', PPO), ('a2c', A2C), ('td3', TD3), ('ddpg', DDPG)]
+        order = [
+            ("tqc", TQC),
+            ("sac", SAC),
+            ("ppo", PPO),
+            ("a2c", A2C),
+            ("td3", TD3),
+            ("ddpg", DDPG),
+        ]
         for name, cls in order:
             if name in path_lower:
                 return name, cls
@@ -238,22 +253,24 @@ def detect_model_type(model_path):
         )
 
 
-def evaluate_model(model_path,
-                   model_class,
-                   test_start,
-                   test_end,
-                   stock_tickers=DOW_30_TICKER,
-                   tech_indicators=INDICATORS,
-                   initial_amount=1000000,
-                   verbose=True,
-                   reward_type="dsr_cvar",
-                   lambda_dsr=0.1,
-                   lambda_cvar=0.05,
-                   expected_obs_dim=None,
-                   use_weighted_action: bool = True,
-                   weight_slippage: float = 0.001,
-                   weight_transaction_cost: float = 0.0005,
-                   reward_scaling: float = 1e-4):
+def evaluate_model(
+    model_path,
+    model_class,
+    test_start,
+    test_end,
+    stock_tickers=DOW_30_TICKER,
+    tech_indicators=INDICATORS,
+    initial_amount=1000000,
+    verbose=True,
+    reward_type="dsr_cvar",
+    lambda_dsr=0.1,
+    lambda_cvar=0.05,
+    expected_obs_dim=None,
+    use_weighted_action: bool = True,
+    weight_slippage: float = 0.001,
+    weight_transaction_cost: float = 0.0005,
+    reward_scaling: float = 1e-4,
+):
     """
     범용 모델 평가 함수
 
@@ -289,9 +306,7 @@ def evaluate_model(model_path,
     if verbose:
         print(f"\n[1/4] Downloading test data...")
     df = YahooDownloader(
-        start_date=test_start,
-        end_date=test_end,
-        ticker_list=stock_tickers
+        start_date=test_start, end_date=test_end, ticker_list=stock_tickers
     ).fetch_data()
     if verbose:
         print(f"  Downloaded: {df.shape[0]} rows")
@@ -303,7 +318,7 @@ def evaluate_model(model_path,
         use_technical_indicator=True,
         tech_indicator_list=tech_indicators,
         use_turbulence=False,
-        user_defined_feature=False
+        user_defined_feature=False,
     )
     df_processed = fe.preprocess_data(df)
     test_df = data_split(df_processed, test_start, test_end)
@@ -318,7 +333,7 @@ def evaluate_model(model_path,
         print(f"  실제 주식 수: {stock_dim}")
 
     # Phase 3.5 & H1: IRT 모델은 학습 시점 보상 타입을 그대로 사용해야 함
-    is_irt = 'irt' in model_path.lower()
+    is_irt = "irt" in model_path.lower()
     requested_reward_type = reward_type
 
     # Auto-detect reward type when loading IRT models (fallback if mismatch occurs)
@@ -379,9 +394,13 @@ def evaluate_model(model_path,
                     env_candidate.close()
     if model is None or test_env is None or env_reward_type is None:
         detail = "\n".join(mismatch_reasons) if mismatch_reasons else "<none>"
-        raise load_error if load_error is not None else ValueError(
-            "Failed to load model with any compatible reward type."
-            f"\nTried reward types: {candidate_reward_types}\nReasons:\n{detail}"
+        raise (
+            load_error
+            if load_error is not None
+            else ValueError(
+                "Failed to load model with any compatible reward type."
+                f"\nTried reward types: {candidate_reward_types}\nReasons:\n{detail}"
+            )
         )
 
     if verbose:
@@ -437,39 +456,47 @@ def evaluate_model(model_path,
     if stock_dim > 0 and isinstance(obs, (np.ndarray, list, tuple)):
         obs_array = np.asarray(obs, dtype=np.float64).reshape(-1)
         if obs_array.size >= stock_dim + 1:
-            prev_prices = obs_array[1:stock_dim + 1]
+            prev_prices = obs_array[1 : stock_dim + 1]
 
     # IRT 모델 감지 (이미 위에서 설정됨, 중복 제거)
 
     # IRT 데이터 수집 준비
     if is_irt:
         irt_data_list = {
-            'w': [],
-            'w_rep': [],
-            'w_ot': [],
-            'crisis_levels': [],
-            'crisis_levels_pre_guard': [],
-            'crisis_raw': [],
-            'crisis_bias': [],
-            'crisis_temperature': [],
-            'crisis_guard_rate': [],
-            'crisis_types': [],
-            'cost_matrices': [],
-            'weights': [],
-            'actual_weights': [],  # Phase-1: 실행가중 기록
-            'eta': [],
-            'alpha_c': [],
-            'hysteresis_up': [],
-            'hysteresis_down': [],
-            'turnover_target': [],
-            'top_snapshots': []
+            "w": [],
+            "w_rep": [],
+            "w_ot": [],
+            "crisis_levels": [],
+            "crisis_levels_pre_guard": [],
+            "crisis_raw": [],
+            "crisis_bias": [],
+            "crisis_temperature": [],
+            "crisis_guard_rate": [],
+            "crisis_types": [],
+            "cost_matrices": [],
+            "weights": [],
+            "actual_weights": [],  # Phase-1: 실행가중 기록
+            "eta": [],
+            "alpha_c": [],
+            "alpha_c_raw": [],  # Phase 1.5: raw alpha before clamp
+            "alpha_c_prev": [],  # Phase 1.5: previous alpha
+            "hysteresis_up": [],
+            "hysteresis_down": [],
+            "turnover_target": [],
+            "top_snapshots": [],
+            "crisis_regime": [],  # Phase 1.5: 이진 레짐 분류 결과 (0/1)
         }
         if env_reward_type == "adaptive_risk":
-            irt_data_list['env_crisis_levels'] = []
-            irt_data_list['env_kappa'] = []
-            irt_data_list['env_delta_sharpe'] = []
+            irt_data_list["env_crisis_levels"] = []
+            irt_data_list["env_kappa"] = []
+            irt_data_list["env_delta_sharpe"] = []
     else:
         irt_data_list = {}
+
+    # Phase 1.5: 평가 시 히스테리시스 상태 명시적 관리
+    # bcell_actor의 crisis_regime은 학습 버퍼 상태에 의존하므로,
+    # 평가 시작 시 명시적으로 초기화하고 step별로 추적
+    eval_crisis_regime_prev = None  # None=첫 스텝, 0=평시, 1=위기
 
     step = 0
     while not done:
@@ -477,36 +504,114 @@ def evaluate_model(model_path,
 
         info_dict = None
         # IRT info 수집
-        if is_irt and hasattr(model.policy, 'get_irt_info'):
+        if is_irt and hasattr(model.policy, "get_irt_info"):
             info_dict = model.policy.get_irt_info()
             if info_dict is not None:
                 # Batch=1이므로 [0] 인덱스로 추출
-                irt_data_list['w'].append(info_dict['w'][0].cpu().numpy())
-                irt_data_list['w_rep'].append(info_dict['w_rep'][0].cpu().numpy())
-                irt_data_list['w_ot'].append(info_dict['w_ot'][0].cpu().numpy())
-                irt_data_list['crisis_levels'].append(info_dict['crisis_level'][0].cpu().numpy())
-                if 'crisis_level_pre_guard' in info_dict:
-                    irt_data_list['crisis_levels_pre_guard'].append(info_dict['crisis_level_pre_guard'][0].cpu().numpy())
-                if 'crisis_raw' in info_dict:
-                    irt_data_list['crisis_raw'].append(info_dict['crisis_raw'][0].cpu().numpy())
-                if 'crisis_bias' in info_dict:
-                    irt_data_list['crisis_bias'].append(info_dict['crisis_bias'].cpu().numpy())
-                if 'crisis_temperature' in info_dict:
-                    irt_data_list['crisis_temperature'].append(info_dict['crisis_temperature'].cpu().numpy())
-                if 'crisis_guard_rate' in info_dict:
-                    irt_data_list['crisis_guard_rate'].append(info_dict['crisis_guard_rate'].cpu().numpy())
-                irt_data_list['crisis_types'].append(info_dict['crisis_types'][0].cpu().numpy())
-                irt_data_list['cost_matrices'].append(info_dict['cost_matrix'][0].cpu().numpy())
-                irt_data_list['eta'].append(info_dict['eta'][0].cpu().numpy())
-                irt_data_list['alpha_c'].append(info_dict['alpha_c'][0].cpu().numpy())
-                if 'hysteresis_up' in info_dict:
-                    irt_data_list['hysteresis_up'].append(float(np.array(info_dict['hysteresis_up']).item()))
-                if 'hysteresis_down' in info_dict:
-                    irt_data_list['hysteresis_down'].append(float(np.array(info_dict['hysteresis_down']).item()))
+                irt_data_list["w"].append(info_dict["w"][0].cpu().numpy())
+                irt_data_list["w_rep"].append(info_dict["w_rep"][0].cpu().numpy())
+                irt_data_list["w_ot"].append(info_dict["w_ot"][0].cpu().numpy())
+                irt_data_list["crisis_levels"].append(
+                    info_dict["crisis_level"][0].cpu().numpy()
+                )
+                if "crisis_level_pre_guard" in info_dict:
+                    irt_data_list["crisis_levels_pre_guard"].append(
+                        info_dict["crisis_level_pre_guard"][0].cpu().numpy()
+                    )
+                if "crisis_raw" in info_dict:
+                    irt_data_list["crisis_raw"].append(
+                        info_dict["crisis_raw"][0].cpu().numpy()
+                    )
+                if "crisis_bias" in info_dict:
+                    irt_data_list["crisis_bias"].append(
+                        info_dict["crisis_bias"].cpu().numpy()
+                    )
+                if "crisis_temperature" in info_dict:
+                    irt_data_list["crisis_temperature"].append(
+                        info_dict["crisis_temperature"].cpu().numpy()
+                    )
+                if "crisis_guard_rate" in info_dict:
+                    irt_data_list["crisis_guard_rate"].append(
+                        info_dict["crisis_guard_rate"].cpu().numpy()
+                    )
+                irt_data_list["crisis_types"].append(
+                    info_dict["crisis_types"][0].cpu().numpy()
+                )
+                irt_data_list["cost_matrices"].append(
+                    info_dict["cost_matrix"][0].cpu().numpy()
+                )
+                irt_data_list["eta"].append(info_dict["eta"][0].cpu().numpy())
+                irt_data_list["alpha_c"].append(info_dict["alpha_c"][0].cpu().numpy())
+
+                # Phase 1.5: alpha_c 상세 정보 수집
+                if "alpha_c_raw" in info_dict:
+                    irt_data_list["alpha_c_raw"].append(
+                        info_dict["alpha_c_raw"][0].cpu().numpy()
+                    )
+                if "alpha_c_prev" in info_dict:
+                    irt_data_list["alpha_c_prev"].append(
+                        info_dict["alpha_c_prev"][0].cpu().numpy()
+                    )
+
+                # Phase 1.5: 히스테리시스 임계치 수집
+                hysteresis_up_val = 0.55  # 기본값
+                hysteresis_down_val = 0.45  # 기본값
+                if "hysteresis_up" in info_dict:
+                    hysteresis_up_val = float(
+                        np.asarray(info_dict["hysteresis_up"], dtype=np.float64).item()
+                    )
+                    irt_data_list["hysteresis_up"].append(hysteresis_up_val)
+                if "hysteresis_down" in info_dict:
+                    hysteresis_down_val = float(
+                        np.asarray(
+                            info_dict["hysteresis_down"], dtype=np.float64
+                        ).item()
+                    )
+                    irt_data_list["hysteresis_down"].append(hysteresis_down_val)
+
+                # Phase 1.5: 평가 시 히스테리시스 기반 레짐 분류
+                # bcell_actor의 crisis_regime은 훈련 버퍼 상태에 의존하므로,
+                # 평가에서는 명시적으로 step-by-step 히스테리시스 적용
+                crisis_level_val = float(
+                    info_dict["crisis_level"][0].cpu().numpy().item()
+                )
+
+                if eval_crisis_regime_prev is None:
+                    # 첫 스텝: 단순 임계치 기준
+                    eval_crisis_regime = 1 if crisis_level_val > 0.5 else 0
+                else:
+                    # 히스테리시스 적용
+                    if eval_crisis_regime_prev == 0:
+                        # 평시 → 위기 진입: hysteresis_up 초과 시
+                        eval_crisis_regime = (
+                            1 if crisis_level_val > hysteresis_up_val else 0
+                        )
+                    else:
+                        # 위기 → 평시 복귀: hysteresis_down 미만 시
+                        eval_crisis_regime = (
+                            0 if crisis_level_val < hysteresis_down_val else 1
+                        )
+
+                # bcell_actor의 crisis_regime과 비교 (검증용)
+                bcell_crisis_regime = None
+                if "crisis_regime" in info_dict:
+                    bcell_crisis_regime = int(
+                        info_dict["crisis_regime"][0].cpu().numpy().item()
+                    )
+                    # 불일치 시 로깅 (첫 몇 스텝은 버퍼 초기화 차이로 불일치 가능)
+                    if step > 5 and bcell_crisis_regime != eval_crisis_regime:
+                        if step < 10:  # 초기 불일치만 로깅
+                            print(
+                                f"  [Step {step}] Crisis regime mismatch: bcell={bcell_crisis_regime}, eval={eval_crisis_regime}, level={crisis_level_val:.3f}"
+                            )
+
+                # 평가 전용 레짐 사용 (학습 버퍼 독립적)
+                irt_data_list["crisis_regime"].append(eval_crisis_regime)
+                eval_crisis_regime_prev = eval_crisis_regime
 
                 # Action을 weight로 변환 (simplex 정규화)
                 weights = action / (action.sum() + 1e-8)
-                irt_data_list['weights'].append(weights.copy())
+                irt_data_list["weights"].append(weights.copy())
 
         next_obs, reward, done_step, truncated, info = test_env.step(action)
         done = done_step or truncated
@@ -516,21 +621,25 @@ def evaluate_model(model_path,
             is_irt
             and env_reward_type == "adaptive_risk"
             and info_dict is not None
-            and info_dict.get('crisis_level') is not None
+            and info_dict.get("crisis_level") is not None
         ):
-            crisis_value = info_dict['crisis_level'][0]
+            crisis_value = info_dict["crisis_level"][0]
             if hasattr(crisis_value, "detach"):
                 crisis_value = crisis_value.detach()
             if hasattr(crisis_value, "cpu"):
                 crisis_value = crisis_value.cpu()
-            crisis_level_scalar = float(np.array(crisis_value).item())
+            crisis_level_scalar = float(
+                np.asarray(crisis_value, dtype=np.float64).item()
+            )
             _apply_crisis_level(test_env, crisis_level_scalar)
 
         # Portfolio value 계산
         state = np.asarray(test_env.state, dtype=np.float64)
         cash = float(state[0])
-        prices = np.asarray(state[1:stock_dim + 1], dtype=np.float64)
-        holdings = np.asarray(state[stock_dim + 1: 2 * stock_dim + 1], dtype=np.float64)
+        prices = np.asarray(state[1 : stock_dim + 1], dtype=np.float64)
+        holdings = np.asarray(
+            state[stock_dim + 1 : 2 * stock_dim + 1], dtype=np.float64
+        )
         prev_value = float(portfolio_values[-1])
         pv = float(cash + np.dot(prices, holdings))
         portfolio_values.append(pv)
@@ -539,12 +648,16 @@ def evaluate_model(model_path,
         value_return = (pv - prev_value) / denom
         value_returns.append(value_return)
 
-        executed_weights = info.get('executed_weights')
+        executed_weights = info.get("executed_weights")
         if executed_weights is not None:
-            executed_weights = np.asarray(executed_weights, dtype=np.float64).reshape(-1)
+            executed_weights = np.asarray(executed_weights, dtype=np.float64).reshape(
+                -1
+            )
 
         if is_irt:
-            irt_data_list['turnover_target'].append(float(info.get('turnover_target', 0.0) or 0.0))
+            irt_data_list["turnover_target"].append(
+                float(info.get("turnover_target", 0.0) or 0.0)
+            )
 
         # Phase-1: 실행가중(actual_weights) 계산 및 기록
         actual_weights = None
@@ -552,20 +665,20 @@ def evaluate_model(model_path,
             # w^{exec}_t = (p_t ⊙ h_t) / (cash_t + Σ p_{t,i} h_{t,i} + ε)
             total_equity = pv + 1e-8
             actual_weights = (prices * holdings) / total_equity
-            irt_data_list['actual_weights'].append(actual_weights)
+            irt_data_list["actual_weights"].append(actual_weights)
             if env_reward_type == "adaptive_risk":
-                irt_data_list['env_crisis_levels'].append(test_env.last_crisis_level)
-                irt_data_list['env_kappa'].append(test_env.last_kappa)
-                irt_data_list['env_delta_sharpe'].append(test_env.last_delta_sharpe)
+                irt_data_list["env_crisis_levels"].append(test_env.last_crisis_level)
+                irt_data_list["env_kappa"].append(test_env.last_kappa)
+                irt_data_list["env_delta_sharpe"].append(test_env.last_delta_sharpe)
 
-            if len(irt_data_list['top_snapshots']) < 50 and actual_weights is not None:
+            if len(irt_data_list["top_snapshots"]) < 50 and actual_weights is not None:
                 sorted_idx = np.argsort(actual_weights)[::-1]
                 top_k = int(min(5, sorted_idx.size))
                 top_symbols = [stock_tickers[i] for i in sorted_idx[:top_k]]
                 top_exec_weights = actual_weights[sorted_idx[:top_k]].tolist()
                 target_slice = None
-                if irt_data_list['weights']:
-                    last_target = np.asarray(irt_data_list['weights'][-1])
+                if irt_data_list["weights"]:
+                    last_target = np.asarray(irt_data_list["weights"][-1])
                     target_slice = last_target[sorted_idx[:top_k]].tolist()
                 current_date = None
                 if hasattr(test_env, "date_memory") and test_env.date_memory:
@@ -577,16 +690,16 @@ def evaluate_model(model_path,
                     "weights": top_exec_weights,
                     "target_weights": target_slice,
                 }
-                irt_data_list['top_snapshots'].append(snapshot)
+                irt_data_list["top_snapshots"].append(snapshot)
 
-        tc_value = float(info.get('transaction_cost', 0.0) or 0.0)
+        tc_value = float(info.get("transaction_cost", 0.0) or 0.0)
         transaction_costs.append(tc_value)
 
         current_prices = None
         if stock_dim > 0 and isinstance(next_obs, (np.ndarray, list, tuple)):
             next_obs_array = np.asarray(next_obs, dtype=np.float64).reshape(-1)
             if next_obs_array.size >= stock_dim + 1:
-                current_prices = next_obs_array[1:stock_dim + 1]
+                current_prices = next_obs_array[1 : stock_dim + 1]
 
         exec_return = value_return
         if prev_prices is not None and current_prices is not None:
@@ -602,7 +715,9 @@ def evaluate_model(model_path,
         execution_returns.append(exec_return)
 
         if hasattr(test_env, "_last_turnover_executed"):
-            turnover_executed.append(float(getattr(test_env, "_last_turnover_executed")))
+            turnover_executed.append(
+                float(getattr(test_env, "_last_turnover_executed"))
+            )
         else:
             turnover_executed.append(0.0)
 
@@ -616,67 +731,97 @@ def evaluate_model(model_path,
     # 수익률 정제
     from finrl.evaluation.visualizer import sanitize_returns
 
-    execution_returns_array = sanitize_returns(np.array(execution_returns, dtype=np.float64))
+    execution_returns_array = sanitize_returns(
+        np.array(execution_returns, dtype=np.float64)
+    )
     value_returns_array = sanitize_returns(np.array(value_returns, dtype=np.float64))
     transaction_costs_array = np.array(transaction_costs, dtype=np.float64)
     turnover_executed_array = np.array(turnover_executed, dtype=np.float64)
     turnover_target_array = (
-        np.array(irt_data_list['turnover_target'], dtype=np.float64)
-        if (is_irt and irt_data_list.get('turnover_target'))
+        np.array(irt_data_list["turnover_target"], dtype=np.float64)
+        if (is_irt and irt_data_list.get("turnover_target"))
         else np.array([], dtype=np.float64)
     )
 
     # IRT 데이터 변환
     irt_data = None
-    if is_irt and irt_data_list['w']:
+    if is_irt and irt_data_list["w"]:
         irt_data = {
-            'w_rep': np.array(irt_data_list['w_rep']),  # [T, M]
-            'w_ot': np.array(irt_data_list['w_ot']),    # [T, M]
-            'weights': np.array(irt_data_list['weights']),  # [T, N] 목표가중
-            'actual_weights': np.array(irt_data_list['actual_weights']),  # [T, N] Phase-1: 실행가중
-            'crisis_levels': np.array(irt_data_list['crisis_levels']).squeeze(),  # [T]
-            'crisis_types': np.array(irt_data_list['crisis_types']),  # [T, K]
-            'prototype_weights': np.array(irt_data_list['w']),  # [T, M]
-            'cost_matrices': np.array(irt_data_list['cost_matrices']),  # [T, m, M]
-            'eta': np.array(irt_data_list['eta']).squeeze(),  # [T]
-            'alpha_c': np.array(irt_data_list['alpha_c']).squeeze(),  # [T]
-            'hysteresis_up': np.array(irt_data_list['hysteresis_up'], dtype=np.float64),
-            'hysteresis_down': np.array(irt_data_list['hysteresis_down'], dtype=np.float64),
-            'symbols': stock_tickers[:stock_dim],  # 실제 주식 수만큼
-            'metrics': None,  # 호출자가 calculate_metrics()로 계산
-            'returns': execution_returns_array,
-            'returns_exec': execution_returns_array,
-            'returns_value': value_returns_array,
-            'transaction_costs': transaction_costs_array,
-            'turnover_executed': turnover_executed_array,
-            'turnover_target': np.array(irt_data_list['turnover_target'], dtype=np.float64),
-            'top_snapshots': irt_data_list['top_snapshots'],
+            "w_rep": np.array(irt_data_list["w_rep"]),  # [T, M]
+            "w_ot": np.array(irt_data_list["w_ot"]),  # [T, M]
+            "weights": np.array(irt_data_list["weights"]),  # [T, N] 목표가중
+            "actual_weights": np.array(
+                irt_data_list["actual_weights"]
+            ),  # [T, N] Phase-1: 실행가중
+            "crisis_levels": np.array(irt_data_list["crisis_levels"]).squeeze(),  # [T]
+            "crisis_regime": np.array(
+                irt_data_list["crisis_regime"], dtype=np.int32
+            ),  # Phase 1.5: [T] 이진 분류
+            "crisis_types": np.array(irt_data_list["crisis_types"]),  # [T, K]
+            "prototype_weights": np.array(irt_data_list["w"]),  # [T, M]
+            "cost_matrices": np.array(irt_data_list["cost_matrices"]),  # [T, m, M]
+            "eta": np.array(irt_data_list["eta"]).squeeze(),  # [T]
+            "alpha_c": np.array(irt_data_list["alpha_c"]).squeeze(),  # [T]
+            "hysteresis_up": np.array(irt_data_list["hysteresis_up"], dtype=np.float64),
+            "hysteresis_down": np.array(
+                irt_data_list["hysteresis_down"], dtype=np.float64
+            ),
+            "symbols": stock_tickers[:stock_dim],  # 실제 주식 수만큼
+            "metrics": None,  # 호출자가 calculate_metrics()로 계산
+            "returns": execution_returns_array,
+            "returns_exec": execution_returns_array,
+            "returns_value": value_returns_array,
+            "transaction_costs": transaction_costs_array,
+            "turnover_executed": turnover_executed_array,
+            "turnover_target": np.array(
+                irt_data_list["turnover_target"], dtype=np.float64
+            ),
+            "top_snapshots": irt_data_list["top_snapshots"],
         }
-        if env_reward_type == "adaptive_risk" and irt_data_list.get('env_crisis_levels'):
-            irt_data['env_crisis_levels'] = np.array(irt_data_list['env_crisis_levels']).squeeze()
-            irt_data['env_kappa'] = np.array(irt_data_list['env_kappa']).squeeze()
-            irt_data['env_delta_sharpe'] = np.array(irt_data_list['env_delta_sharpe']).squeeze()
-        if irt_data_list['crisis_levels_pre_guard']:
-            irt_data['crisis_levels_pre_guard'] = np.array(irt_data_list['crisis_levels_pre_guard']).squeeze()
-        if irt_data_list['crisis_raw']:
-            irt_data['crisis_raw'] = np.array(irt_data_list['crisis_raw']).squeeze()
-        if irt_data_list['crisis_bias']:
-            irt_data['crisis_bias'] = np.array(irt_data_list['crisis_bias']).squeeze()
-        if irt_data_list['crisis_temperature']:
-            irt_data['crisis_temperature'] = np.array(irt_data_list['crisis_temperature']).squeeze()
-        if irt_data_list['crisis_guard_rate']:
-            irt_data['crisis_guard_rate'] = np.array(irt_data_list['crisis_guard_rate']).squeeze()
+        # Phase 1.5: alpha_c 상세 정보 추가
+        if irt_data_list["alpha_c_raw"]:
+            irt_data["alpha_c_raw"] = np.array(irt_data_list["alpha_c_raw"]).squeeze()
+        if irt_data_list["alpha_c_prev"]:
+            irt_data["alpha_c_prev"] = np.array(irt_data_list["alpha_c_prev"]).squeeze()
+        if env_reward_type == "adaptive_risk" and irt_data_list.get(
+            "env_crisis_levels"
+        ):
+            irt_data["env_crisis_levels"] = np.array(
+                irt_data_list["env_crisis_levels"]
+            ).squeeze()
+            irt_data["env_kappa"] = np.array(irt_data_list["env_kappa"]).squeeze()
+            irt_data["env_delta_sharpe"] = np.array(
+                irt_data_list["env_delta_sharpe"]
+            ).squeeze()
+        if irt_data_list["crisis_levels_pre_guard"]:
+            irt_data["crisis_levels_pre_guard"] = np.array(
+                irt_data_list["crisis_levels_pre_guard"]
+            ).squeeze()
+        if irt_data_list["crisis_raw"]:
+            irt_data["crisis_raw"] = np.array(irt_data_list["crisis_raw"]).squeeze()
+        if irt_data_list["crisis_bias"]:
+            irt_data["crisis_bias"] = np.array(irt_data_list["crisis_bias"]).squeeze()
+        if irt_data_list["crisis_temperature"]:
+            irt_data["crisis_temperature"] = np.array(
+                irt_data_list["crisis_temperature"]
+            ).squeeze()
+        if irt_data_list["crisis_guard_rate"]:
+            irt_data["crisis_guard_rate"] = np.array(
+                irt_data_list["crisis_guard_rate"]
+            ).squeeze()
 
     # 성능 지표 계산
-    weights_history = irt_data['weights'] if irt_data else None
+    weights_history = irt_data["weights"] if irt_data else None
     metrics = calculate_metrics(
         portfolio_values,
         initial_amount,
         weights_history,
-        returns=execution_returns_array
+        returns=execution_returns_array,
     )
 
-    avg_turnover_exec = float(np.mean(turnover_executed_array)) if turnover_executed_array.size else 0.0
+    avg_turnover_exec = (
+        float(np.mean(turnover_executed_array)) if turnover_executed_array.size else 0.0
+    )
     metrics["avg_turnover_executed"] = avg_turnover_exec
     metrics["turnover_executed_std"] = (
         float(np.std(turnover_executed_array)) if turnover_executed_array.size else 0.0
@@ -687,6 +832,8 @@ def evaluate_model(model_path,
         metrics["turnover_target_std"] = float(np.std(turnover_target_array))
     else:
         avg_turnover_target = float(metrics.get("avg_turnover", 0.0) or 0.0)
+        metrics["avg_turnover_target"] = 0.0
+        metrics["turnover_target_std"] = 0.0
     metrics["turnover_transfer_ratio"] = (
         float(avg_turnover_exec / (avg_turnover_target + 1e-8))
         if avg_turnover_exec or avg_turnover_target
@@ -694,6 +841,7 @@ def evaluate_model(model_path,
     )
 
     if irt_data is not None:
+
         def _safe_array(name):
             value = irt_data.get(name)
             if value is None:
@@ -701,14 +849,32 @@ def evaluate_model(model_path,
             arr = np.asarray(value)
             return arr if arr.size else None
 
-        alpha_vals = _safe_array('alpha_c')
+        alpha_vals = _safe_array("alpha_c")
         if alpha_vals is not None:
             metrics["alpha_c_mean_eval"] = float(np.mean(alpha_vals))
             metrics["alpha_c_std_eval"] = float(np.std(alpha_vals))
             metrics["alpha_c_min_eval"] = float(np.min(alpha_vals))
             metrics["alpha_c_max_eval"] = float(np.max(alpha_vals))
 
-        crisis_vals = _safe_array('crisis_levels')
+        # Phase 1.5: alpha_c 상세 정보 (raw, prev 포함)
+        alpha_raw_vals = _safe_array("alpha_c_raw")
+        alpha_prev_vals = _safe_array("alpha_c_prev")
+        if alpha_raw_vals is not None:
+            metrics["alpha_c_raw_mean_eval"] = float(np.mean(alpha_raw_vals))
+            metrics["alpha_c_raw_std_eval"] = float(np.std(alpha_raw_vals))
+        if alpha_prev_vals is not None:
+            metrics["alpha_c_prev_mean_eval"] = float(np.mean(alpha_prev_vals))
+        if (
+            alpha_vals is not None
+            and alpha_prev_vals is not None
+            and len(alpha_vals) == len(alpha_prev_vals)
+        ):
+            delta_alpha = alpha_vals - alpha_prev_vals
+            metrics["delta_alpha_c_mean"] = float(np.mean(delta_alpha))
+            metrics["delta_alpha_c_std"] = float(np.std(delta_alpha))
+            metrics["delta_alpha_c_abs_mean"] = float(np.mean(np.abs(delta_alpha)))
+
+        crisis_vals = _safe_array("crisis_levels")
         if crisis_vals is not None:
             metrics["crisis_level_max_eval"] = float(np.max(crisis_vals))
             metrics["crisis_level_p90_eval"] = float(np.quantile(crisis_vals, 0.9))
@@ -716,13 +882,62 @@ def evaluate_model(model_path,
             metrics["crisis_level_median_eval"] = float(np.median(crisis_vals))
             metrics["crisis_activation_rate"] = float(np.mean(crisis_vals >= 0.55))
 
-        hyst_up_vals = _safe_array('hysteresis_up')
-        hyst_down_vals = _safe_array('hysteresis_down')
-        if hyst_up_vals is not None and hyst_down_vals is not None:
+        # Phase 1.5: 레짐 기반 분리 통계
+        crisis_regime_vals = _safe_array("crisis_regime")
+        if crisis_regime_vals is not None and len(crisis_regime_vals) > 0:
+            crisis_mask = crisis_regime_vals == 1
+            normal_mask = crisis_regime_vals == 0
+            crisis_steps = int(np.sum(crisis_mask))
+            normal_steps = int(np.sum(normal_mask))
+            total_steps = len(crisis_regime_vals)
+
+            metrics["crisis_regime_pct"] = float(crisis_steps / max(total_steps, 1))
+            metrics["crisis_steps"] = crisis_steps
+            metrics["normal_steps"] = normal_steps
+
+            # 레짐별 수익률/샤프 분리 (execution_returns_array 사용)
+            if len(execution_returns_array) == len(crisis_regime_vals):
+                if crisis_steps > 0:
+                    crisis_returns = execution_returns_array[crisis_mask]
+                    metrics["crisis_mean_return"] = float(np.mean(crisis_returns))
+                    metrics["crisis_volatility"] = float(np.std(crisis_returns))
+                    if metrics["crisis_volatility"] > 1e-8:
+                        metrics["crisis_sharpe"] = float(
+                            metrics["crisis_mean_return"]
+                            / metrics["crisis_volatility"]
+                            * np.sqrt(252)
+                        )
+                if normal_steps > 0:
+                    normal_returns = execution_returns_array[normal_mask]
+                    metrics["normal_mean_return"] = float(np.mean(normal_returns))
+                    metrics["normal_volatility"] = float(np.std(normal_returns))
+                    if metrics["normal_volatility"] > 1e-8:
+                        metrics["normal_sharpe"] = float(
+                            metrics["normal_mean_return"]
+                            / metrics["normal_volatility"]
+                            * np.sqrt(252)
+                        )
+
+        hyst_up_vals = _safe_array("hysteresis_up")
+        hyst_down_vals = _safe_array("hysteresis_down")
+        if (
+            hyst_up_vals is not None
+            and hyst_down_vals is not None
+            and len(hyst_up_vals) > 0
+            and len(hyst_down_vals) > 0
+        ):
             metrics["hysteresis_up_mean"] = float(np.mean(hyst_up_vals))
             metrics["hysteresis_down_mean"] = float(np.mean(hyst_down_vals))
+            # Phase 1.5: 히스테리시스 범위 추적
+            metrics["hysteresis_up_min"] = float(np.min(hyst_up_vals))
+            metrics["hysteresis_up_max"] = float(np.max(hyst_up_vals))
+            metrics["hysteresis_down_min"] = float(np.min(hyst_down_vals))
+            metrics["hysteresis_down_max"] = float(np.max(hyst_down_vals))
+            metrics["hysteresis_width_mean"] = float(
+                np.mean(hyst_up_vals - hyst_down_vals)
+            )
 
-        proto_weights = _safe_array('prototype_weights')
+        proto_weights = _safe_array("prototype_weights")
         if proto_weights is not None:
             weights_clipped = np.clip(proto_weights, 1e-12, 1.0)
             proto_entropy = -np.sum(weights_clipped * np.log(weights_clipped), axis=1)
@@ -730,14 +945,29 @@ def evaluate_model(model_path,
             proto_var = np.var(weights_clipped, axis=1)
             metrics["prototype_entropy_mean_eval"] = float(np.mean(proto_entropy))
             metrics["prototype_entropy_std_eval"] = float(np.std(proto_entropy))
+            metrics["prototype_entropy_min_eval"] = float(
+                np.min(proto_entropy)
+            )  # Phase 1.5
+            metrics["prototype_entropy_max_eval"] = float(
+                np.max(proto_entropy)
+            )  # Phase 1.5
             metrics["prototype_max_weight_mean_eval"] = float(np.mean(proto_max))
+            metrics["prototype_max_weight_max_eval"] = float(
+                np.max(proto_max)
+            )  # Phase 1.5
             metrics["prototype_var_mean_eval"] = float(np.mean(proto_var))
 
     # IRT 데이터에 metrics 추가
     if irt_data is not None:
-        irt_data['metrics'] = metrics
+        irt_data["metrics"] = metrics
 
-    return portfolio_values, execution_returns_array, value_returns_array, irt_data, metrics
+    return (
+        portfolio_values,
+        execution_returns_array,
+        value_returns_array,
+        irt_data,
+        metrics,
+    )
 
 
 def evaluate_direct(args, model_name, model_class):
@@ -751,7 +981,7 @@ def evaluate_direct(args, model_name, model_class):
         stock_tickers=DOW_30_TICKER,
         tech_indicators=INDICATORS,
         initial_amount=1000000,
-        verbose=True
+        verbose=True,
     )
 
 
@@ -763,9 +993,7 @@ def evaluate_drlagent(args, model_name, model_class):
     # 1. 데이터 준비
     print(f"\n[1/4] Downloading test data...")
     df = YahooDownloader(
-        start_date=args.test_start,
-        end_date=args.test_end,
-        ticker_list=DOW_30_TICKER
+        start_date=args.test_start, end_date=args.test_end, ticker_list=DOW_30_TICKER
     ).fetch_data()
     print(f"  Downloaded: {df.shape[0]} rows")
 
@@ -775,7 +1003,7 @@ def evaluate_drlagent(args, model_name, model_class):
         use_technical_indicator=True,
         tech_indicator_list=INDICATORS,
         use_turbulence=False,
-        user_defined_feature=False
+        user_defined_feature=False,
     )
     df_processed = fe.preprocess_data(df)
     test_df = data_split(df_processed, args.test_start, args.test_end)
@@ -787,7 +1015,7 @@ def evaluate_drlagent(args, model_name, model_class):
     print(f"  실제 주식 수: {stock_dim}")
 
     # Phase 3.5: IRT 모델은 dsr_cvar 보상 사용
-    is_irt = 'irt' in args.model.lower()
+    is_irt = "irt" in args.model.lower()
     reward_type = "dsr_cvar" if is_irt else "basic"
 
     # State space: balance(1) + prices(N) + shares(N) + tech_indicators(K*N)
@@ -823,15 +1051,13 @@ def evaluate_drlagent(args, model_name, model_class):
     # 4. DRL_prediction 실행
     print(f"\n[4/4] Running DRL_prediction...")
     account_memory, actions_memory = DRLAgent.DRL_prediction(
-        model=model,
-        environment=e_test_gym,
-        deterministic=True
+        model=model, environment=e_test_gym, deterministic=True
     )
 
     print(f"  Evaluation completed: {len(account_memory)} steps")
 
     # account_memory에서 portfolio_values 추출
-    portfolio_values = account_memory['account_value'].tolist()
+    portfolio_values = account_memory["account_value"].tolist()
 
     # DRLAgent 방식은 IRT 데이터 수집 불가
     pv_array = np.asarray(portfolio_values, dtype=np.float64)
@@ -841,6 +1067,7 @@ def evaluate_drlagent(args, model_name, model_class):
     else:
         raw_returns = np.array([], dtype=np.float64)
     from finrl.evaluation.visualizer import sanitize_returns
+
     exec_returns = sanitize_returns(raw_returns)
 
     return portfolio_values, exec_returns, exec_returns.copy(), None
@@ -857,9 +1084,9 @@ def main(args):
         print(f"\n  Auto-detected model type: {model_name.upper()}")
     else:
         model_name = args.model_type
-        model_class = {
-            'sac': SAC, 'ppo': PPO, 'a2c': A2C, 'td3': TD3, 'ddpg': DDPG
-        }[model_name]
+        model_class = {"sac": SAC, "ppo": PPO, "a2c": A2C, "td3": TD3, "ddpg": DDPG}[
+            model_name
+        ]
 
     print(f"\n[Config]")
     print(f"  Model: {args.model}")
@@ -869,20 +1096,17 @@ def main(args):
 
     # 평가 방식 선택
     if args.method == "direct":
-        portfolio_values, exec_returns, value_returns, irt_data, metrics = evaluate_direct(
-            args, model_name, model_class
+        portfolio_values, exec_returns, value_returns, irt_data, metrics = (
+            evaluate_direct(args, model_name, model_class)
         )
     elif args.method == "drlagent":
         portfolio_values, exec_returns, value_returns, irt_data = evaluate_drlagent(
             args, model_name, model_class
         )
         # DRLAgent 방식은 metrics 계산 필요
-        metrics = calculate_metrics(
-            portfolio_values,
-            returns=exec_returns
-        )
+        metrics = calculate_metrics(portfolio_values, returns=exec_returns)
         if irt_data is not None:
-            irt_data['metrics'] = metrics
+            irt_data["metrics"] = metrics
     else:
         raise ValueError(f"Unknown method: {args.method}")
 
@@ -926,7 +1150,7 @@ def main(args):
             output_dir,
             model_name=model_name.upper(),
             model_path=args.model,
-            irt_data=irt_data
+            irt_data=irt_data,
         )
 
     # 8. JSON 저장 (기본 활성화)
@@ -940,31 +1164,27 @@ def main(args):
         if irt_data is not None:
             # 상세 evaluation_results.json + evaluation_insights.json 저장
             results = {
-                'returns': exec_returns,
-                'returns_value': value_returns,
-                'values': np.array(portfolio_values),
-                'weights': irt_data.get('weights'),
-                'actual_weights': irt_data.get('actual_weights'),
-                'crisis_levels': irt_data.get('crisis_levels'),
-                'crisis_types': irt_data.get('crisis_types'),
-                'prototype_weights': irt_data.get('prototype_weights'),
-                'w_rep': irt_data.get('w_rep'),
-                'w_ot': irt_data.get('w_ot'),
-                'eta': irt_data.get('eta'),
-                'alpha_c': irt_data.get('alpha_c'),
-                'cost_matrices': irt_data.get('cost_matrices'),
-                'symbols': irt_data.get('symbols'),
-                'transaction_costs': irt_data.get('transaction_costs'),
-                'turnover_executed': irt_data.get('turnover_executed'),
-                'metrics': metrics
+                "returns": exec_returns,
+                "returns_value": value_returns,
+                "values": np.array(portfolio_values),
+                "weights": irt_data.get("weights"),
+                "actual_weights": irt_data.get("actual_weights"),
+                "crisis_levels": irt_data.get("crisis_levels"),
+                "crisis_types": irt_data.get("crisis_types"),
+                "prototype_weights": irt_data.get("prototype_weights"),
+                "w_rep": irt_data.get("w_rep"),
+                "w_ot": irt_data.get("w_ot"),
+                "eta": irt_data.get("eta"),
+                "alpha_c": irt_data.get("alpha_c"),
+                "cost_matrices": irt_data.get("cost_matrices"),
+                "symbols": irt_data.get("symbols"),
+                "transaction_costs": irt_data.get("transaction_costs"),
+                "turnover_executed": irt_data.get("turnover_executed"),
+                "metrics": metrics,
             }
 
             # Config (IRT Policy의 경우)
-            config = {
-                'irt': {
-                    'alpha': 0.3  # TODO: 모델에서 추출하거나 인자로 받기
-                }
-            }
+            config = {"irt": {"alpha": 0.3}}  # TODO: 모델에서 추출하거나 인자로 받기
 
             print(f"\n  Saving detailed JSON (IRT data)...")
             save_evaluation_results(results, Path(output_dir), config)
@@ -981,23 +1201,23 @@ def main(args):
                 "test_period": {
                     "start": args.test_start,
                     "end": args.test_end,
-                    "steps": metrics['n_steps']
+                    "steps": metrics["n_steps"],
                 },
                 "metrics": {
-                    "total_return": float(metrics['total_return']),
-                    "annualized_return": float(metrics['annualized_return']),
-                    "volatility": float(metrics['volatility']),
-                    "sharpe_ratio": float(metrics['sharpe_ratio']),
-                    "sortino_ratio": float(metrics['sortino_ratio']),
-                    "calmar_ratio": float(metrics['calmar_ratio']),
-                    "max_drawdown": float(metrics['max_drawdown']),
-                    "final_value": float(metrics['final_value']),
-                    "profit_loss": float(metrics['final_value'] - 1000000)
+                    "total_return": float(metrics["total_return"]),
+                    "annualized_return": float(metrics["annualized_return"]),
+                    "volatility": float(metrics["volatility"]),
+                    "sharpe_ratio": float(metrics["sharpe_ratio"]),
+                    "sortino_ratio": float(metrics["sortino_ratio"]),
+                    "calmar_ratio": float(metrics["calmar_ratio"]),
+                    "max_drawdown": float(metrics["max_drawdown"]),
+                    "final_value": float(metrics["final_value"]),
+                    "profit_loss": float(metrics["final_value"] - 1000000),
                 },
-                "timestamp": datetime.now().isoformat()
+                "timestamp": datetime.now().isoformat(),
             }
 
-            with open(output_file, 'w') as f:
+            with open(output_file, "w") as f:
                 json.dump(results, f, indent=2)
 
             print(f"\n  Results saved to: {output_file}")
@@ -1008,30 +1228,59 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="모델 상세 평가")
 
-    parser.add_argument("--model", type=str, required=True,
-                        help="모델 파일 경로 (.zip)")
-    parser.add_argument("--model-type", type=str, default=None,
-                        choices=['sac', 'ppo', 'a2c', 'td3', 'ddpg'],
-                        help="모델 타입 (자동 감지 실패 시 명시)")
+    parser.add_argument(
+        "--model", type=str, required=True, help="모델 파일 경로 (.zip)"
+    )
+    parser.add_argument(
+        "--model-type",
+        type=str,
+        default=None,
+        choices=["sac", "ppo", "a2c", "td3", "ddpg"],
+        help="모델 타입 (자동 감지 실패 시 명시)",
+    )
 
-    parser.add_argument("--method", type=str, default="direct",
-                        choices=['direct', 'drlagent'],
-                        help="평가 방식 (default: direct)")
+    parser.add_argument(
+        "--method",
+        type=str,
+        default="direct",
+        choices=["direct", "drlagent"],
+        help="평가 방식 (default: direct)",
+    )
 
-    parser.add_argument("--test-start", type=str, default=TEST_START_DATE,
-                        help=f"Test start date (default: {TEST_START_DATE})")
-    parser.add_argument("--test-end", type=str, default=TEST_END_DATE,
-                        help=f"Test end date (default: {TEST_END_DATE})")
+    parser.add_argument(
+        "--test-start",
+        type=str,
+        default=TEST_START_DATE,
+        help=f"Test start date (default: {TEST_START_DATE})",
+    )
+    parser.add_argument(
+        "--test-end",
+        type=str,
+        default=TEST_END_DATE,
+        help=f"Test end date (default: {TEST_END_DATE})",
+    )
 
-    parser.add_argument("--no-plot", action="store_true",
-                        help="시각화 결과 저장 비활성화 (기본: 활성화)")
-    parser.add_argument("--no-json", action="store_true",
-                        help="JSON 결과 저장 비활성화 (기본: 활성화)")
+    parser.add_argument(
+        "--no-plot",
+        action="store_true",
+        help="시각화 결과 저장 비활성화 (기본: 활성화)",
+    )
+    parser.add_argument(
+        "--no-json", action="store_true", help="JSON 결과 저장 비활성화 (기본: 활성화)"
+    )
 
-    parser.add_argument("--output", type=str, default=None,
-                        help="Plot 출력 디렉토리 (기본: 모델 디렉토리/evaluation_plots)")
-    parser.add_argument("--output-json", type=str, default=None,
-                        help="JSON 출력 파일 (기본: 모델 디렉토리/evaluation_results.json)")
+    parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="Plot 출력 디렉토리 (기본: 모델 디렉토리/evaluation_plots)",
+    )
+    parser.add_argument(
+        "--output-json",
+        type=str,
+        default=None,
+        help="JSON 출력 파일 (기본: 모델 디렉토리/evaluation_results.json)",
+    )
 
     args = parser.parse_args()
 
