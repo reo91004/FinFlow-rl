@@ -32,9 +32,85 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from typing import Optional, List
 from pathlib import Path
+from warnings import warn
 
 # 한글 폰트 설정 (선택사항, 환경에 따라 조정)
 plt.rcParams['axes.unicode_minus'] = False
+
+
+def sanitize_returns(returns: np.ndarray,
+                     cap: float = 0.3,
+                     floor: float = -0.99) -> np.ndarray:
+    """
+    Clip and clean return series to prevent runaway spikes.
+
+    Args:
+        returns: Input return series (decimal form).
+        cap: Maximum positive return allowed.
+        floor: Minimum negative return allowed (>-1 to keep log1p stable).
+
+    Returns:
+        Sanitized 1D numpy array of returns.
+    """
+    if returns is None:
+        return np.array([], dtype=np.float64)
+
+    arr = np.asarray(returns, dtype=np.float64).reshape(-1)
+    if arr.size == 0:
+        return arr
+
+    sanitized = np.nan_to_num(arr, nan=0.0, posinf=cap, neginf=floor)
+    if cap is not None:
+        sanitized = np.minimum(sanitized, cap)
+    if floor is not None:
+        sanitized = np.maximum(sanitized, floor)
+    return sanitized
+
+
+def compute_cumulative_returns(returns: np.ndarray,
+                               mode: str = "log") -> np.ndarray:
+    """
+    Convert a return series to cumulative returns with optional log aggregation.
+
+    Args:
+        returns: Sanitized return series (decimal form).
+        mode: 'log' for log-return accumulation, 'geom' for geometric.
+
+    Returns:
+        Cumulative returns array (same length as returns).
+    """
+    returns = np.asarray(returns, dtype=np.float64).reshape(-1)
+    if returns.size == 0:
+        return returns
+
+    if mode == "log":
+        log_r = np.log1p(returns)
+        cumulative = np.expm1(np.cumsum(log_r))
+    elif mode == "geom":
+        cumulative = np.cumprod(1.0 + returns) - 1.0
+    else:
+        raise ValueError(f"Unsupported cumulative mode: {mode}")
+
+    return cumulative
+
+
+def compute_portfolio_returns(values: np.ndarray) -> np.ndarray:
+    """
+    Compute simple returns from a portfolio value trajectory with safeguards.
+
+    Args:
+        values: Portfolio value series [T].
+
+    Returns:
+        Decimal return series [T-1].
+    """
+    arr = np.asarray(values, dtype=np.float64).reshape(-1)
+    if arr.size < 2:
+        return np.array([], dtype=np.float64)
+
+    prev = np.clip(arr[:-1], 1e-8, None)
+    returns = (arr[1:] - arr[:-1]) / prev
+    return returns
 
 def plot_portfolio_value(values: np.ndarray,
                         dates: Optional[List] = None,
@@ -92,10 +168,17 @@ def plot_returns(returns: np.ndarray,
         title: 그래프 제목
         save_path: 저장 경로 (optional)
     """
+    returns = np.asarray(returns, dtype=np.float64).reshape(-1)
+    if returns.size == 0:
+        warn("plot_returns received an empty return series; plot skipped.")
+        return
+
+    returns_pct = returns * 100.0
+
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
 
     # 시계열 그래프
-    ax1.plot(returns, linewidth=1, color='steelblue', alpha=0.7)
+    ax1.plot(returns_pct, linewidth=1, color='steelblue', alpha=0.7)
     ax1.axhline(y=0, color='black', linestyle='-', linewidth=0.5)
     ax1.set_xlabel('Step')
     ax1.set_ylabel('Daily Return (%)')
@@ -103,8 +186,9 @@ def plot_returns(returns: np.ndarray,
     ax1.grid(True, alpha=0.3)
 
     # 히스토그램
-    ax2.hist(returns, bins=50, color='steelblue', alpha=0.7, edgecolor='black')
-    ax2.axvline(x=returns.mean(), color='red', linestyle='--', linewidth=2, label=f'Mean: {returns.mean():.3f}%')
+    ax2.hist(returns_pct, bins=50, color='steelblue', alpha=0.7, edgecolor='black')
+    mean_ret = returns_pct.mean()
+    ax2.axvline(x=mean_ret, color='red', linestyle='--', linewidth=2, label=f'Mean: {mean_ret:.3f}%')
     ax2.axvline(x=0, color='black', linestyle='-', linewidth=0.5)
     ax2.set_xlabel('Daily Return (%)')
     ax2.set_ylabel('Frequency')
@@ -421,7 +505,8 @@ def plot_stock_analysis(weights: np.ndarray,
 
 def plot_performance_timeline(returns: np.ndarray,
                               title: str = "Performance Timeline",
-                              save_path: Optional[str] = None):
+                              save_path: Optional[str] = None,
+                              cumulative_mode: str = "log"):
     """
     성능 타임라인 (누적 수익률)
 
@@ -430,7 +515,12 @@ def plot_performance_timeline(returns: np.ndarray,
         title: 그래프 제목
         save_path: 저장 경로 (optional)
     """
-    cumulative = np.cumprod(1 + returns) - 1
+    returns = np.asarray(returns, dtype=np.float64).reshape(-1)
+    if returns.size == 0:
+        warn("plot_performance_timeline received an empty return series; plot skipped.")
+        return
+
+    cumulative = compute_cumulative_returns(returns, mode=cumulative_mode)
 
     fig, ax = plt.subplots(figsize=(14, 6))
     ax.plot(cumulative, linewidth=2, label='Cumulative Return')
@@ -453,7 +543,9 @@ def plot_performance_timeline(returns: np.ndarray,
 def plot_benchmark_comparison(returns: np.ndarray,
                               benchmark_returns: Optional[np.ndarray] = None,
                               title: str = "Benchmark Comparison",
-                              save_path: Optional[str] = None):
+                              save_path: Optional[str] = None,
+                              cumulative_mode: str = "log",
+                              sanitize_cap: float = 0.3):
     """
     벤치마크 비교
 
@@ -463,14 +555,34 @@ def plot_benchmark_comparison(returns: np.ndarray,
         title: 그래프 제목
         save_path: 저장 경로 (optional)
     """
-    cumulative = np.cumprod(1 + returns) - 1
+    returns = np.asarray(returns, dtype=np.float64).reshape(-1)
+    if returns.size == 0:
+        warn("plot_benchmark_comparison received an empty return series; plot skipped.")
+        return
+
+    strategy_returns = returns.copy()
+    benchmark_curve = None
+
+    if benchmark_returns is not None:
+        bench = sanitize_returns(benchmark_returns, cap=sanitize_cap)
+        if bench.size == 0:
+            bench = None
+        else:
+            min_len = min(strategy_returns.size, bench.size)
+            if min_len == 0:
+                bench = None
+            else:
+                strategy_returns = strategy_returns[-min_len:]
+                bench = bench[-min_len:]
+                benchmark_curve = compute_cumulative_returns(bench, mode=cumulative_mode)
+
+    cumulative = compute_cumulative_returns(strategy_returns, mode=cumulative_mode)
 
     fig, ax = plt.subplots(figsize=(14, 6))
     ax.plot(cumulative, linewidth=2, label='IRT Strategy', color='blue')
 
-    if benchmark_returns is not None:
-        cumulative_benchmark = np.cumprod(1 + benchmark_returns) - 1
-        ax.plot(cumulative_benchmark, linewidth=2, label='Benchmark', color='gray', alpha=0.7)
+    if benchmark_curve is not None:
+        ax.plot(benchmark_curve, linewidth=2, label='Benchmark', color='gray', alpha=0.7)
     else:
         ax.axhline(0, color='gray', linestyle='--', alpha=0.5, label='Zero Return')
 
@@ -492,7 +604,8 @@ def plot_benchmark_comparison(returns: np.ndarray,
 def plot_risk_dashboard(returns: np.ndarray,
                         metrics: dict,
                         title: str = "Risk Dashboard",
-                        save_path: Optional[str] = None):
+                        save_path: Optional[str] = None,
+                        cumulative_mode: str = "log"):
     """
     리스크 대시보드 (VaR/CVaR, Drawdown)
 
@@ -502,12 +615,18 @@ def plot_risk_dashboard(returns: np.ndarray,
         title: 그래프 제목
         save_path: 저장 경로 (optional)
     """
+    returns = np.asarray(returns, dtype=np.float64).reshape(-1)
+    if returns.size == 0:
+        warn("plot_risk_dashboard received an empty return series; plot skipped.")
+        return
+
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
 
     # (1) Returns Distribution
     axes[0, 0].hist(returns, bins='auto', alpha=0.7, edgecolor='black', color='steelblue')
-    axes[0, 0].axvline(returns.mean(), color='red', linestyle='--', linewidth=2,
-                       label=f'Mean = {returns.mean():.4f}')
+    mean_ret = returns.mean()
+    axes[0, 0].axvline(mean_ret, color='red', linestyle='--', linewidth=2,
+                       label=f'Mean = {mean_ret:.4f}')
     axes[0, 0].set_xlabel('Return')
     axes[0, 0].set_ylabel('Frequency')
     axes[0, 0].set_title('Returns Distribution', fontsize=12, fontweight='bold')
@@ -527,7 +646,7 @@ def plot_risk_dashboard(returns: np.ndarray,
     axes[0, 1].set_title('Key Metrics', fontsize=12, fontweight='bold')
 
     # (3) Cumulative Returns
-    cumulative = np.cumprod(1 + returns) - 1
+    cumulative = compute_cumulative_returns(returns, mode=cumulative_mode)
     axes[1, 0].plot(cumulative, linewidth=2, color='green')
     axes[1, 0].fill_between(range(len(cumulative)), 0, cumulative, alpha=0.3, color='green')
     axes[1, 0].set_xlabel('Time Step')
@@ -682,7 +801,10 @@ def plot_cost_matrix(cost_matrices: np.ndarray,
 def plot_all(portfolio_values: np.ndarray,
             dates: Optional[List] = None,
             output_dir: str = "evaluation_plots",
-            irt_data: Optional[dict] = None):
+            irt_data: Optional[dict] = None,
+            returns: Optional[np.ndarray] = None,
+            cumulative_mode: str = "log",
+            sanitize_cap: float = 0.3):
     """
     모든 시각화를 한 번에 생성
 
@@ -721,11 +843,28 @@ def plot_all(portfolio_values: np.ndarray,
     )
 
     # 2. Returns
-    returns = np.diff(portfolio_values) / portfolio_values[:-1] * 100
-    plot_returns(
-        returns,
-        save_path=str(output_path / "returns_distribution.png")
-    )
+    series_returns = None
+    if returns is not None:
+        series_returns = np.asarray(returns, dtype=np.float64).reshape(-1)
+    elif irt_data is not None:
+        for key in ("returns_exec", "returns", "returns_value"):
+            if key in irt_data and irt_data[key] is not None:
+                series_returns = np.asarray(irt_data[key], dtype=np.float64).reshape(-1)
+                if series_returns.size > 0:
+                    break
+    if series_returns is None:
+        series_returns = compute_portfolio_returns(portfolio_values)
+
+    series_returns = sanitize_returns(series_returns, cap=sanitize_cap)
+    has_returns = series_returns.size >= 1
+
+    if has_returns:
+        plot_returns(
+            series_returns,
+            save_path=str(output_path / "returns_distribution.png")
+        )
+    else:
+        warn("plot_all could not derive a non-empty return series; skipping return-based plots.")
 
     # 3. Drawdown
     plot_drawdown(
@@ -776,25 +915,31 @@ def plot_all(portfolio_values: np.ndarray,
             )
 
         # 9. Performance Timeline
-        plot_performance_timeline(
-            returns,
-            save_path=str(output_path / "performance_timeline.png")
-        )
+        if has_returns:
+            plot_performance_timeline(
+                series_returns,
+                save_path=str(output_path / "performance_timeline.png"),
+                cumulative_mode=cumulative_mode
+            )
 
         # 10. Benchmark Comparison
         benchmark_returns = irt_data.get('benchmark_returns', None)
-        plot_benchmark_comparison(
-            returns,
-            benchmark_returns=benchmark_returns,
-            save_path=str(output_path / "benchmark_comparison.png")
-        )
+        if has_returns:
+            plot_benchmark_comparison(
+                series_returns,
+                benchmark_returns=benchmark_returns,
+                save_path=str(output_path / "benchmark_comparison.png"),
+                cumulative_mode=cumulative_mode,
+                sanitize_cap=sanitize_cap
+            )
 
         # 11. Risk Dashboard
-        if 'metrics' in irt_data:
+        if has_returns and 'metrics' in irt_data:
             plot_risk_dashboard(
-                returns,
+                series_returns,
                 irt_data['metrics'],
-                save_path=str(output_path / "risk_dashboard.png")
+                save_path=str(output_path / "risk_dashboard.png"),
+                cumulative_mode=cumulative_mode
             )
 
         # 12. T-Cell Analysis
@@ -806,10 +951,10 @@ def plot_all(portfolio_values: np.ndarray,
             )
 
         # 13. Attribution Analysis
-        if 'weights' in irt_data and 'symbols' in irt_data:
+        if 'weights' in irt_data and 'symbols' in irt_data and has_returns:
             plot_attribution_analysis(
                 irt_data['weights'],
-                returns,
+                series_returns,
                 irt_data['symbols'],
                 save_path=str(output_path / "attribution_analysis.png")
             )
@@ -892,7 +1037,7 @@ def _generate_insights(results: dict, config: dict = None) -> dict:
     Returns:
         insights: 구조화된 해석 정보
     """
-    returns = np.array(results.get('returns', []))
+    returns = sanitize_returns(results.get('returns', []))
     weights = np.array(results.get('weights', []))  # 목표가중
     actual_weights = np.array(results.get('actual_weights', []))  # Phase-1: 실행가중
     crisis_levels = np.array(results.get('crisis_levels', []))

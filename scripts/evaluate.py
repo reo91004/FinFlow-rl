@@ -75,7 +75,10 @@ def create_env(
     return StockTradingEnv(**env_kwargs)
 
 
-def calculate_metrics(portfolio_values, initial_amount=1000000, weights_history=None):
+def calculate_metrics(portfolio_values,
+                      initial_amount=1000000,
+                      weights_history=None,
+                      returns=None):
     """
     성능 지표 계산 (상세 메트릭 포함)
 
@@ -97,16 +100,33 @@ def calculate_metrics(portfolio_values, initial_amount=1000000, weights_history=
         calculate_turnover
     )
 
-    pv = np.array(portfolio_values)
+    pv = np.asarray(portfolio_values, dtype=np.float64).reshape(-1)
 
     # Daily returns
-    returns = (pv[1:] - pv[:-1]) / pv[:-1]
+    if returns is None:
+        if pv.size > 1:
+            prev_values = np.clip(pv[:-1], 1e-8, None)
+            returns = (pv[1:] - pv[:-1]) / prev_values
+        else:
+            returns = np.array([], dtype=np.float64)
+    else:
+        returns = np.asarray(returns, dtype=np.float64).reshape(-1)
+        expected_len = max(pv.size - 1, 0)
+        if expected_len and returns.size != expected_len:
+            min_len = min(expected_len, returns.size)
+            if min_len == 0:
+                returns = np.array([], dtype=np.float64)
+            else:
+                returns = returns[-min_len:]
+                pv = pv[-(min_len + 1):]
+        elif expected_len == 0:
+            returns = np.array([], dtype=np.float64)
 
     # Total return
     total_return = (pv[-1] - initial_amount) / initial_amount
 
     # Annualized return (assuming 252 trading days)
-    n_days = len(pv) - 1
+    n_days = returns.size
     annualized_return = (1 + total_return) ** (252 / n_days) - 1 if n_days > 0 else 0
 
     # Volatility (annualized)
@@ -154,7 +174,13 @@ def calculate_metrics(portfolio_values, initial_amount=1000000, weights_history=
     }
 
 
-def plot_results(portfolio_values, output_dir, model_name="Model", model_path=None, irt_data=None):
+def plot_results(portfolio_values,
+                 returns,
+                 output_dir,
+                 model_name="Model",
+                 model_path=None,
+                 irt_data=None,
+                 cumulative_mode: str = "log"):
     """
     시각화 생성 (finrl.evaluation.visualizer 사용)
 
@@ -163,6 +189,7 @@ def plot_results(portfolio_values, output_dir, model_name="Model", model_path=No
 
     Args:
         portfolio_values: 포트폴리오 가치 배열
+        returns: 실행 기반 수익률 배열 (decimal)
         output_dir: 출력 디렉토리
         model_name: 모델 이름
         model_path: 모델 경로 (IRT 감지용)
@@ -174,7 +201,9 @@ def plot_results(portfolio_values, output_dir, model_name="Model", model_path=No
         portfolio_values=np.array(portfolio_values),
         dates=None,
         output_dir=output_dir,
-        irt_data=irt_data
+        irt_data=irt_data,
+        returns=np.array(returns) if returns is not None else None,
+        cumulative_mode=cumulative_mode
     )
 
 
@@ -248,6 +277,8 @@ def evaluate_model(model_path,
 
     Returns:
         portfolio_values: 포트폴리오 가치 배열
+        execution_returns: 거래 비용 반영 실행 기반 수익률 (정제됨)
+        value_returns: 포트폴리오 가치 기반 보조 수익률
         irt_data: IRT 중간 데이터 (IRT 모델인 경우, 아니면 None)
         metrics: 성능 지표 딕셔너리
     """
@@ -380,6 +411,16 @@ def evaluate_model(model_path,
     obs, _ = test_env.reset()
     done = False
     portfolio_values = [initial_amount]
+    value_returns = []
+    execution_returns = []
+    transaction_costs = []
+    turnover_executed = []
+
+    prev_prices = None
+    if stock_dim > 0 and isinstance(obs, (np.ndarray, list, tuple)):
+        obs_array = np.asarray(obs, dtype=np.float64).reshape(-1)
+        if obs_array.size >= stock_dim + 1:
+            prev_prices = obs_array[1:stock_dim + 1]
 
     # IRT 모델 감지 (이미 위에서 설정됨, 중복 제거)
 
@@ -401,6 +442,8 @@ def evaluate_model(model_path,
             irt_data_list['env_crisis_levels'] = []
             irt_data_list['env_kappa'] = []
             irt_data_list['env_delta_sharpe'] = []
+    else:
+        irt_data_list = {}
 
     step = 0
     while not done:
@@ -425,8 +468,8 @@ def evaluate_model(model_path,
                 weights = action / (action.sum() + 1e-8)
                 irt_data_list['weights'].append(weights)
 
-        obs, reward, done, truncated, info = test_env.step(action)
-        done = done or truncated
+        next_obs, reward, done_step, truncated, info = test_env.step(action)
+        done = done_step or truncated
 
         # Phase-H1: Crisis bridge during evaluation (policy → env)
         if (
@@ -446,14 +489,24 @@ def evaluate_model(model_path,
             test_env.risk_reward.set_crisis_level(crisis_level_scalar)
 
         # Portfolio value 계산
-        state = np.array(test_env.state)
-        cash = state[0]
-        prices = state[1:stock_dim+1]
-        holdings = state[stock_dim+1:2*stock_dim+1]
-        pv = cash + np.sum(prices * holdings)
+        state = np.asarray(test_env.state, dtype=np.float64)
+        cash = float(state[0])
+        prices = np.asarray(state[1:stock_dim + 1], dtype=np.float64)
+        holdings = np.asarray(state[stock_dim + 1: 2 * stock_dim + 1], dtype=np.float64)
+        prev_value = float(portfolio_values[-1])
+        pv = float(cash + np.dot(prices, holdings))
         portfolio_values.append(pv)
 
+        denom = max(prev_value, 1e-8)
+        value_return = (pv - prev_value) / denom
+        value_returns.append(value_return)
+
+        executed_weights = info.get('executed_weights')
+        if executed_weights is not None:
+            executed_weights = np.asarray(executed_weights, dtype=np.float64).reshape(-1)
+
         # Phase-1: 실행가중(actual_weights) 계산 및 기록
+        actual_weights = None
         if is_irt:
             # w^{exec}_t = (p_t ⊙ h_t) / (cash_t + Σ p_{t,i} h_{t,i} + ε)
             total_equity = pv + 1e-8
@@ -464,10 +517,47 @@ def evaluate_model(model_path,
                 irt_data_list['env_kappa'].append(test_env.last_kappa)
                 irt_data_list['env_delta_sharpe'].append(test_env.last_delta_sharpe)
 
+        tc_value = float(info.get('transaction_cost', 0.0) or 0.0)
+        transaction_costs.append(tc_value)
+
+        current_prices = None
+        if stock_dim > 0 and isinstance(next_obs, (np.ndarray, list, tuple)):
+            next_obs_array = np.asarray(next_obs, dtype=np.float64).reshape(-1)
+            if next_obs_array.size >= stock_dim + 1:
+                current_prices = next_obs_array[1:stock_dim + 1]
+
+        exec_return = value_return
+        if prev_prices is not None and current_prices is not None:
+            price_denominator = np.clip(prev_prices, 1e-8, None)
+            price_relatives = (current_prices - price_denominator) / price_denominator
+            weight_vector = executed_weights
+            if weight_vector is None and actual_weights is not None:
+                weight_vector = actual_weights
+            if weight_vector is not None and weight_vector.size == price_relatives.size:
+                exec_return = float(
+                    np.dot(weight_vector, price_relatives) - tc_value / denom
+                )
+        execution_returns.append(exec_return)
+
+        if hasattr(test_env, "_last_turnover_executed"):
+            turnover_executed.append(float(getattr(test_env, "_last_turnover_executed")))
+        else:
+            turnover_executed.append(0.0)
+
+        obs = next_obs
+        prev_prices = current_prices
         step += 1
 
     if verbose:
         print(f"  Evaluation completed: {step} steps")
+
+    # 수익률 정제
+    from finrl.evaluation.visualizer import sanitize_returns
+
+    execution_returns_array = sanitize_returns(np.array(execution_returns, dtype=np.float64))
+    value_returns_array = sanitize_returns(np.array(value_returns, dtype=np.float64))
+    transaction_costs_array = np.array(transaction_costs, dtype=np.float64)
+    turnover_executed_array = np.array(turnover_executed, dtype=np.float64)
 
     # IRT 데이터 변환
     irt_data = None
@@ -484,7 +574,12 @@ def evaluate_model(model_path,
             'eta': np.array(irt_data_list['eta']).squeeze(),  # [T]
             'alpha_c': np.array(irt_data_list['alpha_c']).squeeze(),  # [T]
             'symbols': stock_tickers[:stock_dim],  # 실제 주식 수만큼
-            'metrics': None  # 호출자가 calculate_metrics()로 계산
+            'metrics': None,  # 호출자가 calculate_metrics()로 계산
+            'returns': execution_returns_array,
+            'returns_exec': execution_returns_array,
+            'returns_value': value_returns_array,
+            'transaction_costs': transaction_costs_array,
+            'turnover_executed': turnover_executed_array,
         }
         if env_reward_type == "adaptive_risk" and irt_data_list.get('env_crisis_levels'):
             irt_data['env_crisis_levels'] = np.array(irt_data_list['env_crisis_levels']).squeeze()
@@ -493,13 +588,18 @@ def evaluate_model(model_path,
 
     # 성능 지표 계산
     weights_history = irt_data['weights'] if irt_data else None
-    metrics = calculate_metrics(portfolio_values, initial_amount, weights_history)
+    metrics = calculate_metrics(
+        portfolio_values,
+        initial_amount,
+        weights_history,
+        returns=execution_returns_array
+    )
 
     # IRT 데이터에 metrics 추가
     if irt_data is not None:
         irt_data['metrics'] = metrics
 
-    return portfolio_values, irt_data, metrics
+    return portfolio_values, execution_returns_array, value_returns_array, irt_data, metrics
 
 
 def evaluate_direct(args, model_name, model_class):
@@ -596,7 +696,16 @@ def evaluate_drlagent(args, model_name, model_class):
     portfolio_values = account_memory['account_value'].tolist()
 
     # DRLAgent 방식은 IRT 데이터 수집 불가
-    return portfolio_values, None
+    pv_array = np.asarray(portfolio_values, dtype=np.float64)
+    if pv_array.size > 1:
+        prev_vals = np.clip(pv_array[:-1], 1e-8, None)
+        raw_returns = (pv_array[1:] - pv_array[:-1]) / prev_vals
+    else:
+        raw_returns = np.array([], dtype=np.float64)
+    from finrl.evaluation.visualizer import sanitize_returns
+    exec_returns = sanitize_returns(raw_returns)
+
+    return portfolio_values, exec_returns, exec_returns.copy(), None
 
 
 def main(args):
@@ -622,11 +731,18 @@ def main(args):
 
     # 평가 방식 선택
     if args.method == "direct":
-        portfolio_values, irt_data, metrics = evaluate_direct(args, model_name, model_class)
+        portfolio_values, exec_returns, value_returns, irt_data, metrics = evaluate_direct(
+            args, model_name, model_class
+        )
     elif args.method == "drlagent":
-        portfolio_values, irt_data = evaluate_drlagent(args, model_name, model_class)
+        portfolio_values, exec_returns, value_returns, irt_data = evaluate_drlagent(
+            args, model_name, model_class
+        )
         # DRLAgent 방식은 metrics 계산 필요
-        metrics = calculate_metrics(portfolio_values)
+        metrics = calculate_metrics(
+            portfolio_values,
+            returns=exec_returns
+        )
         if irt_data is not None:
             irt_data['metrics'] = metrics
     else:
@@ -666,10 +782,14 @@ def main(args):
         output_dir = args.output or os.path.join(
             os.path.dirname(args.model), "evaluation_plots"
         )
-        plot_results(portfolio_values, output_dir,
-                    model_name=model_name.upper(),
-                    model_path=args.model,
-                    irt_data=irt_data)
+        plot_results(
+            portfolio_values,
+            exec_returns,
+            output_dir,
+            model_name=model_name.upper(),
+            model_path=args.model,
+            irt_data=irt_data
+        )
 
     # 8. JSON 저장 (기본 활성화)
     if not args.no_json:
@@ -681,22 +801,23 @@ def main(args):
         # IRT 데이터가 있으면 상세 JSON 저장, 없으면 기본 메트릭만 저장
         if irt_data is not None:
             # 상세 evaluation_results.json + evaluation_insights.json 저장
-            returns = np.diff(portfolio_values) / portfolio_values[:-1]
-
             results = {
-                'returns': returns,
+                'returns': exec_returns,
+                'returns_value': value_returns,
                 'values': np.array(portfolio_values),
-                'weights': irt_data['weights'],  # 목표가중
-                'actual_weights': irt_data['actual_weights'],  # Phase-1: 실행가중
-                'crisis_levels': irt_data['crisis_levels'],
-                'crisis_types': irt_data['crisis_types'],
-                'prototype_weights': irt_data['prototype_weights'],
-                'w_rep': irt_data['w_rep'],
-                'w_ot': irt_data['w_ot'],
-                'eta': irt_data['eta'],
-                'alpha_c': irt_data['alpha_c'],
-                'cost_matrices': irt_data['cost_matrices'],
-                'symbols': irt_data['symbols'],
+                'weights': irt_data.get('weights'),
+                'actual_weights': irt_data.get('actual_weights'),
+                'crisis_levels': irt_data.get('crisis_levels'),
+                'crisis_types': irt_data.get('crisis_types'),
+                'prototype_weights': irt_data.get('prototype_weights'),
+                'w_rep': irt_data.get('w_rep'),
+                'w_ot': irt_data.get('w_ot'),
+                'eta': irt_data.get('eta'),
+                'alpha_c': irt_data.get('alpha_c'),
+                'cost_matrices': irt_data.get('cost_matrices'),
+                'symbols': irt_data.get('symbols'),
+                'transaction_costs': irt_data.get('transaction_costs'),
+                'turnover_executed': irt_data.get('turnover_executed'),
                 'metrics': metrics
             }
 

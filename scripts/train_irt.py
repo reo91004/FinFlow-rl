@@ -661,7 +661,7 @@ def test_irt(args, model_path=None):
             args.reward_type = env_meta["reward_type"]
 
     # evaluate.py의 evaluate_model() 재사용
-    portfolio_values, irt_data, metrics = evaluate_model(
+    portfolio_values, exec_returns, value_returns, irt_data, metrics = evaluate_model(
         model_path=model_path,
         model_class=SAC,
         test_start=args.test_start,

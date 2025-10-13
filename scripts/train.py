@@ -297,7 +297,7 @@ def test_model(args, model_path=None):
     print(f"  주식 목록: {train_tickers[:5]}... (생략)")
 
     # evaluate.py의 evaluate_model() 재사용
-    portfolio_values, irt_data, metrics = evaluate_model(
+    portfolio_values, exec_returns, value_returns, irt_data, metrics = evaluate_model(
         model_path=model_path,
         model_class=MODEL_CLASSES[args.model],
         test_start=args.test_start,
