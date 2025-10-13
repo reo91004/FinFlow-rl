@@ -6,7 +6,7 @@ from __future__ import annotations
 import os
 import time
 
-import gym
+import gymnasium as gym
 import torch.nn as nn
 from torch import Tensor
 from torch.distributions.normal import Normal
@@ -278,7 +278,14 @@ class AgentPPO(AgentBase):
             action, logprob = (t.squeeze(0) for t in get_action(state.unsqueeze(0))[:2])
 
             ary_action = convert(action).detach().cpu().numpy()
-            ary_state, reward, done, _ = env.step(ary_action)
+            step_result = env.step(ary_action)
+            if isinstance(step_result, tuple) and len(step_result) == 5:
+                ary_state, reward, terminated, truncated, _ = step_result
+                done = bool(terminated or truncated)
+            else:
+                ary_state, reward, done, _ = step_result
+                done = bool(done)
+            reward = float(np.asarray(reward).item() if np.shape(reward) else reward)
             if done:
                 obs = env.reset()
                 if isinstance(obs, tuple):
@@ -396,17 +403,27 @@ class PendulumEnv(gym.Wrapper):  # a demo of custom gym env
         seed=None,
         options=None,
     ) -> np.ndarray:  # reset the agent in env
-        obs = self.env.reset()
-        if isinstance(obs, tuple):
-            obs = obs[0]
-        return obs
+        obs, info = self.env.reset(seed=seed, options=options)
+        return obs, info
 
     def step(
         self, action: np.ndarray
-    ) -> (np.ndarray, float, bool, dict):  # agent interacts in env
+    ) -> tuple[np.ndarray, float, bool, bool, dict]:  # agent interacts in env
         # We suggest that adjust action space to (-1, +1) when designing a custom env.
-        state, reward, done, info_dict = self.env.step(action * 2)
-        return state.reshape(self.state_dim), float(reward), done, info_dict
+        result = self.env.step(action * 2)
+        if len(result) == 5:
+            state, reward, terminated, truncated, info_dict = result
+        else:  # Backward compatibility (Gym <= 0.21)
+            state, reward, done, info_dict = result
+            terminated = bool(done)
+            truncated = bool(info_dict.get("TimeLimit.truncated", False))
+        return (
+            state.reshape(self.state_dim),
+            float(reward),
+            terminated,
+            truncated,
+            info_dict,
+        )
 
 
 def train_agent(args: Config):
@@ -538,7 +555,14 @@ def get_rewards_and_steps(
         action = (
             tensor_action.detach().cpu().numpy()[0]
         )  # not need detach(), because using torch.no_grad() outside
-        state, reward, done, _ = env.step(action)
+        step_result = env.step(action)
+        if isinstance(step_result, tuple) and len(step_result) == 5:
+            state, reward, terminated, truncated, _ = step_result
+            done = bool(terminated or truncated)
+        else:
+            state, reward, done, _ = step_result
+            done = bool(done)
+        reward = float(np.asarray(reward).item() if np.shape(reward) else reward)
         cumulative_returns += reward
 
         if if_render:
@@ -655,6 +679,8 @@ class DRLAgent:
         # test on the testing env
         _torch = torch
         state = environment.reset()
+        if isinstance(state, tuple):
+            state = state[0]
         episode_returns = []  # the cumulative_return / initial_account
         episode_total_assets = [environment.initial_total_asset]
         with _torch.no_grad():
@@ -664,7 +690,14 @@ class DRLAgent:
                 action = (
                     a_tensor.detach().cpu().numpy()[0]
                 )  # not need detach(), because with torch.no_grad() outside
-                state, reward, done, _ = environment.step(action)
+                step_result = environment.step(action)
+                if isinstance(step_result, tuple) and len(step_result) == 5:
+                    state, reward, terminated, truncated, _ = step_result
+                    done = bool(terminated or truncated)
+                else:
+                    state, reward, done, _ = step_result
+                    done = bool(done)
+                reward = float(np.asarray(reward).item() if np.shape(reward) else reward)
 
                 total_asset = (
                     environment.amount

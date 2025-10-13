@@ -32,9 +32,10 @@ from finrl.config import (
 from finrl.config_tickers import DOW_30_TICKER
 from finrl.meta.preprocessor.yahoodownloader import YahooDownloader
 from finrl.meta.preprocessor.preprocessors import FeatureEngineer, data_split
+from finrl.agents.stablebaselines3 import StrictEvalCallback
 from finrl.meta.env_stock_trading.env_stocktrading import StockTradingEnv
 from stable_baselines3 import SAC, PPO, A2C, TD3, DDPG
-from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
+from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv
 
@@ -209,7 +210,7 @@ def train_model(args):
     # Monitor wrapper로 평가 환경 래핑
     eval_env = Monitor(test_env)
 
-    eval_callback = EvalCallback(
+    eval_callback = StrictEvalCallback(
         eval_env,
         best_model_save_path=os.path.join(log_dir, "best_model"),
         log_path=os.path.join(log_dir, "eval"),

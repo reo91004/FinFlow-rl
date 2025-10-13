@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 
-import gym
+import gymnasium as gym
 import numpy as np
 from numpy import random as rd
 
@@ -110,7 +110,7 @@ class StockEnvNAS100:
         self.total_asset = self.amount + (self.stocks * price).sum()
         self.initial_total_asset = self.total_asset
         self.gamma_reward = 0.0
-        return self.get_state(price)  # state
+        return self.get_state(price), {}
 
     def step(self, actions):
         actions = (actions * self.max_stock).astype(int)
@@ -156,7 +156,7 @@ class StockEnvNAS100:
             reward = self.gamma_reward
             self.episode_return = total_asset / self.initial_total_asset
 
-        return state, reward, done, dict()
+        return state, reward, done, False, {}
 
     def get_state(self, price):
         amount = np.array(max(self.amount, 1e4) * (2**-12), dtype=np.float32)
@@ -213,7 +213,8 @@ class StockEnvNAS100:
                 action = (
                     a_tensor.detach().cpu().numpy()[0]
                 )  # not need detach(), because with torch.no_grad() outside
-                state, reward, done, _ = self.step(action)
+                state, reward, terminated, truncated, _ = self.step(action)
+                done = terminated or truncated
 
                 total_asset = (
                     self.amount + (self.price_ary[self.day] * self.stocks).sum()

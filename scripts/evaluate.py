@@ -405,10 +405,33 @@ def evaluate_model(model_path,
             f"tx_cost={getattr(test_env, 'weight_transaction_cost', None)}"
         )
 
+    def _apply_crisis_level(env_obj, level_value) -> None:
+        """Synchronize crisis level into the evaluation environment."""
+        if env_obj is None:
+            return
+        try:
+            crisis_float = float(np.array(level_value).item())
+        except (TypeError, ValueError):
+            return
+
+        risk_reward = getattr(env_obj, "risk_reward", None)
+        if risk_reward is not None and hasattr(risk_reward, "set_crisis_level"):
+            try:
+                risk_reward.set_crisis_level(crisis_float)
+            except Exception:
+                pass
+
+        if hasattr(env_obj, "_crisis_level"):
+            env_obj._crisis_level = crisis_float
+        if hasattr(env_obj, "last_crisis_level"):
+            env_obj.last_crisis_level = crisis_float
+
     # 4. 평가 실행
     if verbose:
         print(f"\n[4/4] Running evaluation...")
     obs, _ = test_env.reset()
+    if is_irt and env_reward_type == "adaptive_risk":
+        _apply_crisis_level(test_env, getattr(test_env, "last_crisis_level", 0.5))
     done = False
     portfolio_values = [initial_amount]
     value_returns = []
@@ -492,8 +515,6 @@ def evaluate_model(model_path,
             and env_reward_type == "adaptive_risk"
             and info_dict is not None
             and info_dict.get('crisis_level') is not None
-            and hasattr(test_env, 'risk_reward')
-            and hasattr(test_env.risk_reward, 'set_crisis_level')
         ):
             crisis_value = info_dict['crisis_level'][0]
             if hasattr(crisis_value, "detach"):
@@ -501,7 +522,7 @@ def evaluate_model(model_path,
             if hasattr(crisis_value, "cpu"):
                 crisis_value = crisis_value.cpu()
             crisis_level_scalar = float(np.array(crisis_value).item())
-            test_env.risk_reward.set_crisis_level(crisis_level_scalar)
+            _apply_crisis_level(test_env, crisis_level_scalar)
 
         # Portfolio value 계산
         state = np.asarray(test_env.state, dtype=np.float64)
@@ -619,6 +640,52 @@ def evaluate_model(model_path,
         weights_history,
         returns=execution_returns_array
     )
+
+    avg_turnover_exec = float(np.mean(turnover_executed_array)) if turnover_executed_array.size else 0.0
+    metrics["avg_turnover_executed"] = avg_turnover_exec
+    metrics["turnover_executed_std"] = (
+        float(np.std(turnover_executed_array)) if turnover_executed_array.size else 0.0
+    )
+    avg_turnover_target = float(metrics.get("avg_turnover", 0.0) or 0.0)
+    metrics["turnover_transfer_ratio"] = (
+        float(avg_turnover_exec / (avg_turnover_target + 1e-8))
+        if avg_turnover_exec or avg_turnover_target
+        else 0.0
+    )
+
+    if irt_data is not None:
+        def _safe_array(name):
+            value = irt_data.get(name)
+            if value is None:
+                return None
+            arr = np.asarray(value)
+            return arr if arr.size else None
+
+        alpha_vals = _safe_array('alpha_c')
+        if alpha_vals is not None:
+            metrics["alpha_c_mean_eval"] = float(np.mean(alpha_vals))
+            metrics["alpha_c_std_eval"] = float(np.std(alpha_vals))
+            metrics["alpha_c_min_eval"] = float(np.min(alpha_vals))
+            metrics["alpha_c_max_eval"] = float(np.max(alpha_vals))
+
+        crisis_vals = _safe_array('crisis_levels')
+        if crisis_vals is not None:
+            metrics["crisis_level_max_eval"] = float(np.max(crisis_vals))
+            metrics["crisis_level_p90_eval"] = float(np.quantile(crisis_vals, 0.9))
+            metrics["crisis_level_p99_eval"] = float(np.quantile(crisis_vals, 0.99))
+            metrics["crisis_level_median_eval"] = float(np.median(crisis_vals))
+            metrics["crisis_activation_rate"] = float(np.mean(crisis_vals >= 0.55))
+
+        proto_weights = _safe_array('prototype_weights')
+        if proto_weights is not None:
+            weights_clipped = np.clip(proto_weights, 1e-12, 1.0)
+            proto_entropy = -np.sum(weights_clipped * np.log(weights_clipped), axis=1)
+            proto_max = np.max(weights_clipped, axis=1)
+            proto_var = np.var(weights_clipped, axis=1)
+            metrics["prototype_entropy_mean_eval"] = float(np.mean(proto_entropy))
+            metrics["prototype_entropy_std_eval"] = float(np.std(proto_entropy))
+            metrics["prototype_max_weight_mean_eval"] = float(np.mean(proto_max))
+            metrics["prototype_var_mean_eval"] = float(np.mean(proto_var))
 
     # IRT 데이터에 metrics 추가
     if irt_data is not None:

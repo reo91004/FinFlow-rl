@@ -36,7 +36,7 @@ from finrl.meta.preprocessor.yahoodownloader import YahooDownloader
 from finrl.meta.preprocessor.preprocessors import FeatureEngineer, data_split
 from finrl.meta.env_stock_trading.env_stocktrading import StockTradingEnv
 from stable_baselines3 import SAC
-from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback, EvalCallback
+from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
 from stable_baselines3.common.monitor import Monitor
 import torch
 
@@ -48,6 +48,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
 from evaluate import evaluate_model
+from finrl.agents.stablebaselines3 import StrictEvalCallback
 
 
 def set_global_seed(seed: int) -> None:
@@ -137,6 +138,14 @@ class IRTLoggingCallback(BaseCallback):
 
         # Phase 3.5: 이전 action 저장 (turnover 계산용)
         self.prev_action = None
+        # Phase 1+: alpha 변화율 추적
+        self.prev_alpha_c = None
+
+    def _on_training_start(self) -> None:
+        self.prev_action = None
+        self.prev_alpha_c = None
+        self.alpha_c_ema_mean = None
+        self.alpha_c_ema_var = None
 
     def _on_step(self) -> bool:
         if self.n_calls % self.log_freq == 0:
@@ -163,13 +172,22 @@ class IRTLoggingCallback(BaseCallback):
 
                 std_alpha_c = self.alpha_c_ema_var ** 0.5 if self.alpha_c_ema_var is not None else 0.0
                 self.logger.record("irt/std_alpha_c", std_alpha_c)
+                alpha_c_tensor = info['alpha_c']  # [B, 1]
+                alpha_c_min = alpha_c_tensor.min().item()
+                alpha_c_max = alpha_c_tensor.max().item()
+                self.logger.record("irt/min_alpha_c", alpha_c_min)
+                self.logger.record("irt/max_alpha_c", alpha_c_max)
+
+                if self.prev_alpha_c is not None:
+                    delta_alpha = alpha_c_val - self.prev_alpha_c
+                    self.logger.record("irt/delta_alpha_c", delta_alpha)
+                self.prev_alpha_c = alpha_c_val
 
                 # ===== Phase D 교정: Replicator vs OT 실제 기여도 =====
                 # w = (1 - alpha_c) * tilde_w + alpha_c * p_mass
                 # 따라서 혼합 후 기여도는:
                 # rep_contribution = (1 - alpha_c).mean()
                 # ot_contribution = alpha_c.mean()
-                alpha_c_tensor = info['alpha_c']  # [B, 1]
                 rep_contribution = (1 - alpha_c_tensor).mean().item()
                 ot_contribution = alpha_c_tensor.mean().item()
 
@@ -196,6 +214,10 @@ class IRTLoggingCallback(BaseCallback):
                 prototype_avg_weights = w.mean(dim=0)  # [M]
                 prototype_max_weight_value = prototype_avg_weights.max().item()
                 self.logger.record("irt/prototype_max_weight", prototype_max_weight_value)
+                prototype_var = w.var(dim=-1, unbiased=False).mean().item()
+                self.logger.record("irt/prototype_var", prototype_var)
+                prototype_std = torch.sqrt(w.var(dim=-1, unbiased=False) + 1e-8).mean().item()
+                self.logger.record("irt/prototype_std", prototype_std)
 
                 # 프로토타입 가중치 엔트로피 (프로토타입 축 다양성)
                 prototype_entropy = -torch.sum(prototype_avg_weights * torch.log(prototype_avg_weights + 1e-8)).item()
@@ -222,6 +244,18 @@ class IRTLoggingCallback(BaseCallback):
                 except Exception:
                     pass  # IRTPolicy 구조에 따라 실패 가능
 
+                # 위기 레벨 분포 요약
+                crisis_tensor = info['crisis_level'].detach()
+                crisis_flat = crisis_tensor.view(-1)
+                crisis_max = crisis_flat.max().item()
+                crisis_p90 = torch.quantile(crisis_flat, torch.tensor(0.9, device=crisis_flat.device)).item()
+                crisis_p99 = torch.quantile(crisis_flat, torch.tensor(0.99, device=crisis_flat.device)).item()
+                crisis_median = torch.quantile(crisis_flat, torch.tensor(0.5, device=crisis_flat.device)).item()
+                self.logger.record("irt/crisis_level_max", crisis_max)
+                self.logger.record("irt/crisis_level_p99", crisis_p99)
+                self.logger.record("irt/crisis_level_p90", crisis_p90)
+                self.logger.record("irt/crisis_level_median", crisis_median)
+
                 # ===== Phase 3.5: Turnover 메트릭 (목표 가중치 기준) =====
                 # 현재 action은 self.locals에 저장되어 있음
                 if 'actions' in self.locals and self.prev_action is not None:
@@ -245,6 +279,25 @@ class IRTLoggingCallback(BaseCallback):
                         self.prev_action = current_action.detach().cpu().numpy()
                     else:
                         self.prev_action = current_action
+
+                infos = self.locals.get('infos') if isinstance(self.locals, dict) else None
+                if infos:
+                    exec_vals, target_vals = [], []
+                    for info_item in infos:
+                        if not info_item:
+                            continue
+                        exec_vals.append(float(info_item.get('turnover_executed', 0.0) or 0.0))
+                        target_vals.append(float(info_item.get('turnover_target', 0.0) or 0.0))
+                    if exec_vals:
+                        exec_mean = float(np.mean(exec_vals))
+                        self.logger.record("irt/turnover_executed", exec_mean)
+                        if target_vals:
+                            target_mean = float(np.mean(target_vals))
+                            self.logger.record("irt/turnover_target_env", target_mean)
+                            self.logger.record(
+                                "irt/turnover_transfer_ratio",
+                                exec_mean / (target_mean + 1e-8),
+                            )
 
         return True
 
@@ -493,7 +546,7 @@ def train_irt(args):
         name_prefix="irt_model",
     )
 
-    eval_callback = EvalCallback(
+    eval_callback = StrictEvalCallback(
         Monitor(test_env),
         best_model_save_path=os.path.join(log_dir, "best_model"),
         log_path=os.path.join(log_dir, "eval"),

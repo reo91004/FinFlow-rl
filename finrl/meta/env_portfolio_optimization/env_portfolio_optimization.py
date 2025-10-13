@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import math
 
-import gym
+import gymnasium as gym
 import matplotlib
 import numpy as np
 import pandas as pd
-from gym import spaces
-from gym.utils import seeding
+from gymnasium import spaces
+from gymnasium.utils import seeding
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -368,7 +368,12 @@ class PortfolioOptimizationEnv(gym.Env):
             return self._state, self._reward, self._terminal, False, self._info
         return self._state, self._reward, self._terminal, self._info
 
-    def reset(self):
+    def reset(
+        self,
+        *,
+        seed: int | None = None,
+        options: dict | None = None,
+    ):
         """Resets the environment and returns it to its initial state (the
         fist date of the dataframe).
 
@@ -386,6 +391,9 @@ class PortfolioOptimizationEnv(gym.Env):
             state: Initial state.
             info: Initial state info.
         """
+        if seed is not None:
+            self._seed(seed)
+
         # time_index must start a little bit in the future to implement lookback
         self._time_index = self._time_window - 1
         self._reset_memory()

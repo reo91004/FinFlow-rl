@@ -7,7 +7,7 @@ import threading
 import time
 
 import alpaca_trade_api as tradeapi
-import gym
+import gymnasium as gym
 import numpy as np
 import pandas as pd
 import torch
@@ -416,7 +416,15 @@ class StockEnvEmpty(gym.Env):
         seed=None,
         options=None,
     ):
-        return
+        if seed is not None:
+            np.random.seed(seed)
+        return np.zeros(self.state_dim, dtype=np.float32), {}
 
     def step(self, actions):
-        return
+        return (
+            np.zeros(self.state_dim, dtype=np.float32),
+            0.0,
+            False,
+            False,
+            {},
+        )

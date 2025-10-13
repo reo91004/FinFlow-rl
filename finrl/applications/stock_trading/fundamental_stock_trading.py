@@ -326,13 +326,13 @@ def main():
     print(len(train_data))
     print(len(trade_data))
 
-    import gym
+    import gymnasium as gym
     import matplotlib
     import matplotlib.pyplot as plt
     import numpy as np
     import pandas as pd
-    from gym import spaces
-    from gym.utils import seeding
+    from gymnasium import spaces
+    from gymnasium.utils import seeding
     from stable_baselines3.common.vec_env import DummyVecEnv
 
     matplotlib.use("Agg")
@@ -599,7 +599,8 @@ def main():
                 # logger.record("environment/total_cost", self.cost)
                 # logger.record("environment/total_trades", self.trades)
 
-                return self.state, self.reward, self.terminal, {}
+                terminated = bool(self.terminal)
+                return self.state, self.reward, terminated, False, {}
 
             else:
                 actions = (
@@ -659,10 +660,18 @@ def main():
                 self.rewards_memory.append(self.reward)
                 self.reward = self.reward * self.reward_scaling
 
-            return self.state, self.reward, self.terminal, {}
+            terminated = bool(self.terminal)
+            return self.state, self.reward, terminated, False, {}
 
-        def reset(self):
+        def reset(
+            self,
+            *,
+            seed=None,
+            options=None,
+        ):
             # initiate state
+            if seed is not None:
+                self._seed(seed)
             self.state = self._initiate_state()
 
             if self.initial:
@@ -691,7 +700,7 @@ def main():
 
             self.episode += 1
 
-            return self.state
+            return self.state, {}
 
         def render(self, mode="human", close=False):
             return self.state
