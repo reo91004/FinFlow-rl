@@ -82,31 +82,31 @@ IRT는 Stable Baselines3의 SAC 알고리즘과 완전히 통합되어 작동한
 │  │              │<────────│                 │       │              │ │
 │  │  (s,a,r,s')  │  store  └────────┬────────┘       └──────┬───────┘ │
 │  └──────────────┘                  │                       │         │
-│                                    │ fitness [B,M]         │         │
+│                                    │ Q-values [B,M]        │         │
 │                                    │<──────────────────────┘         │
-│                                    │ Q(s,a_j)                        │
+│                                    │ Q(s,π_j(s))                     │
 │                                    ▼                                 │
 │  ┌─────────────────────────────────────────────────────────────────┐ │
-│  │                    IRT Actor (BCellIRTActor)                    │ │
+│  │                      IRT Actor Network                          │ │
 │  │                                                                 │ │
 │  │  Input: s_t ∈ ℝ^d                                              │ │
 │  │  Output: a_t ∈ Δ^n (Simplex)                                   │ │
 │  │                                                                 │ │
 │  │  ┌─────────────┐    ┌──────────────┐    ┌──────────────────┐  │ │
-│  │  │   T-Cell    │    │  Epitope     │    │   Prototypes     │  │ │
-│  │  │   Module    │───>│  Encoder     │    │   {K_j}^M_j=1    │  │ │
-│  │  │             │    │  (ϕ_E)       │    │                  │  │ │
-│  │  │ c_t, d_t    │    │  E_t         │───>│  IRT Operator    │  │ │
+│  │  │   Crisis    │    │  State       │    │   Expert         │  │ │
+│  │  │   Detector  │───>│  Encoder     │    │   Strategies     │  │ │
+│  │  │             │    │  (ϕ_s)       │    │   {θ_j}^M_j=1    │  │ │
+│  │  │ c_t, h^c_t  │    │  h^s_t       │───>│  IRT Operator    │  │ │
 │  │  └─────────────┘    └──────────────┘    │  (Ψ_IRT)         │  │ │
 │  │                                          │                  │  │ │
-│  │  Fitness f_t ────────────────────────────> w_t = Ψ_IRT()   │  │ │
+│  │  Q-values Q_t ───────────────────────────> w_t = Ψ_IRT()   │  │ │
 │  │  [M]                                     │  [M]             │  │ │
 │  │                                          └────────┬─────────┘  │ │
 │  │                                                   │             │ │
 │  │  ┌────────────────────────────────────────────────▼──────────┐ │ │
-│  │  │           Dirichlet Policy (ϕ_π)                          │ │ │
+│  │  │           Mixture Policy (ϕ_π)                            │ │ │
 │  │  │                                                            │ │ │
-│  │  │  α_j = decoder_j(K_j)  [n]                                │ │ │
+│  │  │  α_j = MLP_j(θ_j)  [n]                                    │ │ │
 │  │  │  α_t = Σ_j w_{t,j} · α_j  [n]                             │ │ │
 │  │  │                                                            │ │ │
 │  │  │  a_t ~ Dir(α_t)  or  a_t = softmax(α_t/τ)                │ │ │
@@ -128,22 +128,22 @@ IRT는 Stable Baselines3의 SAC 알고리즘과 완전히 통합되어 작동한
       │                    │                    │
       ▼                    ▼                    ▼
 ┌─────────────┐    ┌──────────────┐    ┌─────────────────┐
-│  Market     │    │   State      │    │  Fitness        │
-│  Features   │    │   Features   │    │  Computation    │
-│  Extraction │    │              │    │  (from Critics) │
+│  Market     │    │   State      │    │  Q-value        │
+│  Features   │    │   Features   │    │  Estimation     │
+│  Extraction │    │              │    │  (Twin Critics) │
 │             │    │              │    │                 │
-│  x^m ∈ ℝ^12 │    │  s_t ∈ ℝ^d   │    │  f_j = Q(s,a_j) │
+│  x^m ∈ ℝ^12 │    │  s_t ∈ ℝ^d   │    │  Q_j=Q(s,π_j(s))│
 └──────┬──────┘    └──────┬───────┘    └────────┬────────┘
        │                  │                     │
-       │                  │                     │ f ∈ ℝ^M
+       │                  │                     │ Q ∈ ℝ^M
        ▼                  ▼                     │
 ┌──────────────┐   ┌─────────────┐             │
-│   T-Cell     │   │  Epitope    │             │
-│   Network    │   │  Encoder    │             │
-│   (ϕ_TC)     │   │  (ϕ_E)      │             │
+│  Crisis      │   │  State      │             │
+│  Detector    │   │  Encoder    │             │
+│  (ϕ_c)       │   │  (ϕ_s)      │             │
 │              │   │             │             │
 │  h = MLP(x^m)│   │  h = MLP(s) │             │
-│  z, d = h    │   │  E = h      │             │
+│  z, h^c = h  │   │  h^s = h    │             │
 │              │   │  [m×D]      │             │
 └──────┬───────┘   └──────┬──────┘             │
        │                  │                     │
@@ -151,16 +151,29 @@ IRT는 Stable Baselines3의 SAC 알고리즘과 완전히 통합되어 작동한
        │ │                                      │
        ▼ ▼                                      │
   ┌─────────────────────────────────────┐       │
-  │    Crisis Detection & Normalization │       │
-  │    ───────────────────────────────  │       │
+  │    Multi-Signal Crisis Assessment   │       │
+  │    ────────────────────────────     │       │
   │                                     │       │
-  │  DSR/CVaR Signals: Δs, c_v         │       │
-  │  Z-Score: z_b, z_s, z_c ← EMA(μ,σ) │       │
-  │  Fusion: c_r = Σ_i w_i·σ(k_i·z_i)  │       │
-  │  Correction: c̃ = σ((c_r-b)/T)      │       │
-  │  Guard: c = c̃ + g·(0.5 - c̃)        │       │
+  │  Signal Extraction:                │       │
+  │    - Market signal: z [4]          │       │
+  │    - Sharpe gradient: Δs           │       │
+  │    - CVaR signal: c_v              │       │
   │                                     │       │
-  │  Output: c_t ∈ [0,1], d_t ∈ ℝ^D    │       │
+  │  Z-Score Normalization:            │       │
+  │    z_i = (x_i - μ_i)/σ_i  (EMA)   │       │
+  │                                     │       │
+  │  Weighted Fusion:                  │       │
+  │    c_r = w_m·σ(k_m·z_m)            │       │
+  │        + w_s·σ(k_s·z_s)            │       │
+  │        + w_c·σ(k_c·z_c)            │       │
+  │                                     │       │
+  │  Bias/Temperature Correction:      │       │
+  │    c̃ = σ((c_r - b)/T)              │       │
+  │                                     │       │
+  │  Target-Driven Regularization:     │       │
+  │    c = c̃ + λ_g·(c_target - c̃)     │       │
+  │                                     │       │
+  │  Output: c_t ∈ [0,1], h^c_t ∈ ℝ^D  │       │
   └────────────────┬────────────────────┘       │
                    │                            │
                    │                            │
@@ -171,24 +184,23 @@ IRT는 Stable Baselines3의 SAC 알고리즘과 완전히 통합되어 작동한
   │          IRT Operator (Ψ_IRT)                  │
   │          ────────────────────                  │
   │                                                │
-  │  Input:  E_t [m×D], K [M×D], d_t [D],         │
-  │          w_{t-1} [M], f_t [M], c_t, Δs_t      │
+  │  Input:  h^s_t [m×D], {θ_j} [M×D], h^c_t [D], │
+  │          w_{t-1} [M], Q_t [M], c_t, Δs_t      │
   │                                                │
   │  ┌──────────────────┐  ┌────────────────────┐ │
   │  │ Optimal          │  │ Replicator         │ │
   │  │ Transport        │  │ Dynamics           │ │
   │  │ ─────────        │  │ ────────           │ │
   │  │                  │  │                    │ │
-  │  │ Cost:            │  │ Heating:           │ │
-  │  │  C = d_M(E,K)    │  │  η = η_0+η_1·c    │ │
-  │  │    - γ⟨E,d⟩      │  │                    │ │
-  │  │    + λ·R_tol     │  │ Advantage:         │ │
-  │  │    + ρ·R_ckpt    │  │  A = f - w^T f    │ │
-  │  │                  │  │                    │ │
-  │  │ Sinkhorn:        │  │ Update:            │ │
-  │  │  P* = S(C,ε)     │  │  w̃ ∝ w·exp(η·A)   │ │
-  │  │                  │  │  w_r=softmax(w̃/τ) │ │
-  │  │ Margin:          │  │                    │ │
+  │  │ Distance Matrix: │  │ Adaptive LR:       │ │
+  │  │  C = d_M(h^s,θ)  │  │  η = η_0+η_1·c    │ │
+  │  │    - γ⟨h^s,h^c⟩  │  │                    │ │
+  │  │    + penalties   │  │ Advantage:         │ │
+  │  │                  │  │  A = Q - w^T Q    │ │
+  │  │ Sinkhorn OT:     │  │                    │ │
+  │  │  P* = S(C,ε)     │  │ Update:            │ │
+  │  │                  │  │  w̃ ∝ w·exp(η·A)   │ │
+  │  │ Marginal:        │  │  w_r=softmax(w̃/τ) │ │
   │  │  w_o = P*^T 1_m  │  │                    │ │
   │  │                  │  │                    │ │
   │  └────────┬─────────┘  └─────────┬──────────┘ │
@@ -197,8 +209,8 @@ IRT는 Stable Baselines3의 SAC 알고리즘과 완전히 통합되어 작동한
   │           │  │                                │
   │           ▼  ▼                                │
   │  ┌────────────────────────┐                   │
-  │  │  Dynamic Mixing        │                   │
-  │  │  ──────────────        │                   │
+  │  │  Dynamic α Schedule    │                   │
+  │  │  ──────────────────    │                   │
   │  │                        │                   │
   │  │  α(c) = α_max + ...    │                   │
   │  │  α'(Δs) = α·(1+...)    │                   │
@@ -207,24 +219,24 @@ IRT는 Stable Baselines3의 SAC 알고리즘과 완전히 통합되어 작동한
   │  │      + α'·w_o          │                   │
   │  └────────────────────────┘                   │
   │                                                │
-  │  Output: w_t ∈ Δ^M (Prototype weights)        │
+  │  Output: w_t ∈ Δ^M (Expert weights)           │
   └──────────────────────┬─────────────────────────┘
                          │
                          │ w_t [M]
                          ▼
   ┌────────────────────────────────────────────────┐
-  │         Dirichlet Policy Network (ϕ_π)         │
-  │         ──────────────────────────────         │
+  │         Mixture Policy Network (ϕ_π)           │
+  │         ────────────────────────────           │
   │                                                │
-  │  Prototype Decoders: {decoder_j}^M_j=1        │
+  │  Expert Policy Heads: {MLP_j}^M_j=1           │
   │                                                │
-  │  ∀j: α_j = decoder_j(K_j) ∈ ℝ^n               │
+  │  ∀j: α_j = MLP_j(θ_j) ∈ ℝ^n                   │
   │       α_j = clamp(tanh(·)·7.5+2.5, 0.01)      │
   │                                                │
-  │  Weighted Mixing:                             │
+  │  Weighted Aggregation:                        │
   │    α_t = Σ^M_j=1 w_{t,j} · α_j               │
   │                                                │
-  │  Action Generation:                           │
+  │  Action Sampling:                             │
   │    Training:   a_t ~ Dirichlet(α_t)           │
   │    Inference:  a_t = softmax(α_t/τ_a)         │
   │                                                │
@@ -241,24 +253,108 @@ IRT는 Stable Baselines3의 SAC 알고리즘과 완전히 통합되어 작동한
 | 모듈 | 입력 | 출력 | 설명 |
 |------|------|------|------|
 | **Market Features** | s_t [d] | x^m [12] | 시장 통계 + 기술 지표 |
-| **T-Cell (ϕ_TC)** | x^m [12] | z [4], d [D] | 위기 타입, 위험 임베딩 |
-| **Crisis Detection** | z, Δs, c_v | c [1] | 다중 신호 융합 → 위기 레벨 |
-| **Epitope Encoder (ϕ_E)** | s_t [d] | E [m×D] | 상태 → 다중 토큰 |
-| **Prototypes** | - | K [M×D] | 학습 가능한 전문가 키 |
-| **Fitness Computation** | s_t, K | f [M] | Critic Q-value |
-| **IRT Operator (Ψ_IRT)** | E, K, d, w_prev, f, c, Δs | w [M] | OT + Replicator 혼합 |
-| **Decoders {ϕ_j}** | K_j [D] | α_j [n] | 프로토타입 → Concentration |
-| **Dirichlet Policy (ϕ_π)** | w [M], {α_j} [M×n] | a_t [n] | 최종 포트폴리오 |
+| **Crisis Detector (ϕ_c)** | x^m [12] | z [4], h^c [D] | 위기 신호 벡터, 위기 임베딩 |
+| **Multi-Signal Assessment** | z, Δs, c_v | c [1] | 다중 신호 융합 → 위기 레벨 |
+| **State Encoder (ϕ_s)** | s_t [d] | h^s [m×D] | 상태 → 다중 표현 토큰 |
+| **Expert Strategies** | - | {θ_j} [M×D] | 학습 가능한 전문가 파라미터 |
+| **Q-value Estimation** | s_t, {θ_j} | Q [M] | Twin Critic Q-networks |
+| **IRT Operator (Ψ_IRT)** | h^s, {θ_j}, h^c, w_prev, Q, c, Δs | w [M] | OT + Replicator 결합 |
+| **Expert Policy Heads {MLP_j}** | θ_j [D] | α_j [n] | 전문가 → Concentration |
+| **Mixture Policy (ϕ_π)** | w [M], {α_j} [M×n] | a_t [n] | 최종 포트폴리오 |
 
 **표기법**:
 - d: 상태 차원 (181)
 - n: 행동 차원 (30, 자산 수)
-- m: 에피토프 토큰 수 (6)
-- M: 프로토타입 수 (8)
+- m: 상태 표현 토큰 수 (6)
+- M: 전문가 수 (8)
 - D: 임베딩 차원 (128)
 - Δ^k: k-simplex (합이 1인 양수 벡터)
 - [k]: k-차원 벡터
 - [k×l]: k×l 행렬
+
+---
+
+### 용어 매핑: 논문 ↔ 코드베이스
+
+본 문서에서는 논문 작성을 위해 formal한 용어를 사용하지만, 실제 코드베이스에서는 면역학적 비유를 사용한다. 다음은 용어 매핑표다:
+
+| 논문 용어 (Formal) | 코드베이스 용어 (Metaphorical) | 구현 위치 |
+|-------------------|-------------------------------|----------|
+| **IRT Operator** | IRT Operator | `finrl/agents/irt/irt_operator.py` |
+| **Crisis Detector (ϕ_c)** | T-Cell Network | `finrl/agents/irt/t_cell.py:TCellMinimal` |
+| **State Encoder (ϕ_s)** | Epitope Encoder | `finrl/agents/irt/bcell_actor.py:epitope_encoder` |
+| **Expert Strategies {θ_j}** | Prototype Keys | `finrl/agents/irt/bcell_actor.py:proto_keys` |
+| **Expert Policy Heads {MLP_j}** | Decoders | `finrl/agents/irt/bcell_actor.py:decoders` |
+| **Q-values (Q_t)** | Fitness | `finrl/agents/irt/irt_policy.py:_compute_fitness()` |
+| **State Representation (h^s)** | Epitope Tokens (E) | `bcell_actor.py:L439` |
+| **Crisis Embedding (h^c)** | Danger Embedding | `bcell_actor.py:L324` |
+| **Expert Weights (w_t)** | Prototype Weights | `irt_operator.py:L312` |
+| **Distance Matrix (C)** | Immunological Cost Matrix | `irt_operator.py:L171-222` |
+| **Multi-Signal Assessment** | T-Cell Multi-Signal Detection | `bcell_actor.py:L292-434` |
+| **Z-Score Normalization** | EMA Statistics | `bcell_actor.py:L331-347` |
+| **Bias/Temperature Correction** | Crisis Bias/Temperature | `bcell_actor.py:L389-407` |
+| **Target-Driven Regularization** | T-Cell Guard | `bcell_actor.py:L409-415` |
+| **Mixture Policy (ϕ_π)** | Dirichlet Mixture Policy | `bcell_actor.py:L466-498` |
+| **Adaptive Learning Rate (η)** | Crisis Heating | `irt_operator.py:L265-267` |
+| **Dynamic α Schedule** | Dynamic OT-Replicator Mixing | `irt_operator.py:L288-303` |
+
+**주요 용어 설명**:
+
+1. **Crisis Detector → T-Cell**
+   - 논문: 위기 감지 신경망
+   - 코드: T-Cell (면역 세포의 비유)
+   - 이유: 면역계의 T-Cell이 병원체를 감지하는 것처럼 시장 위기를 감지
+
+2. **State Encoder → Epitope Encoder**
+   - 논문: 상태를 다중 토큰으로 인코딩
+   - 코드: Epitope (항원 결정기의 비유)
+   - 이유: 면역계의 항원-항체 결합처럼 상태-전략 매칭
+
+3. **Expert Strategies → Prototypes**
+   - 논문: 학습 가능한 전문가 전략 파라미터
+   - 코드: Prototype Keys (원형의 비유)
+   - 이유: 각 전문가가 특정 시장 조건의 프로토타입 전략
+
+4. **Q-values → Fitness**
+   - 논문: Critic의 Q-value 추정
+   - 코드: Fitness (진화론적 적합도)
+   - 이유: Replicator Dynamics가 진화 게임 이론에서 유래
+
+5. **Distance Matrix → Immunological Cost**
+   - 논문: 상태-전략 간 거리 행렬
+   - 코드: Immunological Cost (면역학적 비용)
+   - 이유: 면역 반응의 비용 개념을 OT 비용으로 해석
+
+**코드 예시**:
+
+```python
+# 논문: Crisis Detector
+# 코드: T-Cell Network
+self.t_cell = TCellMinimal(in_dim=market_feature_dim, emb_dim=emb_dim)
+# 위치: bcell_actor.py:196-199
+
+# 논문: State Encoder
+# 코드: Epitope Encoder
+self.epitope_encoder = nn.Sequential(...)
+# 위치: bcell_actor.py:147-153
+
+# 논문: Expert Strategies
+# 코드: Prototype Keys
+self.proto_keys = nn.Parameter(torch.randn(M_proto, emb_dim))
+# 위치: bcell_actor.py:156-159
+
+# 논문: Q-values
+# 코드: Fitness
+fitness = self._compute_fitness(obs)
+# 위치: irt_policy.py:154, 183
+
+# 논문: IRT Operator
+# 코드: IRT (동일)
+w, P, irt_debug = self.irt(E, K, danger_embed, w_prev, fitness, ...)
+# 위치: bcell_actor.py:455-464
+```
+
+이러한 비유적 명명은 알고리즘의 생물학적 영감을 강조하기 위함이나, 논문에서는 formal한 용어를 사용하는 것이 표준적이다.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────────────┐
