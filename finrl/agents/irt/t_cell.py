@@ -29,8 +29,7 @@ class TCellMinimal(nn.Module):
                  in_dim: int,
                  emb_dim: int = 128,
                  n_types: int = 4,
-                 momentum: float = 0.99,
-                 crisis_guard_rate: float = 0.25):  # Phase 2.1: 0.15 → 0.25 (stronger normalization)
+                 momentum: float = 0.99):
         """
         Args:
             in_dim: 입력 차원 (시장 특성, 예: 12)
@@ -44,8 +43,6 @@ class TCellMinimal(nn.Module):
         self.n_types = n_types
         self.emb_dim = emb_dim
         self.momentum = momentum
-        self.crisis_guard_rate = crisis_guard_rate  # Phase 1: Crisis guard
-        self.crisis_target = 0.5  # Phase 1: Target crisis level
 
         # 단일 인코더 (효율성)
         self.encoder = nn.Sequential(
@@ -66,7 +63,7 @@ class TCellMinimal(nn.Module):
 
     def forward(self,
                 features: torch.Tensor,
-                update_stats: bool = True) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+                update_stats: bool = True) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Args:
             features: 시장 특성 [B, F]
@@ -75,7 +72,8 @@ class TCellMinimal(nn.Module):
         Returns:
             z: 위기 타입 점수 [B, K]
             d: 공자극 임베딩 [B, D]
-            c: 스칼라 위기 레벨 [B, 1]
+            crisis_affine: 가열 직전 선형 조합 값 [B, 1]
+            crisis_base: 시그모이드 스케일 위기 확률 [B, 1]
         """
         h = self.encoder(features)  # [B, K+D]
 
@@ -99,16 +97,10 @@ class TCellMinimal(nn.Module):
 
         # 가중 합산 → 시그모이드 (0-1 범위)
         alpha_norm = F.softmax(self.alpha, dim=0)  # [K]
-        c = torch.sigmoid(
-            (z_std * alpha_norm).sum(dim=-1, keepdim=True)
-        )  # [B, 1]
-        
-        # Phase 1: Crisis guard - soft clamp towards target
-        # Prevents 100% crisis regime by pulling towards 0.5
-        if self.training:
-            c = c + self.crisis_guard_rate * (self.crisis_target - c.detach())
+        crisis_affine = (z_std * alpha_norm).sum(dim=-1, keepdim=True)  # [B, 1]
+        crisis_base = torch.sigmoid(crisis_affine)  # [B, 1]
 
-        return z, d, c
+        return z, d, crisis_affine, crisis_base
 
     def get_crisis_interpretation(self, z: torch.Tensor) -> Dict[str, float]:
         """

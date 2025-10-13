@@ -13,10 +13,12 @@ B-Cell Actor with IRT (Immune Replicator Transport)
 사용처: IRTPolicy
 """
 
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Tuple, Optional, Dict, List
+from typing import Tuple, Optional, Dict, List, Any
 
 from finrl.agents.irt.irt_operator import IRT
 from finrl.agents.irt.t_cell import TCellMinimal
@@ -39,14 +41,31 @@ class BCellIRTActor(nn.Module):
                  dirichlet_max: float = 5.0,  # Phase 2: keep 5.0 (Dirichlet stochastic path)
                  action_temp: float = 0.3,  # Phase 2: 0.7 → 0.3 (sharper for concentration)
                  # Phase 3.5 Step 2: 다중 신호 위기 감지
-                 w_r: float = 0.6,
-                 w_s: float = 0.25,
-                 w_c: float = 0.15,
+                 w_r: float = 0.55,
+                 w_s: float = -0.25,
+                 w_c: float = 0.20,
                  # Phase B: 바이어스 EMA 보정
-                 eta_b: float = 2e-3,
+                 eta_b: float = 0.02,
+                 eta_b_min: float = 0.002,
+                 eta_b_decay_steps: int = 30000,
+                 eta_T: float = 0.01,
+                 eta_b_warmup_steps: int = 10000,
+                 eta_b_warmup_value: float = 0.05,
                  # T-Cell 가드
                  crisis_target: float = 0.5,  # 목표 crisis_regime_pct
-                 crisis_guard_rate: float = 0.15,  # 과민 억제 비율 강화
+                 crisis_guard_rate_init: float = 0.30,
+                 crisis_guard_rate_final: float = 0.05,
+                 crisis_guard_warmup_steps: int = 10000,
+                 hysteresis_up: float = 0.55,
+                 hysteresis_down: float = 0.45,
+                 crisis_guard_rate: Optional[float] = None,
+                 k_s: float = 6.0,
+                 k_c: float = 6.0,
+                 k_b: float = 4.0,
+                 p_star: float = 0.35,
+                 temperature_min: float = 0.9,
+                 temperature_max: float = 1.2,
+                 stat_momentum: float = 0.95,
                  **irt_kwargs):
         """
         Args:
@@ -86,14 +105,50 @@ class BCellIRTActor(nn.Module):
         self.w_s = w_s
         self.w_c = w_c
 
-        # Phase B: 바이어스 EMA 보정
-        self.eta_b = eta_b
+        # Phase 1: 신호 스케일 파라미터
+        self.k_s = k_s
+        self.k_c = k_c
+        self.k_b = k_b
+
+        # Phase B: 바이어스/온도 보정
+        self.eta_b_max = eta_b
+        self.eta_b_min = eta_b_min
+        self.eta_b_decay_steps = eta_b_decay_steps
+        self.eta_T = eta_T
+        self.p_star = p_star
+        self.eta_b_warmup_steps = max(int(eta_b_warmup_steps), 0)
+        self.eta_b_warmup_value = float(eta_b_warmup_value)
+        self.temperature_min = temperature_min
+        self.temperature_max = temperature_max
+        self.stat_momentum = stat_momentum
+        self.stats_eps = 1e-6
+        self._orientation_checked = False
+
         self.register_buffer('crisis_bias', torch.zeros(1))
+        self.register_buffer('crisis_temperature', torch.ones(1))
+        self.register_buffer('crisis_prev_regime', torch.zeros(1))
+        self.register_buffer('crisis_step', torch.zeros(1))
+        self.register_buffer('sharpe_mean', torch.zeros(1))
+        self.register_buffer('sharpe_var', torch.ones(1))
+        self.register_buffer('cvar_mean', torch.zeros(1))
+        self.register_buffer('cvar_var', torch.ones(1))
+        self.register_buffer('crisis_base_mean', torch.zeros(1))
+        self.register_buffer('crisis_base_var', torch.ones(1))
+        self.register_buffer('bias_warm_started', torch.zeros(1))
         self._crisis_initialized = False
+        self._verify_signal_orientation()
 
         # T-Cell 가드
         self.crisis_target = crisis_target
-        self.crisis_guard_rate = crisis_guard_rate
+        self.crisis_guard_rate_init = crisis_guard_rate_init
+        self.crisis_guard_rate_final = crisis_guard_rate_final
+        self.crisis_guard_warmup_steps = crisis_guard_warmup_steps
+        self.hysteresis_up = hysteresis_up
+        self.hysteresis_down = hysteresis_down
+        if crisis_guard_rate is not None:
+            self.crisis_guard_rate_init = float(crisis_guard_rate)
+            self.crisis_guard_rate_final = float(crisis_guard_rate)
+            self.crisis_guard_warmup_steps = 0
 
         # ===== 에피토프 인코더 =====
         self.epitope_encoder = nn.Sequential(
@@ -153,6 +208,90 @@ class BCellIRTActor(nn.Module):
         # ===== 이전 가중치 (EMA) =====
         self.register_buffer('w_prev', torch.full((1, M_proto), 1.0/M_proto))
 
+    def _load_from_state_dict(
+        self,
+        state_dict: Dict[str, torch.Tensor],
+        prefix: str,
+        local_metadata: Dict[str, Any],
+        strict: bool,
+        missing_keys: List[str],
+        unexpected_keys: List[str],
+        error_msgs: List[str]
+    ) -> None:
+        """
+        Backward compatibility for checkpoints saved before Phase 1 buffers were added.
+        Missing buffers are initialized to sensible defaults instead of raising.
+        """
+        compatibility_buffers = [
+            'crisis_bias',
+            'crisis_temperature',
+            'crisis_prev_regime',
+            'crisis_step',
+            'sharpe_mean',
+            'sharpe_var',
+            'cvar_mean',
+            'cvar_var',
+            'crisis_base_mean',
+            'crisis_base_var',
+            'bias_warm_started',
+        ]
+
+        for name in compatibility_buffers:
+            full_key = prefix + name
+            if full_key not in state_dict:
+                state_dict[full_key] = getattr(self, name).detach().clone()
+
+        super()._load_from_state_dict(
+            state_dict,
+            prefix,
+            local_metadata,
+            strict,
+            missing_keys,
+            unexpected_keys,
+            error_msgs
+        )
+
+    def _current_eta_b(self) -> float:
+        step = float(self.crisis_step.item())
+        if step < self.eta_b_warmup_steps:
+            return self.eta_b_warmup_value
+        adjusted_step = max(step - self.eta_b_warmup_steps, 0.0)
+        if self.eta_b_decay_steps <= 0:
+            return self.eta_b_max
+        ratio = min(max(adjusted_step / float(self.eta_b_decay_steps), 0.0), 1.0)
+        cosine = 0.5 * (1.0 + math.cos(math.pi * ratio))
+        return self.eta_b_min + (self.eta_b_max - self.eta_b_min) * cosine
+
+    def _current_guard_rate(self) -> float:
+        if not self.training:
+            return self.crisis_guard_rate_final
+        if self.crisis_guard_warmup_steps <= 0:
+            return self.crisis_guard_rate_final
+        step = float(self.crisis_step.item())
+        progress = min(max(step / float(self.crisis_guard_warmup_steps), 0.0), 1.0)
+        return self.crisis_guard_rate_init + (self.crisis_guard_rate_final - self.crisis_guard_rate_init) * progress
+
+    def _verify_signal_orientation(self) -> None:
+        if self._orientation_checked:
+            return
+        def sigmoid(x: float) -> float:
+            return 1.0 / (1.0 + math.exp(-x))
+
+        sharpe_good = sigmoid(-self.k_s * 1.0)
+        sharpe_bad = sigmoid(-self.k_s * -1.0)
+        cvar_good = sigmoid(self.k_c * 1.0)
+        cvar_bad = sigmoid(self.k_c * -1.0)
+        base_good = sigmoid(self.k_b * 1.0)
+        base_bad = sigmoid(self.k_b * -1.0)
+
+        if not (sharpe_good < sharpe_bad):
+            raise ValueError("Sharpe signal transform orientation invalid (expected Sharpe↑ → crisis↓).")
+        if not (cvar_good > cvar_bad):
+            raise ValueError("CVaR signal transform orientation invalid (expected CVaR↑ → crisis↑).")
+        if not (base_good > base_bad):
+            raise ValueError("Base crisis transform orientation invalid (expected base↑ → crisis↑).")
+        self._orientation_checked = True
+
     def forward(self,
                 state: torch.Tensor,
                 fitness: Optional[torch.Tensor] = None,
@@ -170,8 +309,6 @@ class BCellIRTActor(nn.Module):
         B = state.size(0)
 
         if not self._crisis_initialized:
-            if hasattr(self, "crisis_bias"):
-                self.crisis_bias.data.zero_()
             self._crisis_initialized = True
 
         # ===== Step 1: T-Cell 위기 감지 =====
@@ -206,53 +343,131 @@ class BCellIRTActor(nn.Module):
             tech_features      # [B, 8] - 기술적 지표들
         ], dim=1)  # [B, 12]
 
-        z, danger_embed, crisis_base = self.t_cell(
+        z, danger_embed, crisis_affine_raw, crisis_base_sigmoid = self.t_cell(
             market_features,
             update_stats=self.training
         )
+
+        def _update_running_stats(sample: torch.Tensor,
+                                  mean_buf: torch.Tensor,
+                                  var_buf: torch.Tensor) -> None:
+            if not self.training:
+                return
+            if sample.ndim == 1:
+                sample_view = sample.view(-1, 1)
+            else:
+                sample_view = sample
+            with torch.no_grad():
+                batch_mean = sample_view.detach().mean(dim=0)
+                if sample_view.size(0) > 1:
+                    batch_var = sample_view.detach().var(dim=0, unbiased=False)
+                else:
+                    batch_var = torch.zeros_like(batch_mean)
+                mean_buf.mul_(self.stat_momentum).add_(batch_mean * (1 - self.stat_momentum))
+                var_buf.mul_(self.stat_momentum).add_(batch_var * (1 - self.stat_momentum))
+                var_buf.clamp_(min=self.stats_eps)
+
+        # Base crisis component (T-Cell)
+        _update_running_stats(crisis_affine_raw, self.crisis_base_mean, self.crisis_base_var)
+        base_mean = self.crisis_base_mean.to(state.device)
+        base_std = torch.sqrt(self.crisis_base_var.to(state.device) + self.stats_eps)
+        base_z = (crisis_affine_raw - base_mean) / base_std
+        crisis_base_component = torch.sigmoid(self.k_b * base_z)
 
         # Phase 3.5 Step 2: DSR/CVaR 신호 추출 및 위기 레벨 결합
         # state 마지막 2개 차원: [dsr_bonus, cvar_value]
         # state_dim은 reward_type='dsr_cvar'일 때 +2 되어 있음
         # 따라서 항상 마지막 2개 차원을 시도하되, 존재하지 않으면 0으로 처리
+        delta_sharpe_raw = torch.zeros(B, 1, device=state.device)
+        cvar_raw = torch.zeros(B, 1, device=state.device)
+        delta_component = torch.full_like(crisis_base_component, 0.5)
+        cvar_component = torch.full_like(crisis_base_component, 0.5)
+
         if state.size(1) >= self.state_dim - 2:
             # DSR/CVaR가 state에 포함된 경우
-            delta_sharpe = state[:, -2:-1]  # [B, 1] - DSR bonus (원본 스케일 ~0.1)
-            cvar = state[:, -1:]  # [B, 1] - CVaR value (원본 스케일 ~0.01)
+            delta_sharpe_raw = state[:, -2:-1]  # [B, 1] - DSR bonus (원본 스케일 ~0.1)
+            cvar_raw = state[:, -1:]  # [B, 1] - CVaR value (원본 스케일 ~0.01)
 
-            # 각 신호를 [0, 1] 범위로 스케일링
-            # crisis_base는 이미 sigmoid 통과 → [0, 1]
-            # DSR: 10배 증폭 후 sigmoid (0.1 → ~0.73)
-            delta_sharpe_scaled = torch.sigmoid(delta_sharpe * 10.0)
-            # CVaR: 절댓값 + 50배 증폭 후 sigmoid (0.01 → ~0.62)
-            cvar_scaled = torch.sigmoid(torch.abs(cvar) * 50.0)
+            _update_running_stats(delta_sharpe_raw, self.sharpe_mean, self.sharpe_var)
+            _update_running_stats(cvar_raw, self.cvar_mean, self.cvar_var)
 
-            # 3개 신호 가중 평균 (w_r + w_s + w_c = 1.0 → 출력도 [0, 1])
-            crisis_level_raw = (
-                self.w_r * crisis_base
-                + self.w_s * delta_sharpe_scaled
-                + self.w_c * cvar_scaled
-            )  # [B, 1]
+            sharpe_mean = self.sharpe_mean.to(state.device)
+            sharpe_std = torch.sqrt(self.sharpe_var.to(state.device) + self.stats_eps)
+            cvar_mean = self.cvar_mean.to(state.device)
+            cvar_std = torch.sqrt(self.cvar_var.to(state.device) + self.stats_eps)
 
-            # Phase B: 바이어스 보정 (crisis_regime_pct → 0.5)
-            crisis_level = crisis_level_raw + self.crisis_bias.to(state.device)
+            sharpe_z = (delta_sharpe_raw - sharpe_mean) / sharpe_std
+            cvar_z = (cvar_raw - cvar_mean) / cvar_std
 
-            # T-Cell 가드: 과민 억제 (crisis_level이 높으면 하향 조정)
-            # crisis_level > crisis_target이면 억제, < crisis_target이면 증폭
-            crisis_adjustment = -self.crisis_guard_rate * (crisis_level - self.crisis_target)
-            crisis_level = torch.clamp(crisis_level + crisis_adjustment, min=0.0, max=1.0)
+            delta_component = torch.sigmoid(-self.k_s * sharpe_z)
+            cvar_component = torch.sigmoid(self.k_c * cvar_z)
 
-            # Phase E: 버그 픽스 - B=1(DummyVecEnv)에서도 바이어스 업데이트
-            # 학습 중 바이어스 EMA 업데이트 (배치 크기 무관)
-            if self.training:
-                with torch.no_grad():
-                    p = (crisis_level > 0.5).float().mean()
-                    self.crisis_bias = self.crisis_bias - self.eta_b * (p - 0.5)
+        crisis_raw = (
+            self.w_r * crisis_base_component
+            + self.w_s * delta_component
+            + self.w_c * cvar_component
+        )
+
+        if self.training and self.bias_warm_started.item() < 0.5:
+            with torch.no_grad():
+                mean_raw = crisis_raw.detach().mean()
+                temp = self.crisis_temperature.to(state.device)
+                temp_clamped = torch.clamp(temp, min=self.stats_eps)
+                target = mean_raw.new_tensor(self.p_star)
+                target = torch.clamp(target, self.stats_eps, 1 - self.stats_eps)
+                target_logit = torch.log(target / (1 - target))
+                new_bias = mean_raw - temp_clamped * target_logit
+                self.crisis_bias.copy_(new_bias)
+                self.bias_warm_started.fill_(1.0)
+
+        bias = self.crisis_bias.to(state.device)
+        temperature = self.crisis_temperature.to(state.device)
+        crisis_affine = (crisis_raw - bias) / (temperature + self.stats_eps)
+        crisis_level_pre_guard = torch.sigmoid(crisis_affine)
+
+        p_hat = crisis_level_pre_guard.detach().mean()
+
+        if self.training:
+            with torch.no_grad():
+                self.crisis_step.add_(1.0)
+                eta_b_now = self._current_eta_b()
+                self.crisis_bias.add_(eta_b_now * (p_hat - self.p_star))
+                temperature_update = 1.0 + self.eta_T * (p_hat - self.p_star)
+                new_temperature = torch.clamp(
+                    self.crisis_temperature * temperature_update,
+                    min=self.temperature_min,
+                    max=self.temperature_max
+                )
+                self.crisis_temperature.copy_(new_temperature)
+
+        guard_rate = self._current_guard_rate()
+        guard_target = crisis_level_pre_guard.new_full(crisis_level_pre_guard.shape, self.crisis_target)
+        crisis_level = torch.clamp(
+            crisis_level_pre_guard + guard_rate * (guard_target - crisis_level_pre_guard),
+            min=0.0,
+            max=1.0
+        )
+
+        prev_regime_flag = (self.crisis_prev_regime > 0.5).float()
+        if prev_regime_flag.item() >= 0.5:
+            crisis_regime = torch.where(
+                crisis_level < self.hysteresis_down,
+                torch.zeros_like(crisis_level),
+                torch.ones_like(crisis_level)
+            )
         else:
-            # 후진 호환: DSR/CVaR 없으면 T-Cell 출력만 사용
-            delta_sharpe = torch.zeros(B, 1, device=state.device)
-            cvar = torch.zeros(B, 1, device=state.device)
-            crisis_level = crisis_base + self.crisis_bias.to(state.device)
+            crisis_regime = torch.where(
+                crisis_level > self.hysteresis_up,
+                torch.ones_like(crisis_level),
+                torch.zeros_like(crisis_level)
+            )
+
+        with torch.no_grad():
+            new_prev = (crisis_regime.mean() > 0.5).float()
+            self.crisis_prev_regime.copy_(new_prev.view(1))
+
+        delta_sharpe = delta_sharpe_raw
+        cvar = cvar_raw
 
         # ===== Step 2: 에피토프 인코딩 =====
         E = self.epitope_encoder(state).view(B, self.m, self.emb_dim)  # [B, m, D]
@@ -329,6 +544,17 @@ class BCellIRTActor(nn.Module):
             'w': w.detach(),  # [B, M] - 프로토타입 가중치
             'P': P.detach(),  # [B, m, M] - 수송 계획
             'crisis_level': crisis_level.detach(),  # [B, 1]
+            'crisis_level_pre_guard': crisis_level_pre_guard.detach(),  # [B, 1]
+            'crisis_raw': crisis_raw.detach(),  # [B, 1]
+            'crisis_bias': self.crisis_bias.detach().clone(),  # [1]
+            'crisis_temperature': self.crisis_temperature.detach().clone(),  # [1]
+            'crisis_prev_regime': self.crisis_prev_regime.detach().clone(),  # [1]
+            'crisis_base_component': crisis_base_component.detach(),  # [B, 1]
+            'delta_component': delta_component.detach(),  # [B, 1]
+            'cvar_component': cvar_component.detach(),  # [B, 1]
+            'crisis_regime': crisis_regime.detach(),  # [B, 1]
+            'crisis_guard_rate': torch.tensor(guard_rate, device=state.device),
+            'bias_warm_started': self.bias_warm_started.detach().clone(),
             'crisis_types': z.detach(),  # [B, K]
             'fitness': fitness.detach(),  # [B, M]
             # IRT 분해 정보 (시각화용)
@@ -342,7 +568,8 @@ class BCellIRTActor(nn.Module):
             'mixed_conc': mixed_conc.detach(),  # [B, A] - 혼합된 concentration (raw)
             'mixed_conc_clamped': mixed_conc_clamped.detach() if not deterministic else mixed_conc.detach(),  # [B, A]
             # Phase 3.5 Step 2: 다중 신호 위기 감지 정보
-            'crisis_base': crisis_base.detach(),  # [B, 1] - T-Cell 기본 위기 신호
+            'crisis_base': crisis_base_sigmoid.detach(),  # [B, 1] - T-Cell 기본 위기 신호 (sigmoid)
+            'crisis_base_raw': crisis_affine_raw.detach(),  # [B, 1] - T-Cell affine
             'delta_sharpe': delta_sharpe.detach() if state.size(1) >= self.state_dim - 2 else torch.zeros(B, 1, device=state.device),
             'cvar': cvar.detach() if state.size(1) >= self.state_dim - 2 else torch.zeros(B, 1, device=state.device),
         }

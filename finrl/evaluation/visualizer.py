@@ -1226,11 +1226,13 @@ def _generate_insights(results: dict, config: dict = None) -> dict:
     avg_crisis_types = crisis_types.mean(axis=0) if len(crisis_types.shape) > 1 else np.array([])
     top_crisis_type_indices = np.argsort(avg_crisis_types)[::-1][:3].tolist() if len(avg_crisis_types) > 0 else []
 
+    avg_crisis_level = float(crisis_levels.mean()) if len(crisis_levels) > 0 else 0.0
     tcell_insights = {
         'crisis_regime_pct': float(crisis_regime_pct),
         'top_crisis_types': top_crisis_type_indices,
         'avg_crisis_type_distribution': avg_crisis_types.tolist() if len(avg_crisis_types) > 0 else [],
-        'avg_danger_level': float(crisis_levels.mean()) if len(crisis_levels) > 0 else 0.0
+        'avg_crisis_level': avg_crisis_level,
+        'avg_danger_level': avg_crisis_level,  # Legacy alias (deprecated)
     }
 
     # ===== 종합 =====

@@ -532,6 +532,24 @@ def train_irt(args):
         "w_c": args.w_c,
         # Phase B: 바이어스 EMA 보정
         "eta_b": args.eta_b,
+        "eta_b_min": args.eta_b_min,
+        "eta_b_decay_steps": args.eta_b_decay_steps,
+        "eta_T": args.eta_T,
+        "p_star": args.p_star,
+        "temperature_min": args.temperature_min,
+        "temperature_max": args.temperature_max,
+        "stat_momentum": args.stat_momentum,
+        "eta_b_warmup_steps": args.eta_b_warmup_steps,
+        "eta_b_warmup_value": args.eta_b_warmup_value,
+        "crisis_guard_rate_init": args.crisis_guard_rate_init,
+        "crisis_guard_rate_final": args.crisis_guard_rate_final,
+        "crisis_guard_warmup_steps": args.crisis_guard_warmup_steps,
+        "hysteresis_up": args.hysteresis_up,
+        "hysteresis_down": args.hysteresis_down,
+        "k_s": args.k_s,
+        "k_c": args.k_c,
+        "k_b": args.k_b,
+        "crisis_guard_rate": args.crisis_guard_rate,
     }
 
     # SAC parameters
@@ -986,26 +1004,138 @@ def main():
     parser.add_argument(
         "--w-r",
         type=float,
-        default=0.8,
-        help="Market crisis signal weight (T-Cell output) (default: 0.8, Phase E)",
+        default=0.55,
+        help="Market crisis signal weight (T-Cell output) (Phase 1 default: 0.55)",
     )
     parser.add_argument(
         "--w-s",
         type=float,
-        default=0.15,
-        help="Sharpe signal weight (DSR bonus) (default: 0.15, Phase E)",
+        default=-0.25,
+        help="Sharpe signal weight (DSR bonus) (Phase 1 default: -0.25)",
     )
     parser.add_argument(
         "--w-c",
         type=float,
-        default=0.05,
-        help="CVaR signal weight (default: 0.05, Phase E)",
+        default=0.20,
+        help="CVaR signal weight (Phase 1 default: 0.20)",
     )
     parser.add_argument(
         "--eta-b",
         type=float,
+        default=2e-2,
+        help="Initial bias learning rate for crisis calibration (Phase 1 default: 2e-2)",
+    )
+    parser.add_argument(
+        "--eta-b-min",
+        type=float,
         default=2e-3,
-        help="Bias learning rate for crisis neutralization (default: 2e-3, Phase B)",
+        help="Minimum bias learning rate after decay (Phase 1 default: 2e-3)",
+    )
+    parser.add_argument(
+        "--eta-b-decay-steps",
+        type=int,
+        default=30000,
+        help="Cosine decay horizon for bias learning rate (Phase 1 default: 30000)",
+    )
+    parser.add_argument(
+        "--eta-b-warmup-steps",
+        type=int,
+        default=10000,
+        help="Warmup steps to keep bias learning rate at warmup value (Phase 1 default: 10000)",
+    )
+    parser.add_argument(
+        "--eta-b-warmup-value",
+        type=float,
+        default=0.05,
+        help="Warmup bias learning rate before cosine decay (Phase 1 default: 0.05)",
+    )
+    parser.add_argument(
+        "--eta-T",
+        dest="eta_T",
+        type=float,
+        default=1e-2,
+        help="Temperature adaptation rate (Phase 1 default: 0.01)",
+    )
+    parser.add_argument(
+        "--p-star",
+        type=float,
+        default=0.35,
+        help="Target crisis prevalence p* (Phase 1 default: 0.35)",
+    )
+    parser.add_argument(
+        "--temperature-min",
+        type=float,
+        default=0.9,
+        help="Minimum adaptive temperature clamp (Phase 1 default: 0.9)",
+    )
+    parser.add_argument(
+        "--temperature-max",
+        type=float,
+        default=1.2,
+        help="Maximum adaptive temperature clamp (Phase 1 default: 1.2)",
+    )
+    parser.add_argument(
+        "--stat-momentum",
+        type=float,
+        default=0.95,
+        help="EMA momentum for crisis signal statistics (Phase 1 default: 0.95)",
+    )
+    parser.add_argument(
+        "--crisis-guard-rate-init",
+        type=float,
+        default=0.30,
+        help="Initial crisis guard rate during warmup (Phase 1 default: 0.30)",
+    )
+    parser.add_argument(
+        "--crisis-guard-rate-final",
+        type=float,
+        default=0.05,
+        help="Final crisis guard rate after warmup (Phase 1 default: 0.05)",
+    )
+    parser.add_argument(
+        "--crisis-guard-warmup-steps",
+        type=int,
+        default=10000,
+        help="Warmup steps for crisis guard rate schedule (Phase 1 default: 10000)",
+    )
+    parser.add_argument(
+        "--hysteresis-up",
+        type=float,
+        default=0.55,
+        help="Crisis entry threshold when previous regime is normal (Phase 1 default: 0.55)",
+    )
+    parser.add_argument(
+        "--hysteresis-down",
+        type=float,
+        default=0.45,
+        help="Crisis exit threshold when previous regime is crisis (Phase 1 default: 0.45)",
+    )
+    parser.add_argument(
+        "--k-s",
+        dest="k_s",
+        type=float,
+        default=6.0,
+        help="Sigmoid slope for Sharpe z-score transform (Phase 1 default: 6.0)",
+    )
+    parser.add_argument(
+        "--k-c",
+        dest="k_c",
+        type=float,
+        default=6.0,
+        help="Sigmoid slope for CVaR z-score transform (Phase 1 default: 6.0)",
+    )
+    parser.add_argument(
+        "--k-b",
+        dest="k_b",
+        type=float,
+        default=4.0,
+        help="Sigmoid slope for base crisis transform (Phase 1 default: 4.0)",
+    )
+    parser.add_argument(
+        "--crisis-guard-rate",
+        type=float,
+        default=None,
+        help="Legacy static crisis guard rate override (optional)",
     )
 
     # Evaluation only

@@ -431,6 +431,11 @@ def evaluate_model(model_path,
             'w_rep': [],
             'w_ot': [],
             'crisis_levels': [],
+            'crisis_levels_pre_guard': [],
+            'crisis_raw': [],
+            'crisis_bias': [],
+            'crisis_temperature': [],
+            'crisis_guard_rate': [],
             'crisis_types': [],
             'cost_matrices': [],
             'weights': [],
@@ -459,6 +464,16 @@ def evaluate_model(model_path,
                 irt_data_list['w_rep'].append(info_dict['w_rep'][0].cpu().numpy())
                 irt_data_list['w_ot'].append(info_dict['w_ot'][0].cpu().numpy())
                 irt_data_list['crisis_levels'].append(info_dict['crisis_level'][0].cpu().numpy())
+                if 'crisis_level_pre_guard' in info_dict:
+                    irt_data_list['crisis_levels_pre_guard'].append(info_dict['crisis_level_pre_guard'][0].cpu().numpy())
+                if 'crisis_raw' in info_dict:
+                    irt_data_list['crisis_raw'].append(info_dict['crisis_raw'][0].cpu().numpy())
+                if 'crisis_bias' in info_dict:
+                    irt_data_list['crisis_bias'].append(info_dict['crisis_bias'].cpu().numpy())
+                if 'crisis_temperature' in info_dict:
+                    irt_data_list['crisis_temperature'].append(info_dict['crisis_temperature'].cpu().numpy())
+                if 'crisis_guard_rate' in info_dict:
+                    irt_data_list['crisis_guard_rate'].append(info_dict['crisis_guard_rate'].cpu().numpy())
                 irt_data_list['crisis_types'].append(info_dict['crisis_types'][0].cpu().numpy())
                 irt_data_list['cost_matrices'].append(info_dict['cost_matrix'][0].cpu().numpy())
                 irt_data_list['eta'].append(info_dict['eta'][0].cpu().numpy())
@@ -585,6 +600,16 @@ def evaluate_model(model_path,
             irt_data['env_crisis_levels'] = np.array(irt_data_list['env_crisis_levels']).squeeze()
             irt_data['env_kappa'] = np.array(irt_data_list['env_kappa']).squeeze()
             irt_data['env_delta_sharpe'] = np.array(irt_data_list['env_delta_sharpe']).squeeze()
+        if irt_data_list['crisis_levels_pre_guard']:
+            irt_data['crisis_levels_pre_guard'] = np.array(irt_data_list['crisis_levels_pre_guard']).squeeze()
+        if irt_data_list['crisis_raw']:
+            irt_data['crisis_raw'] = np.array(irt_data_list['crisis_raw']).squeeze()
+        if irt_data_list['crisis_bias']:
+            irt_data['crisis_bias'] = np.array(irt_data_list['crisis_bias']).squeeze()
+        if irt_data_list['crisis_temperature']:
+            irt_data['crisis_temperature'] = np.array(irt_data_list['crisis_temperature']).squeeze()
+        if irt_data_list['crisis_guard_rate']:
+            irt_data['crisis_guard_rate'] = np.array(irt_data_list['crisis_guard_rate']).squeeze()
 
     # 성능 지표 계산
     weights_history = irt_data['weights'] if irt_data else None

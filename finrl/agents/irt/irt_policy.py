@@ -256,14 +256,31 @@ class IRTPolicy(SACPolicy):
         eta_0: float = 0.05,
         eta_1: float = 0.12,  # Phase E: 민감도 완화
         gamma: float = 0.85,  # Phase E: 평활화 증가
-        # Phase E: 위기신호 가중 재균형 (log-return 기반 위기 신호 우선)
-        w_r: float = 0.8,  # 시장 위기 신호 (T-Cell) 가중 증가
-        w_s: float = 0.15,  # Sharpe 신호 (DSR) 가중 감소
-        w_c: float = 0.05,  # CVaR 신호 가중 감소
-        eta_b: float = 2e-3,
-        # T-Cell 가드
+        # Phase 1: Crisis calibration defaults
+        w_r: float = 0.55,
+        w_s: float = -0.25,
+        w_c: float = 0.20,
+        eta_b: float = 0.02,
+        eta_b_min: float = 0.002,
+        eta_b_decay_steps: int = 30000,
+        eta_T: float = 0.01,
+        p_star: float = 0.35,
+        temperature_min: float = 0.9,
+        temperature_max: float = 1.2,
+        stat_momentum: float = 0.95,
+        eta_b_warmup_steps: int = 10000,
+        eta_b_warmup_value: float = 0.05,
+        # T-Cell guard + hysteresis
         crisis_target: float = 0.5,  # 목표 crisis_regime_pct
-        crisis_guard_rate: float = 0.05,  # 과민 억제 비율
+        crisis_guard_rate_init: float = 0.30,
+        crisis_guard_rate_final: float = 0.05,
+        crisis_guard_warmup_steps: int = 10000,
+        hysteresis_up: float = 0.55,
+        hysteresis_down: float = 0.45,
+        k_s: float = 6.0,
+        k_c: float = 6.0,
+        k_b: float = 4.0,
+        crisis_guard_rate: Optional[float] = None,
     ):
         """
         Args:
@@ -286,10 +303,22 @@ class IRTPolicy(SACPolicy):
             eta_0: 기본 학습률 (Replicator)
             eta_1: 위기 증가량 (Replicator, Phase E: 0.12)
             gamma: 공자극 가중치 (OT 비용 함수, Phase E: 0.85)
-            w_r: 시장 위기 신호 가중치 (T-Cell 출력, Phase E: 0.8)
-            w_s: Sharpe 신호 가중치 (DSR bonus, Phase E: 0.15)
-            w_c: CVaR 신호 가중치 (Phase E: 0.05)
-            eta_b: 바이어스 학습률 (crisis_regime_pct 중립화용)
+            w_r: 시장 위기 신호 가중치 (Phase 1 재조정 기본값 0.55)
+            w_s: Sharpe 신호 가중치 (Phase 1: 음수로 위기 완화 반영)
+            w_c: CVaR 신호 가중치 (Phase 1: 0.20)
+            eta_b: 바이어스 초기 학습률 (Phase 1: 0.02)
+            eta_b_min: 코사인 감쇠 후 최소 학습률
+            eta_b_decay_steps: 바이어스 학습률 감쇠 스텝
+            eta_T: 온도 적응 학습률
+            p_star: 목표 위기 점유율
+            temperature_min/temperature_max: 온도 클램프 범위
+            stat_momentum: 위기 신호 통계용 EMA 모멘텀
+            eta_b_warmup_steps/value: 바이어스 초기 워밍업 설정
+            crisis_guard_rate_init/final: 가드 강도 스케줄
+            crisis_guard_warmup_steps: 가드 스케줄 워밍업 스텝
+            hysteresis_up/down: 위기 전환 히스테리시스 임계값
+            k_s/k_c/k_b: Sharpe·CVaR·기본 위기 시그모이드 기울기
+            crisis_guard_rate: (선택) 기존 고정 가드 비율 호환성 오버라이드
         """
         # IRT 파라미터 저장
         self.emb_dim = emb_dim
@@ -313,8 +342,25 @@ class IRTPolicy(SACPolicy):
         self.w_s = w_s
         self.w_c = w_c
         self.eta_b = eta_b
+        self.eta_b_min = eta_b_min
+        self.eta_b_decay_steps = eta_b_decay_steps
+        self.eta_T = eta_T
+        self.p_star = p_star
+        self.temperature_min = temperature_min
+        self.temperature_max = temperature_max
+        self.stat_momentum = stat_momentum
+        self.eta_b_warmup_steps = eta_b_warmup_steps
+        self.eta_b_warmup_value = eta_b_warmup_value
         self.crisis_target = crisis_target  # T-Cell 가드
-        self.crisis_guard_rate = crisis_guard_rate  # T-Cell 가드
+        self.crisis_guard_rate_init = crisis_guard_rate_init
+        self.crisis_guard_rate_final = crisis_guard_rate_final
+        self.crisis_guard_warmup_steps = crisis_guard_warmup_steps
+        self.hysteresis_up = hysteresis_up
+        self.hysteresis_down = hysteresis_down
+        self.k_s = k_s
+        self.k_c = k_c
+        self.k_b = k_b
+        self.crisis_guard_rate = crisis_guard_rate  # Optional legacy override
 
         # SACPolicy 초기화
         super().__init__(
@@ -374,8 +420,25 @@ class IRTPolicy(SACPolicy):
             w_s=self.w_s,
             w_c=self.w_c,
             eta_b=self.eta_b,
+            eta_b_min=self.eta_b_min,
+            eta_b_decay_steps=self.eta_b_decay_steps,
+            eta_T=self.eta_T,
+            p_star=self.p_star,
+            temperature_min=self.temperature_min,
+            temperature_max=self.temperature_max,
+            stat_momentum=self.stat_momentum,
+            eta_b_warmup_steps=self.eta_b_warmup_steps,
+            eta_b_warmup_value=self.eta_b_warmup_value,
             crisis_target=self.crisis_target,  # T-Cell 가드
-            crisis_guard_rate=self.crisis_guard_rate  # T-Cell 가드
+            crisis_guard_rate_init=self.crisis_guard_rate_init,
+            crisis_guard_rate_final=self.crisis_guard_rate_final,
+            crisis_guard_warmup_steps=self.crisis_guard_warmup_steps,
+            hysteresis_up=self.hysteresis_up,
+            hysteresis_down=self.hysteresis_down,
+            k_s=self.k_s,
+            k_c=self.k_c,
+            k_b=self.k_b,
+            crisis_guard_rate=self.crisis_guard_rate  # Legacy override if provided
         )
 
         # Wrapper로 감싸기 (self 전달: Critic 참조용)
@@ -414,7 +477,24 @@ class IRTPolicy(SACPolicy):
                 w_s=self.w_s,
                 w_c=self.w_c,
                 eta_b=self.eta_b,
+                eta_b_min=self.eta_b_min,
+                eta_b_decay_steps=self.eta_b_decay_steps,
+                eta_T=self.eta_T,
+                p_star=self.p_star,
+                temperature_min=self.temperature_min,
+                temperature_max=self.temperature_max,
+                stat_momentum=self.stat_momentum,
+                eta_b_warmup_steps=self.eta_b_warmup_steps,
+                eta_b_warmup_value=self.eta_b_warmup_value,
                 crisis_target=self.crisis_target,
+                crisis_guard_rate_init=self.crisis_guard_rate_init,
+                crisis_guard_rate_final=self.crisis_guard_rate_final,
+                crisis_guard_warmup_steps=self.crisis_guard_warmup_steps,
+                hysteresis_up=self.hysteresis_up,
+                hysteresis_down=self.hysteresis_down,
+                k_s=self.k_s,
+                k_c=self.k_c,
+                k_b=self.k_b,
                 crisis_guard_rate=self.crisis_guard_rate,
             )
         )
@@ -429,13 +509,22 @@ class IRTPolicy(SACPolicy):
                 - w: [B, M] - 프로토타입 혼합 가중치
                 - w_rep: [B, M] - Replicator 출력
                 - w_ot: [B, M] - OT 출력
-                - crisis_level: [B, 1] - 위기 레벨
+                - crisis_level: [B, 1] - 위기 레벨 (guard 후)
+                - crisis_level_pre_guard: [B, 1] - guard 적용 전 확률
+                - crisis_raw: [B, 1] - 가중 합산 결과
+                - crisis_bias / crisis_temperature: [1] - EMA 보정 상태
+                - crisis_prev_regime: [1] - 이전 레짐 플래그
+                - crisis_base_component / delta_component / cvar_component: [B, 1] - 신호별 기여
+                - crisis_regime: [B, 1] - 히스테리시스 기반 레짐
+                - crisis_guard_rate: float - 현재 guard 비율
                 - crisis_types: [B, K] - 위기 타입
                 - cost_matrix: [B, m, M] - Immunological cost
                 - P: [B, m, M] - 수송 계획
                 - fitness: [B, M] - 프로토타입 적합도
                 - eta: [B, 1] - Crisis-adaptive learning rate
                 - alpha_c: [B, 1] - Dynamic OT-Replicator mixing ratio
+                - crisis_base / crisis_base_raw: [B, 1] - T-Cell baseline (sigmoid/logit)
+                - delta_sharpe / cvar: [B, 1] - 입력 Sharpe, CVaR 신호
             None: IRTPolicy가 아니거나 아직 forward 안 함
         """
         if hasattr(self, 'actor') and hasattr(self.actor, '_last_irt_info'):
