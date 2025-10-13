@@ -19,6 +19,7 @@ IRT Policy 학습 스크립트
 import argparse
 import json
 import os
+import random
 from datetime import datetime
 import numpy as np
 
@@ -47,6 +48,45 @@ import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
 from evaluate import evaluate_model
+
+
+def set_global_seed(seed: int) -> None:
+    """
+    Configure all known PRNGs to use the same seed for reproducibility.
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+
+
+def seed_environment(env, seed: int) -> None:
+    """
+    Try to seed gym environments and their spaces if supported.
+    """
+    if hasattr(env, "seed"):
+        try:
+            env.seed(seed)
+        except TypeError:
+            env.seed()
+    elif hasattr(env, "_seed"):
+        env._seed(seed)
+
+    # Gymnasium style reset(seed=seed)
+    if hasattr(env, "reset"):
+        try:
+            env.reset(seed=seed)
+        except TypeError:
+            env.reset()
+
+    if hasattr(env, "action_space") and hasattr(env.action_space, "seed"):
+        env.action_space.seed(seed)
+    if hasattr(env, "observation_space") and hasattr(env.observation_space, "seed"):
+        env.observation_space.seed(seed)
 
 
 def _unwrap_env(env):
@@ -339,6 +379,8 @@ def train_irt(args):
     print(f"IRT Training - Dow Jones 30")
     print("=" * 70)
 
+    set_global_seed(args.seed)
+
     # Output directory
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_dir = os.path.join(args.output, "irt", timestamp)
@@ -398,6 +440,7 @@ def train_irt(args):
         lambda_cvar=args.lambda_cvar,
         reward_scaling=args.reward_scale,
     )
+    seed_environment(train_env, args.seed)
     print(
         f"  Train env: reward_scale={train_env.reward_scaling}, "
         f"use_weighted_action={getattr(train_env, 'use_weighted_action', False)}, "
@@ -411,6 +454,7 @@ def train_irt(args):
         lambda_cvar=args.lambda_cvar,
         reward_scaling=args.reward_scale,
     )
+    seed_environment(test_env, args.seed)
     print(
         f"  Test env:  reward_scale={test_env.reward_scaling}, "
         f"use_weighted_action={getattr(test_env, 'use_weighted_action', False)}, "
@@ -518,6 +562,8 @@ def train_irt(args):
         )
         print("  Phase-H1: CrisisBridgeCallback enabled (Policy→Env crisis signal)")
 
+    sac_params["seed"] = args.seed
+
     # Create SAC model with IRT Policy
     model = SAC(
         policy=IRTPolicy,
@@ -582,6 +628,8 @@ def test_irt(args, model_path=None):
     print("=" * 70)
     print(f"IRT Evaluation")
     print("=" * 70)
+
+    set_global_seed(args.seed)
 
     # Model path
     if model_path is None:
@@ -797,6 +845,12 @@ def main():
     # Training settings
     parser.add_argument(
         "--episodes", type=int, default=600, help="Number of episodes (default: 600, Phase 3.5: 150k steps)"
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for reproducibility (default: 42)",
     )
     parser.add_argument(
         "--output", type=str, default="logs", help="Output directory (default: logs)"
