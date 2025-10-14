@@ -347,8 +347,10 @@ class AdaptiveRiskReward:
         # 4. Adaptive κ(c) (risk-averse: crisis ↑ → κ ↓ since crisis_gain < 0)
         kappa = self.lambda_sharpe_base + self.crisis_gain * self.crisis_level
 
-        # 5. Risk bonus
-        risk_bonus = kappa * (delta_sharpe - self.lambda_cvar * cvar_penalty)
+        # 5. Risk bonus (Sharpe contribution minus CVaR penalty)
+        sharpe_term = kappa * delta_sharpe
+        cvar_term = -kappa * self.lambda_cvar * cvar_penalty
+        risk_bonus = sharpe_term + cvar_term
 
         # 6. Turnover penalty
         turnover_penalty = 0.0
@@ -382,6 +384,12 @@ class AdaptiveRiskReward:
             "sharpe_online": self.dsr.sharpe,
             "reward_pre_clip": reward_pre_clip,  # Phase 1: clipping info
             "reward_total": reward,
+            "components": {
+                "log_return": log_return,
+                "sharpe_term": sharpe_term,
+                "cvar_term": cvar_term,
+                "turnover": -turnover_penalty,
+            },
         }
 
         return reward, info

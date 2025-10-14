@@ -1006,6 +1006,11 @@ def save_evaluation_results(results: dict, save_dir: Path, config: dict = None):
             results_copy[key] = value.tolist()
         elif isinstance(value, list) and len(value) > 0 and isinstance(value[0], np.ndarray):
             results_copy[key] = [v.tolist() for v in value]
+        elif key in {"reward_components", "reward_components_scaled"} and isinstance(value, dict):
+            results_copy[key] = {
+                comp_key: np.asarray(comp_values).tolist()
+                for comp_key, comp_values in value.items()
+            }
 
     results_path = save_dir / 'evaluation_results.json'
     with open(results_path, 'w') as f:

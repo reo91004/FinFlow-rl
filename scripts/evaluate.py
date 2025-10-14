@@ -695,6 +695,8 @@ def evaluate_model(
             "turnover_target": [],
             "top_snapshots": [],
             "crisis_regime": [],  # Phase 1.5: 이진 레짐 분류 결과 (0/1)
+            "reward_components": {},
+            "reward_components_scaled": {},
         }
         if env_reward_type == "adaptive_risk":
             irt_data_list["env_crisis_levels"] = []
@@ -832,6 +834,17 @@ def evaluate_model(
             irt_data_list["turnover_target"].append(
                 float(info.get("turnover_target", 0.0) or 0.0)
             )
+            reward_components = info.get("reward_components")
+            if reward_components:
+                scaling_factor = float(getattr(test_env, "reward_scaling", 1.0))
+                for key, value in reward_components.items():
+                    component_value = float(value)
+                    bucket = irt_data_list["reward_components"].setdefault(key, [])
+                    bucket.append(component_value)
+                    bucket_scaled = irt_data_list["reward_components_scaled"].setdefault(
+                        key, []
+                    )
+                    bucket_scaled.append(component_value * scaling_factor)
 
         # Phase-1: 실행가중(actual_weights) 계산 및 기록
         actual_weights = None
@@ -973,6 +986,14 @@ def evaluate_model(
             "turnover_target": np.array(
                 irt_data_list["turnover_target"], dtype=np.float64
             ),
+            "reward_components": {
+                key: np.array(values, dtype=np.float64)
+                for key, values in irt_data_list["reward_components"].items()
+            },
+            "reward_components_scaled": {
+                key: np.array(values, dtype=np.float64)
+                for key, values in irt_data_list["reward_components_scaled"].items()
+            },
             "top_snapshots": irt_data_list["top_snapshots"],
         }
         # Phase 1.5: alpha_c 상세 정보 추가
@@ -1146,6 +1167,23 @@ def evaluate_model(
                             / metrics["normal_volatility"]
                             * np.sqrt(252)
                         )
+
+        reward_components_dict = irt_data.get("reward_components")
+        if reward_components_dict:
+            component_items = [
+                (key, np.asarray(values, dtype=np.float64))
+                for key, values in sorted(reward_components_dict.items())
+                if len(values) > 0
+            ]
+            if component_items:
+                component_matrix = np.vstack([values for _, values in component_items])
+                abs_sum = np.sum(np.abs(component_matrix), axis=0)
+                abs_sum = np.where(abs_sum <= 1e-12, 1e-12, abs_sum)
+                for idx, (key, values) in enumerate(component_items):
+                    metrics[f"reward_component_{key}_mean"] = float(np.mean(values))
+                    metrics[f"reward_component_{key}_std"] = float(np.std(values))
+                    shares = np.abs(component_matrix[idx]) / abs_sum
+                    metrics[f"reward_component_{key}_abs_share"] = float(np.mean(shares))
 
         hyst_up_vals = _safe_array("hysteresis_up")
         hyst_down_vals = _safe_array("hysteresis_down")
@@ -1455,6 +1493,8 @@ def main(args):
                 "hysteresis_up": irt_data.get("hysteresis_up"),
                 "hysteresis_down": irt_data.get("hysteresis_down"),
                 "turnover_target_series": irt_data.get("turnover_target"),
+                "reward_components": irt_data.get("reward_components"),
+                "reward_components_scaled": irt_data.get("reward_components_scaled"),
                 "metrics": metrics,
             }
 

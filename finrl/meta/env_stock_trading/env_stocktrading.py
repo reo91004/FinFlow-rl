@@ -105,6 +105,7 @@ class StockTradingEnv(gym.Env):
         self._crisis_level: float = 0.5
         self._last_bridge_step: int = -1
         self._crisis_history: list[tuple[int, float]] = []
+        self._last_reward_info: dict[str, float] = {}
 
         # Phase 3.5: state_space에 DSR/CVaR 2개 차원 추가
         if reward_type == "dsr_cvar":
@@ -451,6 +452,7 @@ class StockTradingEnv(gym.Env):
             self.last_dsr = float(reward_info["dsr_bonus"])
             self.last_cvar = float(reward_info["cvar_value"])
             self.reward = risk_reward * self.reward_scaling
+            self._last_reward_info = reward_info.copy()
 
         elif self.reward_type == "adaptive_risk" and self.risk_reward is not None:
             log_return = np.log(end_total_asset / (begin_total_asset + 1e-8))
@@ -464,9 +466,33 @@ class StockTradingEnv(gym.Env):
             self.last_kappa = float(reward_info["kappa"])
             self.last_delta_sharpe = float(reward_info["delta_sharpe"])
             self.reward = risk_reward * self.reward_scaling
+            self._last_reward_info = reward_info.copy()
 
         else:
             self.reward = basic_reward * self.reward_scaling
+            self._last_reward_info = {
+                "log_return": np.log(
+                    max(end_total_asset, 1e-8) / max(begin_total_asset, 1e-8)
+                ),
+                "delta_sharpe": 0.0,
+                "cvar_value": 0.0,
+                "cvar_penalty": 0.0,
+                "crisis_level": getattr(self, "_crisis_level", 0.5),
+                "kappa": getattr(self, "adaptive_lambda_sharpe", 0.0),
+                "risk_bonus": 0.0,
+                "turnover_penalty": 0.0,
+                "sharpe_online": 0.0,
+                "reward_pre_clip": basic_reward,
+                "reward_total": np.clip(basic_reward, -1.0, 1.0),
+                "components": {
+                    "log_return": np.log(
+                        max(end_total_asset, 1e-8) / max(begin_total_asset, 1e-8)
+                    ),
+                    "sharpe_term": 0.0,
+                    "cvar_term": 0.0,
+                    "turnover": 0.0,
+                },
+            }
 
         self.rewards_memory.append(self.reward)
         self.state_memory.append(self.state)
@@ -476,6 +502,7 @@ class StockTradingEnv(gym.Env):
             "turnover_executed": getattr(self, "_last_turnover_executed", 0.0),
             "turnover": self._last_turnover,
             "transaction_cost": self._last_tc,
+            "reward_components": self._last_reward_info.get("components", {}).copy(),
         }
         return self.state, self.reward, self.terminal, False, info
 
@@ -631,6 +658,7 @@ class StockTradingEnv(gym.Env):
         self._crisis_level = 0.5
         self._last_bridge_step = -1
         self._crisis_history.clear()
+        self._last_reward_info = {}
 
         # Phase 3: 리스크 민감 보상 함수 초기화
         if self.risk_reward is not None:
