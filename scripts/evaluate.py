@@ -296,7 +296,7 @@ def evaluate_model(
     tech_indicators=INDICATORS,
     initial_amount=1000000,
     verbose=True,
-    reward_type="dsr_cvar",
+    reward_type="basic",
     lambda_dsr=0.1,
     lambda_cvar=0.05,
     expected_obs_dim=None,
