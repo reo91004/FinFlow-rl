@@ -1622,7 +1622,7 @@ crisis_raw = w_r · sigmoid(k_b · crisis_base_z)     # T-Cell 시장 신호
 각 신호는 독립적으로 EMA 통계로 정규화된다:
 
 ```python
-# 각 신호별 running statistics (momentum=0.95)
+# 각 신호별 running statistics (momentum=0.92)
 signal_z = (signal_raw - μ_signal) / σ_signal
 
 # Sigmoid로 [0,1] 범위 변환
@@ -2195,7 +2195,7 @@ PPO와 동일한 문제 (V(s) 기반, On-policy).
 | `p_star`            | 0.35   | 0.3-0.5    | 목표 위기 점유율                      |
 | `temperature_min`   | 0.9    | 0.8-1.0    | 온도 하한                             |
 | `temperature_max`   | 1.2    | 1.1-1.5    | 온도 상한                             |
-| `stat_momentum`     | 0.95   | 0.9-0.99   | EMA 정규화 모멘텀                     |
+| `stat_momentum`     | 0.92   | 0.9-0.96   | EMA 정규화 모멘텀                     |
 
 ### T-Cell Guard 파라미터
 

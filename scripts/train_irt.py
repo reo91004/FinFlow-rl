@@ -288,6 +288,27 @@ class IRTLoggingCallback(BaseCallback):
                     hyst_down = info['hysteresis_down']
                     hyst_down_val = float(hyst_down.mean().item()) if isinstance(hyst_down, torch.Tensor) else float(hyst_down)
                     self.logger.record("irt/hysteresis_down", hyst_down_val)
+                if 'hysteresis_quantile' in info:
+                    hyst_quant = info['hysteresis_quantile']
+                    if isinstance(hyst_quant, torch.Tensor):
+                        hyst_quant_val = float(hyst_quant.mean().item())
+                    else:
+                        hyst_quant_val = float(hyst_quant)
+                    self.logger.record("irt/hysteresis_quantile", hyst_quant_val)
+                if 'crisis_robust_scale' in info:
+                    robust_scale = info['crisis_robust_scale']
+                    if isinstance(robust_scale, torch.Tensor):
+                        robust_scale_val = float(robust_scale.mean().item())
+                    else:
+                        robust_scale_val = float(robust_scale)
+                    self.logger.record("irt/crisis_robust_scale", robust_scale_val)
+                if 'crisis_robust_loc' in info:
+                    robust_loc = info['crisis_robust_loc']
+                    if isinstance(robust_loc, torch.Tensor):
+                        robust_loc_val = float(robust_loc.mean().item())
+                    else:
+                        robust_loc_val = float(robust_loc)
+                    self.logger.record("irt/crisis_robust_loc", robust_loc_val)
 
                 # ===== Phase 3.5: Turnover 메트릭 (목표 가중치 기준) =====
                 # 현재 action은 self.locals에 저장되어 있음
@@ -704,6 +725,7 @@ def train_irt(args):
         "crisis_guard_warmup_steps": args.crisis_guard_warmup_steps,
         "hysteresis_up": args.hysteresis_up,
         "hysteresis_down": args.hysteresis_down,
+        "hysteresis_quantile": args.hysteresis_quantile,
         "k_s": args.k_s,
         "k_c": args.k_c,
         "k_b": args.k_b,
@@ -1233,8 +1255,8 @@ def main():
     parser.add_argument(
         "--action-temp",
         type=float,
-        default=0.4,
-        help="Action softmax temperature (default: 0.4 to promote differentiation)"
+        default=0.50,
+        help="Action softmax temperature (default: 0.50 for smoother regime transitions)"
     )
 
     # Phase 3: DSR + CVaR 보상 파라미터
@@ -1371,8 +1393,8 @@ def main():
     parser.add_argument(
         "--stat-momentum",
         type=float,
-        default=0.95,
-        help="EMA momentum for crisis signal statistics (Phase 1 default: 0.95)",
+        default=0.92,
+        help="EMA momentum for crisis signal statistics (default: 0.92)",
     )
     parser.add_argument(
         "--crisis-guard-rate-init",
@@ -1395,14 +1417,20 @@ def main():
     parser.add_argument(
         "--hysteresis-up",
         type=float,
-        default=0.45,  # Phase 1.5: 0.55 → 0.45 (위기 검출 민감도 증가)
-        help="Crisis entry threshold when previous regime is normal (Phase 1.5 default: 0.45)",
+        default=0.52,
+        help="Crisis entry threshold when previous regime is normal (default: 0.52)",
     )
     parser.add_argument(
         "--hysteresis-down",
         type=float,
-        default=0.35,  # Phase 1.5: 0.45 → 0.35 (위기 검출 민감도 증가)
-        help="Crisis exit threshold when previous regime is crisis (Phase 1.5 default: 0.35)",
+        default=0.42,
+        help="Crisis exit threshold when previous regime is crisis (default: 0.42)",
+    )
+    parser.add_argument(
+        "--hysteresis-quantile",
+        type=float,
+        default=0.72,
+        help="Quantile target for adaptive hysteresis thresholds (default: 0.72)",
     )
     parser.add_argument(
         "--k-s",

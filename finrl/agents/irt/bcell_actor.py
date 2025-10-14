@@ -41,7 +41,7 @@ class BCellIRTActor(nn.Module):
         market_feature_dim: int = 12,
         dirichlet_min: float = 0.05,
         dirichlet_max: float = 6.0,
-        action_temp: float = 0.35,
+        action_temp: float = 0.50,
         # Phase 3.5 Step 2: 다중 신호 위기 감지
         w_r: float = 0.55,
         w_s: float = -0.25,
@@ -58,13 +58,13 @@ class BCellIRTActor(nn.Module):
         crisis_guard_rate_init: float = 0.10,
         crisis_guard_rate_final: float = 0.0,
         crisis_guard_warmup_steps: int = 10000,
-        # Phase 1.5: 히스테리시스 임계치 하향 (0.55/0.45 → 0.45/0.35)
-        hysteresis_up: float = 0.45,
-        hysteresis_down: float = 0.35,
+        # Phase 1.5: 히스테리시스 임계치 재조정 (0.55/0.45 → 0.52/0.42)
+        hysteresis_up: float = 0.52,
+        hysteresis_down: float = 0.42,
         adaptive_hysteresis: bool = True,
-        # Phase 1.5: 분위수 하향 (0.85 → 0.65)
-        hysteresis_quantile: float = 0.65,
-        hysteresis_min_gap: float = 0.1,
+        # Phase 1.5: 분위수 상향 (0.65 → 0.72)
+        hysteresis_quantile: float = 0.72,
+        hysteresis_min_gap: float = 0.03,
         crisis_history_len: int = 512,
         crisis_guard_rate: Optional[float] = None,
         k_s: float = 6.0,
@@ -73,7 +73,7 @@ class BCellIRTActor(nn.Module):
         p_star: float = 0.35,
         temperature_min: float = 0.7,
         temperature_max: float = 1.1,
-        stat_momentum: float = 0.95,
+        stat_momentum: float = 0.92,
         alpha_crisis_source: str = "pre_guard",
         **irt_kwargs
     ):
@@ -150,6 +150,8 @@ class BCellIRTActor(nn.Module):
         self.register_buffer("crisis_base_mean", torch.zeros(1))
         self.register_buffer("crisis_base_var", torch.ones(1))
         self.register_buffer("bias_warm_started", torch.zeros(1))
+        self.register_buffer("crisis_robust_loc", torch.zeros(1))
+        self.register_buffer("crisis_robust_scale", torch.ones(1))
         self._crisis_initialized = False
         self._verify_signal_orientation()
 
@@ -480,6 +482,20 @@ class BCellIRTActor(nn.Module):
             + self.w_c * cvar_component
         )
 
+        if self.training:
+            with torch.no_grad():
+                flat_raw = crisis_raw.detach().view(-1)
+                if flat_raw.numel() > 0:
+                    median = flat_raw.median()
+                    mad = torch.median(torch.abs(flat_raw - median))
+                    scale_update = torch.clamp(mad * 1.4826, min=self.stats_eps)
+                    self.crisis_robust_loc.copy_(median.unsqueeze(0))
+                    self.crisis_robust_scale.copy_(scale_update.unsqueeze(0))
+
+        robust_loc = self.crisis_robust_loc.to(state.device)
+        robust_scale = self.crisis_robust_scale.to(state.device)
+        crisis_raw = (crisis_raw - robust_loc) / (robust_scale + self.stats_eps)
+
         if self.training and self.bias_warm_started.item() < 0.5:
             with torch.no_grad():
                 mean_raw = crisis_raw.detach().mean()
@@ -722,6 +738,9 @@ class BCellIRTActor(nn.Module):
             # Phase 3.5 Step 2: 다중 신호 위기 감지 정보
             "crisis_base": crisis_base_sigmoid.detach(),  # [B, 1] - T-Cell 기본 위기 신호 (sigmoid)
             "crisis_base_raw": crisis_affine_raw.detach(),  # [B, 1] - T-Cell affine
+            "crisis_robust_loc": self.crisis_robust_loc.detach().to(state.device),
+            "crisis_robust_scale": self.crisis_robust_scale.detach().to(state.device),
+            "hysteresis_quantile": torch.tensor(self.hysteresis_quantile, device=state.device),
             "delta_sharpe": (
                 delta_sharpe.detach()
                 if state.size(1) >= self.state_dim - 2

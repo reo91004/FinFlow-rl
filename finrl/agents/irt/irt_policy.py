@@ -249,7 +249,7 @@ class IRTPolicy(SACPolicy):
         market_feature_dim: int = 12,
         dirichlet_min: float = 0.05,
         dirichlet_max: float = 6.0,
-        action_temp: float = 0.4,
+        action_temp: float = 0.50,
         eps: float = 0.03,  # Phase-F2': 0.05 → 0.03 (OT 평탄화 완화)
         max_iters: int = 30,
         replicator_temp: float = 0.4,
@@ -272,7 +272,7 @@ class IRTPolicy(SACPolicy):
         p_star: float = 0.35,
         temperature_min: float = 0.7,
         temperature_max: float = 1.1,
-        stat_momentum: float = 0.95,
+        stat_momentum: float = 0.92,
         eta_b_warmup_steps: int = 10000,
         eta_b_warmup_value: float = 0.05,
         alpha_crisis_source: str = "pre_guard",
@@ -281,13 +281,13 @@ class IRTPolicy(SACPolicy):
         crisis_guard_rate_init: float = 0.30,
         crisis_guard_rate_final: float = 0.05,
         crisis_guard_warmup_steps: int = 10000,
-        # Phase 1.5: 히스테리시스 임계치 하향 (0.55/0.45 → 0.45/0.35)
-        hysteresis_up: float = 0.45,
-        hysteresis_down: float = 0.35,
+        # Phase 1.5: 히스테리시스 임계치 재조정 (0.55/0.45 → 0.52/0.42)
+        hysteresis_up: float = 0.52,
+        hysteresis_down: float = 0.42,
         adaptive_hysteresis: bool = True,
-        # Phase 1.5: 분위수 하향 (0.85 → 0.65)
-        hysteresis_quantile: float = 0.65,
-        hysteresis_min_gap: float = 0.1,
+        # Phase 1.5: 분위수 상향 (0.65 → 0.72)
+        hysteresis_quantile: float = 0.72,
+        hysteresis_min_gap: float = 0.03,
         crisis_history_len: int = 512,
         k_s: float = 6.0,
         k_c: float = 6.0,
