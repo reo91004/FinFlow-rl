@@ -246,7 +246,10 @@ class IRTPolicy(SACPolicy):
         alpha_min: float = 0.08,  # Phase F: Rep 경로 확보
         alpha_max: Optional[float] = None,
         ema_beta: float = 0.55,  # Phase 1.5: 0.70 → 0.55 (faster responsiveness)
-        market_feature_dim: int = 12,
+        market_feature_dim: Optional[int] = None,
+        stock_dim: Optional[int] = None,
+        tech_indicator_count: Optional[int] = None,
+        has_dsr_cvar: bool = False,
         dirichlet_min: float = 0.05,
         dirichlet_max: float = 6.0,
         action_temp: float = 0.50,
@@ -340,7 +343,17 @@ class IRTPolicy(SACPolicy):
         self.alpha_min = alpha_min
         self.alpha_max = alpha_max
         self.ema_beta = ema_beta
-        self.market_feature_dim = market_feature_dim
+        self.stock_dim_meta = stock_dim
+        self.tech_indicator_count = (
+            int(tech_indicator_count) if tech_indicator_count is not None else None
+        )
+        self.has_dsr_cvar = bool(has_dsr_cvar)
+        if market_feature_dim is not None:
+            self.market_feature_dim = int(market_feature_dim)
+        elif self.tech_indicator_count is not None:
+            self.market_feature_dim = 4 + self.tech_indicator_count
+        else:
+            self.market_feature_dim = 12
         self.dirichlet_min = dirichlet_min
         self.dirichlet_max = dirichlet_max
         self.action_temp = action_temp  # Phase-2
@@ -433,6 +446,9 @@ class IRTPolicy(SACPolicy):
             alpha_max=self.alpha_max,
             ema_beta=self.ema_beta,
             market_feature_dim=self.market_feature_dim,
+            stock_dim=self.stock_dim_meta or action_dim,
+            tech_indicator_count=self.tech_indicator_count,
+            has_dsr_cvar=self.has_dsr_cvar,
             dirichlet_min=self.dirichlet_min,
             dirichlet_max=self.dirichlet_max,
             action_temp=self.action_temp,  # Phase-2
@@ -500,6 +516,9 @@ class IRTPolicy(SACPolicy):
                 alpha_max=self.alpha_max,
                 ema_beta=self.ema_beta,
                 market_feature_dim=self.market_feature_dim,
+                stock_dim=self.stock_dim_meta,
+                tech_indicator_count=self.tech_indicator_count,
+                has_dsr_cvar=self.has_dsr_cvar,
                 dirichlet_min=self.dirichlet_min,
                 dirichlet_max=self.dirichlet_max,
                 action_temp=self.action_temp,

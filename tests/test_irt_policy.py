@@ -29,7 +29,10 @@ def irt_config():
         'm_tokens': 6,
         'M_proto': 8,
         'alpha': 0.3,
-        'market_feature_dim': 12
+        'market_feature_dim': 8,
+        'stock_dim': 30,
+        'tech_indicator_count': 4,
+        'has_dsr_cvar': False
     }
 
 

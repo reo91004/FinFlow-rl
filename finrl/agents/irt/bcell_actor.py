@@ -38,7 +38,10 @@ class BCellIRTActor(nn.Module):
         alpha_min: float = 0.06,
         alpha_max: Optional[float] = None,
         ema_beta: float = 0.55,  # Phase 1.5: 0.65 → 0.55 (faster adaptation to fitness signals)
-        market_feature_dim: int = 12,
+        market_feature_dim: Optional[int] = None,
+        stock_dim: Optional[int] = None,
+        tech_indicator_count: Optional[int] = None,
+        has_dsr_cvar: bool = False,
         dirichlet_min: float = 0.05,
         dirichlet_max: float = 6.0,
         action_temp: float = 0.50,
@@ -108,7 +111,22 @@ class BCellIRTActor(nn.Module):
         self.dirichlet_min = dirichlet_min
         self.dirichlet_max = dirichlet_max
         self.action_temp = action_temp  # Phase-2
-        self.market_feature_dim = market_feature_dim
+        self.has_dsr_cvar = bool(has_dsr_cvar)
+        self.stock_dim = int(stock_dim) if stock_dim is not None else action_dim
+        if self.stock_dim <= 0:
+            raise ValueError(f"stock_dim must be positive, got {self.stock_dim}")
+        extra_dims = 2 if self.has_dsr_cvar else 0
+        inferred_indicator_count = tech_indicator_count
+        if inferred_indicator_count is None:
+            remainder = max(state_dim - (1 + 2 * self.stock_dim) - extra_dims, 0)
+            inferred_indicator_count = remainder // self.stock_dim if self.stock_dim > 0 else 0
+        self.tech_indicator_count = int(max(inferred_indicator_count or 0, 0))
+        computed_market_dim = 4 + self.tech_indicator_count
+        if market_feature_dim is not None and market_feature_dim >= computed_market_dim:
+            self.market_feature_dim = int(market_feature_dim)
+        else:
+            self.market_feature_dim = computed_market_dim
+        self.market_feature_dim = max(self.market_feature_dim, 4)
 
         # Phase 3.5 Step 2: 위기 신호 가중치
         self.w_r = w_r
@@ -228,7 +246,7 @@ class BCellIRTActor(nn.Module):
         )
 
         # ===== T-Cell 통합 =====
-        self.t_cell = TCellMinimal(in_dim=market_feature_dim, emb_dim=emb_dim)
+        self.t_cell = TCellMinimal(in_dim=self.market_feature_dim, emb_dim=emb_dim)
 
         # ===== 이전 가중치 (EMA) =====
         self.register_buffer("w_prev", torch.full((1, M_proto), 1.0 / M_proto))
@@ -378,17 +396,17 @@ class BCellIRTActor(nn.Module):
             self._crisis_initialized = True
 
         # ===== Step 1: T-Cell 위기 감지 =====
-        # FinRL state 구조: [balance(1), prices(30), shares(30), tech_indicators(240)]
-        # Tech indicators: [macd*30, boll_ub*30, boll_lb*30, rsi_30*30,
-        #                   cci_30*30, dx_30*30, close_30_sma*30, close_60_sma*30]
-
-        # Market features 추출 (12차원):
-        # 1. 시장 전체 특성 (4개): balance, price_mean, price_std, cash_ratio
-        # 2. Technical indicators 대표값 (8개): 각 indicator의 첫 번째 주식 값
+        # FinRL state 구조: [balance(1), prices(N), shares(N), tech_indicators(K*N), ... optional extras ...]
 
         balance = state[:, 0:1]  # [B, 1]
-        prices = state[:, 1:31]  # [B, 30]
-        shares = state[:, 31:61]  # [B, 30]
+        stock_dim = self.stock_dim
+        price_start = 1
+        price_end = price_start + stock_dim
+        prices = state[:, price_start:price_end]  # [B, stock_dim]
+
+        shares_start = price_end
+        shares_end = shares_start + stock_dim
+        shares = state[:, shares_start:shares_end]  # [B, stock_dim]
 
         # 시장 통계량
         price_mean = prices.mean(dim=1, keepdim=True)  # [B, 1]
@@ -397,20 +415,33 @@ class BCellIRTActor(nn.Module):
         cash_ratio = balance / (total_value + 1e-8)  # [B, 1]
 
         # Technical indicators (각 지표의 첫 번째 주식 값)
-        # macd, boll_ub, boll_lb, rsi_30, cci_30, dx_30, close_30_sma, close_60_sma
-        tech_indices = [61, 91, 121, 151, 181, 211, 241, 271]
-        tech_features = state[:, tech_indices]  # [B, 8]
+        tech_start = shares_end
+        dsr_offset = 2 if self.has_dsr_cvar else 0
+        available = max(state.size(1) - dsr_offset - tech_start, 0)
+        indicator_blocks = min(self.tech_indicator_count, available // stock_dim)
+        tech_features = None
+        if indicator_blocks > 0:
+            tech_total = indicator_blocks * stock_dim
+            tech_slice = state[:, tech_start : tech_start + tech_total]
+            tech_features_full = tech_slice.view(B, indicator_blocks, stock_dim)
+            tech_features = tech_features_full[:, :, 0]  # [B, indicator_blocks]
+        else:
+            tech_features = torch.zeros(
+                (B, 0), device=state.device, dtype=state.dtype
+            )
 
-        market_features = torch.cat(
-            [
-                balance,  # [B, 1] - 현금 보유량
-                price_mean,  # [B, 1] - 평균 주가
-                price_std,  # [B, 1] - 주가 변동성
-                cash_ratio,  # [B, 1] - 현금 비율
-                tech_features,  # [B, 8] - 기술적 지표들
-            ],
-            dim=1,
-        )  # [B, 12]
+        market_components = [balance, price_mean, price_std, cash_ratio]
+        if tech_features.shape[1] > 0:
+            market_components.append(tech_features)
+        market_features = torch.cat(market_components, dim=1)
+        if market_features.shape[1] < self.market_feature_dim:
+            pad_cols = self.market_feature_dim - market_features.shape[1]
+            market_features = torch.cat(
+                [market_features, torch.zeros(B, pad_cols, device=state.device, dtype=state.dtype)],
+                dim=1,
+            )
+        elif market_features.shape[1] > self.market_feature_dim:
+            market_features = market_features[:, : self.market_feature_dim]
 
         z, danger_embed, crisis_affine_raw, crisis_base_sigmoid = self.t_cell(
             market_features, update_stats=self.training
@@ -457,8 +488,8 @@ class BCellIRTActor(nn.Module):
         delta_component = torch.full_like(crisis_base_component, 0.5)
         cvar_component = torch.full_like(crisis_base_component, 0.5)
 
-        if state.size(1) >= self.state_dim - 2:
-            # DSR/CVaR가 state에 포함된 경우
+        if self.has_dsr_cvar and state.size(1) >= 2:
+            # DSR/CVaR가 state에 포함된 경우 (reward_type='dsr_cvar')
             delta_sharpe_raw = state[:, -2:-1]  # [B, 1] - DSR bonus (원본 스케일 ~0.1)
             cvar_raw = state[:, -1:]  # [B, 1] - CVaR value (원본 스케일 ~0.01)
 
@@ -741,6 +772,10 @@ class BCellIRTActor(nn.Module):
             "crisis_robust_loc": self.crisis_robust_loc.detach().to(state.device),
             "crisis_robust_scale": self.crisis_robust_scale.detach().to(state.device),
             "hysteresis_quantile": torch.tensor(self.hysteresis_quantile, device=state.device),
+            "tech_indicator_count": torch.tensor(self.tech_indicator_count, device=state.device),
+            "tech_indicator_count_active": torch.tensor(indicator_blocks, device=state.device),
+            "has_dsr_cvar": torch.tensor(1 if self.has_dsr_cvar else 0, device=state.device),
+            "stock_dim": torch.tensor(self.stock_dim, device=state.device),
             "delta_sharpe": (
                 delta_sharpe.detach()
                 if state.size(1) >= self.state_dim - 2

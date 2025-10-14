@@ -604,6 +604,8 @@ def train_irt(args):
         f"slippage={getattr(train_env, 'weight_slippage', None)}, "
         f"tx_cost={getattr(train_env, 'weight_transaction_cost', None)}"
     )
+    tech_indicator_count = len(getattr(train_env, "tech_indicator_list", []))
+    has_dsr_cvar = args.reward_type == "dsr_cvar"
     test_env = create_env(
         test_df,
         stock_dim,
@@ -679,6 +681,12 @@ def train_irt(args):
     irt_logging_callback = IRTLoggingCallback(verbose=0, log_freq=100, ema_beta=args.ema_beta)
 
     # IRT Policy kwargs
+    effective_market_dim = (
+        args.market_feature_dim
+        if args.market_feature_dim is not None
+        else 4 + tech_indicator_count
+    )
+
     policy_kwargs = {
         "emb_dim": args.emb_dim,
         "m_tokens": args.m_tokens,
@@ -687,7 +695,10 @@ def train_irt(args):
         "alpha_min": args.alpha_min,
         "alpha_max": args.alpha_max if args.alpha_max else args.alpha,
         "ema_beta": args.ema_beta,
-        "market_feature_dim": args.market_feature_dim,
+        "market_feature_dim": effective_market_dim,
+        "stock_dim": stock_dim,
+        "tech_indicator_count": tech_indicator_count,
+        "has_dsr_cvar": has_dsr_cvar,
         # Phase 3.5: Dirichlet 및 온도 파라미터 (훈련 경로 전달 필수)
         "dirichlet_min": args.dirichlet_min,
         "dirichlet_max": args.dirichlet_max,
@@ -831,6 +842,10 @@ def train_irt(args):
         "weight_slippage": getattr(train_env, "weight_slippage", 0.001),
         "weight_transaction_cost": getattr(train_env, "weight_transaction_cost", 0.0005),
         "reward_scaling": args.reward_scale,
+        "stock_dim": stock_dim,
+        "tech_indicator_count": tech_indicator_count,
+        "has_dsr_cvar": has_dsr_cvar,
+        "stat_momentum": args.stat_momentum,
         "adaptive_lambda_sharpe": args.adaptive_lambda_sharpe,
         "adaptive_lambda_cvar": args.adaptive_lambda_cvar,
         "adaptive_lambda_turnover": args.adaptive_lambda_turnover,
