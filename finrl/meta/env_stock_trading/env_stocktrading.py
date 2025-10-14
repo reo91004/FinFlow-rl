@@ -28,6 +28,12 @@ class StockTradingEnv(gym.Env):
         sell_cost_pct (float, array): Cost for selling shares, each index corresponds to each asset
         turbulence_threshold (float): Maximum turbulence allowed in market for purchases to occur. If exceeded, positions are liquidated
         print_verbosity(int): When iterating (step), how often to print stats about state of env
+        adaptive_lambda_sharpe (float): Base κ weight for adaptive risk reward (default: 0.20)
+        adaptive_lambda_cvar (float): CVaR penalty weight for adaptive risk reward (default: 0.40)
+        adaptive_lambda_turnover (float): Turnover penalty weight for adaptive risk reward (default: 0.0023)
+        adaptive_crisis_gain (float): Crisis gain g_c (keep negative, default: -0.15)
+        adaptive_dsr_beta (float): DSR EMA β for adaptive risk reward (default: 0.92)
+        adaptive_cvar_window (int): CVaR estimation window for adaptive risk reward (default: 40)
     """
 
     metadata = {"render.modes": ["human"]}
@@ -65,6 +71,12 @@ class StockTradingEnv(gym.Env):
         use_weighted_action: bool = False,
         weight_slippage: float = 0.001,
         weight_transaction_cost: float = 0.0005,
+        adaptive_lambda_sharpe: float = 0.20,
+        adaptive_lambda_cvar: float = 0.40,
+        adaptive_lambda_turnover: float = 0.0023,
+        adaptive_crisis_gain: float = -0.15,
+        adaptive_dsr_beta: float = 0.92,
+        adaptive_cvar_window: int = 40,
     ):
         self.day = day
         self.df = df
@@ -78,6 +90,12 @@ class StockTradingEnv(gym.Env):
         self.use_weighted_action = use_weighted_action
         self.weight_slippage = weight_slippage
         self.weight_transaction_cost = weight_transaction_cost
+        self.adaptive_lambda_sharpe = adaptive_lambda_sharpe
+        self.adaptive_lambda_cvar = adaptive_lambda_cvar
+        self.adaptive_lambda_turnover = adaptive_lambda_turnover
+        self.adaptive_crisis_gain = adaptive_crisis_gain
+        self.adaptive_dsr_beta = adaptive_dsr_beta
+        self.adaptive_cvar_window = adaptive_cvar_window
         self.weights_memory: list[np.ndarray] = []
         self.executed_weights_memory: list[np.ndarray] = []
         self.turnover_memory: list[float] = []
@@ -133,18 +151,18 @@ class StockTradingEnv(gym.Env):
             from .reward_functions import AdaptiveRiskReward
 
             self.risk_reward = AdaptiveRiskReward(
-                lambda_sharpe=0.15,
-                lambda_cvar=0.5,
-                lambda_turnover=0.002,
-                crisis_gain=0.25,
-                dsr_beta=dsr_beta,
+                lambda_sharpe=self.adaptive_lambda_sharpe,
+                lambda_cvar=self.adaptive_lambda_cvar,
+                lambda_turnover=self.adaptive_lambda_turnover,
+                crisis_gain=self.adaptive_crisis_gain,
+                dsr_beta=self.adaptive_dsr_beta,
                 cvar_alpha=cvar_alpha,
-                cvar_window=cvar_window,
+                cvar_window=self.adaptive_cvar_window,
             )
 
             # Phase-H1: crisis_level 및 디버깅 정보 저장
             self.last_crisis_level = 0.5
-            self.last_kappa = 0.15
+            self.last_kappa = self.adaptive_lambda_sharpe
             self.last_delta_sharpe = 0.0
         else:
             self.risk_reward = None
@@ -625,7 +643,7 @@ class StockTradingEnv(gym.Env):
             # Phase-H1: Adaptive Risk 버퍼 초기화
             elif self.reward_type == "adaptive_risk":
                 self.last_crisis_level = 0.5
-                self.last_kappa = 0.15
+                self.last_kappa = self.adaptive_lambda_sharpe
                 self.last_delta_sharpe = 0.0
 
         self.episode += 1

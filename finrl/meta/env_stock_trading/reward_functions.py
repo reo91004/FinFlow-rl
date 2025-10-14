@@ -262,9 +262,9 @@ class AdaptiveRiskReward:
 
     여기서:
     - log(V_t/V_{t-1}): 항상 non-zero gradient를 보장하는 base return
-    - κ(c) = 0.15 + 0.25·c: crisis_level에 따라 adaptive한 risk bonus 가중치
-      * c=0 (평시): κ=0.15
-      * c=1 (위기): κ=0.40
+    - κ(c) = λ_S + g_c·c, 여기서 g_c < 0 (위기 강도 ↑ ⇒ κ ↓)
+      * c=0 (평시): κ=λ_S
+      * c=1 (위기): κ=λ_S + g_c
     - ΔSharpe: DSR (Differential Sharpe Ratio)
     - CVaR: 꼬리 위험 (음수)
     - turnover: 거래 비용 (실행가중 기반)
@@ -275,24 +275,24 @@ class AdaptiveRiskReward:
     3. Direct CVaR penalty → Risk-aware value learning
 
     Args:
-        lambda_sharpe: ΔSharpe 기본 가중치 (κ_min, default: 0.15)
-        lambda_cvar: CVaR penalty 가중치 (β, default: 0.5)
-        lambda_turnover: Turnover penalty 가중치 (μ, default: 0.002)
-        crisis_gain: Crisis에 의한 κ 증폭 계수 (default: 0.25)
-        dsr_beta: DSR 이동평균 계수 (default: 0.95)
+        lambda_sharpe: ΔSharpe 기본 가중치 (κ_min, default: 0.20)
+        lambda_cvar: CVaR penalty 가중치 (β, default: 0.40)
+        lambda_turnover: Turnover penalty 가중치 (μ, default: 0.0023)
+        crisis_gain: Crisis에 의한 κ 조정 계수 (default: -0.15, 음수 유지)
+        dsr_beta: DSR 이동평균 계수 (default: 0.92)
         cvar_alpha: CVaR 분위수 (default: 0.05)
-        cvar_window: CVaR 추정 윈도우 (default: 20)
+        cvar_window: CVaR 추정 윈도우 (default: 40)
     """
 
     def __init__(
         self,
-        lambda_sharpe: float = 0.15,
-        lambda_cvar: float = 0.5,
-        lambda_turnover: float = 0.002,
-        crisis_gain: float = -0.10,
-        dsr_beta: float = 0.95,
+        lambda_sharpe: float = 0.20,
+        lambda_cvar: float = 0.40,
+        lambda_turnover: float = 0.0023,
+        crisis_gain: float = -0.15,
+        dsr_beta: float = 0.92,
         cvar_alpha: float = 0.05,
-        cvar_window: int = 20,
+        cvar_window: int = 40,
     ):
         self.lambda_sharpe_base = lambda_sharpe
         self.lambda_cvar = lambda_cvar
@@ -344,7 +344,7 @@ class AdaptiveRiskReward:
         cvar_value = self.cvar.update(basic_return)
         cvar_penalty = abs(cvar_value) if cvar_value < 0 else 0.0
 
-        # 4. Adaptive κ(c) (risk-averse: crisis ↑ → κ ↓)
+        # 4. Adaptive κ(c) (risk-averse: crisis ↑ → κ ↓ since crisis_gain < 0)
         kappa = self.lambda_sharpe_base + self.crisis_gain * self.crisis_level
 
         # 5. Risk bonus

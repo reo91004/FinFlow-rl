@@ -1769,8 +1769,8 @@ Sharpe ratio 변화율을 α_c에 피드백하여 성능 추세 반영:
 현재 Adaptive-Risk Reward 함수는:
 
 ```
-reward = log_return + κ(c)·ΔSharpe - ...
-κ(c) = 0.15 + 0.25*c  # 위기 시 Sharpe bonus 증가
+reward = log_return + κ(c)·ΔSharpe - …
+κ(c) = 0.20 - 0.15*c  # 위기 시 Sharpe bonus 감소
 ```
 
 이것은 **α(c) 설계와 충돌**합니다:
@@ -1784,14 +1784,14 @@ reward = log_return + κ(c)·ΔSharpe - ...
 
 ```python
 # reward_functions.py 수정
-crisis_gain = -0.10  # 0.25 → -0.10 (부호 반전)
-# κ(c) = 0.15 - 0.10*c
+crisis_gain = -0.15  # 0.25 → -0.15 (부호 반전 + 스케일 조정)
+# κ(c) = 0.20 - 0.15*c
 # 위기 시 κ↓ → Sharpe 비중 감소 → α(c)↓와 일치
 ```
 
 이렇게 하면:
 
-- 평시: κ=0.15 (Sharpe 추구)
+- 평시: κ=0.20 (Sharpe 추구)
 - 위기: κ=0.05 (생존 우선)
 - T-Cell과 Reward가 같은 방향 (일관성 확보)
 
@@ -2615,8 +2615,8 @@ Reward:  위기 → κ↑ → Sharpe 추구 → 고수익
 **해결**: κ(c) 부호 반전
 
 ```python
-crisis_gain = -0.10  # 0.25 → -0.10
-# κ(c) = 0.15 - 0.10*c
+crisis_gain = -0.15  # 0.25 → -0.15
+# κ(c) = 0.20 - 0.15*c
 
 T-Cell:  위기 → α↓ → 집중
 Reward:  위기 → κ↓ → 생존 우선

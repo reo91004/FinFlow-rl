@@ -456,6 +456,12 @@ def create_env(
     weight_slippage: float = 0.001,
     weight_transaction_cost: float = 0.0005,
     reward_scaling: float = 1e-4,
+    adaptive_lambda_sharpe: float = 0.20,
+    adaptive_lambda_cvar: float = 0.40,
+    adaptive_lambda_turnover: float = 0.0023,
+    adaptive_crisis_gain: float = -0.15,
+    adaptive_dsr_beta: float = 0.92,
+    adaptive_cvar_window: int = 40,
 ):
     """StockTradingEnv 생성 (Phase 3: DSR + CVaR 보상 지원)"""
 
@@ -483,6 +489,12 @@ def create_env(
         "use_weighted_action": use_weighted_action,
         "weight_slippage": weight_slippage,
         "weight_transaction_cost": weight_transaction_cost,
+        "adaptive_lambda_sharpe": adaptive_lambda_sharpe,
+        "adaptive_lambda_cvar": adaptive_lambda_cvar,
+        "adaptive_lambda_turnover": adaptive_lambda_turnover,
+        "adaptive_crisis_gain": adaptive_crisis_gain,
+        "adaptive_dsr_beta": adaptive_dsr_beta,
+        "adaptive_cvar_window": adaptive_cvar_window,
     }
 
     return StockTradingEnv(**env_kwargs)
@@ -550,11 +562,19 @@ def train_irt(args):
 
     # Phase 3: 리스크 민감 보상 환경 생성
     train_env = create_env(
-        train_df, stock_dim, INDICATORS,
+        train_df,
+        stock_dim,
+        INDICATORS,
         reward_type=args.reward_type,
         lambda_dsr=args.lambda_dsr,
         lambda_cvar=args.lambda_cvar,
         reward_scaling=args.reward_scale,
+        adaptive_lambda_sharpe=args.adaptive_lambda_sharpe,
+        adaptive_lambda_cvar=args.adaptive_lambda_cvar,
+        adaptive_lambda_turnover=args.adaptive_lambda_turnover,
+        adaptive_crisis_gain=args.adaptive_crisis_gain,
+        adaptive_dsr_beta=args.adaptive_dsr_beta,
+        adaptive_cvar_window=args.adaptive_cvar_window,
     )
     seed_environment(train_env, args.seed)
     print(
@@ -564,11 +584,19 @@ def train_irt(args):
         f"tx_cost={getattr(train_env, 'weight_transaction_cost', None)}"
     )
     test_env = create_env(
-        test_df, stock_dim, INDICATORS,
+        test_df,
+        stock_dim,
+        INDICATORS,
         reward_type=args.reward_type,
         lambda_dsr=args.lambda_dsr,
         lambda_cvar=args.lambda_cvar,
         reward_scaling=args.reward_scale,
+        adaptive_lambda_sharpe=args.adaptive_lambda_sharpe,
+        adaptive_lambda_cvar=args.adaptive_lambda_cvar,
+        adaptive_lambda_turnover=args.adaptive_lambda_turnover,
+        adaptive_crisis_gain=args.adaptive_crisis_gain,
+        adaptive_dsr_beta=args.adaptive_dsr_beta,
+        adaptive_cvar_window=args.adaptive_cvar_window,
     )
     seed_environment(test_env, args.seed)
     print(
@@ -781,6 +809,12 @@ def train_irt(args):
         "weight_slippage": getattr(train_env, "weight_slippage", 0.001),
         "weight_transaction_cost": getattr(train_env, "weight_transaction_cost", 0.0005),
         "reward_scaling": args.reward_scale,
+        "adaptive_lambda_sharpe": args.adaptive_lambda_sharpe,
+        "adaptive_lambda_cvar": args.adaptive_lambda_cvar,
+        "adaptive_lambda_turnover": args.adaptive_lambda_turnover,
+        "adaptive_crisis_gain": args.adaptive_crisis_gain,
+        "adaptive_dsr_beta": args.adaptive_dsr_beta,
+        "adaptive_cvar_window": args.adaptive_cvar_window,
         "train_start": args.train_start,
         "train_end": args.train_end,
         "test_start": args.test_start,
@@ -819,6 +853,12 @@ def test_irt(args, model_path=None):
     weight_slippage = 0.001
     weight_transaction_cost = 0.0005
     reward_scaling = args.reward_scale
+    adaptive_lambda_sharpe = args.adaptive_lambda_sharpe
+    adaptive_lambda_cvar = args.adaptive_lambda_cvar
+    adaptive_lambda_turnover = args.adaptive_lambda_turnover
+    adaptive_crisis_gain = args.adaptive_crisis_gain
+    adaptive_dsr_beta = args.adaptive_dsr_beta
+    adaptive_cvar_window = args.adaptive_cvar_window
     meta_path = os.path.join(os.path.dirname(model_path), "env_meta.json")
     if os.path.exists(meta_path):
         with open(meta_path, "r") as meta_fp:
@@ -828,12 +868,24 @@ def test_irt(args, model_path=None):
         weight_slippage = env_meta.get("weight_slippage", weight_slippage)
         weight_transaction_cost = env_meta.get("weight_transaction_cost", weight_transaction_cost)
         reward_scaling = env_meta.get("reward_scaling", reward_scaling)
+        adaptive_lambda_sharpe = env_meta.get("adaptive_lambda_sharpe", adaptive_lambda_sharpe)
+        adaptive_lambda_cvar = env_meta.get("adaptive_lambda_cvar", adaptive_lambda_cvar)
+        adaptive_lambda_turnover = env_meta.get("adaptive_lambda_turnover", adaptive_lambda_turnover)
+        adaptive_crisis_gain = env_meta.get("adaptive_crisis_gain", adaptive_crisis_gain)
+        adaptive_dsr_beta = env_meta.get("adaptive_dsr_beta", adaptive_dsr_beta)
+        adaptive_cvar_window = env_meta.get("adaptive_cvar_window", adaptive_cvar_window)
 
         # Phase 1.5: 체크포인트 reward_type 우선 (CLI보다 우선)
         if env_meta.get("reward_type"):
             if args.reward_type and args.reward_type != env_meta["reward_type"]:
                 print(f"  Warning: Overriding CLI reward_type ({args.reward_type}) with checkpoint ({env_meta['reward_type']})")
             args.reward_type = env_meta["reward_type"]
+        args.adaptive_lambda_sharpe = adaptive_lambda_sharpe
+        args.adaptive_lambda_cvar = adaptive_lambda_cvar
+        args.adaptive_lambda_turnover = adaptive_lambda_turnover
+        args.adaptive_crisis_gain = adaptive_crisis_gain
+        args.adaptive_dsr_beta = adaptive_dsr_beta
+        args.adaptive_cvar_window = adaptive_cvar_window
 
     # evaluate.py의 evaluate_model() 재사용
     portfolio_values, exec_returns, value_returns, irt_data, metrics = evaluate_model(
@@ -853,6 +905,12 @@ def test_irt(args, model_path=None):
         weight_slippage=weight_slippage,
         weight_transaction_cost=weight_transaction_cost,
         reward_scaling=reward_scaling,
+        adaptive_lambda_sharpe=adaptive_lambda_sharpe,
+        adaptive_lambda_cvar=adaptive_lambda_cvar,
+        adaptive_lambda_turnover=adaptive_lambda_turnover,
+        adaptive_crisis_gain=adaptive_crisis_gain,
+        adaptive_dsr_beta=adaptive_dsr_beta,
+        adaptive_cvar_window=adaptive_cvar_window,
     )
 
     # 결과 추출
@@ -1198,6 +1256,42 @@ def main():
         type=float,
         default=0.05,
         help="CVaR penalty weight (default: 0.05, Phase 3)",
+    )
+    parser.add_argument(
+        "--adaptive-lambda-sharpe",
+        type=float,
+        default=0.20,
+        help="Adaptive risk reward Sharpe weight λ_S (default: 0.20)",
+    )
+    parser.add_argument(
+        "--adaptive-lambda-cvar",
+        type=float,
+        default=0.40,
+        help="Adaptive risk reward CVaR penalty weight β (default: 0.40)",
+    )
+    parser.add_argument(
+        "--adaptive-lambda-turnover",
+        type=float,
+        default=0.0023,
+        help="Adaptive risk reward turnover penalty μ (default: 0.0023)",
+    )
+    parser.add_argument(
+        "--adaptive-crisis-gain",
+        type=float,
+        default=-0.15,
+        help="Adaptive risk reward crisis gain g_c (default: -0.15, keep negative)",
+    )
+    parser.add_argument(
+        "--adaptive-dsr-beta",
+        type=float,
+        default=0.92,
+        help="Adaptive risk reward DSR EMA β (default: 0.92)",
+    )
+    parser.add_argument(
+        "--adaptive-cvar-window",
+        type=int,
+        default=40,
+        help="Adaptive risk reward CVaR window length (default: 40)",
     )
 
     # Phase E: 위기신호 가중 재균형

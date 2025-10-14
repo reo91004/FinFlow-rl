@@ -65,6 +65,12 @@ def create_env(
     weight_slippage: float = 0.001,
     weight_transaction_cost: float = 0.0005,
     reward_scaling: float = 1e-4,
+    adaptive_lambda_sharpe: float = 0.20,
+    adaptive_lambda_cvar: float = 0.40,
+    adaptive_lambda_turnover: float = 0.0023,
+    adaptive_crisis_gain: float = -0.15,
+    adaptive_dsr_beta: float = 0.92,
+    adaptive_cvar_window: int = 40,
 ):
     """환경 생성 (Phase 3.5: reward_type 지원)"""
     # State space: balance(1) + prices(N) + shares(N) + tech_indicators(K*N)
@@ -91,6 +97,12 @@ def create_env(
         "use_weighted_action": use_weighted_action,
         "weight_slippage": weight_slippage,
         "weight_transaction_cost": weight_transaction_cost,
+        "adaptive_lambda_sharpe": adaptive_lambda_sharpe,
+        "adaptive_lambda_cvar": adaptive_lambda_cvar,
+        "adaptive_lambda_turnover": adaptive_lambda_turnover,
+        "adaptive_crisis_gain": adaptive_crisis_gain,
+        "adaptive_dsr_beta": adaptive_dsr_beta,
+        "adaptive_cvar_window": adaptive_cvar_window,
     }
 
     return StockTradingEnv(**env_kwargs)
@@ -304,6 +316,12 @@ def evaluate_model(
     weight_slippage: float = 0.001,
     weight_transaction_cost: float = 0.0005,
     reward_scaling: float = 1e-4,
+    adaptive_lambda_sharpe: float = 0.20,
+    adaptive_lambda_cvar: float = 0.40,
+    adaptive_lambda_turnover: float = 0.0023,
+    adaptive_crisis_gain: float = -0.15,
+    adaptive_dsr_beta: float = 0.92,
+    adaptive_cvar_window: int = 40,
 ):
     """
     범용 모델 평가 함수
@@ -325,6 +343,12 @@ def evaluate_model(
         weight_slippage: 가중치 슬리피지 계수
         weight_transaction_cost: 가중치 거래 비용 계수
         reward_scaling: 환경 보상 스케일링 계수
+        adaptive_lambda_sharpe: Adaptive risk reward Sharpe 가중치
+        adaptive_lambda_cvar: Adaptive risk reward CVaR 가중치
+        adaptive_lambda_turnover: Adaptive risk reward turnover 가중치
+        adaptive_crisis_gain: Adaptive risk reward crisis gain (음수 유지)
+        adaptive_dsr_beta: Adaptive risk reward DSR EMA 계수
+        adaptive_cvar_window: Adaptive risk reward CVaR 추정 윈도우
 
     Returns:
         portfolio_values: 포트폴리오 가치 배열
@@ -408,6 +432,24 @@ def evaluate_model(
             env_meta.get("weight_transaction_cost", weight_transaction_cost)
         )
         reward_scaling = float(env_meta.get("reward_scaling", reward_scaling))
+        adaptive_lambda_sharpe = float(
+            env_meta.get("adaptive_lambda_sharpe", adaptive_lambda_sharpe)
+        )
+        adaptive_lambda_cvar = float(
+            env_meta.get("adaptive_lambda_cvar", adaptive_lambda_cvar)
+        )
+        adaptive_lambda_turnover = float(
+            env_meta.get("adaptive_lambda_turnover", adaptive_lambda_turnover)
+        )
+        adaptive_crisis_gain = float(
+            env_meta.get("adaptive_crisis_gain", adaptive_crisis_gain)
+        )
+        adaptive_dsr_beta = float(
+            env_meta.get("adaptive_dsr_beta", adaptive_dsr_beta)
+        )
+        adaptive_cvar_window = int(
+            env_meta.get("adaptive_cvar_window", adaptive_cvar_window)
+        )
 
     # Auto-detect reward type when loading IRT models (fallback if mismatch occurs)
     if is_irt:
@@ -438,6 +480,12 @@ def evaluate_model(
             weight_slippage=weight_slippage,
             weight_transaction_cost=weight_transaction_cost,
             reward_scaling=reward_scaling,
+            adaptive_lambda_sharpe=adaptive_lambda_sharpe,
+            adaptive_lambda_cvar=adaptive_lambda_cvar,
+            adaptive_lambda_turnover=adaptive_lambda_turnover,
+            adaptive_crisis_gain=adaptive_crisis_gain,
+            adaptive_dsr_beta=adaptive_dsr_beta,
+            adaptive_cvar_window=adaptive_cvar_window,
         )
         if expected_obs_dim is not None:
             obs_dim = env_candidate.observation_space.shape[0]
@@ -971,6 +1019,16 @@ def evaluate_model(
             "weight_transaction_cost": getattr(
                 base_env, "weight_transaction_cost", None
             ),
+            "adaptive_lambda_sharpe": getattr(
+                base_env, "adaptive_lambda_sharpe", None
+            ),
+            "adaptive_lambda_cvar": getattr(base_env, "adaptive_lambda_cvar", None),
+            "adaptive_lambda_turnover": getattr(
+                base_env, "adaptive_lambda_turnover", None
+            ),
+            "adaptive_crisis_gain": getattr(base_env, "adaptive_crisis_gain", None),
+            "adaptive_dsr_beta": getattr(base_env, "adaptive_dsr_beta", None),
+            "adaptive_cvar_window": getattr(base_env, "adaptive_cvar_window", None),
         }
         irt_data["env_info"] = env_info
         if env_meta:
@@ -1153,6 +1211,12 @@ def evaluate_direct(args, model_name, model_class):
         tech_indicators=INDICATORS,
         initial_amount=1000000,
         verbose=True,
+        adaptive_lambda_sharpe=args.adaptive_lambda_sharpe,
+        adaptive_lambda_cvar=args.adaptive_lambda_cvar,
+        adaptive_lambda_turnover=args.adaptive_lambda_turnover,
+        adaptive_crisis_gain=args.adaptive_crisis_gain,
+        adaptive_dsr_beta=args.adaptive_dsr_beta,
+        adaptive_cvar_window=args.adaptive_cvar_window,
     )
 
 
@@ -1335,6 +1399,25 @@ def main(args):
     use_weighted_action = env_info.get("use_weighted_action")
     weight_slippage = env_info.get("weight_slippage")
     weight_transaction_cost = env_info.get("weight_transaction_cost")
+    adaptive_lambda_sharpe = env_info.get("adaptive_lambda_sharpe")
+    adaptive_lambda_cvar = env_info.get("adaptive_lambda_cvar")
+    adaptive_lambda_turnover = env_info.get("adaptive_lambda_turnover")
+    adaptive_crisis_gain = env_info.get("adaptive_crisis_gain")
+    adaptive_dsr_beta = env_info.get("adaptive_dsr_beta")
+    adaptive_cvar_window = env_info.get("adaptive_cvar_window")
+
+    if adaptive_lambda_sharpe is None:
+        adaptive_lambda_sharpe = args.adaptive_lambda_sharpe
+    if adaptive_lambda_cvar is None:
+        adaptive_lambda_cvar = args.adaptive_lambda_cvar
+    if adaptive_lambda_turnover is None:
+        adaptive_lambda_turnover = args.adaptive_lambda_turnover
+    if adaptive_crisis_gain is None:
+        adaptive_crisis_gain = args.adaptive_crisis_gain
+    if adaptive_dsr_beta is None:
+        adaptive_dsr_beta = args.adaptive_dsr_beta
+    if adaptive_cvar_window is None:
+        adaptive_cvar_window = args.adaptive_cvar_window
 
     # 8. JSON 저장 (기본 활성화)
     if not args.no_json:
@@ -1383,6 +1466,12 @@ def main(args):
                     "use_weighted_action": use_weighted_action,
                     "weight_slippage": weight_slippage,
                     "weight_transaction_cost": weight_transaction_cost,
+                    "adaptive_lambda_sharpe": adaptive_lambda_sharpe,
+                    "adaptive_lambda_cvar": adaptive_lambda_cvar,
+                    "adaptive_lambda_turnover": adaptive_lambda_turnover,
+                    "adaptive_crisis_gain": adaptive_crisis_gain,
+                    "adaptive_dsr_beta": adaptive_dsr_beta,
+                    "adaptive_cvar_window": adaptive_cvar_window,
                 },
                 "meta": env_meta,
             }
@@ -1459,6 +1548,42 @@ if __name__ == "__main__":
         type=str,
         default=TEST_END_DATE,
         help=f"Test end date (default: {TEST_END_DATE})",
+    )
+    parser.add_argument(
+        "--adaptive-lambda-sharpe",
+        type=float,
+        default=0.20,
+        help="Adaptive risk reward Sharpe weight λ_S (default: 0.20)",
+    )
+    parser.add_argument(
+        "--adaptive-lambda-cvar",
+        type=float,
+        default=0.40,
+        help="Adaptive risk reward CVaR weight β (default: 0.40)",
+    )
+    parser.add_argument(
+        "--adaptive-lambda-turnover",
+        type=float,
+        default=0.0023,
+        help="Adaptive risk reward turnover penalty μ (default: 0.0023)",
+    )
+    parser.add_argument(
+        "--adaptive-crisis-gain",
+        type=float,
+        default=-0.15,
+        help="Adaptive risk reward crisis gain g_c (default: -0.15, keep negative)",
+    )
+    parser.add_argument(
+        "--adaptive-dsr-beta",
+        type=float,
+        default=0.92,
+        help="Adaptive risk reward DSR EMA β (default: 0.92)",
+    )
+    parser.add_argument(
+        "--adaptive-cvar-window",
+        type=int,
+        default=40,
+        help="Adaptive risk reward CVaR window length (default: 40)",
     )
 
     parser.add_argument(
