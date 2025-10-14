@@ -217,7 +217,7 @@ class IRTLoggingCallback(BaseCallback):
                 prototype_entropy = -torch.sum(prototype_avg_weights * torch.log(prototype_avg_weights + 1e-8)).item()
                 self.logger.record("irt/prototype_entropy", prototype_entropy)
 
-                # ===== Phase 3.5: α clamp 검증 =====
+                # ===== Phase 1.5: α clamp 검증 =====
                 if 'alpha_c_raw' in info:
                     alpha_c_raw_val = info['alpha_c_raw'].mean().item()
                     self.logger.record("irt/alpha_c_raw", alpha_c_raw_val)
@@ -227,6 +227,39 @@ class IRTLoggingCallback(BaseCallback):
 
                     self.logger.record("irt/pct_clamped_min", pct_clamped_min)
                     self.logger.record("irt/pct_clamped_max", pct_clamped_max)
+
+                # Phase 1.5: α 업데이트 상세 정보
+                if 'alpha_c_star' in info:
+                    self.logger.record("irt/alpha_c_star", info['alpha_c_star'].mean().item())
+                if 'alpha_c_decay_factor' in info:
+                    decay_mean = info['alpha_c_decay_factor'].mean().item()
+                    decay_min = info['alpha_c_decay_factor'].min().item()
+                    self.logger.record("irt/alpha_c_decay_factor", decay_mean)
+                    self.logger.record("irt/alpha_c_decay_factor_min", decay_min)
+                if 'alpha_candidate' in info:
+                    self.logger.record("irt/alpha_candidate_mean", info['alpha_candidate'].mean().item())
+                if 'alpha_state' in info:
+                    alpha_state_val = info['alpha_state']
+                    if isinstance(alpha_state_val, torch.Tensor):
+                        alpha_state_val = alpha_state_val.mean().item()
+                    elif isinstance(alpha_state_val, (list, tuple)):
+                        alpha_state_val = float(np.mean(alpha_state_val))
+                    self.logger.record("irt/alpha_state_buffer", float(alpha_state_val))
+                if 'alpha_feedback_gain' in info:
+                    gain_val = info['alpha_feedback_gain']
+                    if isinstance(gain_val, torch.Tensor):
+                        gain_val = gain_val.item()
+                    self.logger.record("irt/alpha_feedback_gain", float(gain_val))
+                if 'alpha_feedback_bias' in info:
+                    bias_val = info['alpha_feedback_bias']
+                    if isinstance(bias_val, torch.Tensor):
+                        bias_val = bias_val.item()
+                    self.logger.record("irt/alpha_feedback_bias", float(bias_val))
+                if 'directional_decay_min' in info:
+                    decay_floor = info['directional_decay_min']
+                    if isinstance(decay_floor, torch.Tensor):
+                        decay_floor = decay_floor.item()
+                    self.logger.record("irt/directional_decay_min", float(decay_floor))
 
                 # ===== Phase 3.5: 정책 하이퍼파라미터 확인 =====
                 actor = getattr(self.model.policy, "actor", None)
@@ -296,6 +329,17 @@ class IRTLoggingCallback(BaseCallback):
                                 exec_mean / (target_mean + 1e-8),
                             )
                 
+                # Phase 1.5: 프로토타입 전방 반영 검증
+                if 'concentrations_mean' in info and 'mixed_conc_mean' in info:
+                    conc_mean = info['concentrations_mean']  # [M, A]
+                    conc_std = info['concentrations_std']    # [M, A]
+                    # 프로토타입별 concentration 평균의 평균 (전체 평균)
+                    self.logger.record("irt/concentrations_global_mean", conc_mean.mean().item())
+                    self.logger.record("irt/concentrations_global_std", conc_std.mean().item())
+                    # 혼합 후 통계
+                    self.logger.record("irt/mixed_conc_mean", info['mixed_conc_mean'].item())
+                    self.logger.record("irt/mixed_conc_std", info['mixed_conc_std'].item())
+
                 # Phase 1.5: Gradient norm 로깅 (prototype 경로 검증)
                 actor = getattr(self.model.policy, "actor", None)
                 if actor is not None and hasattr(actor, 'irt_actor'):
@@ -313,6 +357,9 @@ class IRTLoggingCallback(BaseCallback):
                             grad_norm = (total_norm ** 0.5)
                             self.logger.record("irt/prototype_grad_norm", grad_norm)
                             self.logger.record("irt/prototype_grad_param_count", param_count)
+                    if hasattr(irt_actor, 'proto_keys') and irt_actor.proto_keys.grad is not None:
+                        proto_grad = irt_actor.proto_keys.grad.data.norm(2).item()
+                        self.logger.record("irt/proto_keys_grad_norm", proto_grad)
 
         return True
 
@@ -544,8 +591,16 @@ def train_irt(args):
     if args.reward_type == "dsr_cvar":
         print(f"    λ_dsr: {args.lambda_dsr}, λ_cvar: {args.lambda_cvar}")
     elif args.reward_type == "adaptive_risk":
+        rr = getattr(train_env, "risk_reward", None)
+        lambda_sharpe = getattr(rr, "lambda_sharpe_base", None)
+        lambda_cvar = getattr(rr, "lambda_cvar", None)
+        lambda_turnover = getattr(rr, "lambda_turnover", None)
+        crisis_gain = getattr(rr, "crisis_gain", None)
         print(f"    Phase-H1: Adaptive Risk-Aware Reward")
-        print(f"    λ_sharpe: 0.15, λ_cvar: 0.5, λ_turnover: 0.002, crisis_gain: 0.25")
+        print(
+            f"    λ_sharpe: {lambda_sharpe}, λ_cvar: {lambda_cvar}, "
+            f"λ_turnover: {lambda_turnover}, crisis_gain: {crisis_gain}"
+        )
 
     # 5. Train IRT model
     print(f"\n[5/5] Training SAC + IRT Policy...")
@@ -572,7 +627,7 @@ def train_irt(args):
     )
 
     # Phase A: IRT 계측 callback
-    irt_logging_callback = IRTLoggingCallback(verbose=0, log_freq=100)
+    irt_logging_callback = IRTLoggingCallback(verbose=0, log_freq=100, ema_beta=args.ema_beta)
 
     # IRT Policy kwargs
     policy_kwargs = {
@@ -595,6 +650,11 @@ def train_irt(args):
         "eta_0": args.eta_0,
         "eta_1": args.eta_1,
         "gamma": args.gamma,
+        "alpha_update_rate": args.alpha_update_rate,
+        "alpha_feedback_gain": args.alpha_feedback_gain,
+        "alpha_feedback_bias": args.alpha_feedback_bias,
+        "directional_decay_min": args.directional_decay_min,
+        "alpha_noise_std": args.alpha_noise_std,
         # Phase 3.5 Step 2: 다중 신호 위기 감지
         "w_r": args.w_r,
         "w_s": args.w_s,
@@ -751,6 +811,7 @@ def test_irt(args, model_path=None):
     print(f"  Test: {args.test_start} ~ {args.test_end}")
 
     # 메타데이터 로드 (관측 공간 검증 및 설정 유지)
+    # Phase 1.5: 체크포인트 config 우선
     env_meta = {}
     expected_obs_dim = None
     use_weighted_action = True
@@ -766,7 +827,11 @@ def test_irt(args, model_path=None):
         weight_slippage = env_meta.get("weight_slippage", weight_slippage)
         weight_transaction_cost = env_meta.get("weight_transaction_cost", weight_transaction_cost)
         reward_scaling = env_meta.get("reward_scaling", reward_scaling)
-        if env_meta.get("reward_type") and args.reward_type is None:
+
+        # Phase 1.5: 체크포인트 reward_type 우선 (CLI보다 우선)
+        if env_meta.get("reward_type"):
+            if args.reward_type and args.reward_type != env_meta["reward_type"]:
+                print(f"  Warning: Overriding CLI reward_type ({args.reward_type}) with checkpoint ({env_meta['reward_type']})")
             args.reward_type = env_meta["reward_type"]
 
     # evaluate.py의 evaluate_model() 재사용
@@ -892,6 +957,11 @@ def test_irt(args, model_path=None):
                 "eta_0": args.eta_0,
                 "eta_1": args.eta_1,
                 "gamma": args.gamma,
+                "alpha_update_rate": args.alpha_update_rate,
+                "alpha_feedback_gain": args.alpha_feedback_gain,
+                "alpha_feedback_bias": args.alpha_feedback_bias,
+                "directional_decay_min": args.directional_decay_min,
+                "alpha_noise_std": args.alpha_noise_std,
                 # Phase B
                 "w_r": args.w_r,
                 "w_s": args.w_s,
@@ -1003,10 +1073,40 @@ def main():
         help="Normal maximum alpha (Phase 2: increased for IRT flexibility)",
     )
     parser.add_argument(
+        "--alpha-update-rate",
+        type=float,
+        default=0.80,
+        help="Update rate for alpha_c state adaptation (default: 0.80)",
+    )
+    parser.add_argument(
+        "--alpha-feedback-gain",
+        type=float,
+        default=0.15,
+        help="Sharpe feedback gain for alpha_c (default: 0.15)",
+    )
+    parser.add_argument(
+        "--alpha-feedback-bias",
+        type=float,
+        default=0.0,
+        help="Sharpe feedback bias for alpha_c (default: 0.0)",
+    )
+    parser.add_argument(
+        "--directional-decay-min",
+        type=float,
+        default=0.10,
+        help="Minimum directional decay factor near alpha bounds (default: 0.10)",
+    )
+    parser.add_argument(
+        "--alpha-noise-std",
+        type=float,
+        default=0.02,
+        help="Gaussian noise std added to alpha during training (default: 0.02)",
+    )
+    parser.add_argument(
         "--ema-beta",
         type=float,
-        default=0.65,
-        help="EMA memory coefficient (default: 0.65, Phase 3.5)",
+        default=0.50,
+        help="EMA memory coefficient (default: 0.50, Phase 1.5)",
     )
     parser.add_argument(
         "--eps",
@@ -1023,8 +1123,8 @@ def main():
     parser.add_argument(
         "--replicator-temp",
         type=float,
-        default=1.4,
-        help="Replicator softmax temperature (default: 1.4, Phase F, >1 for diversity)",
+        default=0.4,
+        help="Replicator softmax temperature (default: 0.4 for stronger selection)",
     )
     parser.add_argument(
         "--eta-0",
@@ -1041,8 +1141,8 @@ def main():
     parser.add_argument(
         "--gamma",
         type=float,
-        default=0.65,
-        help="Co-stimulation weight in cost function (default: 0.65, Phase 3.5)",
+        default=0.90,
+        help="Co-stimulation weight in cost function (default: 0.90, Phase 1.5)",
     )
     parser.add_argument(
         "--market-feature-dim",
@@ -1054,20 +1154,20 @@ def main():
     parser.add_argument(
         "--dirichlet-min",
         type=float,
-        default=0.1,  # Phase 2: 0.8 → 0.1 (allow sparsity for exploration)
-        help="Dirichlet concentration minimum (Phase 2: enables sparse exploration)"
+        default=0.05,
+        help="Dirichlet concentration minimum (default: 0.05 for sharper selectivity)"
     )
     parser.add_argument(
         "--dirichlet-max",
         type=float,
-        default=5.0,  # Phase 2: 2.0 → 5.0 (keep current, only for stochastic)
-        help="Dirichlet concentration maximum (Phase 2: stochastic path only)"
+        default=6.0,
+        help="Dirichlet concentration maximum (encourages sharper prototypes)"
     )
     parser.add_argument(
         "--action-temp",
         type=float,
-        default=0.3,  # Phase 2: 0.9 → 0.3 (much sharper for concentrated portfolios)
-        help="Action softmax temperature (Phase 2: sharper = more concentration)"
+        default=0.4,
+        help="Action softmax temperature (default: 0.4 to promote differentiation)"
     )
 
     # Phase 3: DSR + CVaR 보상 파라미터
@@ -1174,14 +1274,14 @@ def main():
     parser.add_argument(
         "--crisis-guard-rate-init",
         type=float,
-        default=0.30,
-        help="Initial crisis guard rate during warmup (Phase 1 default: 0.30)",
+        default=0.10,
+        help="Initial crisis guard rate during warmup (default: 0.10)",
     )
     parser.add_argument(
         "--crisis-guard-rate-final",
         type=float,
-        default=0.05,
-        help="Final crisis guard rate after warmup (Phase 1 default: 0.05)",
+        default=0.0,
+        help="Final crisis guard rate after warmup (default: 0.0)",
     )
     parser.add_argument(
         "--crisis-guard-warmup-steps",
@@ -1192,14 +1292,14 @@ def main():
     parser.add_argument(
         "--hysteresis-up",
         type=float,
-        default=0.55,
-        help="Crisis entry threshold when previous regime is normal (Phase 1 default: 0.55)",
+        default=0.45,  # Phase 1.5: 0.55 → 0.45 (위기 검출 민감도 증가)
+        help="Crisis entry threshold when previous regime is normal (Phase 1.5 default: 0.45)",
     )
     parser.add_argument(
         "--hysteresis-down",
         type=float,
-        default=0.45,
-        help="Crisis exit threshold when previous regime is crisis (Phase 1 default: 0.45)",
+        default=0.35,  # Phase 1.5: 0.45 → 0.35 (위기 검출 민감도 증가)
+        help="Crisis exit threshold when previous regime is crisis (Phase 1.5 default: 0.35)",
     )
     parser.add_argument(
         "--k-s",

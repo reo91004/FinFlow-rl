@@ -23,6 +23,8 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from datetime import datetime
+from pathlib import Path
+from typing import Optional, Iterable, Dict, Any
 
 from finrl.config_tickers import DOW_30_TICKER
 from finrl.config import INDICATORS, TEST_START_DATE, TEST_END_DATE
@@ -32,6 +34,24 @@ from finrl.meta.env_stock_trading.env_stocktrading import StockTradingEnv
 from finrl.agents.stablebaselines3.models import DRLAgent
 from stable_baselines3 import SAC, PPO, A2C, TD3, DDPG
 from sb3_contrib.tqc import TQC
+
+
+def _unwrap_env(env):
+    """Extract the underlying base environment from VecEnv/wrappers."""
+    env_ref = env
+    visited = set()
+    while True:
+        if id(env_ref) in visited:
+            break
+        visited.add(id(env_ref))
+        if hasattr(env_ref, "envs") and getattr(env_ref, "envs"):
+            env_ref = env_ref.envs[0]
+            continue
+        if hasattr(env_ref, "env"):
+            env_ref = env_ref.env
+            continue
+        break
+    return env_ref
 
 
 def create_env(
@@ -77,7 +97,12 @@ def create_env(
 
 
 def calculate_metrics(
-    portfolio_values, initial_amount=1000000, weights_history=None, returns=None
+    portfolio_values,
+    initial_amount=1000000,
+    weights_history=None,
+    returns=None,
+    executed_weights_history=None,
+    turnover_target_series=None,
 ):
     """
     성능 지표 계산 (상세 메트릭 포함)
@@ -158,10 +183,17 @@ def calculate_metrics(
         np.std(downside_returns) * np.sqrt(252) if len(downside_returns) > 0 else 0
     )
 
-    # Turnover (if weights history provided)
-    avg_turnover = 0.0
-    if weights_history is not None and len(weights_history) > 1:
-        avg_turnover = calculate_turnover(np.array(weights_history))
+    # Turnover (target vs executed)
+    turnover_target = 0.0
+    turnover_actual = 0.0
+    if turnover_target_series is not None and len(turnover_target_series) > 0:
+        turnover_target = float(np.mean(turnover_target_series))
+    elif weights_history is not None and len(weights_history) > 1:
+        turnover_target = calculate_turnover(np.array(weights_history))
+    if executed_weights_history is not None and len(executed_weights_history) > 1:
+        turnover_actual = calculate_turnover(np.array(executed_weights_history))
+    else:
+        turnover_actual = turnover_target
 
     return {
         "total_return": total_return,
@@ -174,7 +206,9 @@ def calculate_metrics(
         "var_5": var_5,
         "cvar_5": cvar_5,
         "downside_deviation": downside_deviation,
-        "avg_turnover": avg_turnover,
+        "avg_turnover": turnover_actual,
+        "avg_turnover_target": turnover_target,
+        "turnover_gap_abs": abs(turnover_actual - turnover_target),
         "final_value": pv[-1],
         "n_steps": n_days,
     }
@@ -336,6 +370,45 @@ def evaluate_model(
     is_irt = "irt" in model_path.lower()
     requested_reward_type = reward_type
 
+    # Phase 1.5: Load checkpoint metadata first (reward scale, action mode, obs dim, etc.)
+    env_meta = {}
+    meta_candidates = []
+    try:
+        model_path_obj = Path(model_path).expanduser().resolve()
+        meta_candidates.append(model_path_obj.parent / "env_meta.json")
+        # Many checkpoints live in .../best_model/best_model.zip
+        meta_candidates.append(model_path_obj.parent.parent / "env_meta.json")
+    except Exception:
+        model_path_obj = None  # type: ignore[assignment]
+
+    for candidate in meta_candidates:
+        if candidate is None:
+            continue
+        try:
+            if candidate.exists():
+                with candidate.open("r") as meta_fp:
+                    env_meta = json.load(meta_fp)
+                break
+        except (OSError, json.JSONDecodeError):
+            continue
+
+    if env_meta:
+        meta_reward_type = env_meta.get("reward_type")
+        if meta_reward_type:
+            if requested_reward_type and requested_reward_type != meta_reward_type and verbose:
+                print(
+                    f"  Overriding requested reward_type '{requested_reward_type}' with checkpoint value '{meta_reward_type}'"
+                )
+            requested_reward_type = str(meta_reward_type)
+        if expected_obs_dim is None and env_meta.get("obs_dim") is not None:
+            expected_obs_dim = int(env_meta["obs_dim"])
+        use_weighted_action = bool(env_meta.get("use_weighted_action", use_weighted_action))
+        weight_slippage = float(env_meta.get("weight_slippage", weight_slippage))
+        weight_transaction_cost = float(
+            env_meta.get("weight_transaction_cost", weight_transaction_cost)
+        )
+        reward_scaling = float(env_meta.get("reward_scaling", reward_scaling))
+
     # Auto-detect reward type when loading IRT models (fallback if mismatch occurs)
     if is_irt:
         candidate_reward_types = []
@@ -413,11 +486,15 @@ def evaluate_model(
                 )
             else:
                 print(f"  Reward type: {env_reward_type}")
+
+    base_env = _unwrap_env(test_env) if test_env is not None else None
+
+    if verbose:
         print(
-            f"  Env settings → reward_scale={test_env.reward_scaling}, "
-            f"use_weighted_action={getattr(test_env, 'use_weighted_action', False)}, "
-            f"slippage={getattr(test_env, 'weight_slippage', None)}, "
-            f"tx_cost={getattr(test_env, 'weight_transaction_cost', None)}"
+            f"  Env settings → reward_scale={getattr(base_env, 'reward_scaling', None)}, "
+            f"use_weighted_action={getattr(base_env, 'use_weighted_action', False)}, "
+            f"slippage={getattr(base_env, 'weight_slippage', None)}, "
+            f"tx_cost={getattr(base_env, 'weight_transaction_cost', None)}"
         )
 
     def _apply_crisis_level(env_obj, level_value) -> None:
@@ -439,12 +516,95 @@ def evaluate_model(
         if hasattr(env_obj, "last_crisis_level"):
             env_obj.last_crisis_level = crisis_float
 
+    class _CrisisBridgeMonitor:
+        """Track crisis thresholds, regime state, and sync with environment."""
+
+        def __init__(
+            self,
+            vec_env=None,
+            base_env=None,
+            default_up: float = 0.55,
+            default_down: float = 0.45,
+        ):
+            self.vec_env = vec_env
+            self.base_env = base_env
+            self.hysteresis_up = float(default_up)
+            self.hysteresis_down = float(default_down)
+            self.prev_regime = None  # type: ignore[assignment]
+            self.latest_level = None  # type: ignore[assignment]
+            self.steps_crisis = 0
+            self.steps_normal = 0
+
+        @staticmethod
+        def _to_float(value, fallback=None):
+            try:
+                import torch  # type: ignore
+
+                if isinstance(value, torch.Tensor):
+                    value = value.detach().cpu().numpy()
+            except Exception:
+                pass
+            if value is None:
+                return fallback
+            try:
+                return float(np.asarray(value).astype(np.float64).reshape(-1)[0])
+            except (TypeError, ValueError, IndexError):
+                return fallback
+
+        def observe_policy(self, info_dict) -> None:
+            """Ingest policy-side statistics prior to env update."""
+            if not info_dict or "crisis_level" not in info_dict:
+                self.latest_level = None
+                return
+
+            self.latest_level = self._to_float(info_dict.get("crisis_level"), None)
+
+            hysteresis_up_val = self._to_float(info_dict.get("hysteresis_up"), None)
+            hysteresis_down_val = self._to_float(info_dict.get("hysteresis_down"), None)
+            if hysteresis_up_val is not None:
+                self.hysteresis_up = hysteresis_up_val
+            if hysteresis_down_val is not None:
+                self.hysteresis_down = hysteresis_down_val
+
+        def inject_env(self) -> None:
+            """Push latest crisis level into the environment via bridge."""
+            if self.latest_level is None:
+                return
+            env_target = self.base_env if self.base_env is not None else self.vec_env
+            _apply_crisis_level(env_target, self.latest_level)
+
+        def classify(self):
+            """Compute hysteresis-based regime label and update counters."""
+            if self.latest_level is None:
+                return None
+
+            if self.prev_regime is None:
+                regime = 1 if self.latest_level > 0.5 else 0
+            elif self.prev_regime == 0:
+                regime = 1 if self.latest_level > self.hysteresis_up else 0
+            else:
+                regime = 0 if self.latest_level < self.hysteresis_down else 1
+
+            self.prev_regime = regime
+            if regime == 1:
+                self.steps_crisis += 1
+            else:
+                self.steps_normal += 1
+            return regime
+
+        def stats(self):
+            return {
+                "steps_crisis": self.steps_crisis,
+                "steps_normal": self.steps_normal,
+            }
+
     # 4. 평가 실행
     if verbose:
         print(f"\n[4/4] Running evaluation...")
     obs, _ = test_env.reset()
     if is_irt and env_reward_type == "adaptive_risk":
-        _apply_crisis_level(test_env, getattr(test_env, "last_crisis_level", 0.5))
+        target_env = base_env if base_env is not None else test_env
+        _apply_crisis_level(target_env, getattr(target_env, "last_crisis_level", 0.5))
     done = False
     portfolio_values = [initial_amount]
     value_returns = []
@@ -493,10 +653,11 @@ def evaluate_model(
     else:
         irt_data_list = {}
 
-    # Phase 1.5: 평가 시 히스테리시스 상태 명시적 관리
-    # bcell_actor의 crisis_regime은 학습 버퍼 상태에 의존하므로,
-    # 평가 시작 시 명시적으로 초기화하고 step별로 추적
-    eval_crisis_regime_prev = None  # None=첫 스텝, 0=평시, 1=위기
+    bridge_monitor = (
+        _CrisisBridgeMonitor(vec_env=test_env, base_env=base_env)
+        if is_irt
+        else None
+    )
 
     step = 0
     while not done:
@@ -507,6 +668,8 @@ def evaluate_model(
         if is_irt and hasattr(model.policy, "get_irt_info"):
             info_dict = model.policy.get_irt_info()
             if info_dict is not None:
+                if bridge_monitor is not None:
+                    bridge_monitor.observe_policy(info_dict)
                 # Batch=1이므로 [0] 인덱스로 추출
                 irt_data_list["w"].append(info_dict["w"][0].cpu().numpy())
                 irt_data_list["w_rep"].append(info_dict["w_rep"][0].cpu().numpy())
@@ -568,70 +731,23 @@ def evaluate_model(
                         ).item()
                     )
                     irt_data_list["hysteresis_down"].append(hysteresis_down_val)
-
-                # Phase 1.5: 평가 시 히스테리시스 기반 레짐 분류
-                # bcell_actor의 crisis_regime은 훈련 버퍼 상태에 의존하므로,
-                # 평가에서는 명시적으로 step-by-step 히스테리시스 적용
-                crisis_level_val = float(
-                    info_dict["crisis_level"][0].cpu().numpy().item()
-                )
-
-                if eval_crisis_regime_prev is None:
-                    # 첫 스텝: 단순 임계치 기준
-                    eval_crisis_regime = 1 if crisis_level_val > 0.5 else 0
-                else:
-                    # 히스테리시스 적용
-                    if eval_crisis_regime_prev == 0:
-                        # 평시 → 위기 진입: hysteresis_up 초과 시
-                        eval_crisis_regime = (
-                            1 if crisis_level_val > hysteresis_up_val else 0
-                        )
-                    else:
-                        # 위기 → 평시 복귀: hysteresis_down 미만 시
-                        eval_crisis_regime = (
-                            0 if crisis_level_val < hysteresis_down_val else 1
-                        )
-
-                # bcell_actor의 crisis_regime과 비교 (검증용)
-                bcell_crisis_regime = None
-                if "crisis_regime" in info_dict:
-                    bcell_crisis_regime = int(
-                        info_dict["crisis_regime"][0].cpu().numpy().item()
-                    )
-                    # 불일치 시 로깅 (첫 몇 스텝은 버퍼 초기화 차이로 불일치 가능)
-                    if step > 5 and bcell_crisis_regime != eval_crisis_regime:
-                        if step < 10:  # 초기 불일치만 로깅
-                            print(
-                                f"  [Step {step}] Crisis regime mismatch: bcell={bcell_crisis_regime}, eval={eval_crisis_regime}, level={crisis_level_val:.3f}"
-                            )
-
-                # 평가 전용 레짐 사용 (학습 버퍼 독립적)
-                irt_data_list["crisis_regime"].append(eval_crisis_regime)
-                eval_crisis_regime_prev = eval_crisis_regime
-
                 # Action을 weight로 변환 (simplex 정규화)
                 weights = action / (action.sum() + 1e-8)
                 irt_data_list["weights"].append(weights.copy())
 
+        if bridge_monitor is not None and info_dict is None:
+            bridge_monitor.observe_policy(None)
+
         next_obs, reward, done_step, truncated, info = test_env.step(action)
         done = done_step or truncated
 
-        # Phase-H1: Crisis bridge during evaluation (policy → env)
-        if (
-            is_irt
-            and env_reward_type == "adaptive_risk"
-            and info_dict is not None
-            and info_dict.get("crisis_level") is not None
-        ):
-            crisis_value = info_dict["crisis_level"][0]
-            if hasattr(crisis_value, "detach"):
-                crisis_value = crisis_value.detach()
-            if hasattr(crisis_value, "cpu"):
-                crisis_value = crisis_value.cpu()
-            crisis_level_scalar = float(
-                np.asarray(crisis_value, dtype=np.float64).item()
-            )
-            _apply_crisis_level(test_env, crisis_level_scalar)
+        # Phase-H1: Crisis bridge during evaluation (policy → env) & hysteresis classify
+        if bridge_monitor is not None:
+            if env_reward_type == "adaptive_risk":
+                bridge_monitor.inject_env()
+            regime = bridge_monitor.classify()
+            if regime is not None:
+                irt_data_list["crisis_regime"].append(int(regime))
 
         # Portfolio value 계산
         state = np.asarray(test_env.state, dtype=np.float64)
@@ -728,6 +844,19 @@ def evaluate_model(
     if verbose:
         print(f"  Evaluation completed: {step} steps")
 
+    if bridge_monitor is not None:
+        stats = bridge_monitor.stats()
+        total_reg = stats.get("steps_crisis", 0) + stats.get("steps_normal", 0)
+        expected_reg = len(irt_data_list.get("crisis_levels", []))
+        if total_reg == 0:
+            raise RuntimeError(
+                "Crisis regime classification produced zero samples. Verify bridge wiring."
+            )
+        if expected_reg and total_reg != expected_reg:
+            print(
+                f"⚠️  Crisis regime length mismatch (classified {total_reg} vs {expected_reg}).",
+            )
+
     # 수익률 정제
     from finrl.evaluation.visualizer import sanitize_returns
 
@@ -810,30 +939,48 @@ def evaluate_model(
                 irt_data_list["crisis_guard_rate"]
             ).squeeze()
 
+        env_info = {
+            "reward_type": env_reward_type,
+            "reward_scaling": getattr(base_env, "reward_scaling", None),
+            "use_weighted_action": getattr(base_env, "use_weighted_action", None),
+            "weight_slippage": getattr(base_env, "weight_slippage", None),
+            "weight_transaction_cost": getattr(
+                base_env, "weight_transaction_cost", None
+            ),
+        }
+        irt_data["env_info"] = env_info
+        if env_meta:
+            irt_data["env_meta"] = env_meta
+
     # 성능 지표 계산
     weights_history = irt_data["weights"] if irt_data else None
+    executed_weights_history = irt_data["actual_weights"] if irt_data else None
     metrics = calculate_metrics(
         portfolio_values,
         initial_amount,
         weights_history,
         returns=execution_returns_array,
+        executed_weights_history=executed_weights_history,
+        turnover_target_series=turnover_target_array,
     )
 
     avg_turnover_exec = (
         float(np.mean(turnover_executed_array)) if turnover_executed_array.size else 0.0
     )
+    avg_turnover_target = (
+        float(np.mean(turnover_target_array)) if turnover_target_array.size else 0.0
+    )
+
+    metrics["avg_turnover"] = avg_turnover_exec
     metrics["avg_turnover_executed"] = avg_turnover_exec
+    metrics["avg_turnover_target_env"] = avg_turnover_target
+    metrics["avg_turnover_target"] = avg_turnover_target
     metrics["turnover_executed_std"] = (
         float(np.std(turnover_executed_array)) if turnover_executed_array.size else 0.0
     )
-    if turnover_target_array.size:
-        avg_turnover_target = float(np.mean(turnover_target_array))
-        metrics["avg_turnover_target"] = avg_turnover_target
-        metrics["turnover_target_std"] = float(np.std(turnover_target_array))
-    else:
-        avg_turnover_target = float(metrics.get("avg_turnover", 0.0) or 0.0)
-        metrics["avg_turnover_target"] = 0.0
-        metrics["turnover_target_std"] = 0.0
+    metrics["turnover_target_std"] = (
+        float(np.std(turnover_target_array)) if turnover_target_array.size else 0.0
+    )
     metrics["turnover_transfer_ratio"] = (
         float(avg_turnover_exec / (avg_turnover_target + 1e-8))
         if avg_turnover_exec or avg_turnover_target
@@ -1153,6 +1300,18 @@ def main(args):
             irt_data=irt_data,
         )
 
+    env_info = {}
+    env_meta = None
+    if isinstance(irt_data, dict):
+        env_info = irt_data.pop("env_info", {}) or {}
+        env_meta = irt_data.pop("env_meta", None)
+
+    env_reward_type = env_info.get("reward_type")
+    reward_scaling = env_info.get("reward_scaling")
+    use_weighted_action = env_info.get("use_weighted_action")
+    weight_slippage = env_info.get("weight_slippage")
+    weight_transaction_cost = env_info.get("weight_transaction_cost")
+
     # 8. JSON 저장 (기본 활성화)
     if not args.no_json:
         from finrl.evaluation.visualizer import save_evaluation_results
@@ -1170,21 +1329,36 @@ def main(args):
                 "weights": irt_data.get("weights"),
                 "actual_weights": irt_data.get("actual_weights"),
                 "crisis_levels": irt_data.get("crisis_levels"),
+                "crisis_regime": irt_data.get("crisis_regime"),
                 "crisis_types": irt_data.get("crisis_types"),
                 "prototype_weights": irt_data.get("prototype_weights"),
                 "w_rep": irt_data.get("w_rep"),
                 "w_ot": irt_data.get("w_ot"),
                 "eta": irt_data.get("eta"),
                 "alpha_c": irt_data.get("alpha_c"),
+                "alpha_c_raw": irt_data.get("alpha_c_raw"),
+                "alpha_c_prev": irt_data.get("alpha_c_prev"),
                 "cost_matrices": irt_data.get("cost_matrices"),
                 "symbols": irt_data.get("symbols"),
                 "transaction_costs": irt_data.get("transaction_costs"),
                 "turnover_executed": irt_data.get("turnover_executed"),
+                "hysteresis_up": irt_data.get("hysteresis_up"),
+                "hysteresis_down": irt_data.get("hysteresis_down"),
+                "turnover_target_series": irt_data.get("turnover_target"),
                 "metrics": metrics,
             }
 
             # Config (IRT Policy의 경우)
-            config = {"irt": {"alpha": 0.3}}  # TODO: 모델에서 추출하거나 인자로 받기
+            config = {
+                "env": {
+                    "reward_type": env_reward_type,
+                    "reward_scaling": reward_scaling,
+                    "use_weighted_action": use_weighted_action,
+                    "weight_slippage": weight_slippage,
+                    "weight_transaction_cost": weight_transaction_cost,
+                },
+                "meta": env_meta,
+            }
 
             print(f"\n  Saving detailed JSON (IRT data)...")
             save_evaluation_results(results, Path(output_dir), config)

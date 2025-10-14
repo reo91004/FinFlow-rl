@@ -245,18 +245,22 @@ class IRTPolicy(SACPolicy):
         alpha: float = 0.45,  # Phase F: alpha_max 기본값
         alpha_min: float = 0.08,  # Phase F: Rep 경로 확보
         alpha_max: Optional[float] = None,
-        ema_beta: float = 0.70,  # Phase-3: 0.85 → 0.70 (전달 감쇠 완화)
+        ema_beta: float = 0.55,  # Phase 1.5: 0.70 → 0.55 (faster responsiveness)
         market_feature_dim: int = 12,
-        dirichlet_min: float = 0.1,
-        dirichlet_max: float = 10.0,
-        action_temp: float = 0.6,
+        dirichlet_min: float = 0.05,
+        dirichlet_max: float = 6.0,
+        action_temp: float = 0.4,
         eps: float = 0.03,  # Phase-F2': 0.05 → 0.03 (OT 평탄화 완화)
         max_iters: int = 30,
-        replicator_temp: float = 0.9,
+        replicator_temp: float = 0.4,
         eta_0: float = 0.05,
         eta_1: float = 0.12,  # Phase E: 민감도 완화
-        alpha_update_rate: float = 0.25,
-        gamma: float = 0.85,  # Phase E: 평활화 증가
+        alpha_update_rate: float = 0.95,
+        alpha_feedback_gain: float = 0.10,
+        alpha_feedback_bias: float = 0.0,
+        directional_decay_min: float = 0.0,
+        alpha_noise_std: float = 0.0,
+        gamma: float = 0.90,  # Phase 1.5: cost responsiveness ↑ (0.85 → 0.90)
         # Phase 1: Crisis calibration defaults
         w_r: float = 0.55,
         w_s: float = -0.25,
@@ -276,10 +280,12 @@ class IRTPolicy(SACPolicy):
         crisis_guard_rate_init: float = 0.30,
         crisis_guard_rate_final: float = 0.05,
         crisis_guard_warmup_steps: int = 10000,
-        hysteresis_up: float = 0.55,
-        hysteresis_down: float = 0.45,
+        # Phase 1.5: 히스테리시스 임계치 하향 (0.55/0.45 → 0.45/0.35)
+        hysteresis_up: float = 0.45,
+        hysteresis_down: float = 0.35,
         adaptive_hysteresis: bool = True,
-        hysteresis_quantile: float = 0.85,
+        # Phase 1.5: 분위수 하향 (0.85 → 0.65)
+        hysteresis_quantile: float = 0.65,
         hysteresis_min_gap: float = 0.1,
         crisis_history_len: int = 512,
         k_s: float = 6.0,
@@ -343,6 +349,10 @@ class IRTPolicy(SACPolicy):
         self.eta_0 = eta_0
         self.eta_1 = eta_1
         self.alpha_update_rate = alpha_update_rate
+        self.alpha_feedback_gain = alpha_feedback_gain
+        self.alpha_feedback_bias = alpha_feedback_bias
+        self.directional_decay_min = directional_decay_min
+        self.alpha_noise_std = alpha_noise_std
         self.gamma = gamma
         self.w_r = w_r
         self.w_s = w_s
@@ -426,6 +436,10 @@ class IRTPolicy(SACPolicy):
             eta_0=self.eta_0,
             eta_1=self.eta_1,
             alpha_update_rate=self.alpha_update_rate,
+            alpha_feedback_gain=self.alpha_feedback_gain,
+            alpha_feedback_bias=self.alpha_feedback_bias,
+            directional_decay_min=self.directional_decay_min,
+            alpha_noise_std=self.alpha_noise_std,
             gamma=self.gamma,
             w_r=self.w_r,
             w_s=self.w_s,
@@ -488,6 +502,9 @@ class IRTPolicy(SACPolicy):
                 eta_0=self.eta_0,
                 eta_1=self.eta_1,
                 alpha_update_rate=self.alpha_update_rate,
+                alpha_feedback_gain=self.alpha_feedback_gain,
+                alpha_feedback_bias=self.alpha_feedback_bias,
+                directional_decay_min=self.directional_decay_min,
                 gamma=self.gamma,
                 w_r=self.w_r,
                 w_s=self.w_s,

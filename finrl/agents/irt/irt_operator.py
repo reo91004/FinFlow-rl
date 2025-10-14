@@ -101,18 +101,22 @@ class IRT(nn.Module):
                  alpha: float = 0.45,  # Phase F: alpha_max 기본값으로 사용
                  alpha_min: float = 0.05,  # Phase 3.5: 0.08 → 0.05 (Rep 경로 확장)
                  alpha_max: Optional[float] = 0.55,  # Phase 3.5: OT 상한 확장
-                 gamma: float = 0.65,  # Phase 3.5: 0.85 → 0.65 (crisis decay 완화, 반응성 증가)
+                 gamma: float = 0.90,  # Phase 1.5: 위기 반응성 강화 (0.65 → 0.90)
                  lambda_tol: float = 2.0,
                  rho: float = 0.3,
                  eta_0: float = 0.05,
                  eta_1: float = 0.12,  # Phase E: 0.25 → 0.12 (민감도 완화)
-                 alpha_update_rate: float = 0.25,
+                 alpha_update_rate: float = 0.95,
+                 alpha_feedback_gain: float = 0.10,
+                 alpha_feedback_bias: float = 0.0,
+                 directional_decay_min: float = 0.0,
+                 alpha_noise_std: float = 0.0,
                  kappa: float = 1.0,
                  eps_tol: float = 0.1,
                  n_self_sigs: int = 4,
                  max_iters: int = 30,
                  tol: float = 1e-3,
-                 replicator_temp: float = 1.4):  # Phase F: 0.9 → 1.4 (분포 평탄화)
+                 replicator_temp: float = 0.4):
         super().__init__()
 
         self.emb_dim = emb_dim
@@ -140,6 +144,10 @@ class IRT(nn.Module):
         self.eta_1 = eta_1          # 위기 시 증가량
 
         self.alpha_update_rate = float(alpha_update_rate)
+        self.alpha_feedback_gain = float(alpha_feedback_gain)
+        self.alpha_feedback_bias = float(alpha_feedback_bias)
+        self.directional_decay_min = float(max(min(directional_decay_min, 1.0), 0.0))
+        self.alpha_noise_std = float(max(alpha_noise_std, 0.0))
 
         # Replicator 온도 (균등 혼합 고착 해제)
         self.replicator_temp = replicator_temp
@@ -290,26 +298,45 @@ class IRT(nn.Module):
         # Temperature softmax (τ < 1: 뾰족하게, 균등 혼합 고착 해제)
         tilde_w = F.softmax(log_tilde_w / self.replicator_temp, dim=-1)  # [B, M]
 
-        # ===== Step 3: 동적 α(c) 계산 =====
+        # ===== Step 3: 동적 α(c) 계산 (cosine mapping) =====
         # α(c) = α_max + (α_min - α_max) · (1 - cos(πc)) / 2
-        # c=0 (평시) → α(c)=α_max (OT 증가)
-        # c=1 (위기) → α(c)=α_min (Replicator 증가)
-        pi_c = torch.tensor(torch.pi, device=crisis_level_safe.device) * crisis_level_safe
+        # c=0 → α=α_max, c=1 → α=α_min, 중간에서 민감도 최대
+        pi_c = torch.tensor(torch.pi, device=crisis_level_safe.device) * torch.clamp(crisis_level_safe, 0.0, 1.0)
         alpha_c = self.alpha_max + (self.alpha_min - self.alpha_max) * (1 - torch.cos(pi_c)) / 2
 
         # ===== Step 3.5: Sharpe gradient feedback (Phase C: 이득 증폭) =====
         # delta_sharpe > 0 (상승) → alpha_c 증가 → OT 기여 ↑
         # delta_sharpe < 0 (하락) → alpha_c 감소 → Rep 기여 ↑
-        # 곱셈(0.6) + 가법(+0.07): 저α 영역에서도 feedback 효과 유지
+        # Phase 1.5: 증폭 계수 재조정 (gain/bias 파라미터화)
         delta_sharpe_safe = torch.nan_to_num(delta_sharpe, nan=0.0)  # [B, 1]
         delta_tanh = torch.tanh(delta_sharpe_safe)
-        alpha_c_raw = alpha_c * (1 + 0.6 * delta_tanh) + 0.07 * delta_tanh
+        alpha_c_raw = alpha_c * (1 + self.alpha_feedback_gain * delta_tanh) + self.alpha_feedback_bias * delta_tanh
 
         # 방향성 감쇠 기반 α 업데이트 (Phase 1.5)
         alpha_star = torch.clamp(alpha_c_raw, min=self.alpha_min, max=self.alpha_max)
+        if self.alpha_noise_std > 0 and self.training:
+            noise = torch.randn_like(alpha_star) * self.alpha_noise_std
+            alpha_star = torch.clamp(alpha_star + noise, min=self.alpha_min, max=self.alpha_max)
         alpha_prev = self.alpha_state.to(alpha_star.device).expand(B, 1)
         delta_raw = alpha_star - alpha_prev
-        delta = self.alpha_update_rate * delta_raw
+
+        # Phase 1.5: 방향성 감쇠 - 상한/하한 근처에서 업데이트 감속
+        alpha_range = self.alpha_max - self.alpha_min
+        distance_to_max = (self.alpha_max - alpha_prev) / (alpha_range + 1e-8)
+        distance_to_min = (alpha_prev - self.alpha_min) / (alpha_range + 1e-8)
+
+        # 증가 방향: 상한에 가까울수록 감쇠 (최소 directional_decay_min 배)
+        # 감소 방향: 하한에 가까울수록 감쇠 (최소 directional_decay_min 배)
+        decay_min = torch.tensor(
+            self.directional_decay_min, device=delta_raw.device, dtype=delta_raw.dtype
+        )
+        decay_factor = torch.where(
+            delta_raw > 0,
+            torch.clamp(distance_to_max, min=decay_min, max=1.0),
+            torch.clamp(distance_to_min, min=decay_min, max=1.0)
+        )
+
+        delta = self.alpha_update_rate * delta_raw * decay_factor
         alpha_candidate = alpha_prev + delta
         alpha_c = torch.clamp(alpha_candidate, min=self.alpha_min, max=self.alpha_max)
 
@@ -337,11 +364,18 @@ class IRT(nn.Module):
             'cost_matrix': C,  # [B, m, M] - Immunological cost
             'eta': eta,        # [B, 1] - Crisis-adaptive learning rate
             'alpha_c': alpha_c,  # [B, 1] - Dynamic OT-Replicator mixing ratio (clamped)
-            # Phase 3.5: Clamp 검증
+            # Phase 1.5: α 업데이트 상세 정보
             'alpha_c_raw': alpha_c_raw,  # [B, 1] - Raw alpha before clamp
             'alpha_c_prev': alpha_prev.detach(),  # [B, 1]
+            'alpha_c_star': alpha_star,  # [B, 1] - Target alpha (after first clamp)
+            'alpha_c_decay_factor': decay_factor,  # [B, 1] - Directional decay factor
             'pct_clamped_min': pct_clamped_min,  # scalar - % samples clamped to min
             'pct_clamped_max': pct_clamped_max,  # scalar - % samples clamped to max
+            'alpha_candidate': alpha_candidate.detach(),  # [B, 1] - Pre-clamp candidate
+            'alpha_state_buffer': self.alpha_state.detach().clone(),  # [1,1] - Persistent state
+            'alpha_feedback_gain': torch.tensor(self.alpha_feedback_gain, device=alpha_c.device),
+            'alpha_feedback_bias': torch.tensor(self.alpha_feedback_bias, device=alpha_c.device),
+            'directional_decay_min': torch.tensor(self.directional_decay_min, device=alpha_c.device),
         }
 
         return w, P, debug_info

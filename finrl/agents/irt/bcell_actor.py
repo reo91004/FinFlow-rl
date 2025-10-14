@@ -23,54 +23,59 @@ from typing import Tuple, Optional, Dict, List, Any
 from finrl.agents.irt.irt_operator import IRT
 from finrl.agents.irt.t_cell import TCellMinimal
 
+
 class BCellIRTActor(nn.Module):
     """IRT 기반 B-Cell Actor (간소화 버전)"""
 
-    def __init__(self,
-                 state_dim: int,
-                 action_dim: int,
-                 emb_dim: int = 128,
-                 m_tokens: int = 6,
-                 M_proto: int = 8,
-                 alpha: float = 0.3,
-                 alpha_min: float = 0.06,
-                 alpha_max: Optional[float] = None,
-                 ema_beta: float = 0.5,  # Phase 2.2a: 0.65 → 0.5 (faster adaptation to fitness signals)
-                 market_feature_dim: int = 12,
-                 dirichlet_min: float = 0.1,  # Phase 2: 0.8 → 0.1 (allow sparsity for exploration)
-                 dirichlet_max: float = 5.0,  # Phase 2: keep 5.0 (Dirichlet stochastic path)
-                 action_temp: float = 0.3,  # Phase 2: 0.7 → 0.3 (sharper for concentration)
-                 # Phase 3.5 Step 2: 다중 신호 위기 감지
-                 w_r: float = 0.55,
-                 w_s: float = -0.25,
-                 w_c: float = 0.20,
-                 # Phase B: 바이어스 EMA 보정
-                 eta_b: float = 0.02,
-                 eta_b_min: float = 0.002,
-                 eta_b_decay_steps: int = 30000,
-                 eta_T: float = 0.01,
-                 eta_b_warmup_steps: int = 10000,
-                 eta_b_warmup_value: float = 0.05,
-                 # T-Cell 가드
-                 crisis_target: float = 0.5,  # 목표 crisis_regime_pct
-                 crisis_guard_rate_init: float = 0.30,
-                 crisis_guard_rate_final: float = 0.05,
-                 crisis_guard_warmup_steps: int = 10000,
-                 hysteresis_up: float = 0.55,
-                 hysteresis_down: float = 0.45,
-                 adaptive_hysteresis: bool = True,
-                 hysteresis_quantile: float = 0.85,
-                 hysteresis_min_gap: float = 0.1,
-                 crisis_history_len: int = 512,
-                 crisis_guard_rate: Optional[float] = None,
-                 k_s: float = 6.0,
-                 k_c: float = 6.0,
-                 k_b: float = 4.0,
-                 p_star: float = 0.35,
-                 temperature_min: float = 0.7,
-                 temperature_max: float = 1.1,
-                 stat_momentum: float = 0.95,
-                 **irt_kwargs):
+    def __init__(
+        self,
+        state_dim: int,
+        action_dim: int,
+        emb_dim: int = 128,
+        m_tokens: int = 6,
+        M_proto: int = 8,
+        alpha: float = 0.3,
+        alpha_min: float = 0.06,
+        alpha_max: Optional[float] = None,
+        ema_beta: float = 0.55,  # Phase 1.5: 0.65 → 0.55 (faster adaptation to fitness signals)
+        market_feature_dim: int = 12,
+        dirichlet_min: float = 0.05,
+        dirichlet_max: float = 6.0,
+        action_temp: float = 0.35,
+        # Phase 3.5 Step 2: 다중 신호 위기 감지
+        w_r: float = 0.55,
+        w_s: float = -0.25,
+        w_c: float = 0.20,
+        # Phase B: 바이어스 EMA 보정
+        eta_b: float = 0.02,
+        eta_b_min: float = 0.002,
+        eta_b_decay_steps: int = 30000,
+        eta_T: float = 0.01,
+        eta_b_warmup_steps: int = 10000,
+        eta_b_warmup_value: float = 0.05,
+        # T-Cell 가드
+        crisis_target: float = 0.45,  # 목표 crisis_regime_pct
+        crisis_guard_rate_init: float = 0.10,
+        crisis_guard_rate_final: float = 0.0,
+        crisis_guard_warmup_steps: int = 10000,
+        # Phase 1.5: 히스테리시스 임계치 하향 (0.55/0.45 → 0.45/0.35)
+        hysteresis_up: float = 0.45,
+        hysteresis_down: float = 0.35,
+        adaptive_hysteresis: bool = True,
+        # Phase 1.5: 분위수 하향 (0.85 → 0.65)
+        hysteresis_quantile: float = 0.65,
+        hysteresis_min_gap: float = 0.1,
+        crisis_history_len: int = 512,
+        crisis_guard_rate: Optional[float] = None,
+        k_s: float = 6.0,
+        k_c: float = 6.0,
+        k_b: float = 4.0,
+        p_star: float = 0.35,
+        temperature_min: float = 0.7,
+        temperature_max: float = 1.1,
+        stat_momentum: float = 0.95,
+        **irt_kwargs
+    ):
         """
         Args:
             state_dim: 상태 차원 (예: 181 for Dow 30)
@@ -128,17 +133,17 @@ class BCellIRTActor(nn.Module):
         self.stats_eps = 1e-6
         self._orientation_checked = False
 
-        self.register_buffer('crisis_bias', torch.zeros(1))
-        self.register_buffer('crisis_temperature', torch.ones(1))
-        self.register_buffer('crisis_prev_regime', torch.zeros(1))
-        self.register_buffer('crisis_step', torch.zeros(1))
-        self.register_buffer('sharpe_mean', torch.zeros(1))
-        self.register_buffer('sharpe_var', torch.ones(1))
-        self.register_buffer('cvar_mean', torch.zeros(1))
-        self.register_buffer('cvar_var', torch.ones(1))
-        self.register_buffer('crisis_base_mean', torch.zeros(1))
-        self.register_buffer('crisis_base_var', torch.ones(1))
-        self.register_buffer('bias_warm_started', torch.zeros(1))
+        self.register_buffer("crisis_bias", torch.zeros(1))
+        self.register_buffer("crisis_temperature", torch.ones(1))
+        self.register_buffer("crisis_prev_regime", torch.zeros(1))
+        self.register_buffer("crisis_step", torch.zeros(1))
+        self.register_buffer("sharpe_mean", torch.zeros(1))
+        self.register_buffer("sharpe_var", torch.ones(1))
+        self.register_buffer("cvar_mean", torch.zeros(1))
+        self.register_buffer("cvar_var", torch.ones(1))
+        self.register_buffer("crisis_base_mean", torch.zeros(1))
+        self.register_buffer("crisis_base_var", torch.ones(1))
+        self.register_buffer("bias_warm_started", torch.zeros(1))
         self._crisis_initialized = False
         self._verify_signal_orientation()
 
@@ -157,7 +162,9 @@ class BCellIRTActor(nn.Module):
         self.register_buffer("crisis_hist_ptr", torch.tensor(0, dtype=torch.long))
         self.register_buffer("crisis_hist_count", torch.tensor(0, dtype=torch.long))
         self.register_buffer("hysteresis_up_state", torch.tensor(float(hysteresis_up)))
-        self.register_buffer("hysteresis_down_state", torch.tensor(float(hysteresis_down)))
+        self.register_buffer(
+            "hysteresis_down_state", torch.tensor(float(hysteresis_down))
+        )
         if crisis_guard_rate is not None:
             self.crisis_guard_rate_init = float(crisis_guard_rate)
             self.crisis_guard_rate_final = float(crisis_guard_rate)
@@ -169,29 +176,29 @@ class BCellIRTActor(nn.Module):
             nn.LayerNorm(256),
             nn.ReLU(),
             nn.Dropout(0.1),
-            nn.Linear(256, m_tokens * emb_dim)
+            nn.Linear(256, m_tokens * emb_dim),
         )
 
         # ===== 프로토타입 키 (학습 가능) =====
         # Xavier 초기화
-        self.proto_keys = nn.Parameter(
-            torch.randn(M_proto, emb_dim) / (emb_dim ** 0.5)
-        )
+        self.proto_keys = nn.Parameter(torch.randn(M_proto, emb_dim) / (emb_dim**0.5))
 
         # ===== 프로토타입별 Dirichlet 디코더 =====
         # 각 프로토타입은 독립적인 정책 (전문가)
         # Phase 3.1: Tanh transformation to allow prototype suppression
-        self.decoders = nn.ModuleList([
-            nn.Sequential(
-                nn.Linear(emb_dim, 128),
-                nn.ReLU(),
-                nn.Dropout(0.1),
-                nn.Linear(128, action_dim),
-                nn.Tanh(),  # [-1, 1] allows both positive and negative logits
-            )
-            for _ in range(M_proto)
-        ])
-        
+        self.decoders = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.Linear(emb_dim, 128),
+                    nn.ReLU(),
+                    nn.Dropout(0.1),
+                    nn.Linear(128, action_dim),
+                    nn.Tanh(),  # [-1, 1] allows both positive and negative logits
+                )
+                for _ in range(M_proto)
+            ]
+        )
+
         # Phase 3.1: Initialize with diversity (keep from 2.2a)
         for decoder_idx, decoder in enumerate(self.decoders):
             # decoder[-2] is the final Linear(128, action_dim) layer before Tanh
@@ -213,13 +220,10 @@ class BCellIRTActor(nn.Module):
         )
 
         # ===== T-Cell 통합 =====
-        self.t_cell = TCellMinimal(
-            in_dim=market_feature_dim,
-            emb_dim=emb_dim
-        )
+        self.t_cell = TCellMinimal(in_dim=market_feature_dim, emb_dim=emb_dim)
 
         # ===== 이전 가중치 (EMA) =====
-        self.register_buffer('w_prev', torch.full((1, M_proto), 1.0/M_proto))
+        self.register_buffer("w_prev", torch.full((1, M_proto), 1.0 / M_proto))
 
     def _load_from_state_dict(
         self,
@@ -229,24 +233,24 @@ class BCellIRTActor(nn.Module):
         strict: bool,
         missing_keys: List[str],
         unexpected_keys: List[str],
-        error_msgs: List[str]
+        error_msgs: List[str],
     ) -> None:
         """
         Backward compatibility for checkpoints saved before Phase 1 buffers were added.
         Missing buffers are initialized to sensible defaults instead of raising.
         """
         compatibility_buffers = [
-            'crisis_bias',
-            'crisis_temperature',
-            'crisis_prev_regime',
-            'crisis_step',
-            'sharpe_mean',
-            'sharpe_var',
-            'cvar_mean',
-            'cvar_var',
-            'crisis_base_mean',
-            'crisis_base_var',
-            'bias_warm_started',
+            "crisis_bias",
+            "crisis_temperature",
+            "crisis_prev_regime",
+            "crisis_step",
+            "sharpe_mean",
+            "sharpe_var",
+            "cvar_mean",
+            "cvar_var",
+            "crisis_base_mean",
+            "crisis_base_var",
+            "bias_warm_started",
         ]
 
         for name in compatibility_buffers:
@@ -261,7 +265,7 @@ class BCellIRTActor(nn.Module):
             strict,
             missing_keys,
             unexpected_keys,
-            error_msgs
+            error_msgs,
         )
 
     def _current_eta_b(self) -> float:
@@ -282,7 +286,10 @@ class BCellIRTActor(nn.Module):
             return self.crisis_guard_rate_final
         step = float(self.crisis_step.item())
         progress = min(max(step / float(self.crisis_guard_warmup_steps), 0.0), 1.0)
-        return self.crisis_guard_rate_init + (self.crisis_guard_rate_final - self.crisis_guard_rate_init) * progress
+        return (
+            self.crisis_guard_rate_init
+            + (self.crisis_guard_rate_final - self.crisis_guard_rate_init) * progress
+        )
 
     def _update_hysteresis_thresholds(self, crisis_samples: torch.Tensor) -> None:
         if not self.adaptive_hysteresis or not self.training:
@@ -316,6 +323,7 @@ class BCellIRTActor(nn.Module):
     def _verify_signal_orientation(self) -> None:
         if self._orientation_checked:
             return
+
         def sigmoid(x: float) -> float:
             return 1.0 / (1.0 + math.exp(-x))
 
@@ -327,17 +335,25 @@ class BCellIRTActor(nn.Module):
         base_bad = sigmoid(self.k_b * -1.0)
 
         if not (sharpe_good < sharpe_bad):
-            raise ValueError("Sharpe signal transform orientation invalid (expected Sharpe↑ → crisis↓).")
+            raise ValueError(
+                "Sharpe signal transform orientation invalid (expected Sharpe↑ → crisis↓)."
+            )
         if not (cvar_good > cvar_bad):
-            raise ValueError("CVaR signal transform orientation invalid (expected CVaR↑ → crisis↑).")
+            raise ValueError(
+                "CVaR signal transform orientation invalid (expected CVaR↑ → crisis↑)."
+            )
         if not (base_good > base_bad):
-            raise ValueError("Base crisis transform orientation invalid (expected base↑ → crisis↑).")
+            raise ValueError(
+                "Base crisis transform orientation invalid (expected base↑ → crisis↑)."
+            )
         self._orientation_checked = True
 
-    def forward(self,
-                state: torch.Tensor,
-                fitness: Optional[torch.Tensor] = None,
-                deterministic: bool = False) -> Tuple[torch.Tensor, Dict]:
+    def forward(
+        self,
+        state: torch.Tensor,
+        fitness: Optional[torch.Tensor] = None,
+        deterministic: bool = False,
+    ) -> Tuple[torch.Tensor, Dict]:
         """
         Args:
             state: [B, S]
@@ -377,22 +393,24 @@ class BCellIRTActor(nn.Module):
         tech_indices = [61, 91, 121, 151, 181, 211, 241, 271]
         tech_features = state[:, tech_indices]  # [B, 8]
 
-        market_features = torch.cat([
-            balance,           # [B, 1] - 현금 보유량
-            price_mean,        # [B, 1] - 평균 주가
-            price_std,         # [B, 1] - 주가 변동성
-            cash_ratio,        # [B, 1] - 현금 비율
-            tech_features      # [B, 8] - 기술적 지표들
-        ], dim=1)  # [B, 12]
+        market_features = torch.cat(
+            [
+                balance,  # [B, 1] - 현금 보유량
+                price_mean,  # [B, 1] - 평균 주가
+                price_std,  # [B, 1] - 주가 변동성
+                cash_ratio,  # [B, 1] - 현금 비율
+                tech_features,  # [B, 8] - 기술적 지표들
+            ],
+            dim=1,
+        )  # [B, 12]
 
         z, danger_embed, crisis_affine_raw, crisis_base_sigmoid = self.t_cell(
-            market_features,
-            update_stats=self.training
+            market_features, update_stats=self.training
         )
 
-        def _update_running_stats(sample: torch.Tensor,
-                                  mean_buf: torch.Tensor,
-                                  var_buf: torch.Tensor) -> None:
+        def _update_running_stats(
+            sample: torch.Tensor, mean_buf: torch.Tensor, var_buf: torch.Tensor
+        ) -> None:
             if not self.training:
                 return
             if sample.ndim == 1:
@@ -405,12 +423,18 @@ class BCellIRTActor(nn.Module):
                     batch_var = sample_view.detach().var(dim=0, unbiased=False)
                 else:
                     batch_var = torch.zeros_like(batch_mean)
-                mean_buf.mul_(self.stat_momentum).add_(batch_mean * (1 - self.stat_momentum))
-                var_buf.mul_(self.stat_momentum).add_(batch_var * (1 - self.stat_momentum))
+                mean_buf.mul_(self.stat_momentum).add_(
+                    batch_mean * (1 - self.stat_momentum)
+                )
+                var_buf.mul_(self.stat_momentum).add_(
+                    batch_var * (1 - self.stat_momentum)
+                )
                 var_buf.clamp_(min=self.stats_eps)
 
         # Base crisis component (T-Cell)
-        _update_running_stats(crisis_affine_raw, self.crisis_base_mean, self.crisis_base_var)
+        _update_running_stats(
+            crisis_affine_raw, self.crisis_base_mean, self.crisis_base_var
+        )
         base_mean = self.crisis_base_mean.to(state.device)
         base_std = torch.sqrt(self.crisis_base_var.to(state.device) + self.stats_eps)
         base_z = (crisis_affine_raw - base_mean) / base_std
@@ -478,16 +502,19 @@ class BCellIRTActor(nn.Module):
                 new_temperature = torch.clamp(
                     self.crisis_temperature * temperature_update,
                     min=self.temperature_min,
-                    max=self.temperature_max
+                    max=self.temperature_max,
                 )
                 self.crisis_temperature.copy_(new_temperature)
 
         guard_rate = self._current_guard_rate()
-        guard_target = crisis_level_pre_guard.new_full(crisis_level_pre_guard.shape, self.crisis_target)
+        guard_target = crisis_level_pre_guard.new_full(
+            crisis_level_pre_guard.shape, self.crisis_target
+        )
         crisis_level = torch.clamp(
-            crisis_level_pre_guard + guard_rate * (guard_target - crisis_level_pre_guard),
+            crisis_level_pre_guard
+            + guard_rate * (guard_target - crisis_level_pre_guard),
             min=0.0,
-            max=1.0
+            max=1.0,
         )
 
         self._update_hysteresis_thresholds(crisis_level_pre_guard)
@@ -500,13 +527,13 @@ class BCellIRTActor(nn.Module):
             crisis_regime = torch.where(
                 crisis_level < hysteresis_down_tensor,
                 torch.zeros_like(crisis_level),
-                torch.ones_like(crisis_level)
+                torch.ones_like(crisis_level),
             )
         else:
             crisis_regime = torch.where(
                 crisis_level > hysteresis_up_tensor,
                 torch.ones_like(crisis_level),
-                torch.zeros_like(crisis_level)
+                torch.zeros_like(crisis_level),
             )
 
         with torch.no_grad():
@@ -541,23 +568,26 @@ class BCellIRTActor(nn.Module):
             fitness=fitness,
             crisis_level=crisis_level,
             delta_sharpe=delta_sharpe_tensor,
-            proto_conf=None
+            proto_conf=None,
         )
 
         # ===== Step 6: Dirichlet 혼합 정책 =====
         # 각 프로토타입의 concentration 계산
         # Phase 3.1: Tanh output [-1, 1] → scale to [-5, 10] → clamp [0.01, 10]
-        concentrations_raw = torch.stack([
-            self.decoders[j](K[:, j, :]) for j in range(self.M)
-        ], dim=1)  # [B, M, A] with Tanh output ∈ [-1, 1]
-        
-        # Transform: [-1, 1] → [-5, 10] allows true suppression
-        # x * 7.5 + 2.5: -1 → -5, 0 → 2.5, 1 → 10
-        concentrations = concentrations_raw * 7.5 + 2.5  # [B, M, A]
-        concentrations = torch.clamp(concentrations, min=0.01)  # Ensure positive for Dirichlet
+        concentrations_raw = torch.stack(
+            [self.decoders[j](K[:, j, :]) for j in range(self.M)], dim=1
+        )  # [B, M, A] with Tanh output ∈ [-1, 1]
+
+        # Transform: encourage sparsity via softplus + asymmetric bias
+        concentrations = torch.nn.functional.softplus(concentrations_raw * 2.0) + 0.02
+        proto_bias = torch.linspace(
+            -0.5, 0.5, steps=self.M, device=concentrations.device, dtype=concentrations.dtype
+        ).view(1, self.M, 1)
+        concentrations = concentrations + 0.05 * proto_bias
+        concentrations = torch.clamp(concentrations, min=0.02, max=self.dirichlet_max)
 
         # IRT 가중치로 혼합
-        mixed_conc = torch.einsum('bm,bma->ba', w, concentrations)  # [B, A]
+        mixed_conc = torch.einsum("bm,bma->ba", w, concentrations)  # [B, A]
 
         if deterministic:
             # 결정적: softmax with temperature (logit-based, NOT Dirichlet)
@@ -570,7 +600,9 @@ class BCellIRTActor(nn.Module):
             # Phase 3.1: mixed_conc already positive after clamp, use directly as α
             # α < 1: Sparse (corners), α = 1: Uniform, α > 1: Peaked near uniform
             # Clamp to [dirichlet_min, dirichlet_max] for numerical stability
-            mixed_conc_clamped = torch.clamp(mixed_conc, min=self.dirichlet_min, max=self.dirichlet_max)
+            mixed_conc_clamped = torch.clamp(
+                mixed_conc, min=self.dirichlet_min, max=self.dirichlet_max
+            )
             dist = torch.distributions.Dirichlet(mixed_conc_clamped)
             action = dist.sample()
 
@@ -581,50 +613,113 @@ class BCellIRTActor(nn.Module):
         # ===== Step 7: EMA 업데이트 (w_prev) =====
         if self.training:
             with torch.no_grad():
-                self.w_prev = (
-                    self.ema_beta * self.w_prev
-                    + (1 - self.ema_beta) * w.detach().mean(dim=0, keepdim=True)
-                )
+                self.w_prev = self.ema_beta * self.w_prev + (
+                    1 - self.ema_beta
+                ) * w.detach().mean(dim=0, keepdim=True)
 
         # ===== Step 8: 해석 정보 수집 =====
         info = {
-            'w': w.detach(),  # [B, M] - 프로토타입 가중치
-            'P': P.detach(),  # [B, m, M] - 수송 계획
-            'crisis_level': crisis_level.detach(),  # [B, 1]
-            'crisis_level_pre_guard': crisis_level_pre_guard.detach(),  # [B, 1]
-            'crisis_raw': crisis_raw.detach(),  # [B, 1]
-            'crisis_bias': self.crisis_bias.detach().clone(),  # [1]
-            'crisis_temperature': self.crisis_temperature.detach().clone(),  # [1]
-            'crisis_prev_regime': self.crisis_prev_regime.detach().clone(),  # [1]
-            'crisis_base_component': crisis_base_component.detach(),  # [B, 1]
-            'delta_component': delta_component.detach(),  # [B, 1]
-            'cvar_component': cvar_component.detach(),  # [B, 1]
-            'crisis_regime': crisis_regime.detach(),  # [B, 1]
-            'crisis_guard_rate': torch.tensor(guard_rate, device=state.device),
-            'bias_warm_started': self.bias_warm_started.detach().clone(),
-            'crisis_types': z.detach(),  # [B, K]
-            'fitness': fitness.detach(),  # [B, M]
-            'hysteresis_up': torch.tensor(hysteresis_up_val, device=state.device),
-            'hysteresis_down': torch.tensor(hysteresis_down_val, device=state.device),
+            "w": w.detach(),  # [B, M] - 프로토타입 가중치
+            "P": P.detach(),  # [B, m, M] - 수송 계획
+            "crisis_level": crisis_level.detach(),  # [B, 1]
+            "crisis_level_pre_guard": crisis_level_pre_guard.detach(),  # [B, 1]
+            "crisis_raw": crisis_raw.detach(),  # [B, 1]
+            "crisis_bias": self.crisis_bias.detach().clone(),  # [1]
+            "crisis_temperature": self.crisis_temperature.detach().clone(),  # [1]
+            "crisis_prev_regime": self.crisis_prev_regime.detach().clone(),  # [1]
+            "crisis_base_component": crisis_base_component.detach(),  # [B, 1]
+            "delta_component": delta_component.detach(),  # [B, 1]
+            "cvar_component": cvar_component.detach(),  # [B, 1]
+            "crisis_regime": crisis_regime.detach(),  # [B, 1]
+            "crisis_guard_rate": torch.tensor(guard_rate, device=state.device),
+            "bias_warm_started": self.bias_warm_started.detach().clone(),
+            "crisis_types": z.detach(),  # [B, K]
+            "fitness": fitness.detach(),  # [B, M]
+            "hysteresis_up": torch.tensor(hysteresis_up_val, device=state.device),
+            "hysteresis_down": torch.tensor(hysteresis_down_val, device=state.device),
             # IRT 분해 정보 (시각화용)
-            'w_rep': irt_debug['w_rep'].detach(),  # [B, M] - Replicator 출력
-            'w_ot': irt_debug['w_ot'].detach(),    # [B, M] - OT 출력
-            'cost_matrix': irt_debug['cost_matrix'].detach(),  # [B, m, M]
-            'eta': irt_debug['eta'].detach(),       # [B, 1] - Crisis learning rate
-            'alpha_c': irt_debug['alpha_c'].detach(),  # [B, 1] - Dynamic OT-Replicator mixing ratio
-            'alpha_c_raw': irt_debug.get('alpha_c_raw', irt_debug['alpha_c']).detach(),  # Phase 1.5: raw alpha
-            'alpha_c_prev': irt_debug.get('alpha_c_prev', irt_debug['alpha_c']).detach(),  # Phase 1.5: prev alpha
-            'pct_clamped_min': irt_debug.get('pct_clamped_min', 0.0),  # Phase 1.5: clamp 검증
-            'pct_clamped_max': irt_debug.get('pct_clamped_max', 0.0),  # Phase 1.5: clamp 검증
+            "w_rep": irt_debug["w_rep"].detach(),  # [B, M] - Replicator 출력
+            "w_ot": irt_debug["w_ot"].detach(),  # [B, M] - OT 출력
+            "cost_matrix": irt_debug["cost_matrix"].detach(),  # [B, m, M]
+            "eta": irt_debug["eta"].detach(),  # [B, 1] - Crisis learning rate
+            "alpha_c": irt_debug[
+                "alpha_c"
+            ].detach(),  # [B, 1] - Dynamic OT-Replicator mixing ratio
+            "alpha_c_raw": irt_debug.get(
+                "alpha_c_raw", irt_debug["alpha_c"]
+            ).detach(),  # Phase 1.5: raw alpha
+            "alpha_c_prev": irt_debug.get(
+                "alpha_c_prev", irt_debug["alpha_c"]
+            ).detach(),  # Phase 1.5: prev alpha
+            "alpha_c_star": irt_debug.get(
+                "alpha_c_star", irt_debug["alpha_c"]
+            ).detach(),  # Phase 1.5: target alpha
+            "alpha_c_decay_factor": irt_debug.get(
+                "alpha_c_decay_factor", torch.ones_like(irt_debug["alpha_c"])
+            ).detach(),  # Phase 1.5: decay
+            "pct_clamped_min": irt_debug.get(
+                "pct_clamped_min", 0.0
+            ),  # Phase 1.5: clamp 검증
+            "pct_clamped_max": irt_debug.get(
+                "pct_clamped_max", 0.0
+            ),  # Phase 1.5: clamp 검증
+            "alpha_candidate": irt_debug.get(
+                "alpha_candidate", irt_debug["alpha_c"]
+            ).detach(),
+            "alpha_state": irt_debug.get(
+                "alpha_state_buffer",
+                self.irt.alpha_state.detach().clone()
+                if hasattr(self.irt, "alpha_state")
+                else torch.zeros(1, 1, device=state.device),
+            ).detach(),
+            "alpha_feedback_gain": irt_debug.get(
+                "alpha_feedback_gain",
+                torch.tensor(getattr(self.irt, "alpha_feedback_gain", 0.0), device=state.device),
+            ).detach(),
+            "alpha_feedback_bias": irt_debug.get(
+                "alpha_feedback_bias",
+                torch.tensor(getattr(self.irt, "alpha_feedback_bias", 0.0), device=state.device),
+            ).detach(),
+            "directional_decay_min": irt_debug.get(
+                "directional_decay_min",
+                torch.tensor(getattr(self.irt, "directional_decay_min", 0.0), device=state.device),
+            ).detach(),
             # Dirichlet 정보 (log_prob 계산용)
-            'concentrations': concentrations.detach(),  # [B, M, A] - 프로토타입별 concentration
-            'mixed_conc': mixed_conc.detach(),  # [B, A] - 혼합된 concentration (raw)
-            'mixed_conc_clamped': mixed_conc_clamped.detach() if not deterministic else mixed_conc.detach(),  # [B, A]
+            "concentrations": concentrations.detach(),  # [B, M, A] - 프로토타입별 concentration
+            "mixed_conc": mixed_conc.detach(),  # [B, A] - 혼합된 concentration (raw)
+            "mixed_conc_clamped": (
+                mixed_conc_clamped.detach()
+                if not deterministic
+                else mixed_conc.detach()
+            ),  # [B, A]
+            # Phase 1.5: 프로토타입 전방 반영 검증
+            "concentrations_mean": concentrations.mean(
+                dim=0
+            ).detach(),  # [M, A] - 프로토타입별 평균
+            "concentrations_std": (
+                concentrations.std(dim=0, unbiased=False).detach()
+                if B > 1
+                else torch.zeros_like(concentrations[0]).detach()
+            ),
+            "mixed_conc_mean": mixed_conc.mean().detach(),  # scalar - 혼합 후 평균
+            "mixed_conc_std": (
+                mixed_conc.std(unbiased=False).detach()
+                if mixed_conc.numel() > 1
+                else mixed_conc.new_tensor(0.0).detach()
+            ),
             # Phase 3.5 Step 2: 다중 신호 위기 감지 정보
-            'crisis_base': crisis_base_sigmoid.detach(),  # [B, 1] - T-Cell 기본 위기 신호 (sigmoid)
-            'crisis_base_raw': crisis_affine_raw.detach(),  # [B, 1] - T-Cell affine
-            'delta_sharpe': delta_sharpe.detach() if state.size(1) >= self.state_dim - 2 else torch.zeros(B, 1, device=state.device),
-            'cvar': cvar.detach() if state.size(1) >= self.state_dim - 2 else torch.zeros(B, 1, device=state.device),
+            "crisis_base": crisis_base_sigmoid.detach(),  # [B, 1] - T-Cell 기본 위기 신호 (sigmoid)
+            "crisis_base_raw": crisis_affine_raw.detach(),  # [B, 1] - T-Cell affine
+            "delta_sharpe": (
+                delta_sharpe.detach()
+                if state.size(1) >= self.state_dim - 2
+                else torch.zeros(B, 1, device=state.device)
+            ),
+            "cvar": (
+                cvar.detach()
+                if state.size(1) >= self.state_dim - 2
+                else torch.zeros(B, 1, device=state.device)
+            ),
         }
 
         return action, info

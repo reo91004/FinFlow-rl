@@ -289,7 +289,7 @@ class AdaptiveRiskReward:
         lambda_sharpe: float = 0.15,
         lambda_cvar: float = 0.5,
         lambda_turnover: float = 0.002,
-        crisis_gain: float = 0.25,
+        crisis_gain: float = -0.10,
         dsr_beta: float = 0.95,
         cvar_alpha: float = 0.05,
         cvar_window: int = 20,
@@ -344,7 +344,7 @@ class AdaptiveRiskReward:
         cvar_value = self.cvar.update(basic_return)
         cvar_penalty = abs(cvar_value) if cvar_value < 0 else 0.0
 
-        # 4. Adaptive κ(c)
+        # 4. Adaptive κ(c) (risk-averse: crisis ↑ → κ ↓)
         kappa = self.lambda_sharpe_base + self.crisis_gain * self.crisis_level
 
         # 5. Risk bonus

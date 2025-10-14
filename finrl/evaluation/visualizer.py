@@ -1064,22 +1064,49 @@ def _generate_insights(results: dict, config: dict = None) -> dict:
         'total_steps': int(n_steps)
     }
 
+    if config:
+        env_cfg = config.get('env', {})
+        if env_cfg:
+            reward_scaling = env_cfg.get('reward_scaling')
+            reward_type = env_cfg.get('reward_type')
+            if reward_scaling is not None:
+                summary['reward_scaling'] = float(reward_scaling)
+            if reward_type is not None:
+                summary['reward_type'] = reward_type
+            if env_cfg.get('use_weighted_action') is not None:
+                summary['use_weighted_action'] = bool(env_cfg.get('use_weighted_action'))
+
     # ===== 2. Top Holdings =====
     top_holdings = []
+    contribution_sum = 0.0
     if n_assets > 0:
         avg_weights = weights.mean(axis=0)
         top_indices = np.argsort(avg_weights)[::-1][:10]
 
-        # 수익 기여도 계산
-        total_return = metrics.get('total_return', 0.0)
-        weight_contributions = avg_weights * total_return
+        # 수익 기여도 계산 (정규화)
+        total_return = float(metrics.get('total_return', 0.0) or 0.0)
+        raw_contributions = avg_weights * total_return
+        if abs(total_return) > 1e-8:
+            normalized_contributions = raw_contributions / abs(total_return)
+        else:
+            denom = max(avg_weights.sum(), 1e-8)
+            normalized_contributions = avg_weights / denom
 
         for idx in top_indices:
+            raw_val = float(raw_contributions[idx])
+            norm_val = float(normalized_contributions[idx])
             top_holdings.append({
                 'symbol': symbols[idx] if idx < len(symbols) else f'Asset_{idx}',
                 'avg_weight': float(avg_weights[idx]),
-                'contribution': float(weight_contributions[idx])
+                'contribution': norm_val,
+                'contribution_raw': raw_val
             })
+
+        contribution_sum = float(np.sum(normalized_contributions[top_indices]))
+        contribution_abs_sum = float(np.sum(np.abs(normalized_contributions[top_indices])))
+    else:
+        contribution_sum = 0.0
+        contribution_abs_sum = 0.0
 
     # ===== 3. Crisis vs Normal Analysis =====
     # Phase 1.5: crisis_regime (히스테리시스 기반 이진 분류) 사용
@@ -1157,30 +1184,25 @@ def _generate_insights(results: dict, config: dict = None) -> dict:
     # Entropy: -Σ p·log(p)
     entropy = -np.sum(proto_weights * np.log(proto_weights + 1e-8), axis=1) if len(proto_weights.shape) > 1 else np.array([])
 
+    max_weight_series = np.max(proto_weights, axis=1) if len(proto_weights.shape) > 1 else np.array([])
+
     prototype_analysis = {
         'most_used_prototypes': top_proto_indices,
         'prototype_avg_weights': avg_proto_weights.tolist() if len(avg_proto_weights) > 0 else [],
         'avg_entropy': float(entropy.mean()) if len(entropy) > 0 else 0.0,
         'max_entropy': float(entropy.max()) if len(entropy) > 0 else 0.0,
-        'min_entropy': float(entropy.min()) if len(entropy) > 0 else 0.0
+        'min_entropy': float(entropy.min()) if len(entropy) > 0 else 0.0,
+        'mean_max_weight': float(max_weight_series.mean()) if len(max_weight_series) > 0 else 0.0,
+        'max_prototype_weight': float(max_weight_series.max()) if len(max_weight_series) > 0 else 0.0
     }
 
     # ===== 6. Risk Metrics =====
     # Phase-1: Turnover 분해 (목표 vs 실행)
-    from finrl.evaluation.metrics import calculate_turnover
-
-    turnover_target = 0.0
-    turnover_actual = 0.0
-    turnover_execution_gap = 0.0
-
-    if len(weights) >= 2:
-        turnover_target = calculate_turnover(weights)
-
-    if len(actual_weights) >= 2:
-        turnover_actual = calculate_turnover(actual_weights)
-
-    if len(weights) >= 2 and len(actual_weights) >= 2:
-        turnover_execution_gap = abs(turnover_target - turnover_actual)
+    turnover_actual = float(metrics.get('avg_turnover_executed', metrics.get('avg_turnover', 0.0)))
+    turnover_target = float(
+        metrics.get('avg_turnover_target_env', metrics.get('avg_turnover_target', 0.0))
+    )
+    turnover_execution_gap = abs(turnover_actual - turnover_target)
 
     # Phase-F2': 균등 이탈도 (L1 distance from uniform)
     # d^{(1)}(w, U) = 0.5 * Σ|w_i - 1/N|
@@ -1217,10 +1239,12 @@ def _generate_insights(results: dict, config: dict = None) -> dict:
         'VaR_5': float(metrics.get('var_5', 0.0)),
         'CVaR_5': float(metrics.get('cvar_5', 0.0)),
         'downside_deviation': float(metrics.get('downside_deviation', 0.0)),
-        'avg_turnover': float(metrics.get('avg_turnover', 0.0)),  # 후진 호환 (목표가중 기반)
+        'avg_turnover': float(metrics.get('avg_turnover', turnover_actual)),
+        'avg_turnover_target': float(metrics.get('avg_turnover_target_env', turnover_target)),
         'turnover_target': float(turnover_target),  # Phase-1: 목표가중 기반 turnover
         'turnover_actual': float(turnover_actual),  # Phase-1: 실행가중 기반 turnover
         'turnover_execution_gap': float(turnover_execution_gap),  # Phase-1: 목표 vs 실행 격차
+        'turnover_gap_abs': float(metrics.get('turnover_gap_abs', abs(turnover_execution_gap))),
         'turnover_transmission_rate': float(turnover_actual / (turnover_target + 1e-8)),  # Phase-1: 전달률
         'target_l1_from_uniform': target_l1_from_uniform,  # Phase-F2': 목표가중 균등 이탈도
         'actual_l1_from_uniform': actual_l1_from_uniform,  # Phase-F2': 실행가중 균등 이탈도
@@ -1241,12 +1265,16 @@ def _generate_insights(results: dict, config: dict = None) -> dict:
         'avg_crisis_type_distribution': avg_crisis_types.tolist() if len(avg_crisis_types) > 0 else [],
         'avg_crisis_level': avg_crisis_level,
         'avg_danger_level': avg_crisis_level,  # Legacy alias (deprecated)
+        'steps_crisis': int(crisis_vs_normal['crisis']['steps']),
+        'steps_normal': int(crisis_vs_normal['normal']['steps'])
     }
 
     # ===== 종합 =====
     insights = {
         'summary': summary,
         'top_holdings': top_holdings,
+        'top_holdings_contribution_sum': float(contribution_sum),
+        'top_holdings_contribution_abs_sum': float(contribution_abs_sum),
         'crisis_vs_normal': crisis_vs_normal,
         'irt_decomposition': irt_decomposition,
         'prototype_analysis': prototype_analysis,
