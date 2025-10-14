@@ -28,6 +28,7 @@ class StockTradingEnv(gym.Env):
         sell_cost_pct (float, array): Cost for selling shares, each index corresponds to each asset
         turbulence_threshold (float): Maximum turbulence allowed in market for purchases to occur. If exceeded, positions are liquidated
         print_verbosity(int): When iterating (step), how often to print stats about state of env
+        use_weighted_action (bool): If True (default), interpret actions as portfolio weights and expose turnover telemetry
         adaptive_lambda_sharpe (float): Base κ weight for adaptive risk reward (default: 0.20)
         adaptive_lambda_cvar (float): CVaR penalty weight for adaptive risk reward (default: 0.40)
         adaptive_lambda_turnover (float): Turnover penalty weight for adaptive risk reward (default: 0.0023)
@@ -68,7 +69,7 @@ class StockTradingEnv(gym.Env):
         dsr_beta: float = 0.99,
         cvar_alpha: float = 0.05,
         cvar_window: int = 50,
-        use_weighted_action: bool = False,
+        use_weighted_action: bool = True,
         weight_slippage: float = 0.001,
         weight_transaction_cost: float = 0.0005,
         adaptive_lambda_sharpe: float = 0.20,
@@ -107,8 +108,16 @@ class StockTradingEnv(gym.Env):
         self._crisis_history: list[tuple[int, float]] = []
         self._last_reward_info: dict[str, float] = {}
 
+        self.reward_type = reward_type
+
+        if self.reward_type == "adaptive_risk" and not self.use_weighted_action:
+            raise ValueError(
+                "Adaptive risk reward requires weight-based actions. "
+                "Set use_weighted_action=True."
+            )
+
         # Phase 3.5: state_space에 DSR/CVaR 2개 차원 추가
-        if reward_type == "dsr_cvar":
+        if self.reward_type == "dsr_cvar":
             self.state_space = state_space + 2  # DSR/CVaR 신호 추가
         else:
             self.state_space = state_space
@@ -132,8 +141,7 @@ class StockTradingEnv(gym.Env):
         self.iteration = iteration
 
         # Phase 3: 리스크 민감 보상 함수 (state 초기화 전에 설정 필요)
-        self.reward_type = reward_type
-        if reward_type == "dsr_cvar":
+        if self.reward_type == "dsr_cvar":
             from .reward_functions import RiskSensitiveReward
 
             self.risk_reward = RiskSensitiveReward(
@@ -147,7 +155,7 @@ class StockTradingEnv(gym.Env):
             # Phase 3.5: DSR/CVaR 값 버퍼 (state에 포함시킬 용도)
             self.last_dsr = 0.0
             self.last_cvar = 0.0
-        elif reward_type == "adaptive_risk":
+        elif self.reward_type == "adaptive_risk":
             # Phase-H1: Adaptive Risk-Aware Reward
             from .reward_functions import AdaptiveRiskReward
 
@@ -588,6 +596,7 @@ class StockTradingEnv(gym.Env):
             self.last_dsr = float(reward_info["dsr_bonus"])
             self.last_cvar = float(reward_info["cvar_value"])
             self.reward = risk_reward * self.reward_scaling
+            self._last_reward_info = reward_info.copy()
         elif self.reward_type == "adaptive_risk" and self.risk_reward is not None:
             risk_reward, reward_info = self.risk_reward.compute(
                 log_return, executed_weights
@@ -596,9 +605,29 @@ class StockTradingEnv(gym.Env):
             self.last_kappa = float(reward_info["kappa"])
             self.last_delta_sharpe = float(reward_info["delta_sharpe"])
             self.reward = risk_reward * self.reward_scaling
+            self._last_reward_info = reward_info.copy()
         else:
             basic_reward = end_total_asset - begin_total_asset
             self.reward = basic_reward * self.reward_scaling
+            self._last_reward_info = {
+                "log_return": log_return,
+                "delta_sharpe": 0.0,
+                "cvar_value": 0.0,
+                "cvar_penalty": 0.0,
+                "crisis_level": getattr(self, "_crisis_level", 0.5),
+                "kappa": getattr(self, "adaptive_lambda_sharpe", 0.0),
+                "risk_bonus": 0.0,
+                "turnover_penalty": 0.0,
+                "sharpe_online": 0.0,
+                "reward_pre_clip": basic_reward,
+                "reward_total": np.clip(basic_reward, -1.0, 1.0),
+                "components": {
+                    "log_return": log_return,
+                    "sharpe_term": 0.0,
+                    "cvar_term": 0.0,
+                    "turnover": 0.0,
+                },
+            }
 
         self.rewards_memory.append(self.reward)
         self.state_memory.append(self.state)
@@ -610,6 +639,7 @@ class StockTradingEnv(gym.Env):
             "turnover_executed": self._last_turnover_executed,
             "turnover": self._last_turnover,
             "transaction_cost": self._last_tc,
+            "reward_components": self._last_reward_info.get("components", {}).copy(),
         }
         return self.state, self.reward, self.terminal, False, info
 

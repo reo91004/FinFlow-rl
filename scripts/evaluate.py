@@ -659,6 +659,7 @@ def evaluate_model(
     execution_returns = []
     transaction_costs = []
     turnover_executed = []
+    turnover_target_series = []
 
     prev_prices = None
     if stock_dim > 0 and isinstance(obs, (np.ndarray, list, tuple)):
@@ -830,10 +831,10 @@ def evaluate_model(
                 -1
             )
 
+        turnover_value = float(info.get("turnover_target", 0.0) or 0.0)
+        turnover_target_series.append(turnover_value)
         if is_irt:
-            irt_data_list["turnover_target"].append(
-                float(info.get("turnover_target", 0.0) or 0.0)
-            )
+            irt_data_list["turnover_target"].append(turnover_value)
             reward_components = info.get("reward_components")
             if reward_components:
                 scaling_factor = float(getattr(test_env, "reward_scaling", 1.0))
@@ -937,11 +938,12 @@ def evaluate_model(
     value_returns_array = sanitize_returns(np.array(value_returns, dtype=np.float64))
     transaction_costs_array = np.array(transaction_costs, dtype=np.float64)
     turnover_executed_array = np.array(turnover_executed, dtype=np.float64)
-    turnover_target_array = (
-        np.array(irt_data_list["turnover_target"], dtype=np.float64)
-        if (is_irt and irt_data_list.get("turnover_target"))
-        else np.array([], dtype=np.float64)
-    )
+    turnover_target_array = np.array(turnover_target_series, dtype=np.float64)
+    if turnover_target_array.size and turnover_target_array.size != turnover_executed_array.size:
+        raise RuntimeError(
+            "Turnover series length mismatch between target and executed. "
+            f"target={turnover_target_array.size}, executed={turnover_executed_array.size}"
+        )
 
     # IRT 데이터 변환
     irt_data = None
