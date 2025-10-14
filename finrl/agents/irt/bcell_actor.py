@@ -54,10 +54,10 @@ class BCellIRTActor(nn.Module):
         eta_b_warmup_steps: int = 10000,
         eta_b_warmup_value: float = 0.05,
         # T-Cell 가드
-        crisis_target: float = 0.45,  # 목표 crisis_regime_pct
-        crisis_guard_rate_init: float = 0.10,
-        crisis_guard_rate_final: float = 0.0,
-        crisis_guard_warmup_steps: int = 10000,
+        crisis_target: float = 0.50,  # 목표 crisis_regime_pct
+        crisis_guard_rate_init: float = 0.07,
+        crisis_guard_rate_final: float = 0.02,
+        crisis_guard_warmup_steps: int = 7500,
         # Phase 1.5: 히스테리시스 임계치 재조정 (0.55/0.45 → 0.52/0.42)
         hysteresis_up: float = 0.52,
         hysteresis_down: float = 0.42,

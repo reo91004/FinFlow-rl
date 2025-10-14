@@ -278,9 +278,9 @@ class IRTPolicy(SACPolicy):
         alpha_crisis_source: str = "pre_guard",
         # T-Cell guard + hysteresis
         crisis_target: float = 0.5,  # 목표 crisis_regime_pct
-        crisis_guard_rate_init: float = 0.30,
-        crisis_guard_rate_final: float = 0.05,
-        crisis_guard_warmup_steps: int = 10000,
+        crisis_guard_rate_init: float = 0.07,
+        crisis_guard_rate_final: float = 0.02,
+        crisis_guard_warmup_steps: int = 7500,
         # Phase 1.5: 히스테리시스 임계치 재조정 (0.55/0.45 → 0.52/0.42)
         hysteresis_up: float = 0.52,
         hysteresis_down: float = 0.42,

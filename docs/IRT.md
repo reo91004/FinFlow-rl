@@ -1228,7 +1228,7 @@ BCellIRTActor.forward(state, fitness, deterministic)
 - IRT 구조: `emb_dim=128`, `m_tokens=6`, `M_proto=8`
 - 동적 혼합: `alpha_min=0.08`, `alpha_max=0.45`
 - 위기 신호: `w_r=0.55`, `w_s=-0.25`, `w_c=0.20`
-- T-Cell 가드: `crisis_target=0.5`, `crisis_guard_rate_init=0.30`
+- T-Cell 가드: `crisis_target=0.5`, `crisis_guard_rate_init=0.07`
 - Replicator: `eta_0=0.05`, `eta_1=0.12`, `replicator_temp=1.4`
 - OT: `eps=0.03`, `gamma=0.85`
 
@@ -1678,9 +1678,9 @@ guard_rate(step) = init + (final - init) · min(step / warmup_steps, 1.0)
 **기본 설정**:
 
 - `crisis_target = 0.5`: 목표 평형점
-- `guard_rate_init = 0.30`: 학습 초기 강한 유도
-- `guard_rate_final = 0.05`: 학습 후기/평가 약한 유도
-- `warmup_steps = 10000`: 스케줄 워밍업
+- `guard_rate_init = 0.07`: 학습 초기 완만한 가드
+- `guard_rate_final = 0.02`: 학습 후기/평가 약한 유도
+- `warmup_steps = 7500`: 스케줄 워밍업
 
 **효과**:
 
@@ -2202,11 +2202,11 @@ PPO와 동일한 문제 (V(s) 기반, On-policy).
 | 파라미터                    | 기본값 | 범위    | 설명                     |
 | --------------------------- | ------ | ------- | ------------------------ |
 | `crisis_target`             | 0.5    | 0.4-0.6 | 목표 crisis_regime_pct   |
-| `crisis_guard_rate_init`    | 0.30   | 0.2-0.5 | 학습 초기 가드 비율      |
-| `crisis_guard_rate_final`   | 0.05   | 0.0-0.1 | 학습 후기/평가 가드 비율 |
-| `crisis_guard_warmup_steps` | 10000  | 5k-20k  | 가드 스케줄 워밍업       |
-| `hysteresis_up`             | 0.55   | 0.5-0.7 | 평시→위기 상승 임계값    |
-| `hysteresis_down`           | 0.45   | 0.3-0.5 | 위기→평시 하강 임계값    |
+| `crisis_guard_rate_init`    | 0.07   | 0.02-0.15 | 학습 초기 가드 비율      |
+| `crisis_guard_rate_final`   | 0.02   | 0.0-0.05 | 학습 후기/평가 가드 비율 |
+| `crisis_guard_warmup_steps` | 7500   | 5k-12k  | 가드 스케줄 워밍업       |
+| `hysteresis_up`             | 0.52   | 0.48-0.60 | 평시→위기 상승 임계값    |
+| `hysteresis_down`           | 0.42   | 0.30-0.50 | 위기→평시 하강 임계값    |
 
 ### Replicator 파라미터
 

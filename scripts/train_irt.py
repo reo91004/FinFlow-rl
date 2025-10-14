@@ -1399,20 +1399,20 @@ def main():
     parser.add_argument(
         "--crisis-guard-rate-init",
         type=float,
-        default=0.10,
-        help="Initial crisis guard rate during warmup (default: 0.10)",
+        default=0.07,
+        help="Initial crisis guard rate during warmup (default: 0.07)",
     )
     parser.add_argument(
         "--crisis-guard-rate-final",
         type=float,
-        default=0.0,
-        help="Final crisis guard rate after warmup (default: 0.0)",
+        default=0.02,
+        help="Final crisis guard rate after warmup (default: 0.02)",
     )
     parser.add_argument(
         "--crisis-guard-warmup-steps",
         type=int,
-        default=10000,
-        help="Warmup steps for crisis guard rate schedule (Phase 1 default: 10000)",
+        default=7500,
+        help="Warmup steps for crisis guard rate schedule (default: 7500)",
     )
     parser.add_argument(
         "--hysteresis-up",
