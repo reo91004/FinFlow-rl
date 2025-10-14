@@ -322,6 +322,8 @@ def evaluate_model(
     adaptive_crisis_gain: float = -0.15,
     adaptive_dsr_beta: float = 0.92,
     adaptive_cvar_window: int = 40,
+    *,
+    cap_metrics: bool = False,
 ):
     """
     범용 모델 평가 함수
@@ -349,6 +351,7 @@ def evaluate_model(
         adaptive_crisis_gain: Adaptive risk reward crisis gain (음수 유지)
         adaptive_dsr_beta: Adaptive risk reward DSR EMA 계수
         adaptive_cvar_window: Adaptive risk reward CVaR 추정 윈도우
+        cap_metrics: 메트릭 산출 전에 수익률 클리핑 여부 (False 권장)
 
     Returns:
         portfolio_values: 포트폴리오 가치 배열
@@ -415,6 +418,12 @@ def evaluate_model(
                 break
         except (OSError, json.JSONDecodeError):
             continue
+
+    if not env_meta:
+        raise FileNotFoundError(
+            "env_meta.json not found alongside the checkpoint; evaluation requires metadata "
+            "to verify reward configuration, action mode, and observation layout."
+        )
 
     if env_meta:
         meta_reward_type = env_meta.get("reward_type")
@@ -929,13 +938,13 @@ def evaluate_model(
                 f"⚠️  Crisis regime length mismatch (classified {total_reg} vs {expected_reg}).",
             )
 
-    # 수익률 정제
+    # 수익률 시리즈 (raw + sanitize)
     from finrl.evaluation.visualizer import sanitize_returns
 
-    execution_returns_array = sanitize_returns(
-        np.array(execution_returns, dtype=np.float64)
-    )
-    value_returns_array = sanitize_returns(np.array(value_returns, dtype=np.float64))
+    execution_returns_raw = np.array(execution_returns, dtype=np.float64)
+    value_returns_raw = np.array(value_returns, dtype=np.float64)
+    execution_returns_array = sanitize_returns(execution_returns_raw)
+    value_returns_array = sanitize_returns(value_returns_raw)
     transaction_costs_array = np.array(transaction_costs, dtype=np.float64)
     turnover_executed_array = np.array(turnover_executed, dtype=np.float64)
     turnover_target_array = np.array(turnover_target_series, dtype=np.float64)
@@ -988,6 +997,10 @@ def evaluate_model(
             "turnover_target": np.array(
                 irt_data_list["turnover_target"], dtype=np.float64
             ),
+            "returns_raw": execution_returns_raw,
+            "returns_sanitized": execution_returns_array,
+            "value_returns_raw": value_returns_raw,
+            "value_returns_sanitized": value_returns_array,
             "reward_components": {
                 key: np.array(values, dtype=np.float64)
                 for key, values in irt_data_list["reward_components"].items()
@@ -1060,11 +1073,14 @@ def evaluate_model(
     # 성능 지표 계산
     weights_history = irt_data["weights"] if irt_data else None
     executed_weights_history = irt_data["actual_weights"] if irt_data else None
+    returns_for_metrics = (
+        execution_returns_array if cap_metrics else execution_returns_raw
+    )
     metrics = calculate_metrics(
         portfolio_values,
         initial_amount,
         weights_history,
-        returns=execution_returns_array,
+        returns=returns_for_metrics,
         executed_weights_history=executed_weights_history,
         turnover_target_series=turnover_target_array,
     )
@@ -1091,6 +1107,16 @@ def evaluate_model(
         if avg_turnover_exec or avg_turnover_target
         else 0.0
     )
+
+    metrics["returns_capped_for_metrics"] = bool(cap_metrics)
+    if execution_returns_array.size and execution_returns_raw.size:
+        diff = execution_returns_array - execution_returns_raw
+        diff_abs = np.abs(diff)
+        metrics["sanitize_gap_mean"] = float(np.mean(diff_abs))
+        metrics["sanitize_gap_max"] = float(np.max(diff_abs))
+    else:
+        metrics["sanitize_gap_mean"] = 0.0
+        metrics["sanitize_gap_max"] = 0.0
 
     if irt_data is not None:
 
@@ -1257,6 +1283,7 @@ def evaluate_direct(args, model_name, model_class):
         adaptive_crisis_gain=args.adaptive_crisis_gain,
         adaptive_dsr_beta=args.adaptive_dsr_beta,
         adaptive_cvar_window=args.adaptive_cvar_window,
+        cap_metrics=not args.no_cap_metrics,
     )
 
 
@@ -1344,8 +1371,25 @@ def evaluate_drlagent(args, model_name, model_class):
     from finrl.evaluation.visualizer import sanitize_returns
 
     exec_returns = sanitize_returns(raw_returns)
+    value_returns = sanitize_returns(raw_returns)
 
-    return portfolio_values, exec_returns, exec_returns.copy(), None
+    cap_metrics = not args.no_cap_metrics
+    returns_for_metrics = exec_returns if cap_metrics else raw_returns
+    metrics = calculate_metrics(
+        portfolio_values,
+        returns=returns_for_metrics,
+    )
+    metrics["returns_capped_for_metrics"] = bool(cap_metrics)
+    if exec_returns.size and raw_returns.size:
+        diff = exec_returns - raw_returns
+        diff_abs = np.abs(diff)
+        metrics["sanitize_gap_mean"] = float(np.mean(diff_abs))
+        metrics["sanitize_gap_max"] = float(np.max(diff_abs))
+    else:
+        metrics["sanitize_gap_mean"] = 0.0
+        metrics["sanitize_gap_max"] = 0.0
+
+    return portfolio_values, exec_returns, value_returns, None, metrics
 
 
 def main(args):
@@ -1375,13 +1419,13 @@ def main(args):
             evaluate_direct(args, model_name, model_class)
         )
     elif args.method == "drlagent":
-        portfolio_values, exec_returns, value_returns, irt_data = evaluate_drlagent(
-            args, model_name, model_class
-        )
-        # DRLAgent 방식은 metrics 계산 필요
-        metrics = calculate_metrics(portfolio_values, returns=exec_returns)
-        if irt_data is not None:
-            irt_data["metrics"] = metrics
+        (
+            portfolio_values,
+            exec_returns,
+            value_returns,
+            irt_data,
+            metrics,
+        ) = evaluate_drlagent(args, model_name, model_class)
     else:
         raise ValueError(f"Unknown method: {args.method}")
 
@@ -1471,7 +1515,11 @@ def main(args):
             # 상세 evaluation_results.json + evaluation_insights.json 저장
             results = {
                 "returns": exec_returns,
+                "returns_raw": irt_data.get("returns_raw"),
+                "returns_sanitized": irt_data.get("returns_sanitized"),
                 "returns_value": value_returns,
+                "value_returns_raw": irt_data.get("value_returns_raw"),
+                "value_returns_sanitized": irt_data.get("value_returns_sanitized"),
                 "values": np.array(portfolio_values),
                 "weights": irt_data.get("weights"),
                 "actual_weights": irt_data.get("actual_weights"),
@@ -1545,6 +1593,11 @@ def main(args):
                     "max_drawdown": float(metrics["max_drawdown"]),
                     "final_value": float(metrics["final_value"]),
                     "profit_loss": float(metrics["final_value"] - 1000000),
+                    "returns_capped_for_metrics": bool(
+                        metrics.get("returns_capped_for_metrics", False)
+                    ),
+                    "sanitize_gap_mean": float(metrics.get("sanitize_gap_mean", 0.0)),
+                    "sanitize_gap_max": float(metrics.get("sanitize_gap_max", 0.0)),
                 },
                 "timestamp": datetime.now().isoformat(),
             }
@@ -1626,6 +1679,20 @@ if __name__ == "__main__":
         type=int,
         default=40,
         help="Adaptive risk reward CVaR window length (default: 40)",
+    )
+
+    parser.set_defaults(no_cap_metrics=True)
+    parser.add_argument(
+        "--no-cap-metrics",
+        dest="no_cap_metrics",
+        action="store_true",
+        help="메트릭 계산 시 수익률 클리핑 비활성화 (기본값)",
+    )
+    parser.add_argument(
+        "--cap-metrics",
+        dest="no_cap_metrics",
+        action="store_false",
+        help="메트릭 계산 전에 수익률을 클리핑합니다 (추천하지 않음).",
     )
 
     parser.add_argument(
