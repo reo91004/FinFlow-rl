@@ -1172,8 +1172,8 @@ def main():
     parser.add_argument(
         "--alpha-update-rate",
         type=float,
-        default=1.0,
-        help="Update rate for alpha_c state adaptation (default: 1.0)",
+        default=0.85,
+        help="Update rate for alpha_c state adaptation (default: 0.85)",
     )
     parser.add_argument(
         "--alpha-feedback-gain",

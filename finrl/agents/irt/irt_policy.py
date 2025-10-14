@@ -258,7 +258,7 @@ class IRTPolicy(SACPolicy):
         replicator_temp: float = 0.4,
         eta_0: float = 0.05,
         eta_1: float = 0.12,  # Phase E: 민감도 완화
-        alpha_update_rate: float = 1.0,
+        alpha_update_rate: float = 0.85,
         alpha_feedback_gain: float = 0.25,
         alpha_feedback_bias: float = 0.0,
         directional_decay_min: float = 0.05,
