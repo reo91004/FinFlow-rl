@@ -255,10 +255,10 @@ class IRTPolicy(SACPolicy):
         replicator_temp: float = 0.4,
         eta_0: float = 0.05,
         eta_1: float = 0.12,  # Phase E: 민감도 완화
-        alpha_update_rate: float = 0.95,
-        alpha_feedback_gain: float = 0.10,
+        alpha_update_rate: float = 1.0,
+        alpha_feedback_gain: float = 0.25,
         alpha_feedback_bias: float = 0.0,
-        directional_decay_min: float = 0.0,
+        directional_decay_min: float = 0.05,
         alpha_noise_std: float = 0.0,
         gamma: float = 0.90,  # Phase 1.5: cost responsiveness ↑ (0.85 → 0.90)
         # Phase 1: Crisis calibration defaults
@@ -275,6 +275,7 @@ class IRTPolicy(SACPolicy):
         stat_momentum: float = 0.95,
         eta_b_warmup_steps: int = 10000,
         eta_b_warmup_value: float = 0.05,
+        alpha_crisis_source: str = "pre_guard",
         # T-Cell guard + hysteresis
         crisis_target: float = 0.5,  # 목표 crisis_regime_pct
         crisis_guard_rate_init: float = 0.30,
@@ -367,6 +368,11 @@ class IRTPolicy(SACPolicy):
         self.stat_momentum = stat_momentum
         self.eta_b_warmup_steps = eta_b_warmup_steps
         self.eta_b_warmup_value = eta_b_warmup_value
+        if alpha_crisis_source not in {"pre_guard", "post_guard"}:
+            raise ValueError(
+                f"alpha_crisis_source must be 'pre_guard' or 'post_guard', got {alpha_crisis_source}"
+            )
+        self.alpha_crisis_source = alpha_crisis_source
         self.crisis_target = crisis_target  # T-Cell 가드
         self.crisis_guard_rate_init = crisis_guard_rate_init
         self.crisis_guard_rate_final = crisis_guard_rate_final
@@ -454,6 +460,7 @@ class IRTPolicy(SACPolicy):
             stat_momentum=self.stat_momentum,
             eta_b_warmup_steps=self.eta_b_warmup_steps,
             eta_b_warmup_value=self.eta_b_warmup_value,
+            alpha_crisis_source=self.alpha_crisis_source,
             crisis_target=self.crisis_target,  # T-Cell 가드
             crisis_guard_rate_init=self.crisis_guard_rate_init,
             crisis_guard_rate_final=self.crisis_guard_rate_final,
@@ -519,6 +526,7 @@ class IRTPolicy(SACPolicy):
                 stat_momentum=self.stat_momentum,
                 eta_b_warmup_steps=self.eta_b_warmup_steps,
                 eta_b_warmup_value=self.eta_b_warmup_value,
+                alpha_crisis_source=self.alpha_crisis_source,
                 crisis_target=self.crisis_target,
                 crisis_guard_rate_init=self.crisis_guard_rate_init,
                 crisis_guard_rate_final=self.crisis_guard_rate_final,

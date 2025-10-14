@@ -1047,6 +1047,10 @@ def _generate_insights(results: dict, config: dict = None) -> dict:
     w_ot = np.array(results.get('w_ot', []))
     eta_list = np.array(results.get('eta', []))
     alpha_c_list = np.array(results.get('alpha_c', []))
+    alpha_c_raw_list = np.array(results.get('alpha_c_raw', []))
+    alpha_c_decay_list = np.array(results.get('alpha_c_decay_factor', []))
+    alpha_crisis_input = np.array(results.get('alpha_crisis_input', []))
+    crisis_levels_pre_guard = np.array(results.get('crisis_levels_pre_guard', []))
     symbols = results.get('symbols', [])
     metrics = results.get('metrics', {})
 
@@ -1173,6 +1177,13 @@ def _generate_insights(results: dict, config: dict = None) -> dict:
         'min_eta': float(eta_list.min()) if len(eta_list) > 0 else 0.0,
         'avg_alpha_c': float(alpha_c_list.mean()) if len(alpha_c_list) > 0 else 0.0,
         'std_alpha_c': float(alpha_c_list.std()) if len(alpha_c_list) > 0 else 0.0,
+        'std_alpha_c_raw': float(alpha_c_raw_list.std()) if len(alpha_c_raw_list) > 0 else 0.0,
+        'avg_alpha_crisis_input': float(alpha_crisis_input.mean()) if len(alpha_crisis_input) > 0 else 0.0,
+        'std_alpha_crisis_input': float(alpha_crisis_input.std()) if len(alpha_crisis_input) > 0 else 0.0,
+        'std_crisis_level_pre_guard': float(crisis_levels_pre_guard.std()) if len(crisis_levels_pre_guard) > 0 else 0.0,
+        'avg_alpha_c_decay_factor': float(alpha_c_decay_list.mean()) if len(alpha_c_decay_list) > 0 else 0.0,
+        'min_alpha_c_decay_factor': float(alpha_c_decay_list.min()) if len(alpha_c_decay_list) > 0 else 0.0,
+        'max_alpha_c_decay_factor': float(alpha_c_decay_list.max()) if len(alpha_c_decay_list) > 0 else 0.0,
         'max_alpha_c': float(alpha_c_list.max()) if len(alpha_c_list) > 0 else 0.0,
         'min_alpha_c': float(alpha_c_list.min()) if len(alpha_c_list) > 0 else 0.0
     }

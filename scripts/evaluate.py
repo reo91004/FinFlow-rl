@@ -640,6 +640,8 @@ def evaluate_model(
             "alpha_c": [],
             "alpha_c_raw": [],  # Phase 1.5: raw alpha before clamp
             "alpha_c_prev": [],  # Phase 1.5: previous alpha
+            "alpha_c_decay_factor": [],
+            "alpha_crisis_input": [],
             "hysteresis_up": [],
             "hysteresis_down": [],
             "turnover_target": [],
@@ -714,6 +716,14 @@ def evaluate_model(
                 if "alpha_c_prev" in info_dict:
                     irt_data_list["alpha_c_prev"].append(
                         info_dict["alpha_c_prev"][0].cpu().numpy()
+                    )
+                if "alpha_c_decay_factor" in info_dict:
+                    irt_data_list["alpha_c_decay_factor"].append(
+                        info_dict["alpha_c_decay_factor"][0].cpu().numpy()
+                    )
+                if "alpha_crisis_input" in info_dict:
+                    irt_data_list["alpha_crisis_input"].append(
+                        info_dict["alpha_crisis_input"][0].cpu().numpy()
                     )
 
                 # Phase 1.5: 히스테리시스 임계치 수집
@@ -883,6 +893,11 @@ def evaluate_model(
                 irt_data_list["actual_weights"]
             ),  # [T, N] Phase-1: 실행가중
             "crisis_levels": np.array(irt_data_list["crisis_levels"]).squeeze(),  # [T]
+            "crisis_levels_pre_guard": np.array(
+                irt_data_list["crisis_levels_pre_guard"]
+            ).squeeze()
+            if irt_data_list["crisis_levels_pre_guard"]
+            else np.array([], dtype=np.float64),
             "crisis_regime": np.array(
                 irt_data_list["crisis_regime"], dtype=np.int32
             ),  # Phase 1.5: [T] 이진 분류
@@ -891,6 +906,11 @@ def evaluate_model(
             "cost_matrices": np.array(irt_data_list["cost_matrices"]),  # [T, m, M]
             "eta": np.array(irt_data_list["eta"]).squeeze(),  # [T]
             "alpha_c": np.array(irt_data_list["alpha_c"]).squeeze(),  # [T]
+            "alpha_crisis_input": np.array(
+                irt_data_list["alpha_crisis_input"]
+            ).squeeze()
+            if irt_data_list["alpha_crisis_input"]
+            else np.array([], dtype=np.float64),
             "hysteresis_up": np.array(irt_data_list["hysteresis_up"], dtype=np.float64),
             "hysteresis_down": np.array(
                 irt_data_list["hysteresis_down"], dtype=np.float64
@@ -912,6 +932,10 @@ def evaluate_model(
             irt_data["alpha_c_raw"] = np.array(irt_data_list["alpha_c_raw"]).squeeze()
         if irt_data_list["alpha_c_prev"]:
             irt_data["alpha_c_prev"] = np.array(irt_data_list["alpha_c_prev"]).squeeze()
+        if irt_data_list["alpha_c_decay_factor"]:
+            irt_data["alpha_c_decay_factor"] = np.array(
+                irt_data_list["alpha_c_decay_factor"]
+            ).squeeze()
         if env_reward_type == "adaptive_risk" and irt_data_list.get(
             "env_crisis_levels"
         ):
@@ -1329,6 +1353,7 @@ def main(args):
                 "weights": irt_data.get("weights"),
                 "actual_weights": irt_data.get("actual_weights"),
                 "crisis_levels": irt_data.get("crisis_levels"),
+                "crisis_levels_pre_guard": irt_data.get("crisis_levels_pre_guard"),
                 "crisis_regime": irt_data.get("crisis_regime"),
                 "crisis_types": irt_data.get("crisis_types"),
                 "prototype_weights": irt_data.get("prototype_weights"),
@@ -1338,6 +1363,8 @@ def main(args):
                 "alpha_c": irt_data.get("alpha_c"),
                 "alpha_c_raw": irt_data.get("alpha_c_raw"),
                 "alpha_c_prev": irt_data.get("alpha_c_prev"),
+                "alpha_c_decay_factor": irt_data.get("alpha_c_decay_factor"),
+                "alpha_crisis_input": irt_data.get("alpha_crisis_input"),
                 "cost_matrices": irt_data.get("cost_matrices"),
                 "symbols": irt_data.get("symbols"),
                 "transaction_costs": irt_data.get("transaction_costs"),

@@ -655,6 +655,7 @@ def train_irt(args):
         "alpha_feedback_bias": args.alpha_feedback_bias,
         "directional_decay_min": args.directional_decay_min,
         "alpha_noise_std": args.alpha_noise_std,
+        "alpha_crisis_source": args.alpha_crisis_source,
         # Phase 3.5 Step 2: 다중 신호 위기 감지
         "w_r": args.w_r,
         "w_s": args.w_s,
@@ -962,6 +963,7 @@ def test_irt(args, model_path=None):
                 "alpha_feedback_bias": args.alpha_feedback_bias,
                 "directional_decay_min": args.directional_decay_min,
                 "alpha_noise_std": args.alpha_noise_std,
+                "alpha_crisis_source": args.alpha_crisis_source,
                 # Phase B
                 "w_r": args.w_r,
                 "w_s": args.w_s,
@@ -1075,14 +1077,14 @@ def main():
     parser.add_argument(
         "--alpha-update-rate",
         type=float,
-        default=0.80,
-        help="Update rate for alpha_c state adaptation (default: 0.80)",
+        default=1.0,
+        help="Update rate for alpha_c state adaptation (default: 1.0)",
     )
     parser.add_argument(
         "--alpha-feedback-gain",
         type=float,
-        default=0.15,
-        help="Sharpe feedback gain for alpha_c (default: 0.15)",
+        default=0.25,
+        help="Sharpe feedback gain for alpha_c (default: 0.25)",
     )
     parser.add_argument(
         "--alpha-feedback-bias",
@@ -1093,14 +1095,21 @@ def main():
     parser.add_argument(
         "--directional-decay-min",
         type=float,
-        default=0.10,
-        help="Minimum directional decay factor near alpha bounds (default: 0.10)",
+        default=0.05,
+        help="Minimum directional decay factor near alpha bounds (default: 0.05)",
     )
     parser.add_argument(
         "--alpha-noise-std",
         type=float,
         default=0.02,
         help="Gaussian noise std added to alpha during training (default: 0.02)",
+    )
+    parser.add_argument(
+        "--alpha-crisis-source",
+        type=str,
+        default="pre_guard",
+        choices=["pre_guard", "post_guard"],
+        help="Which crisis signal source controls alpha_c (default: pre_guard)",
     )
     parser.add_argument(
         "--ema-beta",

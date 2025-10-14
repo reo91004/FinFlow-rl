@@ -312,7 +312,7 @@ class IRT(nn.Module):
         delta_tanh = torch.tanh(delta_sharpe_safe)
         alpha_c_raw = alpha_c * (1 + self.alpha_feedback_gain * delta_tanh) + self.alpha_feedback_bias * delta_tanh
 
-        # 방향성 감쇠 기반 α 업데이트 (Phase 1.5)
+        # 방향성 감쇠 기반 α 업데이트 (Phase 1.5 → 재교정)
         alpha_star = torch.clamp(alpha_c_raw, min=self.alpha_min, max=self.alpha_max)
         if self.alpha_noise_std > 0 and self.training:
             noise = torch.randn_like(alpha_star) * self.alpha_noise_std
@@ -320,21 +320,15 @@ class IRT(nn.Module):
         alpha_prev = self.alpha_state.to(alpha_star.device).expand(B, 1)
         delta_raw = alpha_star - alpha_prev
 
-        # Phase 1.5: 방향성 감쇠 - 상한/하한 근처에서 업데이트 감속
-        alpha_range = self.alpha_max - self.alpha_min
-        distance_to_max = (self.alpha_max - alpha_prev) / (alpha_range + 1e-8)
-        distance_to_min = (alpha_prev - self.alpha_min) / (alpha_range + 1e-8)
-
-        # 증가 방향: 상한에 가까울수록 감쇠 (최소 directional_decay_min 배)
-        # 감소 방향: 하한에 가까울수록 감쇠 (최소 directional_decay_min 배)
+        span = (self.alpha_max - self.alpha_min) + 1e-9
+        pos = torch.clamp((alpha_prev - self.alpha_min) / span, 0.0, 1.0)
+        dist_to_bound = torch.min(pos, 1.0 - pos)
+        centered = torch.clamp(dist_to_bound * 2.0, min=0.0, max=1.0)
+        p = 1.0
         decay_min = torch.tensor(
             self.directional_decay_min, device=delta_raw.device, dtype=delta_raw.dtype
         )
-        decay_factor = torch.where(
-            delta_raw > 0,
-            torch.clamp(distance_to_max, min=decay_min, max=1.0),
-            torch.clamp(distance_to_min, min=decay_min, max=1.0)
-        )
+        decay_factor = decay_min + (1.0 - decay_min) * (centered ** p)
 
         delta = self.alpha_update_rate * delta_raw * decay_factor
         alpha_candidate = alpha_prev + delta

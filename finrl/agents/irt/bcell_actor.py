@@ -74,6 +74,7 @@ class BCellIRTActor(nn.Module):
         temperature_min: float = 0.7,
         temperature_max: float = 1.1,
         stat_momentum: float = 0.95,
+        alpha_crisis_source: str = "pre_guard",
         **irt_kwargs
     ):
         """
@@ -132,6 +133,11 @@ class BCellIRTActor(nn.Module):
         self.stat_momentum = stat_momentum
         self.stats_eps = 1e-6
         self._orientation_checked = False
+        if alpha_crisis_source not in {"pre_guard", "post_guard"}:
+            raise ValueError(
+                f"alpha_crisis_source must be 'pre_guard' or 'post_guard', got {alpha_crisis_source}"
+            )
+        self.alpha_crisis_source = alpha_crisis_source
 
         self.register_buffer("crisis_bias", torch.zeros(1))
         self.register_buffer("crisis_temperature", torch.ones(1))
@@ -560,13 +566,18 @@ class BCellIRTActor(nn.Module):
         # Phase A: delta_sharpe 전달 보증 (이미 line 186-207에서 추출됨)
         delta_sharpe_tensor = delta_sharpe
 
+        if self.alpha_crisis_source == "pre_guard":
+            crisis_for_alpha = crisis_level_pre_guard
+        else:
+            crisis_for_alpha = crisis_level
+
         w, P, irt_debug = self.irt(
             E=E,
             K=K,
             danger=danger_embed,
             w_prev=w_prev_batch,
             fitness=fitness,
-            crisis_level=crisis_level,
+            crisis_level=crisis_for_alpha,
             delta_sharpe=delta_sharpe_tensor,
             proto_conf=None,
         )
@@ -623,6 +634,7 @@ class BCellIRTActor(nn.Module):
             "P": P.detach(),  # [B, m, M] - 수송 계획
             "crisis_level": crisis_level.detach(),  # [B, 1]
             "crisis_level_pre_guard": crisis_level_pre_guard.detach(),  # [B, 1]
+            "alpha_crisis_input": crisis_for_alpha.detach(),  # [B, 1]
             "crisis_raw": crisis_raw.detach(),  # [B, 1]
             "crisis_bias": self.crisis_bias.detach().clone(),  # [1]
             "crisis_temperature": self.crisis_temperature.detach().clone(),  # [1]
