@@ -117,7 +117,10 @@ class StockTradingEnv(gym.Env):
             )
 
         # Phase 3.5: state_space에 DSR/CVaR 2개 차원 추가
-        if self.reward_type == "dsr_cvar":
+        if self.reward_type == "adaptive_risk":
+            # ΔSharpe, CVaR, crisis_level 노출
+            self.state_space = state_space + 3
+        elif self.reward_type == "dsr_cvar":
             self.state_space = state_space + 2  # DSR/CVaR 신호 추가
         else:
             self.state_space = state_space
@@ -173,6 +176,7 @@ class StockTradingEnv(gym.Env):
             self.last_crisis_level = 0.5
             self.last_kappa = self.adaptive_lambda_sharpe
             self.last_delta_sharpe = 0.0
+            self.last_cvar = 0.0
         else:
             self.risk_reward = None
 
@@ -473,6 +477,8 @@ class StockTradingEnv(gym.Env):
             self.last_crisis_level = float(reward_info["crisis_level"])
             self.last_kappa = float(reward_info["kappa"])
             self.last_delta_sharpe = float(reward_info["delta_sharpe"])
+            self.last_cvar = float(reward_info.get("cvar_value", 0.0))
+            self._crisis_level = self.last_crisis_level
             self.reward = risk_reward * self.reward_scaling
             self._last_reward_info = reward_info.copy()
 
@@ -604,6 +610,8 @@ class StockTradingEnv(gym.Env):
             self.last_crisis_level = float(reward_info["crisis_level"])
             self.last_kappa = float(reward_info["kappa"])
             self.last_delta_sharpe = float(reward_info["delta_sharpe"])
+            self.last_cvar = float(reward_info.get("cvar_value", 0.0))
+            self._crisis_level = self.last_crisis_level
             self.reward = risk_reward * self.reward_scaling
             self._last_reward_info = reward_info.copy()
         else:
@@ -703,6 +711,8 @@ class StockTradingEnv(gym.Env):
                 self.last_crisis_level = 0.5
                 self.last_kappa = self.adaptive_lambda_sharpe
                 self.last_delta_sharpe = 0.0
+                self.last_cvar = 0.0
+                self._crisis_level = 0.5
 
         self.episode += 1
 
@@ -768,6 +778,8 @@ class StockTradingEnv(gym.Env):
         # Phase 3.5: DSR/CVaR 신호 추가 (초기값 0.0, 0.0)
         if self.reward_type == "dsr_cvar":
             state = state + [0.0, 0.0]
+        elif self.reward_type == "adaptive_risk":
+            state = state + [0.0, 0.0, 0.5]
 
         return state
 
@@ -799,6 +811,12 @@ class StockTradingEnv(gym.Env):
         # Phase 3.5: DSR/CVaR 신호 추가 (이전 step의 값)
         if self.reward_type == "dsr_cvar":
             state = state + [self.last_dsr, self.last_cvar]
+        elif self.reward_type == "adaptive_risk":
+            state = state + [
+                self.last_delta_sharpe,
+                self.last_cvar,
+                self._crisis_level,
+            ]
 
         return state
 
