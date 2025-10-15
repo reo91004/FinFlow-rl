@@ -32,7 +32,8 @@ class StockTradingEnv(gym.Env):
         adaptive_lambda_sharpe (float): Base κ weight for adaptive risk reward (default: 0.20)
         adaptive_lambda_cvar (float): CVaR penalty weight for adaptive risk reward (default: 0.40)
         adaptive_lambda_turnover (float): Turnover penalty weight for adaptive risk reward (default: 0.0)
-        adaptive_crisis_gain (float): Crisis gain g_c (keep negative, default: -0.15)
+        adaptive_crisis_gain_sharpe (float): Crisis gain g_s for Sharpe term (keep negative, default: -0.15)
+        adaptive_crisis_gain_cvar (float): Crisis gain g_c for CVaR penalty (default: 0.25)
         adaptive_dsr_beta (float): DSR EMA β for adaptive risk reward (default: 0.92)
         adaptive_cvar_window (int): CVaR estimation window for adaptive risk reward (default: 40)
     """
@@ -75,7 +76,8 @@ class StockTradingEnv(gym.Env):
         adaptive_lambda_sharpe: float = 0.20,
         adaptive_lambda_cvar: float = 0.40,
         adaptive_lambda_turnover: float = 0.0,
-        adaptive_crisis_gain: float = -0.15,
+        adaptive_crisis_gain_sharpe: float = -0.15,
+        adaptive_crisis_gain_cvar: float = 0.25,
         adaptive_dsr_beta: float = 0.92,
         adaptive_cvar_window: int = 40,
     ):
@@ -94,7 +96,8 @@ class StockTradingEnv(gym.Env):
         self.adaptive_lambda_sharpe = adaptive_lambda_sharpe
         self.adaptive_lambda_cvar = adaptive_lambda_cvar
         self.adaptive_lambda_turnover = adaptive_lambda_turnover
-        self.adaptive_crisis_gain = adaptive_crisis_gain
+        self.adaptive_crisis_gain_sharpe = adaptive_crisis_gain_sharpe
+        self.adaptive_crisis_gain_cvar = adaptive_crisis_gain_cvar
         self.adaptive_dsr_beta = adaptive_dsr_beta
         self.adaptive_cvar_window = adaptive_cvar_window
         self.weights_memory: list[np.ndarray] = []
@@ -108,6 +111,7 @@ class StockTradingEnv(gym.Env):
         self._crisis_history: list[tuple[int, float]] = []
         self._last_reward_info: dict[str, float] = {}
 
+        self.last_kappa_cvar = 0.0
         self.reward_type = reward_type
 
         if self.reward_type == "adaptive_risk" and not self.use_weighted_action:
@@ -166,7 +170,8 @@ class StockTradingEnv(gym.Env):
                 lambda_sharpe=self.adaptive_lambda_sharpe,
                 lambda_cvar=self.adaptive_lambda_cvar,
                 lambda_turnover=self.adaptive_lambda_turnover,
-                crisis_gain=self.adaptive_crisis_gain,
+                crisis_gain_sharpe=self.adaptive_crisis_gain_sharpe,
+                crisis_gain_cvar=self.adaptive_crisis_gain_cvar,
                 dsr_beta=self.adaptive_dsr_beta,
                 cvar_alpha=cvar_alpha,
                 cvar_window=self.adaptive_cvar_window,
@@ -175,6 +180,7 @@ class StockTradingEnv(gym.Env):
             # Phase-H1: crisis_level 및 디버깅 정보 저장
             self.last_crisis_level = 0.5
             self.last_kappa = self.adaptive_lambda_sharpe
+            self.last_kappa_cvar = self.adaptive_lambda_cvar
             self.last_delta_sharpe = 0.0
             self.last_cvar = 0.0
         else:
@@ -475,7 +481,12 @@ class StockTradingEnv(gym.Env):
 
             risk_reward, reward_info = self.risk_reward.compute(log_return, current_weights)
             self.last_crisis_level = float(reward_info["crisis_level"])
-            self.last_kappa = float(reward_info["kappa"])
+            self.last_kappa = float(
+                reward_info.get("kappa_sharpe", reward_info.get("kappa", self.adaptive_lambda_sharpe))
+            )
+            self.last_kappa_cvar = float(
+                reward_info.get("kappa_cvar", self.adaptive_lambda_cvar)
+            )
             self.last_delta_sharpe = float(reward_info["delta_sharpe"])
             self.last_cvar = float(reward_info.get("cvar_value", 0.0))
             self._crisis_level = self.last_crisis_level
@@ -493,6 +504,8 @@ class StockTradingEnv(gym.Env):
                 "cvar_penalty": 0.0,
                 "crisis_level": getattr(self, "_crisis_level", 0.5),
                 "kappa": getattr(self, "adaptive_lambda_sharpe", 0.0),
+                "kappa_sharpe": getattr(self, "adaptive_lambda_sharpe", 0.0),
+                "kappa_cvar": getattr(self, "adaptive_lambda_cvar", 0.0),
                 "risk_bonus": 0.0,
                 "turnover_penalty": 0.0,
                 "sharpe_online": 0.0,
@@ -608,7 +621,12 @@ class StockTradingEnv(gym.Env):
                 log_return, executed_weights
             )
             self.last_crisis_level = float(reward_info["crisis_level"])
-            self.last_kappa = float(reward_info["kappa"])
+            self.last_kappa = float(
+                reward_info.get("kappa_sharpe", reward_info.get("kappa", self.adaptive_lambda_sharpe))
+            )
+            self.last_kappa_cvar = float(
+                reward_info.get("kappa_cvar", self.adaptive_lambda_cvar)
+            )
             self.last_delta_sharpe = float(reward_info["delta_sharpe"])
             self.last_cvar = float(reward_info.get("cvar_value", 0.0))
             self._crisis_level = self.last_crisis_level
@@ -624,6 +642,8 @@ class StockTradingEnv(gym.Env):
                 "cvar_penalty": 0.0,
                 "crisis_level": getattr(self, "_crisis_level", 0.5),
                 "kappa": getattr(self, "adaptive_lambda_sharpe", 0.0),
+                "kappa_sharpe": getattr(self, "adaptive_lambda_sharpe", 0.0),
+                "kappa_cvar": getattr(self, "adaptive_lambda_cvar", 0.0),
                 "risk_bonus": 0.0,
                 "turnover_penalty": 0.0,
                 "sharpe_online": 0.0,
@@ -710,6 +730,7 @@ class StockTradingEnv(gym.Env):
             elif self.reward_type == "adaptive_risk":
                 self.last_crisis_level = 0.5
                 self.last_kappa = self.adaptive_lambda_sharpe
+                self.last_kappa_cvar = self.adaptive_lambda_cvar
                 self.last_delta_sharpe = 0.0
                 self.last_cvar = 0.0
                 self._crisis_level = 0.5

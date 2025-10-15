@@ -68,7 +68,8 @@ def create_env(
     adaptive_lambda_sharpe: float = 0.20,
     adaptive_lambda_cvar: float = 0.40,
     adaptive_lambda_turnover: float = 0.0,
-    adaptive_crisis_gain: float = -0.15,
+    adaptive_crisis_gain_sharpe: float = -0.15,
+    adaptive_crisis_gain_cvar: float = 0.25,
     adaptive_dsr_beta: float = 0.92,
     adaptive_cvar_window: int = 40,
 ):
@@ -100,7 +101,8 @@ def create_env(
         "adaptive_lambda_sharpe": adaptive_lambda_sharpe,
         "adaptive_lambda_cvar": adaptive_lambda_cvar,
         "adaptive_lambda_turnover": adaptive_lambda_turnover,
-        "adaptive_crisis_gain": adaptive_crisis_gain,
+        "adaptive_crisis_gain_sharpe": adaptive_crisis_gain_sharpe,
+        "adaptive_crisis_gain_cvar": adaptive_crisis_gain_cvar,
         "adaptive_dsr_beta": adaptive_dsr_beta,
         "adaptive_cvar_window": adaptive_cvar_window,
     }
@@ -319,7 +321,8 @@ def evaluate_model(
     adaptive_lambda_sharpe: float = 0.20,
     adaptive_lambda_cvar: float = 0.40,
     adaptive_lambda_turnover: float = 0.0,
-    adaptive_crisis_gain: float = -0.15,
+    adaptive_crisis_gain_sharpe: float = -0.15,
+    adaptive_crisis_gain_cvar: float = 0.25,
     adaptive_dsr_beta: float = 0.92,
     adaptive_cvar_window: int = 40,
     *,
@@ -348,7 +351,8 @@ def evaluate_model(
         adaptive_lambda_sharpe: Adaptive risk reward Sharpe 가중치
         adaptive_lambda_cvar: Adaptive risk reward CVaR 가중치
         adaptive_lambda_turnover: Adaptive risk reward turnover 가중치
-        adaptive_crisis_gain: Adaptive risk reward crisis gain (음수 유지)
+        adaptive_crisis_gain_sharpe: Adaptive risk reward Sharpe 위기 계수
+        adaptive_crisis_gain_cvar: Adaptive risk reward CVaR 위기 계수
         adaptive_dsr_beta: Adaptive risk reward DSR EMA 계수
         adaptive_cvar_window: Adaptive risk reward CVaR 추정 윈도우
         cap_metrics: 메트릭 산출 전에 수익률 클리핑 여부 (False 권장)
@@ -450,8 +454,14 @@ def evaluate_model(
         adaptive_lambda_turnover = float(
             env_meta.get("adaptive_lambda_turnover", adaptive_lambda_turnover)
         )
-        adaptive_crisis_gain = float(
-            env_meta.get("adaptive_crisis_gain", adaptive_crisis_gain)
+        adaptive_crisis_gain_sharpe = float(
+            env_meta.get(
+                "adaptive_crisis_gain_sharpe",
+                env_meta.get("adaptive_crisis_gain", adaptive_crisis_gain_sharpe),
+            )
+        )
+        adaptive_crisis_gain_cvar = float(
+            env_meta.get("adaptive_crisis_gain_cvar", adaptive_crisis_gain_cvar)
         )
         adaptive_dsr_beta = float(
             env_meta.get("adaptive_dsr_beta", adaptive_dsr_beta)
@@ -492,7 +502,8 @@ def evaluate_model(
             adaptive_lambda_sharpe=adaptive_lambda_sharpe,
             adaptive_lambda_cvar=adaptive_lambda_cvar,
             adaptive_lambda_turnover=adaptive_lambda_turnover,
-            adaptive_crisis_gain=adaptive_crisis_gain,
+            adaptive_crisis_gain_sharpe=adaptive_crisis_gain_sharpe,
+            adaptive_crisis_gain_cvar=adaptive_crisis_gain_cvar,
             adaptive_dsr_beta=adaptive_dsr_beta,
             adaptive_cvar_window=adaptive_cvar_window,
         )
@@ -1062,7 +1073,12 @@ def evaluate_model(
             "adaptive_lambda_turnover": getattr(
                 base_env, "adaptive_lambda_turnover", None
             ),
-            "adaptive_crisis_gain": getattr(base_env, "adaptive_crisis_gain", None),
+            "adaptive_crisis_gain_sharpe": getattr(
+                base_env, "adaptive_crisis_gain_sharpe", None
+            ),
+            "adaptive_crisis_gain_cvar": getattr(
+                base_env, "adaptive_crisis_gain_cvar", None
+            ),
             "adaptive_dsr_beta": getattr(base_env, "adaptive_dsr_beta", None),
             "adaptive_cvar_window": getattr(base_env, "adaptive_cvar_window", None),
         }
@@ -1280,7 +1296,8 @@ def evaluate_direct(args, model_name, model_class):
         adaptive_lambda_sharpe=args.adaptive_lambda_sharpe,
         adaptive_lambda_cvar=args.adaptive_lambda_cvar,
         adaptive_lambda_turnover=args.adaptive_lambda_turnover,
-        adaptive_crisis_gain=args.adaptive_crisis_gain,
+        adaptive_crisis_gain_sharpe=args.adaptive_crisis_gain_sharpe,
+        adaptive_crisis_gain_cvar=args.adaptive_crisis_gain_cvar,
         adaptive_dsr_beta=args.adaptive_dsr_beta,
         adaptive_cvar_window=args.adaptive_cvar_window,
         cap_metrics=not args.no_cap_metrics,
@@ -1486,7 +1503,8 @@ def main(args):
     adaptive_lambda_sharpe = env_info.get("adaptive_lambda_sharpe")
     adaptive_lambda_cvar = env_info.get("adaptive_lambda_cvar")
     adaptive_lambda_turnover = env_info.get("adaptive_lambda_turnover")
-    adaptive_crisis_gain = env_info.get("adaptive_crisis_gain")
+    adaptive_crisis_gain_sharpe = env_info.get("adaptive_crisis_gain_sharpe")
+    adaptive_crisis_gain_cvar = env_info.get("adaptive_crisis_gain_cvar")
     adaptive_dsr_beta = env_info.get("adaptive_dsr_beta")
     adaptive_cvar_window = env_info.get("adaptive_cvar_window")
 
@@ -1496,8 +1514,10 @@ def main(args):
         adaptive_lambda_cvar = args.adaptive_lambda_cvar
     if adaptive_lambda_turnover is None:
         adaptive_lambda_turnover = args.adaptive_lambda_turnover
-    if adaptive_crisis_gain is None:
-        adaptive_crisis_gain = args.adaptive_crisis_gain
+    if adaptive_crisis_gain_sharpe is None:
+        adaptive_crisis_gain_sharpe = args.adaptive_crisis_gain_sharpe
+    if adaptive_crisis_gain_cvar is None:
+        adaptive_crisis_gain_cvar = args.adaptive_crisis_gain_cvar
     if adaptive_dsr_beta is None:
         adaptive_dsr_beta = args.adaptive_dsr_beta
     if adaptive_cvar_window is None:
@@ -1559,7 +1579,8 @@ def main(args):
                     "adaptive_lambda_sharpe": adaptive_lambda_sharpe,
                     "adaptive_lambda_cvar": adaptive_lambda_cvar,
                     "adaptive_lambda_turnover": adaptive_lambda_turnover,
-                    "adaptive_crisis_gain": adaptive_crisis_gain,
+                    "adaptive_crisis_gain_sharpe": adaptive_crisis_gain_sharpe,
+                    "adaptive_crisis_gain_cvar": adaptive_crisis_gain_cvar,
                     "adaptive_dsr_beta": adaptive_dsr_beta,
                     "adaptive_cvar_window": adaptive_cvar_window,
                 },
@@ -1664,9 +1685,16 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--adaptive-crisis-gain",
+        dest="adaptive_crisis_gain_sharpe",
         type=float,
         default=-0.15,
-        help="Adaptive risk reward crisis gain g_c (default: -0.15, keep negative)",
+        help="Adaptive risk reward Sharpe crisis gain g_S (default: -0.15, keep negative)",
+    )
+    parser.add_argument(
+        "--adaptive-crisis-gain-cvar",
+        type=float,
+        default=0.25,
+        help="Adaptive risk reward CVaR crisis gain g_C (default: 0.25)",
     )
     parser.add_argument(
         "--adaptive-dsr-beta",

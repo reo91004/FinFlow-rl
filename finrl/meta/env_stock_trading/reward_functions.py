@@ -258,13 +258,12 @@ class AdaptiveRiskReward:
     Log-return base + Adaptive risk bonus + Transaction cost penalty
 
     수식:
-    r_t = log(V_t/V_{t-1}) + κ(c)·(ΔSharpe - β·CVaR) - μ·turnover
+    r_t = log(V_t/V_{t-1}) + κ_S(c)·ΔSharpe - κ_C(c)·CVaR - μ·turnover
 
     여기서:
     - log(V_t/V_{t-1}): 항상 non-zero gradient를 보장하는 base return
-    - κ(c) = λ_S + g_c·c, 여기서 g_c < 0 (위기 강도 ↑ ⇒ κ ↓)
-      * c=0 (평시): κ=λ_S
-      * c=1 (위기): κ=λ_S + g_c
+    - κ_S(c) = λ_S + g_S·c (Sharpe 보너스 게이팅, g_S < 0)
+    - κ_C(c) = λ_C + g_C·c (CVaR 패널티 게이팅, g_C > 0 권장)
     - ΔSharpe: DSR (Differential Sharpe Ratio)
     - CVaR: 꼬리 위험 (음수)
     - turnover: 거래 비용 (실행가중 기반)
@@ -275,10 +274,11 @@ class AdaptiveRiskReward:
     3. Direct CVaR penalty → Risk-aware value learning
 
     Args:
-        lambda_sharpe: ΔSharpe 기본 가중치 (κ_min, default: 0.20)
-        lambda_cvar: CVaR penalty 가중치 (β, default: 0.40)
+        lambda_sharpe: ΔSharpe 기본 가중치 (κ_S, default: 0.20)
+        lambda_cvar: CVaR penalty 기본 가중치 (κ_C, default: 0.40)
         lambda_turnover: Turnover penalty 가중치 (μ, default: 0.0)
-        crisis_gain: Crisis에 의한 κ 조정 계수 (default: -0.15, 음수 유지)
+        crisis_gain_sharpe: Sharpe 게이팅에 대한 위기 계수 g_S (default: -0.15)
+        crisis_gain_cvar: CVaR 게이팅에 대한 위기 계수 g_C (default: 0.25)
         dsr_beta: DSR 이동평균 계수 (default: 0.92)
         cvar_alpha: CVaR 분위수 (default: 0.05)
         cvar_window: CVaR 추정 윈도우 (default: 40)
@@ -289,15 +289,18 @@ class AdaptiveRiskReward:
         lambda_sharpe: float = 0.20,
         lambda_cvar: float = 0.40,
         lambda_turnover: float = 0.0,
-        crisis_gain: float = -0.15,
+        crisis_gain_sharpe: float = -0.15,
+        crisis_gain_cvar: float = 0.25,
         dsr_beta: float = 0.92,
         cvar_alpha: float = 0.05,
         cvar_window: int = 40,
     ):
         self.lambda_sharpe_base = lambda_sharpe
-        self.lambda_cvar = lambda_cvar
+        self.lambda_cvar_base = lambda_cvar
+        self.lambda_cvar = lambda_cvar  # backward compatibility (logging)
         self.lambda_turnover = lambda_turnover
-        self.crisis_gain = crisis_gain
+        self.crisis_gain_sharpe = crisis_gain_sharpe
+        self.crisis_gain_cvar = crisis_gain_cvar
 
         # DSR and CVaR estimators
         self.dsr = DifferentialSharpeRatio(beta=dsr_beta)
@@ -344,12 +347,17 @@ class AdaptiveRiskReward:
         cvar_value = self.cvar.update(basic_return)
         cvar_penalty = abs(cvar_value) if cvar_value < 0 else 0.0
 
-        # 4. Adaptive κ(c) (risk-averse: crisis ↑ → κ ↓ since crisis_gain < 0)
-        kappa = self.lambda_sharpe_base + self.crisis_gain * self.crisis_level
+        # 4. Adaptive 게이팅 (Sharpe ↘, CVaR ↗ when crisis ↑)
+        kappa_sharpe = max(
+            0.0, self.lambda_sharpe_base + self.crisis_gain_sharpe * self.crisis_level
+        )
+        kappa_cvar = max(
+            0.0, self.lambda_cvar_base + self.crisis_gain_cvar * self.crisis_level
+        )
 
         # 5. Risk bonus (Sharpe contribution minus CVaR penalty)
-        sharpe_term = kappa * delta_sharpe
-        cvar_term = -kappa * self.lambda_cvar * cvar_penalty
+        sharpe_term = kappa_sharpe * delta_sharpe
+        cvar_term = -kappa_cvar * cvar_penalty
         risk_bonus = sharpe_term + cvar_term
 
         # 6. Turnover penalty
@@ -378,7 +386,9 @@ class AdaptiveRiskReward:
             "cvar_value": cvar_value,
             "cvar_penalty": cvar_penalty,
             "crisis_level": self.crisis_level,
-            "kappa": kappa,
+            "kappa": kappa_sharpe,
+            "kappa_sharpe": kappa_sharpe,
+            "kappa_cvar": kappa_cvar,
             "risk_bonus": risk_bonus,
             "turnover_penalty": turnover_penalty,
             "sharpe_online": self.dsr.sharpe,
@@ -389,6 +399,8 @@ class AdaptiveRiskReward:
                 "sharpe_term": sharpe_term,
                 "cvar_term": cvar_term,
                 "turnover": -turnover_penalty,
+                "kappa_sharpe": kappa_sharpe,
+                "kappa_cvar": kappa_cvar,
             },
         }
 
