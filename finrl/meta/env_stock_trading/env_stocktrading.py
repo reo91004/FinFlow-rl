@@ -31,7 +31,7 @@ class StockTradingEnv(gym.Env):
         use_weighted_action (bool): If True (default), interpret actions as portfolio weights and expose turnover telemetry
         adaptive_lambda_sharpe (float): Base κ weight for adaptive risk reward (default: 0.20)
         adaptive_lambda_cvar (float): CVaR penalty weight for adaptive risk reward (default: 0.40)
-        adaptive_lambda_turnover (float): Turnover penalty weight for adaptive risk reward (default: 0.0023)
+        adaptive_lambda_turnover (float): Turnover penalty weight for adaptive risk reward (default: 0.0)
         adaptive_crisis_gain (float): Crisis gain g_c (keep negative, default: -0.15)
         adaptive_dsr_beta (float): DSR EMA β for adaptive risk reward (default: 0.92)
         adaptive_cvar_window (int): CVaR estimation window for adaptive risk reward (default: 40)
@@ -74,7 +74,7 @@ class StockTradingEnv(gym.Env):
         weight_transaction_cost: float = 0.0005,
         adaptive_lambda_sharpe: float = 0.20,
         adaptive_lambda_cvar: float = 0.40,
-        adaptive_lambda_turnover: float = 0.0023,
+        adaptive_lambda_turnover: float = 0.0,
         adaptive_crisis_gain: float = -0.15,
         adaptive_dsr_beta: float = 0.92,
         adaptive_cvar_window: int = 40,

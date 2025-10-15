@@ -67,7 +67,7 @@ def create_env(
     reward_scaling: float = 1e-4,
     adaptive_lambda_sharpe: float = 0.20,
     adaptive_lambda_cvar: float = 0.40,
-    adaptive_lambda_turnover: float = 0.0023,
+    adaptive_lambda_turnover: float = 0.0,
     adaptive_crisis_gain: float = -0.15,
     adaptive_dsr_beta: float = 0.92,
     adaptive_cvar_window: int = 40,
@@ -318,7 +318,7 @@ def evaluate_model(
     reward_scaling: float = 1e-4,
     adaptive_lambda_sharpe: float = 0.20,
     adaptive_lambda_cvar: float = 0.40,
-    adaptive_lambda_turnover: float = 0.0023,
+    adaptive_lambda_turnover: float = 0.0,
     adaptive_crisis_gain: float = -0.15,
     adaptive_dsr_beta: float = 0.92,
     adaptive_cvar_window: int = 40,
@@ -1659,8 +1659,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--adaptive-lambda-turnover",
         type=float,
-        default=0.0023,
-        help="Adaptive risk reward turnover penalty μ (default: 0.0023)",
+        default=0.0,
+        help="Adaptive risk reward turnover penalty μ (default: 0.0; set >0 only if NAV lacks transaction costs)",
     )
     parser.add_argument(
         "--adaptive-crisis-gain",

@@ -277,7 +277,7 @@ class AdaptiveRiskReward:
     Args:
         lambda_sharpe: ΔSharpe 기본 가중치 (κ_min, default: 0.20)
         lambda_cvar: CVaR penalty 가중치 (β, default: 0.40)
-        lambda_turnover: Turnover penalty 가중치 (μ, default: 0.0023)
+        lambda_turnover: Turnover penalty 가중치 (μ, default: 0.0)
         crisis_gain: Crisis에 의한 κ 조정 계수 (default: -0.15, 음수 유지)
         dsr_beta: DSR 이동평균 계수 (default: 0.92)
         cvar_alpha: CVaR 분위수 (default: 0.05)
@@ -288,7 +288,7 @@ class AdaptiveRiskReward:
         self,
         lambda_sharpe: float = 0.20,
         lambda_cvar: float = 0.40,
-        lambda_turnover: float = 0.0023,
+        lambda_turnover: float = 0.0,
         crisis_gain: float = -0.15,
         dsr_beta: float = 0.92,
         cvar_alpha: float = 0.05,
