@@ -20,8 +20,12 @@ import argparse
 import json
 import os
 import random
+from dataclasses import dataclass
 from datetime import datetime
+from typing import Any, Dict, Iterable, List, Sequence, Tuple
+
 import numpy as np
+import pandas as pd
 
 from finrl.config import (
     INDICATORS,
@@ -38,6 +42,7 @@ from finrl.meta.env_stock_trading.env_stocktrading import StockTradingEnv
 from stable_baselines3 import SAC
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
 from stable_baselines3.common.monitor import Monitor
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 import torch
 
 # Import IRT Policy
@@ -69,19 +74,36 @@ def seed_environment(env, seed: int) -> None:
     """
     Try to seed gym environments and their spaces if supported.
     """
-    if hasattr(env, "seed"):
+    target_envs: Iterable[Any]
+    if hasattr(env, "envs") and hasattr(env, "seed"):
+        num_envs = len(getattr(env, "envs", []))
         env.seed(seed)
-    elif hasattr(env, "_seed"):  # legacy gym
-        env._seed(seed)
-
-    # Gymnasium style reset(seed=seed)
+        target_envs = getattr(env, "envs")
+    else:
+        if hasattr(env, "seed"):
+            env.seed(seed)
+        elif hasattr(env, "_seed"):  # legacy gym
+            env._seed(seed)
+        target_envs = (env,)
     if hasattr(env, "reset"):
-        env.reset(seed=seed)
+        try:
+            env.reset(seed=seed)
+        except TypeError:
+            env.reset()
 
-    if hasattr(env, "action_space") and hasattr(env.action_space, "seed"):
-        env.action_space.seed(seed)
-    if hasattr(env, "observation_space") and hasattr(env.observation_space, "seed"):
-        env.observation_space.seed(seed)
+    for idx, sub_env in enumerate(target_envs):
+        sub_seed = seed + idx * 997
+        if hasattr(sub_env, "reset"):
+            try:
+                sub_env.reset(seed=sub_seed)
+            except TypeError:
+                sub_env.reset()
+        action_space = getattr(sub_env, "action_space", None)
+        if action_space is not None and hasattr(action_space, "seed"):
+            action_space.seed(sub_seed)
+        observation_space = getattr(sub_env, "observation_space", None)
+        if observation_space is not None and hasattr(observation_space, "seed"):
+            observation_space.seed(sub_seed)
 
 
 def _unwrap_env(env):
@@ -521,6 +543,201 @@ def create_env(
     return StockTradingEnv(**env_kwargs)
 
 
+@dataclass
+class DiversificationConfig:
+    start_index: int
+    start_date: str
+    end_index: int
+    end_date: str
+    window_days: int
+    tx_scale: float
+    slippage_scale: float
+    row_count: int
+
+    def to_meta(self) -> Dict[str, Any]:
+        return {
+            "start_index": int(self.start_index),
+            "start_date": self.start_date,
+            "end_index": int(self.end_index),
+            "end_date": self.end_date,
+            "window_days": int(self.window_days),
+            "tx_scale": float(self.tx_scale),
+            "slippage_scale": float(self.slippage_scale),
+            "row_count": int(self.row_count),
+        }
+
+
+def _sorted_unique_dates(df) -> List[Any]:
+    dates = df["date"].unique()
+    return sorted(dates.tolist())
+
+
+def _slice_df_by_dates(df, start_date, end_date) -> Tuple[Any, Any, pd.DataFrame]:
+    mask = (df["date"] >= start_date) & (df["date"] <= end_date)
+    window = df.loc[mask].copy()
+    if window.empty:
+        raise ValueError("Selected diversification window is empty.")
+    window.sort_values(by=["date", "tic"], inplace=True)
+    day_codes = pd.factorize(window["date"], sort=False)[0]
+    window.index = day_codes
+    window.index.name = None
+    return start_date, end_date, window
+
+
+def _sample_scales(rng: np.random.Generator, magnitude: float) -> float:
+    if magnitude <= 0:
+        return 1.0
+    sample = float(rng.uniform(-magnitude, magnitude))
+    scale = 1.0 + sample
+    return max(scale, 0.05)
+
+
+def _choose_offsets(
+    mode: str,
+    n_envs: int,
+    start_mode: str,
+    max_start: int,
+    rng: np.random.Generator,
+    window_step: int,
+) -> List[int]:
+    if mode == "off":
+        return [0]
+    total = max(1, n_envs)
+    if max_start <= 0:
+        return [0 for _ in range(total)]
+    if start_mode == "random":
+        return [int(rng.integers(0, max_start + 1)) for _ in range(total)]
+    if start_mode == "uniform":
+        if total == 1:
+            return [int(max_start // 2)]
+        lin = np.linspace(0, max_start, num=total)
+        return [int(round(v)) for v in lin]
+    if start_mode == "rolling":
+        step = max(1, min(window_step, max_start if max_start > 0 else window_step))
+        offsets: List[int] = []
+        cursor = 0
+        for _ in range(total):
+            offsets.append(min(cursor, max_start))
+            cursor += step
+            if cursor > max_start:
+                cursor = cursor % (max_start + 1)
+        return offsets
+    raise ValueError(f"Unsupported start_offset_mode: {start_mode}")
+
+
+def build_training_env_with_diversification(
+    df,
+    stock_dim: int,
+    tech_indicators: Sequence[str],
+    args,
+) -> Tuple[Any, Dict[str, Any]]:
+    mode = args.env_diversify
+    rolling_offsets = args.start_offset_mode == "rolling"
+    rng = np.random.default_rng(args.seed + 17041)
+    unique_dates = _sorted_unique_dates(df)
+    if not unique_dates:
+        raise ValueError("Training dataframe does not contain any dates.")
+    total_days = len(unique_dates)
+    min_window = max(1, min(total_days, max(32, int(0.1 * total_days))))
+    window_step = max(1, min(int(args.window_step), total_days))
+
+    if rolling_offsets:
+        window_days = max(min_window, window_step)
+        max_start = max(0, total_days - window_days)
+    else:
+        window_days = total_days
+        max_start = max(0, total_days - min_window)
+
+    n_envs = 1 if mode != "vector" else max(1, int(args.n_envs))
+    offsets = _choose_offsets(
+        mode=mode,
+        n_envs=n_envs,
+        start_mode=args.start_offset_mode,
+        max_start=max_start,
+        rng=rng,
+        window_step=window_step,
+    )
+
+    configs: List[DiversificationConfig] = []
+    env_fns: List[Any] = []
+
+    base_tx = 0.0005
+    base_slippage = 0.001
+
+    for offset in offsets:
+        start_idx = max(0, min(offset, total_days - 1))
+        if rolling_offsets:
+            end_idx = min(total_days, start_idx + window_days)
+        else:
+            end_idx = total_days
+        end_idx = max(start_idx + 1, end_idx)
+        start_date = unique_dates[start_idx]
+        end_date = unique_dates[end_idx - 1]
+        _, _, window_df = _slice_df_by_dates(df, start_date, end_date)
+        tx_scale = 1.0 if mode == "off" else _sample_scales(rng, float(args.domain_rand_tx))
+        slip_scale = 1.0 if mode == "off" else _sample_scales(rng, float(args.domain_rand_slippage))
+        config = DiversificationConfig(
+            start_index=int(start_idx),
+            start_date=str(start_date),
+            end_index=int(end_idx - 1),
+            end_date=str(end_date),
+            window_days=int(end_idx - start_idx),
+            tx_scale=float(tx_scale),
+            slippage_scale=float(slip_scale),
+            row_count=int(window_df.shape[0]),
+        )
+        configs.append(config)
+
+        env_kwargs = {
+            "df": window_df,
+            "stock_dim": stock_dim,
+            "tech_indicators": tech_indicators,
+            "reward_type": args.reward_type,
+            "lambda_dsr": args.lambda_dsr,
+            "lambda_cvar": args.lambda_cvar,
+            "reward_scaling": args.reward_scale,
+            "adaptive_lambda_sharpe": args.adaptive_lambda_sharpe,
+            "adaptive_lambda_cvar": args.adaptive_lambda_cvar,
+            "adaptive_lambda_turnover": args.adaptive_lambda_turnover,
+            "adaptive_crisis_gain": args.adaptive_crisis_gain,
+            "adaptive_dsr_beta": args.adaptive_dsr_beta,
+            "adaptive_cvar_window": args.adaptive_cvar_window,
+            "use_weighted_action": True,
+            "weight_slippage": base_slippage * slip_scale,
+            "weight_transaction_cost": base_tx * tx_scale,
+        }
+
+        def _make_env(env_kwargs=env_kwargs):
+            return create_env(**env_kwargs)
+
+        env_fns.append(_make_env)
+
+    if mode == "vector" and len(env_fns) > 1:
+        vec_env = SubprocVecEnv(env_fns)
+    else:
+        vec_env = DummyVecEnv(env_fns)
+
+    effective_mode = mode
+    if mode == "vector" and len(env_fns) == 1:
+        effective_mode = "basic"
+
+    diversify_meta: Dict[str, Any] = {
+        "mode": effective_mode,
+        "requested_mode": mode,
+        "params": {
+            "n_envs": len(env_fns),
+            "start_offset_mode": args.start_offset_mode,
+            "window_step": int(window_step),
+            "min_window_days": int(min_window),
+            "domain_rand_tx": float(args.domain_rand_tx),
+            "domain_rand_slippage": float(args.domain_rand_slippage),
+        },
+        "configs": [cfg.to_meta() for cfg in configs],
+    }
+
+    return vec_env, diversify_meta
+
+
 def train_irt(args):
     """IRT 모델 학습"""
 
@@ -582,29 +799,45 @@ def train_irt(args):
     print(f"  실제 주식 수: {stock_dim}")
 
     # Phase 3: 리스크 민감 보상 환경 생성
-    train_env = create_env(
+    train_env, diversify_meta = build_training_env_with_diversification(
         train_df,
         stock_dim,
         INDICATORS,
-        reward_type=args.reward_type,
-        lambda_dsr=args.lambda_dsr,
-        lambda_cvar=args.lambda_cvar,
-        reward_scaling=args.reward_scale,
-        adaptive_lambda_sharpe=args.adaptive_lambda_sharpe,
-        adaptive_lambda_cvar=args.adaptive_lambda_cvar,
-        adaptive_lambda_turnover=args.adaptive_lambda_turnover,
-        adaptive_crisis_gain=args.adaptive_crisis_gain,
-        adaptive_dsr_beta=args.adaptive_dsr_beta,
-        adaptive_cvar_window=args.adaptive_cvar_window,
+        args,
     )
     seed_environment(train_env, args.seed)
+    base_train_env = _unwrap_env(train_env)
     print(
-        f"  Train env: reward_scale={train_env.reward_scaling}, "
-        f"use_weighted_action={getattr(train_env, 'use_weighted_action', False)}, "
-        f"slippage={getattr(train_env, 'weight_slippage', None)}, "
-        f"tx_cost={getattr(train_env, 'weight_transaction_cost', None)}"
+        f"  Train env: reward_scale={getattr(base_train_env, 'reward_scaling', None)}, "
+        f"use_weighted_action={getattr(base_train_env, 'use_weighted_action', False)}, "
+        f"slippage={getattr(base_train_env, 'weight_slippage', None)}, "
+        f"tx_cost={getattr(base_train_env, 'weight_transaction_cost', None)}"
     )
-    tech_indicator_count = len(getattr(train_env, "tech_indicator_list", []))
+    if diversify_meta["mode"] != "off":
+        print(
+            f"    Diversify: mode={diversify_meta['mode']}, "
+            f"n_envs={diversify_meta['params']['n_envs']}, "
+            f"window_step={diversify_meta['params']['window_step']}, "
+            f"domain_rand_tx={diversify_meta['params']['domain_rand_tx']}, "
+            f"domain_rand_slippage={diversify_meta['params']['domain_rand_slippage']}"
+        )
+        if diversify_meta.get("requested_mode") != diversify_meta["mode"]:
+            print("      (requested mode: {req}, downcast to {eff} because n_envs=1)".format(
+                req=diversify_meta.get("requested_mode"), eff=diversify_meta["mode"]
+            ))
+        for idx, cfg in enumerate(diversify_meta["configs"]):
+            print(
+                "      Env[{idx}] start={start} end={end} days={days} tx×{tx:.3f} slip×{sl:.3f}".format(
+                    idx=idx,
+                    start=cfg["start_date"],
+                    end=cfg["end_date"],
+                    days=cfg["window_days"],
+                    tx=cfg["tx_scale"],
+                    sl=cfg["slippage_scale"],
+                )
+            )
+
+    tech_indicator_count = len(getattr(base_train_env, "tech_indicator_list", []))
     has_dsr_cvar = args.reward_type == "dsr_cvar"
     test_env = create_env(
         test_df,
@@ -636,13 +869,13 @@ def train_irt(args):
             f"Train/Test observation space mismatch: train={train_obs_dim}, test={test_obs_dim}"
         )
 
-    print(f"  State space: {train_env.state_space}")
-    print(f"  Action space: {train_env.action_space}")
+    print(f"  State space: {getattr(base_train_env, 'state_space', train_obs_dim)}")
+    print(f"  Action space: {base_train_env.action_space}")
     print(f"  Reward type: {args.reward_type}")
     if args.reward_type == "dsr_cvar":
         print(f"    λ_dsr: {args.lambda_dsr}, λ_cvar: {args.lambda_cvar}")
     elif args.reward_type == "adaptive_risk":
-        rr = getattr(train_env, "risk_reward", None)
+        rr = getattr(base_train_env, "risk_reward", None)
         lambda_sharpe = getattr(rr, "lambda_sharpe_base", None)
         lambda_cvar = getattr(rr, "lambda_cvar", None)
         lambda_turnover = getattr(rr, "lambda_turnover", None)
@@ -838,9 +1071,9 @@ def train_irt(args):
         "feature_columns": df_processed.columns.tolist(),
         "tech_indicators": list(INDICATORS),
         "reward_type": args.reward_type,
-        "use_weighted_action": getattr(train_env, "use_weighted_action", True),
-        "weight_slippage": getattr(train_env, "weight_slippage", 0.001),
-        "weight_transaction_cost": getattr(train_env, "weight_transaction_cost", 0.0005),
+        "use_weighted_action": getattr(base_train_env, "use_weighted_action", True),
+        "weight_slippage": getattr(base_train_env, "weight_slippage", 0.001),
+        "weight_transaction_cost": getattr(base_train_env, "weight_transaction_cost", 0.0005),
         "reward_scaling": args.reward_scale,
         "stock_dim": stock_dim,
         "tech_indicator_count": tech_indicator_count,
@@ -856,6 +1089,10 @@ def train_irt(args):
         "train_end": args.train_end,
         "test_start": args.test_start,
         "test_end": args.test_end,
+        "env_diversify": diversify_meta["mode"],
+        "env_diversify_requested": diversify_meta.get("requested_mode"),
+        "env_diversify_params": diversify_meta["params"],
+        "env_diversify_configs": diversify_meta["configs"],
     }
     with open(os.path.join(log_dir, "env_meta.json"), "w") as meta_fp:
         json.dump(env_meta, meta_fp, indent=2)
@@ -1136,6 +1373,42 @@ def main():
         type=float,
         default=1.0,  # Phase 1: 1e-2 → 1.0 (100x increase for proper gradient flow)
         help="Reward scaling factor applied inside the trading environment (default: 1.0)",
+    )
+    parser.add_argument(
+        "--env-diversify",
+        choices=["off", "basic", "vector"],
+        default="off",
+        help="Training environment diversification strategy (default: off)",
+    )
+    parser.add_argument(
+        "--n-envs",
+        type=int,
+        default=1,
+        help="Number of parallel environments when env-diversify=vector (default: 1)",
+    )
+    parser.add_argument(
+        "--start-offset-mode",
+        choices=["random", "uniform", "rolling"],
+        default="random",
+        help="Offset sampling mode for diversified training environments (default: random)",
+    )
+    parser.add_argument(
+        "--window-step",
+        type=int,
+        default=252,
+        help="Window step (days) when env-diversify uses rolling offsets (default: 252)",
+    )
+    parser.add_argument(
+        "--domain-rand-tx",
+        type=float,
+        default=0.25,
+        help="Uniform domain randomization magnitude for transaction cost scaling (default: 0.25)",
+    )
+    parser.add_argument(
+        "--domain-rand-slippage",
+        type=float,
+        default=0.25,
+        help="Uniform domain randomization magnitude for slippage scaling (default: 0.25)",
     )
 
     # IRT parameters
