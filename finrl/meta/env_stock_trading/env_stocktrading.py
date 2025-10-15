@@ -539,11 +539,14 @@ class StockTradingEnv(gym.Env):
             raise ValueError(
                 f"Expected action dimension {self.stock_dim}, received {action_vector.size}"
             )
-        action_vector = np.clip(action_vector, 0.0, np.inf)
-        if action_vector.sum() <= 0:
-            target_weights = np.ones_like(action_vector) / len(action_vector)
+        action_vector = np.clip(action_vector, 0.0, 1.0)
+        sum_actions = float(np.sum(action_vector))
+        if sum_actions <= 1e-12:
+            # 전액 현금 보유
+            target_weights = np.zeros_like(action_vector)
         else:
-            target_weights = action_vector / action_vector.sum()
+            scale = max(1.0, sum_actions)
+            target_weights = action_vector / scale
         if not np.all(np.isfinite(target_weights)):
             target_weights = np.ones_like(action_vector) / len(action_vector)
 
@@ -553,18 +556,26 @@ class StockTradingEnv(gym.Env):
             prev_weights = np.ones(self.stock_dim, dtype=np.float64) / self.stock_dim
 
         delta = target_weights - prev_weights
-        turnover_target = 0.5 * float(np.sum(np.abs(delta)))
+        prev_cash_weight = max(0.0, 1.0 - float(np.sum(prev_weights)))
+        target_cash_weight = max(0.0, 1.0 - float(np.sum(target_weights)))
+        turnover_target = 0.5 * float(
+            np.sum(np.abs(delta)) + abs(target_cash_weight - prev_cash_weight)
+        )
         executed_weights = prev_weights + (1.0 - self.weight_slippage) * delta
-        executed_weights = np.clip(executed_weights, 0.0, np.inf)
+        executed_weights = np.clip(executed_weights, 0.0, 1.0)
         sum_executed = executed_weights.sum()
         if sum_executed <= 0 or not np.isfinite(sum_executed):
             executed_weights = np.ones_like(executed_weights) / len(executed_weights)
-        else:
+        elif sum_executed > 1.0:
             executed_weights /= sum_executed
         if not np.all(np.isfinite(executed_weights)):
             executed_weights = np.ones_like(executed_weights) / len(executed_weights)
 
-        actual_turnover = 0.5 * float(np.sum(np.abs(executed_weights - prev_weights)))
+        executed_cash_weight = max(0.0, 1.0 - float(np.sum(executed_weights)))
+        actual_turnover = 0.5 * float(
+            np.sum(np.abs(executed_weights - prev_weights))
+            + abs(executed_cash_weight - prev_cash_weight)
+        )
         self.weights_memory.append(target_weights.copy())
         self.executed_weights_memory.append(executed_weights.copy())
         self.turnover_memory.append(turnover_target)
