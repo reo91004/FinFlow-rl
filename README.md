@@ -104,33 +104,6 @@ FinFlow-rl/
 
 - `docs/IRT.md`: IRT 연산자, 위기 감지, 비용 함수에 대한 상세 수식 및 알고리즘 설명
 - `docs/SCRIPTS.md`: 학습/평가 스크립트별 인자 설명과 사용 예시
-- `docs/CHANGELOG.md`: 버전별 변경 이력
-- FinRL 공식 문서: <https://finrl.readthedocs.io/>
-
-## 인용 안내
-
-연구 또는 제품에 본 프로젝트를 사용할 경우 아래 BibTeX을 참고하세요.
-
-```bibtex
-@misc{finrl-irt-2025,
-  title        = {FinRL-IRT: Crisis-Adaptive Portfolio Management via Immune Replicator Transport},
-  author       = {Your Name},
-  year         = {2025},
-  note         = {GitHub repository},
-  url          = {<repo-url>}
-}
-```
-
-또한 FinRL 프레임워크 자체에 대해서는 다음 논문을 인용해 주세요.
-
-```bibtex
-@article{liu2024finrl,
-  title   = {FinRL: Financial reinforcement learning framework},
-  author  = {Liu, Xiao-Yang and others},
-  journal = {NeurIPS Workshop},
-  year    = {2024}
-}
-```
 
 ## 라이선스 및 문의
 
