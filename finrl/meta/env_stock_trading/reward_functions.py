@@ -294,6 +294,7 @@ class AdaptiveRiskReward:
         dsr_beta: float = 0.92,
         cvar_alpha: float = 0.05,
         cvar_window: int = 40,
+        scale_beta: float = 0.98,
     ):
         self.lambda_sharpe_base = lambda_sharpe
         self.lambda_cvar_base = lambda_cvar
@@ -311,6 +312,12 @@ class AdaptiveRiskReward:
 
         # Turnover tracking
         self.prev_weights = None
+
+        # Adaptive scaling (EMA of signal magnitudes)
+        self.scale_beta = float(np.clip(scale_beta, 0.0, 0.999))
+        self._delta_sharpe_scale = 1e-3
+        self._cvar_scale = 1e-3
+        self._norm_eps = 1e-8
 
     def set_crisis_level(self, crisis_level: float):
         """
@@ -356,8 +363,20 @@ class AdaptiveRiskReward:
         )
 
         # 5. Risk bonus (Sharpe contribution minus CVaR penalty)
-        sharpe_term = kappa_sharpe * delta_sharpe
-        cvar_term = -kappa_cvar * cvar_penalty
+        self._delta_sharpe_scale = (
+            self.scale_beta * self._delta_sharpe_scale
+            + (1.0 - self.scale_beta) * abs(delta_sharpe)
+        )
+        self._cvar_scale = (
+            self.scale_beta * self._cvar_scale
+            + (1.0 - self.scale_beta) * abs(cvar_penalty)
+        )
+
+        delta_sharpe_norm = delta_sharpe / (self._norm_eps + self._delta_sharpe_scale)
+        cvar_norm = cvar_penalty / (self._norm_eps + self._cvar_scale)
+
+        sharpe_term = kappa_sharpe * delta_sharpe_norm
+        cvar_term = -kappa_cvar * cvar_norm
         risk_bonus = sharpe_term + cvar_term
 
         # 6. Turnover penalty
@@ -372,12 +391,8 @@ class AdaptiveRiskReward:
             self.prev_weights = current_weights.copy()
 
         # 7. 최종 보상
-        reward = log_return + risk_bonus - turnover_penalty
-        
-        # Phase 1: Reward clipping for gradient stability
-        # Prevents exploding/vanishing gradients in Q-network
-        reward_pre_clip = reward
-        reward = np.clip(reward, -1.0, 1.0)
+        reward_pre_tanh = log_return + risk_bonus - turnover_penalty
+        reward = np.tanh(reward_pre_tanh)
 
         # 디버깅 정보
         info = {
@@ -385,6 +400,8 @@ class AdaptiveRiskReward:
             "delta_sharpe": delta_sharpe,
             "cvar_value": cvar_value,
             "cvar_penalty": cvar_penalty,
+            "delta_sharpe_normalized": delta_sharpe_norm,
+            "cvar_normalized": cvar_norm,
             "crisis_level": self.crisis_level,
             "kappa": kappa_sharpe,
             "kappa_sharpe": kappa_sharpe,
@@ -392,7 +409,7 @@ class AdaptiveRiskReward:
             "risk_bonus": risk_bonus,
             "turnover_penalty": turnover_penalty,
             "sharpe_online": self.dsr.sharpe,
-            "reward_pre_clip": reward_pre_clip,  # Phase 1: clipping info
+            "reward_pre_clip": reward_pre_tanh,  # backward compatibility
             "reward_total": reward,
             "components": {
                 "log_return": log_return,
@@ -412,3 +429,5 @@ class AdaptiveRiskReward:
         self.cvar.reset()
         self.crisis_level = 0.5
         self.prev_weights = None
+        self._delta_sharpe_scale = 1e-3
+        self._cvar_scale = 1e-3

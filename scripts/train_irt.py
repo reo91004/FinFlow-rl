@@ -313,6 +313,48 @@ class IRTLoggingCallback(BaseCallback):
         return float(value)
 
 
+class ActionTempSchedulerCallback(BaseCallback):
+    """Linearly anneal the IRT action temperature during training."""
+
+    def __init__(self, final_temp: float, anneal_steps: int):
+        super().__init__()
+        self.final_temp = float(final_temp)
+        self.anneal_steps = max(1, int(anneal_steps))
+        self.initial_temp: Optional[float] = None
+
+    def _get_policy(self):
+        return getattr(self.model, "policy", None)
+
+    def _sync_temp(self, value: float) -> None:
+        policy = self._get_policy()
+        if policy is None:
+            return
+        value = float(value)
+        setattr(policy, "action_temp", value)
+        actor = getattr(policy, "actor", None)
+        if actor is not None:
+            if hasattr(actor, "action_temp"):
+                actor.action_temp = value
+            irt_actor = getattr(actor, "irt_actor", None)
+            if irt_actor is not None and hasattr(irt_actor, "action_temp"):
+                irt_actor.action_temp = value
+
+    def _on_training_start(self) -> None:
+        policy = self._get_policy()
+        if policy is None:
+            return
+        current = getattr(policy, "action_temp", None)
+        if current is not None:
+            self.initial_temp = float(current)
+
+    def _on_step(self) -> bool:
+        if self.initial_temp is None:
+            return True
+        progress = min(self.model.num_timesteps, self.anneal_steps) / self.anneal_steps
+        new_temp = self.initial_temp + progress * (self.final_temp - self.initial_temp)
+        self._sync_temp(new_temp)
+        return True
+
 
 class CrisisBridgeCallback(BaseCallback):
     """
@@ -900,6 +942,22 @@ def train_irt(args):
     sac_params["ent_coef"] = 0.5  # Phase 2.2a: 0.3 → 0.5 (enable diversity)
     sac_params["learning_starts"] = 1000  # Phase 2: 5000 → 1000 (faster warmup)
 
+    action_dim = int(train_env.action_space.shape[0])
+    default_target_entropy = -float(action_dim)
+    if args.target_entropy is not None:
+        sac_params["target_entropy"] = float(args.target_entropy)
+    elif args.target_entropy_mult is not None:
+        sac_params["target_entropy"] = default_target_entropy * float(args.target_entropy_mult)
+
+    if args.utd_ratio is not None and args.utd_ratio > 0:
+        base_freq = sac_params.get("train_freq", 1)
+        if isinstance(base_freq, tuple):
+            freq_value = float(base_freq[0])
+        else:
+            freq_value = float(base_freq)
+        gradient_steps = max(1, int(round(freq_value * float(args.utd_ratio))))
+        sac_params["gradient_steps"] = gradient_steps
+
     # Phase-H1: Critic learning rate 상향 (adaptive_risk 전용)
     if args.reward_type == "adaptive_risk":
         sac_params["learning_rate"] = 5e-4  # 1e-4 → 5e-4 (5배 증가)
@@ -965,6 +1023,10 @@ def train_irt(args):
 
     # Train
     callbacks = [checkpoint_callback, eval_callback, irt_logging_callback]
+    if args.action_temp_final is not None and args.action_temp_final != args.action_temp:
+        anneal_steps = args.action_temp_anneal_steps or total_timesteps
+        callbacks.append(ActionTempSchedulerCallback(args.action_temp_final, anneal_steps))
+        print(f"  ActionTempScheduler: {args.action_temp}->{args.action_temp_final} over {anneal_steps} steps")
     if crisis_bridge_callback is not None:
         callbacks.append(crisis_bridge_callback)
 
@@ -1528,6 +1590,36 @@ def main():
         type=float,
         default=0.50,
         help="Action softmax temperature (default: 0.50 for smoother regime transitions)"
+    )
+    parser.add_argument(
+        "--action-temp-final",
+        type=float,
+        default=None,
+        help="Final action temperature for linear annealing (default: disabled)"
+    )
+    parser.add_argument(
+        "--action-temp-anneal-steps",
+        type=int,
+        default=0,
+        help="Number of steps to anneal action temperature (default: 0 = instantaneous)"
+    )
+    parser.add_argument(
+        "--target-entropy",
+        type=float,
+        default=None,
+        help="Override SAC target entropy (default: heuristic)"
+    )
+    parser.add_argument(
+        "--target-entropy-mult",
+        type=float,
+        default=None,
+        help="Scale default SAC target entropy by this factor (default: disabled)"
+    )
+    parser.add_argument(
+        "--utd-ratio",
+        type=float,
+        default=None,
+        help="Update-to-data ratio for SAC gradient steps (default: heuristic)"
     )
 
     # Phase 3: DSR + CVaR 보상 파라미터
