@@ -1057,6 +1057,10 @@ def _log_returns_to_tensorboard(log_dir: str, metrics: Dict[str, Any]) -> None:
         if max_dd is not None:
             writer.add_scalar("risk/max_drawdown", float(max_dd), step)
 
+        cvar_5 = metrics.get("cvar_5")
+        if cvar_5 is not None:
+            writer.add_scalar("risk/cvar_p05", float(cvar_5), step)
+
         writer.flush()
     finally:
         writer.close()
