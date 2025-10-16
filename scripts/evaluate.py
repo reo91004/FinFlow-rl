@@ -19,12 +19,15 @@ import argparse
 import contextlib
 import os
 import json
+import random
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import torch
+from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Iterable, Dict, Any
+from typing import Optional, Iterable, Dict, Any, List
 
 from finrl.config_tickers import DOW_30_TICKER
 from finrl.config import INDICATORS, TEST_START_DATE, TEST_END_DATE
@@ -327,6 +330,12 @@ def evaluate_model(
     adaptive_cvar_window: int = 40,
     *,
     cap_metrics: bool = False,
+    xai_level: str = "off",
+    xai_target: str = "critic_q",
+    xai_k: int = 20,
+    xai_ig_steps: int = 20,
+    xai_log_interval: int = 10,
+    xai_output_dir: Optional[str] = None,
 ):
     """
     범용 모델 평가 함수
@@ -356,6 +365,12 @@ def evaluate_model(
         adaptive_dsr_beta: Adaptive risk reward DSR EMA 계수
         adaptive_cvar_window: Adaptive risk reward CVaR 추정 윈도우
         cap_metrics: 메트릭 산출 전에 수익률 클리핑 여부 (False 권장)
+        xai_level: XAI 출력 수준 ('off' / 'light' / 'full')
+        xai_target: 특징 기여도 대상 ('critic_q' 또는 'log_prob')
+        xai_k: 특징 기여도 샘플 스텝 수(최대)
+        xai_ig_steps: Integrated Gradients 분해 스텝 수 (1이면 Grad×Input)
+        xai_log_interval: 프로토타입 시계열 기록 간격
+        xai_output_dir: XAI 파일 출력 경로 (None이면 모델 폴더 내 xai/ 사용)
 
     Returns:
         portfolio_values: 포트폴리오 가치 배열
@@ -401,8 +416,25 @@ def evaluate_model(
     is_irt = "irt" in model_path.lower()
     requested_reward_type = reward_type
 
+    xai_level_normalized = (xai_level or "off").lower()
+    xai_target_normalized = (xai_target or "critic_q").lower()
+    if xai_target_normalized == "both":
+        # critic_q: 가치 기반 설명, log_prob: 정책 확률 관점 → both면 두 타깃 모두 계산
+        xai_targets_to_use = ["critic_q", "log_prob"]
+    else:
+        xai_targets_to_use = [xai_target_normalized]
+    xai_enabled = xai_level_normalized != "off"
+    xai_collect_features = xai_level_normalized == "full"
+    if xai_enabled and not is_irt:
+        if verbose:
+            print("  XAI outputs requested but model is not IRT; disabling XAI.")
+        xai_enabled = False
+        xai_collect_features = False
+        xai_targets_to_use = []
+
     # Phase 1.5: Load checkpoint metadata first (reward scale, action mode, obs dim, etc.)
     env_meta = {}
+    feature_columns = None
     meta_candidates = []
     try:
         model_path_obj = Path(model_path).expanduser().resolve()
@@ -431,15 +463,26 @@ def evaluate_model(
 
     if env_meta:
         meta_reward_type = env_meta.get("reward_type")
+        if env_meta.get("feature_columns"):
+            try:
+                feature_columns = list(env_meta["feature_columns"])
+            except Exception:
+                feature_columns = None
         if meta_reward_type:
-            if requested_reward_type and requested_reward_type != meta_reward_type and verbose:
+            if (
+                requested_reward_type
+                and requested_reward_type != meta_reward_type
+                and verbose
+            ):
                 print(
                     f"  Overriding requested reward_type '{requested_reward_type}' with checkpoint value '{meta_reward_type}'"
                 )
             requested_reward_type = str(meta_reward_type)
         if expected_obs_dim is None and env_meta.get("obs_dim") is not None:
             expected_obs_dim = int(env_meta["obs_dim"])
-        use_weighted_action = bool(env_meta.get("use_weighted_action", use_weighted_action))
+        use_weighted_action = bool(
+            env_meta.get("use_weighted_action", use_weighted_action)
+        )
         weight_slippage = float(env_meta.get("weight_slippage", weight_slippage))
         weight_transaction_cost = float(
             env_meta.get("weight_transaction_cost", weight_transaction_cost)
@@ -463,9 +506,7 @@ def evaluate_model(
         adaptive_crisis_gain_cvar = float(
             env_meta.get("adaptive_crisis_gain_cvar", adaptive_crisis_gain_cvar)
         )
-        adaptive_dsr_beta = float(
-            env_meta.get("adaptive_dsr_beta", adaptive_dsr_beta)
-        )
+        adaptive_dsr_beta = float(env_meta.get("adaptive_dsr_beta", adaptive_dsr_beta))
         adaptive_cvar_window = int(
             env_meta.get("adaptive_cvar_window", adaptive_cvar_window)
         )
@@ -727,16 +768,24 @@ def evaluate_model(
         irt_data_list = {}
 
     bridge_monitor = (
-        _CrisisBridgeMonitor(vec_env=test_env, base_env=base_env)
-        if is_irt
-        else None
+        _CrisisBridgeMonitor(vec_env=test_env, base_env=base_env) if is_irt else None
     )
 
     step = 0
+    xai_proto_records: List[Dict[str, Any]] = []
+    xai_cash_series: List[Dict[str, float]] = []
+    xai_feature_samples: List[Dict[str, Any]] = []
+    xai_feature_rows: List[Dict[str, Any]] = []
+    feature_sample_total = 0
+    proto_top_k_default = 5
+    reservoir_rng = random.Random(0)
+
     while not done:
+        obs_before = np.asarray(obs, dtype=np.float32).copy()
         action, _ = model.predict(obs, deterministic=True)
 
         info_dict = None
+        proto_snapshot = None
         # IRT info 수집
         if is_irt and hasattr(model.policy, "get_irt_info"):
             info_dict = model.policy.get_irt_info()
@@ -815,6 +864,52 @@ def evaluate_model(
                 # Action을 weight로 변환 (simplex 정규화)
                 weights = action / (action.sum() + 1e-8)
                 irt_data_list["weights"].append(weights.copy())
+                if xai_enabled and (step % max(1, xai_log_interval) == 0):
+                    proto_weights = info_dict["w"][0].detach().cpu().numpy()
+                    proto_weights = np.asarray(proto_weights, dtype=np.float64).reshape(
+                        -1
+                    )
+                    proto_sum = np.sum(proto_weights)
+                    if proto_sum <= 0:
+                        proto_weights = np.ones_like(proto_weights) / max(
+                            proto_weights.size, 1
+                        )
+                    else:
+                        proto_weights = proto_weights / proto_sum
+                    proto_entropy_val = float(
+                        -(proto_weights * np.log(proto_weights + 1e-12)).sum()
+                    )
+                    alpha_vals = info_dict.get("alpha_c")
+                    if alpha_vals is not None:
+                        alpha_arr = alpha_vals[0].detach().cpu().numpy().reshape(-1)
+                        alpha_mean_val = float(np.mean(alpha_arr))
+                        alpha_std_val = float(np.std(alpha_arr))
+                    else:
+                        alpha_mean_val = float("nan")
+                        alpha_std_val = float("nan")
+                    crisis_tensor = info_dict.get("crisis_level")
+                    if crisis_tensor is not None:
+                        crisis_level_val = float(crisis_tensor[0].detach().cpu().item())
+                    else:
+                        crisis_level_val = 0.0
+                    top_k = min(proto_top_k_default, proto_weights.size)
+                    top_indices = np.argsort(proto_weights)[::-1][:top_k]
+                    top_weights = proto_weights[top_indices]
+                    action_temp_val = getattr(model.policy, "action_temp", None)
+                    proto_snapshot = {
+                        "step": step,
+                        "proto_entropy": proto_entropy_val,
+                        "alpha_c_mean": alpha_mean_val,
+                        "alpha_c_std": alpha_std_val,
+                        "crisis_level": crisis_level_val,
+                        "action_temp": (
+                            float(action_temp_val)
+                            if action_temp_val is not None
+                            else float("nan")
+                        ),
+                        "top_indices": top_indices.tolist(),
+                        "top_weights": top_weights.tolist(),
+                    }
 
         if bridge_monitor is not None and info_dict is None:
             bridge_monitor.observe_policy(None)
@@ -862,9 +957,9 @@ def evaluate_model(
                     component_value = float(value)
                     bucket = irt_data_list["reward_components"].setdefault(key, [])
                     bucket.append(component_value)
-                    bucket_scaled = irt_data_list["reward_components_scaled"].setdefault(
-                        key, []
-                    )
+                    bucket_scaled = irt_data_list[
+                        "reward_components_scaled"
+                    ].setdefault(key, [])
                     bucket_scaled.append(component_value * scaling_factor)
 
         # Phase-1: 실행가중(actual_weights) 계산 및 기록
@@ -899,6 +994,47 @@ def evaluate_model(
                     "target_weights": target_slice,
                 }
                 irt_data_list["top_snapshots"].append(snapshot)
+
+        crisis_for_step = (
+            proto_snapshot["crisis_level"]
+            if proto_snapshot is not None
+            else float(info.get("crisis_level", 0.0))
+        )
+        if xai_enabled:
+            cash_weight_val = info.get("cash_weight")
+            if cash_weight_val is not None:
+                xai_cash_series.append(
+                    {
+                        "step": step,
+                        "cash_weight": float(cash_weight_val),
+                        "crisis_level": float(crisis_for_step),
+                    }
+                )
+        if proto_snapshot is not None:
+            proto_snapshot["cash_weight"] = float(info.get("cash_weight", float("nan")))
+            proto_snapshot["sum_weights"] = float(info.get("sum_weights", float("nan")))
+            proto_snapshot["kappa_sharpe"] = float(
+                info.get("kappa_sharpe", float("nan"))
+            )
+            proto_snapshot["kappa_cvar"] = float(info.get("kappa_cvar", float("nan")))
+            proto_snapshot["turnover_executed"] = float(
+                info.get("turnover_executed", float("nan"))
+            )
+            xai_proto_records.append(proto_snapshot)
+        if xai_collect_features and info_dict is not None:
+            feature_sample_total += 1
+            sample_payload = {
+                "step": step,
+                "obs": obs_before.copy(),
+                "action": np.asarray(action, dtype=np.float32).copy(),
+                "crisis_level": float(crisis_for_step),
+            }
+            if len(xai_feature_samples) < max(1, xai_k):
+                xai_feature_samples.append(sample_payload)
+            else:
+                j = reservoir_rng.randint(0, feature_sample_total - 1)
+                if j < max(1, xai_k):
+                    xai_feature_samples[j] = sample_payload
 
         tc_value = float(info.get("transaction_cost", 0.0) or 0.0)
         transaction_costs.append(tc_value)
@@ -959,7 +1095,10 @@ def evaluate_model(
     transaction_costs_array = np.array(transaction_costs, dtype=np.float64)
     turnover_executed_array = np.array(turnover_executed, dtype=np.float64)
     turnover_target_array = np.array(turnover_target_series, dtype=np.float64)
-    if turnover_target_array.size and turnover_target_array.size != turnover_executed_array.size:
+    if (
+        turnover_target_array.size
+        and turnover_target_array.size != turnover_executed_array.size
+    ):
         raise RuntimeError(
             "Turnover series length mismatch between target and executed. "
             f"target={turnover_target_array.size}, executed={turnover_executed_array.size}"
@@ -976,11 +1115,11 @@ def evaluate_model(
                 irt_data_list["actual_weights"]
             ),  # [T, N] Phase-1: 실행가중
             "crisis_levels": np.array(irt_data_list["crisis_levels"]).squeeze(),  # [T]
-            "crisis_levels_pre_guard": np.array(
-                irt_data_list["crisis_levels_pre_guard"]
-            ).squeeze()
-            if irt_data_list["crisis_levels_pre_guard"]
-            else np.array([], dtype=np.float64),
+            "crisis_levels_pre_guard": (
+                np.array(irt_data_list["crisis_levels_pre_guard"]).squeeze()
+                if irt_data_list["crisis_levels_pre_guard"]
+                else np.array([], dtype=np.float64)
+            ),
             "crisis_regime": np.array(
                 irt_data_list["crisis_regime"], dtype=np.int32
             ),  # Phase 1.5: [T] 이진 분류
@@ -989,11 +1128,11 @@ def evaluate_model(
             "cost_matrices": np.array(irt_data_list["cost_matrices"]),  # [T, m, M]
             "eta": np.array(irt_data_list["eta"]).squeeze(),  # [T]
             "alpha_c": np.array(irt_data_list["alpha_c"]).squeeze(),  # [T]
-            "alpha_crisis_input": np.array(
-                irt_data_list["alpha_crisis_input"]
-            ).squeeze()
-            if irt_data_list["alpha_crisis_input"]
-            else np.array([], dtype=np.float64),
+            "alpha_crisis_input": (
+                np.array(irt_data_list["alpha_crisis_input"]).squeeze()
+                if irt_data_list["alpha_crisis_input"]
+                else np.array([], dtype=np.float64)
+            ),
             "hysteresis_up": np.array(irt_data_list["hysteresis_up"], dtype=np.float64),
             "hysteresis_down": np.array(
                 irt_data_list["hysteresis_down"], dtype=np.float64
@@ -1066,9 +1205,7 @@ def evaluate_model(
             "weight_transaction_cost": getattr(
                 base_env, "weight_transaction_cost", None
             ),
-            "adaptive_lambda_sharpe": getattr(
-                base_env, "adaptive_lambda_sharpe", None
-            ),
+            "adaptive_lambda_sharpe": getattr(base_env, "adaptive_lambda_sharpe", None),
             "adaptive_lambda_cvar": getattr(base_env, "adaptive_lambda_cvar", None),
             "adaptive_lambda_turnover": getattr(
                 base_env, "adaptive_lambda_turnover", None
@@ -1227,7 +1364,9 @@ def evaluate_model(
                     metrics[f"reward_component_{key}_mean"] = float(np.mean(values))
                     metrics[f"reward_component_{key}_std"] = float(np.std(values))
                     shares = np.abs(component_matrix[idx]) / abs_sum
-                    metrics[f"reward_component_{key}_abs_share"] = float(np.mean(shares))
+                    metrics[f"reward_component_{key}_abs_share"] = float(
+                        np.mean(shares)
+                    )
 
         hyst_up_vals = _safe_array("hysteresis_up")
         hyst_down_vals = _safe_array("hysteresis_down")
@@ -1268,6 +1407,433 @@ def evaluate_model(
             )  # Phase 1.5
             metrics["prototype_var_mean_eval"] = float(np.mean(proto_var))
 
+    xai_dir_path: Optional[Path] = None
+    if xai_enabled:
+        if xai_output_dir:
+            xai_dir_path = Path(xai_output_dir).expanduser()
+        elif "model_path_obj" in locals() and model_path_obj is not None:
+            xai_dir_path = model_path_obj.parent / "xai"
+        else:
+            xai_dir_path = Path(model_path).expanduser().resolve().parent / "xai"
+        xai_dir_path.mkdir(parents=True, exist_ok=True)
+
+        if xai_proto_records:
+            base_keys = [
+                "step",
+                "proto_entropy",
+                "alpha_c_mean",
+                "alpha_c_std",
+                "crisis_level",
+                "action_temp",
+                "cash_weight",
+                "sum_weights",
+                "kappa_sharpe",
+                "kappa_cvar",
+                "turnover_executed",
+            ]
+            proto_rows: List[Dict[str, Any]] = []
+            for rec in xai_proto_records:
+                row: Dict[str, Any] = {}
+                for key in base_keys:
+                    if key == "step":
+                        row[key] = int(rec.get("step", 0))
+                    else:
+                        val = rec.get(key)
+                        row[key] = float(val) if val is not None else np.nan
+                top_indices = rec.get("top_indices", []) or []
+                top_weights = rec.get("top_weights", []) or []
+                for idx, proto_idx in enumerate(top_indices, start=1):
+                    row[f"proto_idx_{idx}"] = int(proto_idx)
+                    weight_val = (
+                        float(top_weights[idx - 1])
+                        if idx - 1 < len(top_weights)
+                        else 0.0
+                    )
+                    row[f"proto_weight_{idx}"] = weight_val
+                if top_weights:
+                    other_weight = max(0.0, 1.0 - float(np.sum(top_weights)))
+                    row["proto_other_weight"] = float(other_weight)
+                proto_rows.append(row)
+            proto_df = pd.DataFrame(proto_rows)
+            proto_df.to_csv(xai_dir_path / "xai_prototypes_timeseries.csv", index=False)
+
+    if xai_dir_path is not None and xai_collect_features and xai_feature_samples:
+        feature_names_list: Optional[List[str]] = None
+        if feature_columns and xai_feature_samples:
+            obs_dim = len(xai_feature_samples[0]["obs"])
+            if len(feature_columns) == obs_dim:
+                feature_names_list = list(feature_columns)
+        if feature_names_list is None and xai_feature_samples:
+            obs_dim = len(xai_feature_samples[0]["obs"])
+            feature_names_list = [f"feature_{i}" for i in range(obs_dim)]
+
+        if hasattr(model.policy, "actor"):
+            actor_prev_state = model.policy.actor.training
+            model.policy.actor.eval()
+        else:
+            actor_prev_state = None
+        if hasattr(model, "critic"):
+            critic_prev_state = model.critic.training
+            model.critic.eval()
+        else:
+            critic_prev_state = None
+
+        def _forward_value(
+            target_name: str,
+            obs_tensor: torch.Tensor,
+            action_tensor: torch.Tensor,
+        ) -> torch.Tensor:
+            if target_name == "critic_q" and hasattr(model, "critic"):
+                q1, q2 = model.critic(obs_tensor, action_tensor)
+                return torch.min(q1, q2)
+            # log_prob: 정책 확률 관점 (Dirichlet 기반); actor.action_log_prob는
+            # 정책이 생성한 확률 질량의 로그를 반환한다.
+            fitness = model.policy.actor._compute_fitness(obs_tensor, requires_grad=True)
+            _, info_grad = model.policy.actor.irt_actor(
+                state=obs_tensor,
+                fitness=fitness,
+                deterministic=True,
+                retain_grad=True,
+            )
+            mixed_conc_grad = info_grad.get("mixed_conc_grad")
+            if mixed_conc_grad is None:
+                mixed_conc_grad = info_grad.get("mixed_conc_clamped")
+            action_temp_val = info_grad.get("action_temp", 1.0)
+            logits = mixed_conc_grad / max(float(action_temp_val), 1e-6)
+            log_probs = torch.log_softmax(logits, dim=-1)
+            action_epsilon = 1e-8
+            action_clipped = torch.clamp(action_tensor, min=action_epsilon)
+            action_norm = action_clipped / action_clipped.sum(dim=-1, keepdim=True)
+            return torch.sum(action_norm * log_probs, dim=-1)
+
+        for sample in xai_feature_samples:
+            obs_np = np.asarray(sample["obs"], dtype=np.float32)
+            action_np = np.asarray(sample["action"], dtype=np.float32)
+            for target_name in xai_targets_to_use:
+                obs_tensor = torch.from_numpy(obs_np).to(model.device).unsqueeze(0)
+                action_tensor = (
+                    torch.from_numpy(action_np).to(model.device).unsqueeze(0)
+                )
+
+                if xai_ig_steps <= 1:
+                    obs_tensor = obs_tensor.clone().detach().requires_grad_(True)
+                    target_val = _forward_value(target_name, obs_tensor, action_tensor)
+                    grad = torch.autograd.grad(target_val, obs_tensor)[0]
+                    attribution = (grad * obs_tensor).squeeze(0).detach().cpu().numpy()
+                else:
+                    baseline = torch.zeros_like(obs_tensor)
+                    obs_diff = obs_tensor - baseline
+                    total_attr = torch.zeros_like(obs_tensor)
+                    for alpha in np.linspace(0.0, 1.0, xai_ig_steps):
+                        blended = (
+                            (baseline + alpha * obs_diff)
+                            .clone()
+                            .detach()
+                            .requires_grad_(True)
+                        )
+                        target_val = _forward_value(target_name, blended, action_tensor)
+                        grad = torch.autograd.grad(target_val, blended)[0]
+                        total_attr += grad * obs_diff
+                    attribution = (
+                        (total_attr / float(xai_ig_steps))
+                        .squeeze(0)
+                        .detach()
+                        .cpu()
+                        .numpy()
+                    )
+
+                abs_attr = np.abs(attribution)
+                top_count = min(abs_attr.size, 10)
+                top_indices = np.argsort(abs_attr)[::-1][:top_count]
+                regime_label = "crisis" if sample["crisis_level"] >= 0.55 else "normal"
+                for rank, idx in enumerate(top_indices, start=1):
+                    feature_name = (
+                        feature_names_list[idx]
+                        if feature_names_list and idx < len(feature_names_list)
+                        else f"feature_{idx}"
+                    )
+                    att_val = float(attribution[idx])
+                    xai_feature_rows.append(
+                        {
+                            "step": int(sample["step"]),
+                            "feature_index": int(idx),
+                            "feature_name": feature_name,
+                            "attribution": att_val,
+                            "abs_attribution": float(abs_attr[idx]),
+                            "sign": "positive" if att_val >= 0 else "negative",
+                            "crisis_level": float(sample["crisis_level"]),
+                            "regime": regime_label,
+                            "rank": rank,
+                            "target": target_name,
+                        }
+                    )
+
+        if actor_prev_state is not None and hasattr(model.policy, "actor"):
+            model.policy.actor.train(actor_prev_state)
+        if critic_prev_state is not None and hasattr(model, "critic"):
+            model.critic.train(critic_prev_state)
+
+        feature_df = pd.DataFrame(xai_feature_rows)
+        if not feature_df.empty:
+            parquet_path = xai_dir_path / "xai_feature_attributions.parquet"
+            try:
+                feature_df.to_parquet(parquet_path, index=False)
+            except (ImportError, ValueError):
+                fallback_path = parquet_path.with_suffix(".csv")
+                feature_df.to_csv(fallback_path, index=False)
+
+    if xai_dir_path is not None and xai_collect_features:
+        crisis_threshold = 0.55
+        proto_weights_full = None
+        crisis_levels_full = None
+        if is_irt and "irt_data" in locals() and isinstance(irt_data, dict):
+            proto_weights_full = irt_data.get("prototype_weights")
+            crisis_levels_full = irt_data.get("crisis_levels")
+
+        def _mean_safe(values: np.ndarray) -> Optional[float]:
+            if values.size == 0:
+                return None
+            finite_vals = values[np.isfinite(values)]
+            if finite_vals.size == 0:
+                return None
+            return float(np.mean(finite_vals))
+
+        def _proto_summary(
+            weights_array: Optional[np.ndarray], mask: np.ndarray, limit: int = 5
+        ) -> List[Dict[str, float]]:
+            if (
+                weights_array is None
+                or weights_array.size == 0
+                or mask.size == 0
+                or not mask.any()
+            ):
+                return []
+            masked = weights_array[mask]
+            if masked.size == 0:
+                return []
+            avg_weights = masked.mean(axis=0)
+            top_idx = np.argsort(avg_weights)[::-1][:limit]
+            total = float(np.sum(avg_weights))
+            summary_rows: List[Dict[str, float]] = []
+            for idx in top_idx:
+                mean_weight = float(avg_weights[idx])
+                share = float(mean_weight / total) if total > 0 else 0.0
+                summary_rows.append(
+                    {
+                        "index": int(idx),
+                        "mean_weight": mean_weight,
+                        "weight_share": share,
+                    }
+                )
+            return summary_rows
+
+        def _entropy_mean(
+            records: List[Dict[str, Any]], regime: str
+        ) -> Optional[float]:
+            if not records:
+                return None
+            values = [
+                rec["proto_entropy"]
+                for rec in records
+                if np.isfinite(rec.get("proto_entropy", np.nan))
+                and (
+                    (rec["crisis_level"] >= crisis_threshold)
+                    if regime == "crisis"
+                    else (rec["crisis_level"] < crisis_threshold)
+                )
+            ]
+            return _mean_safe(np.array(values, dtype=np.float64)) if values else None
+
+        def _action_temp_mean(
+            records: List[Dict[str, Any]], regime: str
+        ) -> Optional[float]:
+            if not records:
+                return None
+            values = [
+                rec["action_temp"]
+                for rec in records
+                if np.isfinite(rec.get("action_temp", np.nan))
+                and (
+                    (rec["crisis_level"] >= crisis_threshold)
+                    if regime == "crisis"
+                    else (rec["crisis_level"] < crisis_threshold)
+                )
+            ]
+            return _mean_safe(np.array(values, dtype=np.float64)) if values else None
+
+        def _feature_summary(
+            rows: List[Dict[str, Any]], regime: str, limit: int = 10
+        ) -> List[Dict[str, Any]]:
+            if not rows:
+                return []
+            agg = defaultdict(float)
+            signed = defaultdict(list)
+            for row in rows:
+                if regime != "overall" and row["regime"] != regime:
+                    continue
+                key = (row["feature_index"], row["feature_name"])
+                agg[key] += float(row["abs_attribution"])
+                signed[key].append(float(row["attribution"]))
+            if not agg:
+                return []
+            items = sorted(agg.items(), key=lambda kv: kv[1], reverse=True)[:limit]
+            summary_rows: List[Dict[str, Any]] = []
+            for (idx, name), total in items:
+                feature_name = name if name is not None else f"feature_{idx}"
+                contributions = signed[(idx, name)]
+                mean_signed = float(np.mean(contributions)) if contributions else 0.0
+                summary_rows.append(
+                    {
+                        "feature_index": int(idx),
+                        "feature_name": feature_name,
+                        "total_abs_attribution": float(total),
+                        "mean_attribution": mean_signed,
+                    }
+                )
+            return summary_rows
+
+        def _cash_mean(series: List[Dict[str, float]], regime: str) -> Optional[float]:
+            if not series:
+                return None
+            values = []
+            for entry in series:
+                value = entry.get("cash_weight")
+                if value is None or not np.isfinite(value):
+                    continue
+                crisis_val = entry.get("crisis_level", 0.0)
+                if regime == "normal" and crisis_val >= crisis_threshold:
+                    continue
+                if regime == "crisis" and crisis_val < crisis_threshold:
+                    continue
+                values.append(float(value))
+            if not values:
+                return None
+            return float(np.mean(values))
+
+        def _record_count(records: List[Dict[str, Any]], regime: str) -> int:
+            if not records:
+                return 0
+            if regime == "overall":
+                return len(records)
+            count = 0
+            for rec in records:
+                crisis_val = rec.get("crisis_level", 0.0)
+                if regime == "crisis" and crisis_val >= crisis_threshold:
+                    count += 1
+                elif regime == "normal" and crisis_val < crisis_threshold:
+                    count += 1
+            return count
+
+        summary: Dict[str, Any] = {
+            "params": {
+                "xai_level": xai_level_normalized,
+                "xai_target": xai_target_normalized,
+                "xai_targets": xai_targets_to_use,
+                "xai_log_interval": xai_log_interval,
+                "xai_k": xai_k,
+                "xai_ig_steps": xai_ig_steps,
+                "proto_records": len(xai_proto_records),
+                "feature_samples": len(xai_feature_samples),
+                "feature_rows": len(xai_feature_rows),
+            }
+        }
+
+        regimes = {}
+        overall_masks = {
+            "overall": slice(None),
+            "normal": None,
+            "crisis": None,
+        }
+        if (
+            proto_weights_full is not None
+            and proto_weights_full.size
+            and crisis_levels_full is not None
+        ):
+            crisis_array_full = np.asarray(
+                crisis_levels_full, dtype=np.float64
+            ).reshape(-1)
+            overall_masks["normal"] = crisis_array_full < crisis_threshold
+            overall_masks["crisis"] = crisis_array_full >= crisis_threshold
+
+        for regime_name in ("normal", "crisis"):
+            avg_cash = _cash_mean(xai_cash_series, regime_name)
+            proto_mask = overall_masks.get(regime_name)
+            proto_summary = (
+                _proto_summary(proto_weights_full, proto_mask)
+                if proto_mask is not None
+                else []
+            )
+            regimes[regime_name] = {
+                "steps": (
+                    int(proto_mask.sum())
+                    if isinstance(proto_mask, np.ndarray)
+                    else _record_count(xai_proto_records, regime_name)
+                ),
+                "avg_cash_weight": avg_cash,
+                "proto_entropy_mean": _entropy_mean(xai_proto_records, regime_name),
+                "action_temp_mean": _action_temp_mean(xai_proto_records, regime_name),
+                "top_prototypes": proto_summary,
+                "top_features": _feature_summary(xai_feature_rows, regime_name),
+            }
+
+        regimes["overall"] = {
+            "steps": (
+                int(proto_weights_full.shape[0])
+                if isinstance(proto_weights_full, np.ndarray)
+                else _record_count(xai_proto_records, "overall")
+            ),
+            "avg_cash_weight": _cash_mean(xai_cash_series, "overall"),
+            "proto_entropy_mean": (
+                _mean_safe(
+                    np.array(
+                        [rec["proto_entropy"] for rec in xai_proto_records],
+                        dtype=np.float64,
+                    )
+                )
+                if xai_proto_records
+                else None
+            ),
+            "action_temp_mean": (
+                _mean_safe(
+                    np.array(
+                        [rec["action_temp"] for rec in xai_proto_records],
+                        dtype=np.float64,
+                    )
+                )
+                if xai_proto_records
+                else None
+            ),
+            "top_prototypes": (
+                _proto_summary(
+                    proto_weights_full, np.ones(proto_weights_full.shape[0], dtype=bool)
+                )
+                if isinstance(proto_weights_full, np.ndarray)
+                else []
+            ),
+            "top_features": _feature_summary(xai_feature_rows, "overall"),
+        }
+
+        summary["regimes"] = regimes
+
+        feature_attr_summary: Dict[str, Dict[str, Any]] = {}
+        for target_name in xai_targets_to_use:
+            target_rows = [
+                row for row in xai_feature_rows if row.get("target") == target_name
+            ]
+            target_entry: Dict[str, Any] = {}
+            for regime_name in ("normal", "crisis", "overall"):
+                target_entry[regime_name] = {
+                    "count": _record_count(target_rows, regime_name),
+                    "top_features": _feature_summary(target_rows, regime_name),
+                }
+            feature_attr_summary[target_name] = target_entry
+        summary["feature_attributions"] = feature_attr_summary
+
+        summary_path = xai_dir_path / "xai_summary.json"
+        summary_path.write_text(
+            json.dumps(summary, indent=2, ensure_ascii=False) + "\n"
+        )
+
     # IRT 데이터에 metrics 추가
     if irt_data is not None:
         irt_data["metrics"] = metrics
@@ -1301,6 +1867,12 @@ def evaluate_direct(args, model_name, model_class):
         adaptive_dsr_beta=args.adaptive_dsr_beta,
         adaptive_cvar_window=args.adaptive_cvar_window,
         cap_metrics=not args.no_cap_metrics,
+        xai_level=args.xai_level,
+        xai_target=args.xai_target,
+        xai_k=args.xai_k,
+        xai_ig_steps=args.xai_ig_steps,
+        xai_log_interval=args.xai_log_interval,
+        xai_output_dir=args.xai_output,
     )
 
 
@@ -1429,6 +2001,14 @@ def main(args):
     print(f"  Type: {model_name.upper()}")
     print(f"  Method: {args.method}")
     print(f"  Test: {args.test_start} ~ {args.test_end}")
+
+    if args.xai_level != "off" and args.method != "direct":
+        print("\n[Notice] XAI 출력은 direct 방식 평가에서만 지원되므로 비활성화합니다.")
+        args.xai_level = "off"
+    elif args.xai_level != "off":
+        print(
+            f"  XAI: level={args.xai_level}, target={args.xai_target}, samples={args.xai_k}, ig_steps={args.xai_ig_steps}"
+        )
 
     # 평가 방식 선택
     if args.method == "direct":
@@ -1743,6 +2323,44 @@ if __name__ == "__main__":
         type=str,
         default=None,
         help="JSON 출력 파일 (기본: 모델 디렉토리/evaluation_results.json)",
+    )
+    parser.add_argument(
+        "--xai-level",
+        type=str,
+        default="full",
+        choices=["off", "light", "full"],
+        help="XAI 산출 수준 (off=생성 안 함, light=프로토타입 시계열, full=전체 번들)",
+    )
+    parser.add_argument(
+        "--xai-target",
+        type=str,
+        default="both",
+        choices=["critic_q", "log_prob", "both"],
+        help="특징 기여도 계산 대상 (critic_q: Q(s,a), log_prob: log π(a|s), both: 두 타깃 모두)",
+    )
+    parser.add_argument(
+        "--xai-k",
+        type=int,
+        default=20,
+        help="특징 기여도 샘플링 최대 스텝 수 (default: 20)",
+    )
+    parser.add_argument(
+        "--xai-ig-steps",
+        type=int,
+        default=20,
+        help="Integrated Gradients 분할 스텝 수 (default: 20; 1이면 Grad×Input)",
+    )
+    parser.add_argument(
+        "--xai-log-interval",
+        type=int,
+        default=10,
+        help="프로토타입 시계열 기록 간격 (스텝 단위, default: 10)",
+    )
+    parser.add_argument(
+        "--xai-output",
+        type=str,
+        default=None,
+        help="XAI 산출물 출력 디렉토리 (기본: 모델 폴더/xai)",
     )
 
     args = parser.parse_args()

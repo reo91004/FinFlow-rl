@@ -81,7 +81,9 @@ class IRTActorWrapper(Actor):
         # 마지막 forward의 IRT info 저장 (평가/시각화용)
         self._last_irt_info = None
 
-    def _compute_fitness(self, obs: torch.Tensor) -> Optional[torch.Tensor]:
+    def _compute_fitness(
+        self, obs: torch.Tensor, requires_grad: bool = False
+    ) -> Optional[torch.Tensor]:
         """
         Critic 기반 fitness 계산 (공통 helper method)
 
@@ -100,39 +102,30 @@ class IRTActorWrapper(Actor):
         policy = self._policy_ref() if self._policy_ref is not None else None
 
         if policy is not None and hasattr(policy, 'critic'):
-            with torch.no_grad():
+            ctx = torch.enable_grad if requires_grad else torch.no_grad
+            with ctx():
                 # 각 프로토타입의 샘플 행동 생성
                 K = self.irt_actor.proto_keys  # [M, D]
                 proto_actions = []
 
                 for j in range(M):
-                    # 프로토타입 j의 concentration
                     conc_j = self.irt_actor.decoders[j](K[j:j+1].expand(B, -1))  # [B, action_dim]
                     conc_j_clamped = torch.clamp(conc_j, min=self.dirichlet_min, max=self.dirichlet_max)
-
-                    # 샘플 행동 (mode 사용: 더 안정적)
-                    # Dirichlet mode = (α - 1) / (Σα - K) for α > 1
-                    # 안전하게 softmax 사용
-                    a_j = torch.softmax(conc_j_clamped, dim=-1)  # [B, action_dim]
+                    a_j = torch.softmax(conc_j_clamped, dim=-1)
                     proto_actions.append(a_j)
 
                 proto_actions = torch.stack(proto_actions, dim=1)  # [B, M, action_dim]
 
-                # Critic Q-value 계산 (Twin Q 중 최소값 사용)
                 q_values = []
                 for j in range(M):
-                    # SB3 Critic: forward(obs, actions) → [q1, q2]
-                    q_vals = policy.critic(obs, proto_actions[:, j])  # Tuple[Tensor, Tensor]
-
-                    # Twin Q의 최소값 (conservative)
+                    q_vals = policy.critic(obs, proto_actions[:, j])
                     if isinstance(q_vals, tuple):
-                        q_min = torch.min(q_vals[0], q_vals[1]).squeeze(-1)  # [B]
+                        q_min = torch.min(q_vals[0], q_vals[1]).squeeze(-1)
                     else:
-                        q_min = q_vals.squeeze(-1) if q_vals.ndim > 1 else q_vals  # [B]
-
+                        q_min = q_vals.squeeze(-1) if q_vals.ndim > 1 else q_vals
                     q_values.append(q_min)
 
-                fitness = torch.stack(q_values, dim=1)  # [B, M]
+                fitness = torch.stack(q_values, dim=1)
 
         return fitness
 
@@ -151,13 +144,14 @@ class IRTActorWrapper(Actor):
         obs = obs.float()
 
         # Critic 기반 fitness 계산
-        fitness = self._compute_fitness(obs)
+        fitness = self._compute_fitness(obs, requires_grad=False)
 
         # IRT Actor forward
         action, info = self.irt_actor(
             state=obs,
             fitness=fitness,
-            deterministic=deterministic
+            deterministic=deterministic,
+            retain_grad=False,
         )
 
         # 마지막 IRT info 저장 (평가/시각화용)
@@ -180,13 +174,14 @@ class IRTActorWrapper(Actor):
         obs = obs.float()
 
         # ===== Step 1: Fitness 계산 (Critic Q-network 사용) =====
-        fitness = self._compute_fitness(obs)
+        fitness = self._compute_fitness(obs, requires_grad=False)
 
         # ===== Step 2: IRT forward with fitness =====
         action, info = self.irt_actor(
             state=obs,
             fitness=fitness,
-            deterministic=False
+            deterministic=False,
+            retain_grad=False,
         )
 
         # 마지막 IRT info 저장 (평가/시각화용)

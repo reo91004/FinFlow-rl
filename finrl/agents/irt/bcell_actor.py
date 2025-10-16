@@ -379,12 +379,14 @@ class BCellIRTActor(nn.Module):
         state: torch.Tensor,
         fitness: Optional[torch.Tensor] = None,
         deterministic: bool = False,
+        retain_grad: bool = False,
     ) -> Tuple[torch.Tensor, Dict]:
         """
         Args:
             state: [B, S]
             fitness: 프로토타입 적합도 [B, M] (optional, 없으면 균등)
             deterministic: 결정적 행동 (평가 시)
+            retain_grad: True면 info에 gradient가 유지된 텐서를 포함
 
         Returns:
             action: [B, A] - 포트폴리오 가중치
@@ -676,6 +678,11 @@ class BCellIRTActor(nn.Module):
                 ) * w.detach().mean(dim=0, keepdim=True)
 
         # ===== Step 8: 해석 정보 수집 =====
+        mixed_conc_det = mixed_conc.detach()
+        mixed_conc_clamped_det = (
+            mixed_conc_clamped.detach() if not deterministic else mixed_conc_det
+        )
+
         info = {
             "w": w.detach(),  # [B, M] - 프로토타입 가중치
             "P": P.detach(),  # [B, m, M] - 수송 계획
@@ -745,12 +752,8 @@ class BCellIRTActor(nn.Module):
             ).detach(),
             # Dirichlet 정보 (log_prob 계산용)
             "concentrations": concentrations.detach(),  # [B, M, A] - 프로토타입별 concentration
-            "mixed_conc": mixed_conc.detach(),  # [B, A] - 혼합된 concentration (raw)
-            "mixed_conc_clamped": (
-                mixed_conc_clamped.detach()
-                if not deterministic
-                else mixed_conc.detach()
-            ),  # [B, A]
+            "mixed_conc": mixed_conc_det,  # [B, A] - 혼합된 concentration (raw)
+            "mixed_conc_clamped": mixed_conc_clamped_det,  # [B, A]
             # Phase 1.5: 프로토타입 전방 반영 검증
             "concentrations_mean": concentrations.mean(
                 dim=0
@@ -787,5 +790,12 @@ class BCellIRTActor(nn.Module):
                 else torch.zeros(B, 1, device=state.device)
             ),
         }
+
+        if retain_grad:
+            info["mixed_conc_grad"] = mixed_conc
+            info["mixed_conc_clamped_grad"] = (
+                mixed_conc_clamped if not deterministic else mixed_conc
+            )
+            info["action_temp"] = torch.tensor(self.action_temp, device=state.device)
 
         return action, info
