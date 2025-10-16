@@ -13,7 +13,7 @@ IRT Policy 학습 스크립트
     python scripts/train_irt.py --mode train --alpha 0.5 --episodes 200
 
     # 저장된 모델 평가
-    python scripts/train_irt.py --mode test --checkpoint logs/irt/.../irt_final.zip
+    python scripts/train_irt.py --mode eval --checkpoint logs/irt/.../irt_final.zip
 """
 
 import argparse
@@ -1298,9 +1298,9 @@ def main():
     parser.add_argument(
         "--mode",
         type=str,
-        default="both",
-        choices=["train", "test", "both"],
-        help="Execution mode (default: both)",
+        default="train",
+        choices=["train", "eval", "both", "test"],
+        help="Execution mode (default: train; use 'eval' for evaluation only)",
     )
 
     # Data period (defaults from config.py)
@@ -1331,7 +1331,7 @@ def main():
 
     # Training settings
     parser.add_argument(
-        "--episodes", type=int, default=600, help="Number of episodes (default: 600, Phase 3.5: 150k steps)"
+        "--episodes", type=int, default=60, help="Number of training episodes (default: 60)"
     )
     parser.add_argument(
         "--seed",
@@ -1351,14 +1351,19 @@ def main():
     parser.add_argument(
         "--env-diversify",
         choices=["off", "basic", "vector"],
-        default="off",
-        help="Training environment diversification strategy (default: off)",
+        default="vector",
+        help="Environment diversification strategy (default: vector)",
+    )
+    parser.add_argument(
+        "--advanced",
+        action="store_true",
+        help="Display advanced configuration options and exit",
     )
     parser.add_argument(
         "--n-envs",
         type=int,
-        default=1,
-        help="Number of parallel environments when env-diversify=vector (default: 1)",
+        default=None,
+        help="Number of parallel environments when env-diversify=vector (default: auto)",
     )
     parser.add_argument(
         "--start-offset-mode",
@@ -1525,9 +1530,9 @@ def main():
     parser.add_argument(
         "--reward-type",
         type=str,
-        default="dsr_cvar",
+        default="adaptive_risk",
         choices=["basic", "dsr_cvar", "adaptive_risk"],
-        help="Reward function type (default: dsr_cvar, Phase-H1: adaptive_risk)",
+        help="Reward function (default: adaptive_risk)",
     )
     parser.add_argument(
         "--lambda-dsr",
@@ -1755,14 +1760,52 @@ def main():
         help="Disable saving evaluation results as JSON (default: enabled)",
     )
 
+    base_visible = {"--mode", "--reward-type", "--episodes", "--env-diversify", "--advanced"}
+    advanced_descriptions: List[Tuple[str, str]] = []
+    for action in list(parser._actions):
+        option_strings = tuple(action.option_strings)
+        if not option_strings:
+            continue
+        if any(opt in ("-h", "--help") for opt in option_strings):
+            continue
+        if any(opt in base_visible for opt in option_strings):
+            continue
+        if action.help not in (None, argparse.SUPPRESS):
+            label = ", ".join(option_strings)
+            advanced_descriptions.append((label, action.help))
+        action.help = argparse.SUPPRESS
+
     args = parser.parse_args()
+
+    if getattr(args, "advanced", False):
+        print("Advanced options:\n")
+        for label, description in sorted(advanced_descriptions, key=lambda item: item[0]):
+            print(f"  {label}\n    {description}")
+        return
+
+    if args.mode == "test":
+        args.mode = "eval"
+
+    if args.env_diversify == "vector":
+        if args.n_envs is None:
+            args.n_envs = 8
+    elif args.n_envs is None:
+        args.n_envs = 1
+
+    banner = (
+        f"reward={args.reward_type} | "
+        f"episodes={args.episodes} | "
+        f"diversify={args.env_diversify} | "
+        f"n_envs={args.n_envs}"
+    )
+    print(f"[Run] {banner}")
 
     # Execute
     if args.mode == "train":
         log_dir, model_path = train_irt(args)
         print(f"\nCompleted! Results: {log_dir}")
 
-    elif args.mode == "test":
+    elif args.mode == "eval":
         results = test_irt(args)
         print(f"\nCompleted! Final return: {results['total_return']*100:.2f}%")
 
