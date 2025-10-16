@@ -20,9 +20,10 @@ import argparse
 import json
 import os
 import random
+import math
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, Iterable, List, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -44,6 +45,11 @@ from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 import torch
+from stable_baselines3.common.logger import (
+    HumanOutputFormat,
+    Logger,
+    TensorBoardOutputFormat,
+)
 
 # Import IRT Policy
 from finrl.agents.irt import IRTPolicy
@@ -126,285 +132,186 @@ def _unwrap_env(env):
     return env_ref
 
 
+ALLOWED_TENSORBOARD_TAGS = {
+    "returns/episode_sharpe",
+    "returns/episode_sortino",
+    "returns/annualized_return",
+    "risk/max_drawdown",
+    "risk/cvar_p05",
+    "risk/crisis_level_avg",
+    "risk/kappa_sharpe",
+    "risk/kappa_cvar",
+    "reward/log_return",
+    "reward/sharpe_term",
+    "reward/cvar_term",
+    "reward/total",
+    "action/turnover_executed",
+    "action/cash_weight",
+    "train/actor_loss",
+    "train/critic_loss",
+    "train/entropy",
+    "train/alpha",
+    "xai/proto_entropy",
+}
+
+
+class TensorboardWhitelistOutputFormat(TensorBoardOutputFormat):
+    """
+    TensorBoard output that drops any keys outside the allowed FinFlow telemetry set.
+    """
+
+    def __init__(self, folder: str):
+        os.makedirs(folder, exist_ok=True)
+        super().__init__(folder)
+
+    def _is_allowed(self, key: str) -> bool:
+        return key in ALLOWED_TENSORBOARD_TAGS
+
+    def write(
+        self,
+        key_values: dict[str, Any],
+        key_excluded: dict[str, tuple[str, ...]],
+        step: int = 0,
+    ) -> None:
+        filtered_keys = {}
+        filtered_excluded = {}
+        for k, v in key_values.items():
+            if self._is_allowed(k):
+                filtered_keys[k] = v
+                filtered_excluded[k] = key_excluded.get(k, tuple())
+
+        if not filtered_keys:
+            return
+
+        super().write(filtered_keys, filtered_excluded, step)
+
+
 class IRTLoggingCallback(BaseCallback):
-    """
-    Phase D: IRT 중간 변수 텐서보드 로깅 (교정)
+    """Minimal TensorBoard logging for FinFlow IRT training."""
 
-    100 스텝마다 IRT 내부 변수를 기록:
-    - crisis_level: 위기 감지 레벨
-    - alpha_c: 동적 OT-Replicator 혼합 비율
-    - rep_contribution/ot_contribution: 혼합 후 실제 기여도
-    - entropy: 프로토타입 혼합 다양성
-    - prototype_max_weight: 프로토타입 과점 지표
+    _METRIC_KEYS = {
+        "reward/log_return": "reward_log_return",
+        "reward/sharpe_term": ("reward_components", "sharpe_term"),
+        "reward/cvar_term": ("reward_components", "cvar_term"),
+        "reward/total": "reward_total",
+        "risk/cvar_p05": "cvar_value",
+        "risk/crisis_level_avg": "crisis_level",
+        "risk/kappa_sharpe": "kappa_sharpe",
+        "risk/kappa_cvar": "kappa_cvar",
+        "action/turnover_executed": "turnover_executed",
+        "action/cash_weight": "cash_weight",
+    }
 
-    Phase 3.5 추가:
-    - alpha_c_raw, pct_clamped_min/max: α clamp 검증
-    - action_temp, ema_beta: 하이퍼파라미터 확인
-    - turnover 관련 메트릭 (구현 예정)
-    """
-
-    def __init__(self, verbose: int = 0, log_freq: int = 100, ema_beta: float = 0.95):
+    def __init__(self, log_freq: int = 100, verbose: int = 0):
         super().__init__(verbose)
-        self.log_freq = log_freq
-        self.ema_beta = ema_beta
+        self.log_freq = max(1, int(log_freq))
+        self._reset_buffers()
 
-        # 타임축 통계 추적 (EMA)
-        self.alpha_c_ema_mean = None  # EMA(alpha_c)
-        self.alpha_c_ema_var = None   # EMA((alpha_c - mean)^2)
+    def _reset_buffers(self) -> None:
+        self._metrics = {key: [0.0, 0] for key in self._METRIC_KEYS}
 
-        # Phase 3.5: 이전 action 저장 (turnover 계산용)
-        self.prev_action = None
-        # Phase 1+: alpha 변화율 추적
-        self.prev_alpha_c = None
+    @staticmethod
+    def _to_float(value):
+        if value is None:
+            return None
+        try:
+            val = float(value)
+        except (TypeError, ValueError):
+            return None
+        if not np.isfinite(val):
+            return None
+        return val
+
+    def _accumulate_metric(self, key: str, value) -> None:
+        val = self._to_float(value)
+        if val is None:
+            return
+        bucket = self._metrics[key]
+        bucket[0] += val
+        bucket[1] += 1
+
+    def _value_from_info(self, info: dict, descriptor):
+        if isinstance(descriptor, tuple):
+            container = info.get(descriptor[0]) or {}
+            return container.get(descriptor[1])
+        return info.get(descriptor)
 
     def _on_training_start(self) -> None:
-        self.prev_action = None
-        self.prev_alpha_c = None
-        self.alpha_c_ema_mean = None
-        self.alpha_c_ema_var = None
+        self._reset_buffers()
 
     def _on_step(self) -> bool:
+        infos = self.locals.get("infos") if isinstance(self.locals, dict) else None
+        if infos:
+            for info in infos:
+                if not info:
+                    continue
+                for tb_key, desc in self._METRIC_KEYS.items():
+                    value = self._value_from_info(info, desc)
+                    self._accumulate_metric(tb_key, value)
         if self.n_calls % self.log_freq == 0:
-            # IRT info 가져오기
-            info = self.model.policy.get_irt_info()
-            if info is not None:
-                # ===== 위기 레벨 =====
-                self.logger.record("irt/avg_crisis_level", info['crisis_level'].mean().item())
-
-                # ===== alpha_c (OT-Replicator 혼합 비율) =====
-                alpha_c_val = info['alpha_c'].mean().item()
-                self.logger.record("irt/avg_alpha_c", alpha_c_val)
-
-                # Phase D: 타임축 EMA 분산 (B=1 가드 제거)
-                if self.alpha_c_ema_mean is None:
-                    # 초기화
-                    self.alpha_c_ema_mean = alpha_c_val
-                    self.alpha_c_ema_var = 0.0
-                else:
-                    # EMA 업데이트
-                    delta = alpha_c_val - self.alpha_c_ema_mean
-                    self.alpha_c_ema_mean = self.ema_beta * self.alpha_c_ema_mean + (1 - self.ema_beta) * alpha_c_val
-                    self.alpha_c_ema_var = self.ema_beta * self.alpha_c_ema_var + (1 - self.ema_beta) * (delta ** 2)
-
-                std_alpha_c = self.alpha_c_ema_var ** 0.5 if self.alpha_c_ema_var is not None else 0.0
-                self.logger.record("irt/std_alpha_c", std_alpha_c)
-                alpha_c_tensor = info['alpha_c']  # [B, 1]
-                alpha_c_min = alpha_c_tensor.min().item()
-                alpha_c_max = alpha_c_tensor.max().item()
-                self.logger.record("irt/min_alpha_c", alpha_c_min)
-                self.logger.record("irt/max_alpha_c", alpha_c_max)
-
-                if self.prev_alpha_c is not None:
-                    delta_alpha = alpha_c_val - self.prev_alpha_c
-                    self.logger.record("irt/delta_alpha_c", delta_alpha)
-                self.prev_alpha_c = alpha_c_val
-
-                # ===== Phase D 교정: Replicator vs OT 실제 기여도 =====
-                # w = (1 - alpha_c) * tilde_w + alpha_c * p_mass
-                # 따라서 혼합 후 기여도는:
-                # rep_contribution = (1 - alpha_c).mean()
-                # ot_contribution = alpha_c.mean()
-                rep_contribution = (1 - alpha_c_tensor).mean().item()
-                ot_contribution = alpha_c_tensor.mean().item()
-
-                self.logger.record("irt/rep_contribution", rep_contribution)
-                self.logger.record("irt/ot_contribution", ot_contribution)
-
-                # 검증: rep + ot ≈ 1.0
-                contribution_sum = rep_contribution + ot_contribution
-                self.logger.record("irt/contribution_sum", contribution_sum)
-
-                # ===== 프로토타입 혼합 통계 =====
-                w = info['w']  # [B, M]
-
-                # 엔트로피 (다양성 지표)
-                entropy = -torch.sum(w * torch.log(w + 1e-8), dim=-1).mean().item()
-                self.logger.record("irt/avg_entropy", entropy)
-
-                # Phase D: 프로토타입 과점 지표
-                # 평균 최대 가중치 (배치 평균)
-                max_proto_weight = w.max(dim=-1)[0].mean().item()
-                self.logger.record("irt/max_proto_weight", max_proto_weight)
-
-                # 프로토타입별 평균 가중치 (M개 프로토타입)
-                prototype_avg_weights = w.mean(dim=0)  # [M]
-                prototype_max_weight_value = prototype_avg_weights.max().item()
-                self.logger.record("irt/prototype_max_weight", prototype_max_weight_value)
-                prototype_var = w.var(dim=-1, unbiased=False).mean().item()
-                self.logger.record("irt/prototype_var", prototype_var)
-                prototype_std = torch.sqrt(w.var(dim=-1, unbiased=False) + 1e-8).mean().item()
-                self.logger.record("irt/prototype_std", prototype_std)
-
-                # 프로토타입 가중치 엔트로피 (프로토타입 축 다양성)
-                prototype_entropy = -torch.sum(prototype_avg_weights * torch.log(prototype_avg_weights + 1e-8)).item()
-                self.logger.record("irt/prototype_entropy", prototype_entropy)
-
-                # ===== Phase 1.5: α clamp 검증 =====
-                if 'alpha_c_raw' in info:
-                    alpha_c_raw_val = info['alpha_c_raw'].mean().item()
-                    self.logger.record("irt/alpha_c_raw", alpha_c_raw_val)
-
-                    pct_clamped_min = info['pct_clamped_min'].item() if isinstance(info['pct_clamped_min'], torch.Tensor) else info['pct_clamped_min']
-                    pct_clamped_max = info['pct_clamped_max'].item() if isinstance(info['pct_clamped_max'], torch.Tensor) else info['pct_clamped_max']
-
-                    self.logger.record("irt/pct_clamped_min", pct_clamped_min)
-                    self.logger.record("irt/pct_clamped_max", pct_clamped_max)
-
-                # Phase 1.5: α 업데이트 상세 정보
-                if 'alpha_c_star' in info:
-                    self.logger.record("irt/alpha_c_star", info['alpha_c_star'].mean().item())
-                if 'alpha_c_decay_factor' in info:
-                    decay_mean = info['alpha_c_decay_factor'].mean().item()
-                    decay_min = info['alpha_c_decay_factor'].min().item()
-                    self.logger.record("irt/alpha_c_decay_factor", decay_mean)
-                    self.logger.record("irt/alpha_c_decay_factor_min", decay_min)
-                if 'alpha_candidate' in info:
-                    self.logger.record("irt/alpha_candidate_mean", info['alpha_candidate'].mean().item())
-                if 'alpha_state' in info:
-                    alpha_state_val = info['alpha_state']
-                    if isinstance(alpha_state_val, torch.Tensor):
-                        alpha_state_val = alpha_state_val.mean().item()
-                    elif isinstance(alpha_state_val, (list, tuple)):
-                        alpha_state_val = float(np.mean(alpha_state_val))
-                    self.logger.record("irt/alpha_state_buffer", float(alpha_state_val))
-                if 'alpha_feedback_gain' in info:
-                    gain_val = info['alpha_feedback_gain']
-                    if isinstance(gain_val, torch.Tensor):
-                        gain_val = gain_val.item()
-                    self.logger.record("irt/alpha_feedback_gain", float(gain_val))
-                if 'alpha_feedback_bias' in info:
-                    bias_val = info['alpha_feedback_bias']
-                    if isinstance(bias_val, torch.Tensor):
-                        bias_val = bias_val.item()
-                    self.logger.record("irt/alpha_feedback_bias", float(bias_val))
-                if 'directional_decay_min' in info:
-                    decay_floor = info['directional_decay_min']
-                    if isinstance(decay_floor, torch.Tensor):
-                        decay_floor = decay_floor.item()
-                    self.logger.record("irt/directional_decay_min", float(decay_floor))
-
-                # ===== Phase 3.5: 정책 하이퍼파라미터 확인 =====
-                actor = getattr(self.model.policy, "actor", None)
-                if actor is not None:
-                    if hasattr(actor, 'action_temp'):
-                        self.logger.record("policy/action_temp", actor.action_temp)
-                    if hasattr(actor, 'ema_beta'):
-                        self.logger.record("policy/ema_beta", actor.ema_beta)
-
-                # 위기 레벨 분포 요약
-                crisis_tensor = info['crisis_level'].detach()
-                crisis_flat = crisis_tensor.view(-1)
-                crisis_max = crisis_flat.max().item()
-                crisis_p90 = torch.quantile(crisis_flat, torch.tensor(0.9, device=crisis_flat.device)).item()
-                crisis_p99 = torch.quantile(crisis_flat, torch.tensor(0.99, device=crisis_flat.device)).item()
-                crisis_median = torch.quantile(crisis_flat, torch.tensor(0.5, device=crisis_flat.device)).item()
-                self.logger.record("irt/crisis_level_max", crisis_max)
-                self.logger.record("irt/crisis_level_p99", crisis_p99)
-                self.logger.record("irt/crisis_level_p90", crisis_p90)
-                self.logger.record("irt/crisis_level_median", crisis_median)
-                if 'hysteresis_up' in info:
-                    hyst_up = info['hysteresis_up']
-                    hyst_up_val = float(hyst_up.mean().item()) if isinstance(hyst_up, torch.Tensor) else float(hyst_up)
-                    self.logger.record("irt/hysteresis_up", hyst_up_val)
-                if 'hysteresis_down' in info:
-                    hyst_down = info['hysteresis_down']
-                    hyst_down_val = float(hyst_down.mean().item()) if isinstance(hyst_down, torch.Tensor) else float(hyst_down)
-                    self.logger.record("irt/hysteresis_down", hyst_down_val)
-                if 'hysteresis_quantile' in info:
-                    hyst_quant = info['hysteresis_quantile']
-                    if isinstance(hyst_quant, torch.Tensor):
-                        hyst_quant_val = float(hyst_quant.mean().item())
-                    else:
-                        hyst_quant_val = float(hyst_quant)
-                    self.logger.record("irt/hysteresis_quantile", hyst_quant_val)
-                if 'crisis_robust_scale' in info:
-                    robust_scale = info['crisis_robust_scale']
-                    if isinstance(robust_scale, torch.Tensor):
-                        robust_scale_val = float(robust_scale.mean().item())
-                    else:
-                        robust_scale_val = float(robust_scale)
-                    self.logger.record("irt/crisis_robust_scale", robust_scale_val)
-                if 'crisis_robust_loc' in info:
-                    robust_loc = info['crisis_robust_loc']
-                    if isinstance(robust_loc, torch.Tensor):
-                        robust_loc_val = float(robust_loc.mean().item())
-                    else:
-                        robust_loc_val = float(robust_loc)
-                    self.logger.record("irt/crisis_robust_loc", robust_loc_val)
-
-                # ===== Phase 3.5: Turnover 메트릭 (목표 가중치 기준) =====
-                # 현재 action은 self.locals에 저장되어 있음
-                if 'actions' in self.locals:
-                    current_action = self.locals['actions']
-                    if isinstance(current_action, torch.Tensor):
-                        current_action_np = current_action.detach().cpu().numpy()
-                    else:
-                        current_action_np = np.asarray(current_action)
-
-                    if current_action_np.ndim == 1:
-                        current_action_np = current_action_np[np.newaxis, :]
-
-                    current_clipped = np.maximum(current_action_np, 0.0)
-                    current_weights = current_clipped / (np.sum(current_clipped, axis=-1, keepdims=True) + 1e-8)
-
-                    if self.prev_action is not None:
-                        turnover_target = 0.5 * np.sum(np.abs(current_weights - self.prev_action))
-                        self.logger.record("irt/turnover_target", turnover_target)
-
-                    self.prev_action = current_weights
-
-                infos = self.locals.get('infos') if isinstance(self.locals, dict) else None
-                if infos:
-                    exec_vals, target_vals = [], []
-                    for info_item in infos:
-                        if not info_item:
-                            continue
-                        exec_vals.append(float(info_item.get('turnover_executed', 0.0) or 0.0))
-                        target_vals.append(float(info_item.get('turnover_target', 0.0) or 0.0))
-                    if exec_vals:
-                        exec_mean = float(np.mean(exec_vals))
-                        self.logger.record("irt/turnover_executed", exec_mean)
-                        if target_vals:
-                            target_mean = float(np.mean(target_vals))
-                            self.logger.record("irt/turnover_target_env", target_mean)
-                            self.logger.record(
-                                "irt/turnover_transfer_ratio",
-                                exec_mean / (target_mean + 1e-8),
-                            )
-                
-                # Phase 1.5: 프로토타입 전방 반영 검증
-                if 'concentrations_mean' in info and 'mixed_conc_mean' in info:
-                    conc_mean = info['concentrations_mean']  # [M, A]
-                    conc_std = info['concentrations_std']    # [M, A]
-                    # 프로토타입별 concentration 평균의 평균 (전체 평균)
-                    self.logger.record("irt/concentrations_global_mean", conc_mean.mean().item())
-                    self.logger.record("irt/concentrations_global_std", conc_std.mean().item())
-                    # 혼합 후 통계
-                    self.logger.record("irt/mixed_conc_mean", info['mixed_conc_mean'].item())
-                    self.logger.record("irt/mixed_conc_std", info['mixed_conc_std'].item())
-
-                # Phase 1.5: Gradient norm 로깅 (prototype 경로 검증)
-                actor = getattr(self.model.policy, "actor", None)
-                if actor is not None and hasattr(actor, 'irt_actor'):
-                    irt_actor = actor.irt_actor
-                    if hasattr(irt_actor, 'decoders'):
-                        total_norm = 0.0
-                        param_count = 0
-                        for decoder in irt_actor.decoders:
-                            for p in decoder.parameters():
-                                if p.grad is not None:
-                                    param_norm = p.grad.data.norm(2)
-                                    total_norm += param_norm.item() ** 2
-                                    param_count += 1
-                        if param_count > 0:
-                            grad_norm = (total_norm ** 0.5)
-                            self.logger.record("irt/prototype_grad_norm", grad_norm)
-                            self.logger.record("irt/prototype_grad_param_count", param_count)
-                    if hasattr(irt_actor, 'proto_keys') and irt_actor.proto_keys.grad is not None:
-                        proto_grad = irt_actor.proto_keys.grad.data.norm(2).item()
-                        self.logger.record("irt/proto_keys_grad_norm", proto_grad)
-
+            self._flush()
         return True
+
+    def _on_training_end(self) -> None:
+        self._flush()
+
+    def _flush(self) -> None:
+        for key, (total, count) in self._metrics.items():
+            if count:
+                self.logger.record(key, total / count)
+        proto_entropy = self._compute_proto_entropy()
+        if proto_entropy is not None:
+            self.logger.record("xai/proto_entropy", proto_entropy)
+        alpha = self._current_alpha()
+        if alpha is not None:
+            self.logger.record("train/alpha", alpha)
+        self._reset_buffers()
+
+    def _compute_proto_entropy(self) -> Optional[float]:
+        model = getattr(self, "model", None)
+        if model is None:
+            return None
+        policy = getattr(model, "policy", None)
+        if policy is None or not hasattr(policy, "get_irt_info"):
+            return None
+        try:
+            info = policy.get_irt_info()
+        except AttributeError:
+            return None
+        if not info:
+            return None
+        weights = info.get("w")
+        if weights is None:
+            return None
+        if isinstance(weights, torch.Tensor):
+            tensor = weights.detach().float()
+        else:
+            tensor = torch.as_tensor(weights, dtype=torch.float32)
+        if tensor.ndim < 2:
+            return None
+        probs = torch.clamp(tensor, min=1e-8)
+        entropy = -(probs * probs.log()).sum(dim=-1).mean()
+        if not torch.isfinite(entropy):
+            return None
+        return float(entropy.item())
+
+    def _current_alpha(self) -> Optional[float]:
+        model = getattr(self, "model", None)
+        if model is None or not hasattr(model, "log_ent_coef"):
+            return None
+        log_ent_coef = getattr(model, "log_ent_coef")
+        if log_ent_coef is None:
+            return None
+        if isinstance(log_ent_coef, torch.Tensor):
+            value = torch.exp(log_ent_coef.detach()).cpu().item()
+        elif isinstance(log_ent_coef, (float, int)):
+            value = float(math.exp(log_ent_coef))
+        else:
+            return None
+        if not np.isfinite(value):
+            return None
+        return float(value)
+
 
 
 class CrisisBridgeCallback(BaseCallback):
@@ -917,7 +824,7 @@ def train_irt(args):
     )
 
     # Phase A: IRT 계측 callback
-    irt_logging_callback = IRTLoggingCallback(verbose=0, log_freq=100, ema_beta=args.ema_beta)
+    irt_logging_callback = IRTLoggingCallback(log_freq=100, verbose=0)
 
     # IRT Policy kwargs
     effective_market_dim = (
@@ -1019,8 +926,15 @@ def train_irt(args):
         policy_kwargs=policy_kwargs,
         **sac_params,
         verbose=1,
-        tensorboard_log=os.path.join(log_dir, "tensorboard"),
+        tensorboard_log=None,
     )
+
+    tb_path = os.path.join(log_dir, "tensorboard")
+    logger_formats = [
+        HumanOutputFormat(sys.stdout),
+        TensorboardWhitelistOutputFormat(tb_path),
+    ]
+    model.set_logger(Logger(log_dir, logger_formats))
     
     # Phase 1.5: 파라미터 그룹 검증 (프로토타입 포함 확인)
     print("\n[Phase 1.5] Verifying optimizer parameter groups...")
@@ -1105,6 +1019,47 @@ def train_irt(args):
         json.dump(env_meta, meta_fp, indent=2)
 
     return log_dir, final_model_path
+
+
+def _log_returns_to_tensorboard(log_dir: str, metrics: Dict[str, Any]) -> None:
+    candidates: list[str] = []
+    if log_dir:
+        candidates.append(os.path.join(log_dir, "tensorboard"))
+        parent = os.path.dirname(log_dir.rstrip(os.sep)) if log_dir.rstrip(os.sep) else ""
+        if parent and parent != log_dir:
+            candidates.append(os.path.join(parent, "tensorboard"))
+
+    tb_dir = next((path for path in candidates if os.path.isdir(path)), None)
+    if not tb_dir:
+        return
+
+    try:
+        from torch.utils.tensorboard import SummaryWriter
+    except ImportError:
+        return
+
+    step = int(metrics.get("n_steps", 0) or 0)
+    writer = SummaryWriter(tb_dir)
+    try:
+        sharpe = metrics.get("sharpe_ratio")
+        if sharpe is not None:
+            writer.add_scalar("returns/episode_sharpe", float(sharpe), step)
+
+        sortino = metrics.get("sortino_ratio")
+        if sortino is not None:
+            writer.add_scalar("returns/episode_sortino", float(sortino), step)
+
+        annual_return = metrics.get("annualized_return")
+        if annual_return is not None:
+            writer.add_scalar("returns/annualized_return", float(annual_return), step)
+
+        max_dd = metrics.get("max_drawdown")
+        if max_dd is not None:
+            writer.add_scalar("risk/max_drawdown", float(max_dd), step)
+
+        writer.flush()
+    finally:
+        writer.close()
 
 
 def test_irt(args, model_path=None):
@@ -1236,6 +1191,8 @@ def test_irt(args, model_path=None):
     print(f"  Profit/Loss: ${final_value - 1000000:,.2f}")
 
     print(f"\n" + "=" * 70)
+
+    _log_returns_to_tensorboard(os.path.dirname(model_path), metrics)
 
     # 6. 시각화 (기본 활성화)
     if not args.no_plot and irt_data is not None:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import List
+from typing import Dict, List, Optional
 
 import gymnasium as gym
 import matplotlib
@@ -83,6 +83,14 @@ class StockTradingEnv(gym.Env):
     ):
         self.day = day
         self.df = df
+        if isinstance(self.df.index, pd.MultiIndex) and "tic" in self.df.index.names:
+            self.tickers = (
+                self.df.index.get_level_values("tic").unique().tolist()
+            )
+        elif "tic" in self.df.columns:
+            self.tickers = self.df["tic"].drop_duplicates().tolist()
+        else:
+            self.tickers = [f"asset_{idx}" for idx in range(stock_dim)]
         self.stock_dim = stock_dim
         self.hmax = hmax
         self.num_stock_shares = num_stock_shares
@@ -408,13 +416,90 @@ class StockTradingEnv(gym.Env):
             )
             plt.close()
 
-        info = {
-            "turnover_target": 0.0,
-            "turnover_executed": 0.0,
-            "turnover": self._last_turnover,
-            "transaction_cost": self._last_tc,
+        return self.state, self.reward, self.terminal, False, self._build_step_info(
+            turnover_target=0.0
+        )
+
+    def _build_step_info(
+        self,
+        *,
+        turnover_target: float,
+        executed_weights: Optional[np.ndarray] = None,
+        target_weights: Optional[np.ndarray] = None,
+    ) -> Dict[str, object]:
+        """
+        Assemble per-step telemetry dictionary consumed by logging callbacks.
+        """
+        reward_info = self._last_reward_info or {}
+        components = reward_info.get("components") or {}
+
+        info: Dict[str, object] = {
+            "turnover_target": float(turnover_target),
+            "turnover_executed": float(getattr(self, "_last_turnover_executed", 0.0)),
+            "turnover": float(getattr(self, "_last_turnover", 0.0)),
+            "transaction_cost": float(getattr(self, "_last_tc", 0.0)),
+            "reward_components": components.copy() if isinstance(components, dict) else {},
+            "reward_log_return": float(
+                reward_info.get(
+                    "log_return",
+                    components.get("log_return", 0.0),
+                )
+            ),
+            "reward_total": float(
+                reward_info.get(
+                    "reward_total",
+                    getattr(self, "reward", 0.0),
+                )
+            ),
+            "reward_sharpe_term": float(components.get("sharpe_term", 0.0)),
+            "reward_cvar_term": float(components.get("cvar_term", 0.0)),
+            "cvar_value": float(reward_info.get("cvar_value", 0.0)),
+            "crisis_level": float(
+                reward_info.get("crisis_level", getattr(self, "_crisis_level", 0.5))
+            ),
+            "kappa_sharpe": float(
+                reward_info.get(
+                    "kappa_sharpe",
+                    reward_info.get(
+                        "kappa",
+                        getattr(self, "adaptive_lambda_sharpe", 0.0),
+                    ),
+                )
+            ),
+            "kappa_cvar": float(
+                reward_info.get(
+                    "kappa_cvar",
+                    getattr(self, "adaptive_lambda_cvar", 0.0),
+                )
+            ),
         }
-        return self.state, self.reward, self.terminal, False, info
+
+        if executed_weights is not None:
+            executed_np = np.asarray(executed_weights, dtype=np.float64).flatten()
+            sum_weights = float(np.sum(executed_np))
+            cash_weight = float(max(0.0, 1.0 - sum_weights))
+            holdings = {}
+            for idx, weight in enumerate(executed_np):
+                ticker = self.tickers[idx] if idx < len(self.tickers) else f"asset_{idx}"
+                holdings[ticker] = float(weight)
+            holdings["CASH"] = cash_weight
+            info.update(
+                {
+                    "weights_full": executed_np.tolist(),
+                    "executed_weights": executed_np.tolist(),
+                    "sum_weights": sum_weights,
+                    "cash_weight": cash_weight,
+                    "cash": float(max(self.state[0], 0.0)),
+                    "holdings_full": holdings,
+                }
+            )
+
+        if target_weights is not None:
+            target_np = np.asarray(target_weights, dtype=np.float64).flatten()
+            info["target_weights_full"] = target_np.tolist()
+            info["target_weights"] = target_np.tolist()
+
+        return info
 
     def _step_share_actions(self, actions):
         self._last_turnover = 0.0
@@ -524,14 +609,9 @@ class StockTradingEnv(gym.Env):
         self.rewards_memory.append(self.reward)
         self.state_memory.append(self.state)
 
-        info = {
-            "turnover_target": getattr(self, "_last_turnover", 0.0),
-            "turnover_executed": getattr(self, "_last_turnover_executed", 0.0),
-            "turnover": self._last_turnover,
-            "transaction_cost": self._last_tc,
-            "reward_components": self._last_reward_info.get("components", {}).copy(),
-        }
-        return self.state, self.reward, self.terminal, False, info
+        return self.state, self.reward, self.terminal, False, self._build_step_info(
+            turnover_target=self._last_turnover
+        )
 
     def _step_weight_actions(self, actions):
         action_vector = np.asarray(actions, dtype=np.float64).flatten()
@@ -671,16 +751,11 @@ class StockTradingEnv(gym.Env):
         self.rewards_memory.append(self.reward)
         self.state_memory.append(self.state)
 
-        info = {
-            "target_weights": target_weights,
-            "executed_weights": executed_weights,
-            "turnover_target": turnover_target,
-            "turnover_executed": self._last_turnover_executed,
-            "turnover": self._last_turnover,
-            "transaction_cost": self._last_tc,
-            "reward_components": self._last_reward_info.get("components", {}).copy(),
-        }
-        return self.state, self.reward, self.terminal, False, info
+        return self.state, self.reward, self.terminal, False, self._build_step_info(
+            turnover_target=turnover_target,
+            executed_weights=executed_weights,
+            target_weights=target_weights,
+        )
 
     def reset(
         self,
