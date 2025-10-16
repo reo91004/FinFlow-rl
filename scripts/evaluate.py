@@ -19,7 +19,9 @@ import argparse
 import contextlib
 import os
 import json
+import subprocess
 import random
+import sys
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -721,12 +723,26 @@ def evaluate_model(
     transaction_costs = []
     turnover_executed = []
     turnover_target_series = []
+    holdings_records: List[Dict[str, float]] = []
+    trade_records: List[Dict[str, Any]] = []
+    date_records: List[Optional[str]] = []
+    cash_ratio_series: List[float] = []
 
     prev_prices = None
     if stock_dim > 0 and isinstance(obs, (np.ndarray, list, tuple)):
         obs_array = np.asarray(obs, dtype=np.float64).reshape(-1)
         if obs_array.size >= stock_dim + 1:
             prev_prices = obs_array[1 : stock_dim + 1]
+
+    initial_state = np.asarray(
+        getattr(test_env, "state", np.zeros(1)), dtype=np.float64
+    )
+    if stock_dim > 0 and initial_state.size >= stock_dim * 2 + 1:
+        prev_holdings = initial_state[stock_dim + 1 : 2 * stock_dim + 1].astype(
+            np.float64, copy=True
+        )
+    else:
+        prev_holdings = np.zeros(stock_dim, dtype=np.float64)
 
     # IRT 모델 감지 (이미 위에서 설정됨, 중복 제거)
 
@@ -940,6 +956,50 @@ def evaluate_model(
         value_return = (pv - prev_value) / denom
         value_returns.append(value_return)
 
+        total_equity = max(pv, 1e-8)
+        weights_actual = (
+            (prices * holdings) / total_equity if stock_dim > 0 else np.array([])
+        )
+        cash_ratio_val = float(max(cash, 0.0) / total_equity)
+
+        current_date = None
+        if hasattr(test_env, "date_memory") and test_env.date_memory:
+            current_date = test_env.date_memory[-1]
+        date_records.append(str(current_date) if current_date is not None else None)
+
+        holdings_record: Dict[str, float] = {"step": int(step)}
+        for idx in range(stock_dim):
+            ticker = stock_tickers[idx] if idx < len(stock_tickers) else f"asset_{idx}"
+            weight_val = (
+                float(weights_actual[idx]) if idx < weights_actual.size else 0.0
+            )
+            holdings_record[ticker] = weight_val
+        holdings_record["CASH"] = cash_ratio_val
+        holdings_records.append(holdings_record)
+        cash_ratio_series.append(cash_ratio_val)
+
+        delta_positions = holdings - prev_holdings
+        trade_step_records: List[Dict[str, Any]] = []
+        total_trade_value = 0.0
+        for idx, delta in enumerate(delta_positions):
+            if abs(delta) <= 1e-8:
+                continue
+            ticker = stock_tickers[idx] if idx < len(stock_tickers) else f"asset_{idx}"
+            price_val = float(prices[idx]) if idx < prices.size else 0.0
+            trade_value = abs(delta) * price_val
+            total_trade_value += trade_value
+            trade_step_records.append(
+                {
+                    "step": int(step),
+                    "timestamp": str(current_date) if current_date is not None else "",
+                    "ticker": ticker,
+                    "qty": float(delta),
+                    "price": price_val,
+                    "side": "buy" if delta > 0 else "sell",
+                }
+            )
+        prev_holdings = holdings.copy()
+
         executed_weights = info.get("executed_weights")
         if executed_weights is not None:
             executed_weights = np.asarray(executed_weights, dtype=np.float64).reshape(
@@ -1038,6 +1098,18 @@ def evaluate_model(
 
         tc_value = float(info.get("transaction_cost", 0.0) or 0.0)
         transaction_costs.append(tc_value)
+        if trade_step_records:
+            for rec in trade_step_records:
+                if total_trade_value > 0.0 and tc_value > 0.0:
+                    share = (
+                        abs(rec["qty"]) * rec["price"] / total_trade_value
+                        if rec["price"] > 0
+                        else 0.0
+                    )
+                    rec["tx_cost"] = float(tc_value * share)
+                else:
+                    rec["tx_cost"] = 0.0
+                trade_records.append(rec)
 
         current_prices = None
         if stock_dim > 0 and isinstance(next_obs, (np.ndarray, list, tuple)):
@@ -1104,6 +1176,11 @@ def evaluate_model(
             f"target={turnover_target_array.size}, executed={turnover_executed_array.size}"
         )
 
+    if date_records and len(date_records) > execution_returns_array.size:
+        date_records = date_records[: execution_returns_array.size]
+    if holdings_records and len(holdings_records) > execution_returns_array.size:
+        holdings_records = holdings_records[: execution_returns_array.size]
+
     # IRT 데이터 변환
     irt_data = None
     if is_irt and irt_data_list["w"]:
@@ -1160,6 +1237,9 @@ def evaluate_model(
                 for key, values in irt_data_list["reward_components_scaled"].items()
             },
             "top_snapshots": irt_data_list["top_snapshots"],
+            "dates": list(date_records),
+            "holdings_timeseries": holdings_records.copy(),
+            "trades": trade_records.copy(),
         }
         # Phase 1.5: alpha_c 상세 정보 추가
         if irt_data_list["alpha_c_raw"]:
@@ -1443,16 +1523,16 @@ def evaluate_model(
                 top_indices = rec.get("top_indices", []) or []
                 top_weights = rec.get("top_weights", []) or []
                 for idx, proto_idx in enumerate(top_indices, start=1):
-                    row[f"proto_idx_{idx}"] = int(proto_idx)
+                    row[f"topk_{idx}_id"] = int(proto_idx)
                     weight_val = (
                         float(top_weights[idx - 1])
                         if idx - 1 < len(top_weights)
                         else 0.0
                     )
-                    row[f"proto_weight_{idx}"] = weight_val
+                    row[f"topk_{idx}_weight"] = weight_val
                 if top_weights:
                     other_weight = max(0.0, 1.0 - float(np.sum(top_weights)))
-                    row["proto_other_weight"] = float(other_weight)
+                    row["topk_other_weight"] = float(other_weight)
                 proto_rows.append(row)
             proto_df = pd.DataFrame(proto_rows)
             proto_df.to_csv(xai_dir_path / "xai_prototypes_timeseries.csv", index=False)
@@ -1488,7 +1568,9 @@ def evaluate_model(
                 return torch.min(q1, q2)
             # log_prob: 정책 확률 관점 (Dirichlet 기반); actor.action_log_prob는
             # 정책이 생성한 확률 질량의 로그를 반환한다.
-            fitness = model.policy.actor._compute_fitness(obs_tensor, requires_grad=True)
+            fitness = model.policy.actor._compute_fitness(
+                obs_tensor, requires_grad=True
+            )
             _, info_grad = model.policy.actor.irt_actor(
                 state=obs_tensor,
                 fitness=fitness,
@@ -1834,9 +1916,19 @@ def evaluate_model(
             json.dumps(summary, indent=2, ensure_ascii=False) + "\n"
         )
 
-    # IRT 데이터에 metrics 추가
-    if irt_data is not None:
-        irt_data["metrics"] = metrics
+    artefact_bundle = {
+        "per_step_returns": execution_returns_array,
+        "per_step_returns_raw": execution_returns_raw,
+        "value_returns": value_returns_array,
+        "value_returns_raw": value_returns_raw,
+        "dates": date_records,
+        "holdings_timeseries": holdings_records,
+        "trades": trade_records,
+        "transaction_costs_series": transaction_costs_array,
+        "turnover_executed_series": turnover_executed_array,
+        "turnover_target_series": turnover_target_array,
+        "cash_ratio_series": np.array(cash_ratio_series, dtype=np.float64),
+    }
 
     return (
         portfolio_values,
@@ -1844,6 +1936,7 @@ def evaluate_model(
         value_returns_array,
         irt_data,
         metrics,
+        artefact_bundle,
     )
 
 
@@ -1978,7 +2071,22 @@ def evaluate_drlagent(args, model_name, model_class):
         metrics["sanitize_gap_mean"] = 0.0
         metrics["sanitize_gap_max"] = 0.0
 
-    return portfolio_values, exec_returns, value_returns, None, metrics
+    zero_series = np.zeros_like(exec_returns)
+    artefact_bundle = {
+        "per_step_returns": exec_returns,
+        "per_step_returns_raw": raw_returns,
+        "value_returns": value_returns,
+        "value_returns_raw": raw_returns,
+        "dates": [],
+        "holdings_timeseries": [],
+        "trades": [],
+        "transaction_costs_series": zero_series,
+        "turnover_executed_series": zero_series,
+        "turnover_target_series": zero_series,
+        "cash_ratio_series": zero_series,
+    }
+
+    return portfolio_values, exec_returns, value_returns, None, metrics, artefact_bundle
 
 
 def main(args):
@@ -2012,9 +2120,14 @@ def main(args):
 
     # 평가 방식 선택
     if args.method == "direct":
-        portfolio_values, exec_returns, value_returns, irt_data, metrics = (
-            evaluate_direct(args, model_name, model_class)
-        )
+        (
+            portfolio_values,
+            exec_returns,
+            value_returns,
+            irt_data,
+            metrics,
+            artefacts,
+        ) = evaluate_direct(args, model_name, model_class)
     elif args.method == "drlagent":
         (
             portfolio_values,
@@ -2022,6 +2135,7 @@ def main(args):
             value_returns,
             irt_data,
             metrics,
+            artefacts,
         ) = evaluate_drlagent(args, model_name, model_class)
     else:
         raise ValueError(f"Unknown method: {args.method}")
@@ -2103,52 +2217,53 @@ def main(args):
     if adaptive_cvar_window is None:
         adaptive_cvar_window = args.adaptive_cvar_window
 
-    # 8. JSON 저장 (기본 활성화)
+    artefact_dir: Optional[Path] = None
     if not args.no_json:
         from finrl.evaluation.visualizer import save_evaluation_results
-        from pathlib import Path
 
-        output_dir = args.output_json or os.path.dirname(args.model)
+        artefact_dir = Path(
+            args.output_json or os.path.dirname(args.model) or "."
+        ).expanduser()
 
-        # IRT 데이터가 있으면 상세 JSON 저장, 없으면 기본 메트릭만 저장
+        series_payload = {
+            "portfolio_values": np.asarray(portfolio_values, dtype=np.float64),
+            "per_step_returns": artefacts.get("per_step_returns"),
+            "per_step_returns_raw": artefacts.get("per_step_returns_raw"),
+            "value_returns": artefacts.get("value_returns"),
+            "value_returns_raw": artefacts.get("value_returns_raw"),
+            "transaction_costs": artefacts.get("transaction_costs_series"),
+            "turnover_executed": artefacts.get("turnover_executed_series"),
+            "turnover_target": artefacts.get("turnover_target_series"),
+            "cash_ratio": artefacts.get("cash_ratio_series"),
+            "dates": artefacts.get("dates"),
+        }
+
+        tables_payload = {
+            "holdings_timeseries": artefacts.get("holdings_timeseries"),
+            "trades": artefacts.get("trades"),
+        }
+
+        base_results: Dict[str, Any] = {
+            "model": {
+                "path": args.model,
+                "type": model_name,
+                "evaluation_method": args.method,
+            },
+            "test_period": {
+                "start": args.test_start,
+                "end": args.test_end,
+                "steps": metrics["n_steps"],
+            },
+            "metrics": metrics,
+            "series": series_payload,
+            "tables": tables_payload,
+        }
+
         if irt_data is not None:
-            # 상세 evaluation_results.json + evaluation_insights.json 저장
-            results = {
-                "returns": exec_returns,
-                "returns_raw": irt_data.get("returns_raw"),
-                "returns_sanitized": irt_data.get("returns_sanitized"),
-                "returns_value": value_returns,
-                "value_returns_raw": irt_data.get("value_returns_raw"),
-                "value_returns_sanitized": irt_data.get("value_returns_sanitized"),
-                "values": np.array(portfolio_values),
-                "weights": irt_data.get("weights"),
-                "actual_weights": irt_data.get("actual_weights"),
-                "crisis_levels": irt_data.get("crisis_levels"),
-                "crisis_levels_pre_guard": irt_data.get("crisis_levels_pre_guard"),
-                "crisis_regime": irt_data.get("crisis_regime"),
-                "crisis_types": irt_data.get("crisis_types"),
-                "prototype_weights": irt_data.get("prototype_weights"),
-                "w_rep": irt_data.get("w_rep"),
-                "w_ot": irt_data.get("w_ot"),
-                "eta": irt_data.get("eta"),
-                "alpha_c": irt_data.get("alpha_c"),
-                "alpha_c_raw": irt_data.get("alpha_c_raw"),
-                "alpha_c_prev": irt_data.get("alpha_c_prev"),
-                "alpha_c_decay_factor": irt_data.get("alpha_c_decay_factor"),
-                "alpha_crisis_input": irt_data.get("alpha_crisis_input"),
-                "cost_matrices": irt_data.get("cost_matrices"),
-                "symbols": irt_data.get("symbols"),
-                "transaction_costs": irt_data.get("transaction_costs"),
-                "turnover_executed": irt_data.get("turnover_executed"),
-                "hysteresis_up": irt_data.get("hysteresis_up"),
-                "hysteresis_down": irt_data.get("hysteresis_down"),
-                "turnover_target_series": irt_data.get("turnover_target"),
-                "reward_components": irt_data.get("reward_components"),
-                "reward_components_scaled": irt_data.get("reward_components_scaled"),
-                "metrics": metrics,
-            }
+            base_results["irt"] = irt_data
 
-            # Config (IRT Policy의 경우)
+        config = None
+        if irt_data is not None:
             config = {
                 "env": {
                     "reward_type": env_reward_type,
@@ -2167,46 +2282,41 @@ def main(args):
                 "meta": env_meta,
             }
 
-            print(f"\n  Saving detailed JSON (IRT data)...")
-            save_evaluation_results(results, Path(output_dir), config)
+        save_evaluation_results(base_results, artefact_dir, config)
 
+    if args.viz != "off":
+        if artefact_dir is None:
+            print("[viz] Visualization skipped: JSON artefacts were not generated.")
         else:
-            # 기본 메트릭만 저장
-            output_file = os.path.join(output_dir, "evaluation_results.json")
-            os.makedirs(output_dir, exist_ok=True)
-
-            results = {
-                "model_path": args.model,
-                "model_type": model_name,
-                "evaluation_method": args.method,
-                "test_period": {
-                    "start": args.test_start,
-                    "end": args.test_end,
-                    "steps": metrics["n_steps"],
-                },
-                "metrics": {
-                    "total_return": float(metrics["total_return"]),
-                    "annualized_return": float(metrics["annualized_return"]),
-                    "volatility": float(metrics["volatility"]),
-                    "sharpe_ratio": float(metrics["sharpe_ratio"]),
-                    "sortino_ratio": float(metrics["sortino_ratio"]),
-                    "calmar_ratio": float(metrics["calmar_ratio"]),
-                    "max_drawdown": float(metrics["max_drawdown"]),
-                    "final_value": float(metrics["final_value"]),
-                    "profit_loss": float(metrics["final_value"] - 1000000),
-                    "returns_capped_for_metrics": bool(
-                        metrics.get("returns_capped_for_metrics", False)
-                    ),
-                    "sanitize_gap_mean": float(metrics.get("sanitize_gap_mean", 0.0)),
-                    "sanitize_gap_max": float(metrics.get("sanitize_gap_max", 0.0)),
-                },
-                "timestamp": datetime.now().isoformat(),
-            }
-
-            with open(output_file, "w") as f:
-                json.dump(results, f, indent=2)
-
-            print(f"\n  Results saved to: {output_file}")
+            run_dir = artefact_dir
+            out_dir = (
+                Path(args.viz_outdir).expanduser()
+                if args.viz_outdir
+                else run_dir / "viz"
+            )
+            include_core = args.viz in ("core", "all")
+            include_xai = args.viz in ("xai", "all")
+            cmd = [
+                sys.executable,
+                "scripts/visualize_from_json.py",
+                "--input-dir",
+                str(run_dir),
+                "--out-dir",
+                str(out_dir),
+                "--format",
+                args.viz_format,
+                "--dpi",
+                str(args.viz_dpi),
+                "--crisis-threshold",
+                str(args.viz_crisis_threshold),
+            ]
+            cmd.append("--include-core" if include_core else "--no-core")
+            cmd.append("--include-xai" if include_xai else "--no-xai")
+            try:
+                subprocess.run(cmd, check=True)
+                print(f"[viz] Visualization generated at: {out_dir}")
+            except Exception as exc:
+                print(f"[viz] Visualization skipped (error: {exc})")
 
     return metrics
 
@@ -2361,6 +2471,36 @@ if __name__ == "__main__":
         type=str,
         default=None,
         help="XAI 산출물 출력 디렉토리 (기본: 모델 폴더/xai)",
+    )
+    parser.add_argument(
+        "--viz",
+        choices=["off", "core", "xai", "all"],
+        default="all",
+        help="평가 종료 후 자동 시각화 수준",
+    )
+    parser.add_argument(
+        "--viz-outdir",
+        type=str,
+        default=None,
+        help="자동 시각화 출력 디렉토리 (기본: JSON 폴더/viz)",
+    )
+    parser.add_argument(
+        "--viz-crisis-threshold",
+        type=float,
+        default=0.5,
+        help="자동 시각화용 위기 임계값",
+    )
+    parser.add_argument(
+        "--viz-format",
+        choices=["png", "pdf"],
+        default="png",
+        help="자동 시각화 이미지 포맷",
+    )
+    parser.add_argument(
+        "--viz-dpi",
+        type=int,
+        default=160,
+        help="자동 시각화 이미지 DPI",
     )
 
     args = parser.parse_args()

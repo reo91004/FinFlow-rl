@@ -1199,7 +1199,14 @@ def test_irt(args, model_path=None):
         args.adaptive_cvar_window = adaptive_cvar_window
 
     # evaluate.py의 evaluate_model() 재사용
-    portfolio_values, exec_returns, value_returns, irt_data, metrics = evaluate_model(
+    (
+        portfolio_values,
+        exec_returns,
+        value_returns,
+        irt_data,
+        metrics,
+        _artefacts,
+    ) = evaluate_model(
         model_path=model_path,
         model_class=SAC,
         test_start=args.test_start,

@@ -1,1302 +1,888 @@
-# finrl/evaluation/visualizer.py
-
 """
-포트폴리오 성과 시각화
+FinFlow XAI visualization utilities.
 
-평가 결과를 시각화하여 분석을 용이하게 한다.
+This module provides reusable plotting functions dedicated to the
+evaluation-time explainability report.  The design principle is to
+surface cause-and-effect signals: how risk sensors, portfolio actions,
+and learned representations interact with performance outcomes.
 
-일반 포트폴리오 시각화:
-- plot_portfolio_value: 포트폴리오 가치 추이
-- plot_returns: 일일 수익률 분포
-- plot_drawdown: Drawdown 차트
-
-IRT 특화 시각화:
-- plot_irt_decomposition: IRT 분해 (w_rep vs w_ot)
-- plot_portfolio_weights: 포트폴리오 가중치 스택 차트
-- plot_crisis_levels: T-Cell 위기 레벨
-- plot_prototype_weights: 프로토타입 가중치 + 엔트로피
-- plot_stock_analysis: Top 10 holdings
-- plot_performance_timeline: 성능 타임라인
-- plot_benchmark_comparison: 벤치마크 비교
-- plot_risk_dashboard: 리스크 대시보드
-- plot_tcell_analysis: T-Cell 위기 타입 분석
-- plot_attribution_analysis: Top 10 contributors
-- plot_cost_matrix: Immunological cost matrix
-
-통합 함수:
-- plot_all: 모든 시각화 자동 생성
+Each plot function returns a Matplotlib ``Figure`` so that callers can
+decide where and how to persist the artefact.  Helper utilities are
+included for common data preparation tasks (equity curve, drawdown,
+rolling metrics, attribution normalisation, …).
 """
 
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+import warnings
+
+import matplotlib.dates as mdates
+import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-from typing import Optional, List
-from pathlib import Path
-from warnings import warn
+from matplotlib.axes import Axes
+from matplotlib.figure import Figure
 
-# 한글 폰트 설정 (선택사항, 환경에 따라 조정)
-plt.rcParams['axes.unicode_minus'] = False
+plt.rcParams["axes.unicode_minus"] = False
+
+# ---------------------------------------------------------------------------
+# Data helpers
+# ---------------------------------------------------------------------------
 
 
-def sanitize_returns(returns: np.ndarray,
-                     cap: float = 0.3,
-                     floor: float = -0.99) -> np.ndarray:
+def _to_series(
+    values: Optional[Sequence[float]],
+    index: Optional[Iterable] = None,
+    name: Optional[str] = None,
+) -> Optional[pd.Series]:
+    if values is None:
+        return None
+    arr = np.asarray(values, dtype=float)
+    if arr.size == 0 or np.all(np.isnan(arr)):
+        return None
+    if index is None:
+        index = np.arange(arr.size)
+    series = pd.Series(arr, index=pd.Index(index), name=name)
+    return series
+
+
+def _is_non_empty(value) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, (np.ndarray, np.generic)):
+        return np.asarray(value).size > 0
+    if isinstance(value, (pd.Series, pd.DataFrame)):
+        return value.size > 0
+    if isinstance(value, (list, tuple, set, dict)):
+        return len(value) > 0
+    return True
+
+
+def _first_non_empty(*values):
+    for value in values:
+        if _is_non_empty(value):
+            return value
+    return None
+
+
+def sanitize_returns(
+    returns: Sequence[float],
+    cap: float = 0.3,
+    floor: float = -0.99,
+    fill_value: float = 0.0,
+) -> np.ndarray:
     """
-    Clip and clean return series to prevent runaway spikes.
-
-    Args:
-        returns: Input return series (decimal form).
-        cap: Maximum positive return allowed.
-        floor: Minimum negative return allowed (>-1 to keep log1p stable).
-
-    Returns:
-        Sanitized 1D numpy array of returns.
+    Clamp and clean return series to prevent runaway spikes while keeping the
+    per-step semantics unchanged.
     """
-    if returns is None:
-        return np.array([], dtype=np.float64)
-
     arr = np.asarray(returns, dtype=np.float64).reshape(-1)
     if arr.size == 0:
         return arr
-
-    sanitized = np.nan_to_num(arr, nan=0.0, posinf=cap, neginf=floor)
+    arr = np.nan_to_num(arr, nan=fill_value, posinf=cap, neginf=floor)
     if cap is not None:
-        sanitized = np.minimum(sanitized, cap)
+        arr = np.minimum(arr, cap)
     if floor is not None:
-        sanitized = np.maximum(sanitized, floor)
-    return sanitized
+        arr = np.maximum(arr, floor)
+    return arr
 
 
-def compute_cumulative_returns(returns: np.ndarray,
-                               mode: str = "log") -> np.ndarray:
-    """
-    Convert a return series to cumulative returns with optional log aggregation.
+def compute_equity_curve(
+    returns: Sequence[float], base_value: float = 1.0, index: Optional[Iterable] = None
+) -> pd.Series:
+    returns_series = _to_series(returns, index=index, name="returns")
+    if returns_series is None:
+        raise ValueError("No returns available for equity curve computation.")
+    equity = (1.0 + returns_series).cumprod() * float(base_value)
+    equity.name = "equity"
+    return equity
 
-    Args:
-        returns: Sanitized return series (decimal form).
-        mode: 'log' for log-return accumulation, 'geom' for geometric.
 
-    Returns:
-        Cumulative returns array (same length as returns).
-    """
-    returns = np.asarray(returns, dtype=np.float64).reshape(-1)
-    if returns.size == 0:
-        return returns
+def compute_drawdown(equity: pd.Series) -> pd.Series:
+    if equity.empty:
+        raise ValueError("Equity series is empty.")
+    running_max = equity.cummax()
+    drawdown = equity / running_max - 1.0
+    drawdown.name = "drawdown"
+    return drawdown
 
-    if mode == "log":
-        log_r = np.log1p(returns)
-        cumulative = np.expm1(np.cumsum(log_r))
-    elif mode == "geom":
-        cumulative = np.cumprod(1.0 + returns) - 1.0
+
+@dataclass
+class RollingStats:
+    sharpe: pd.Series
+    volatility: pd.Series
+
+
+def compute_rolling_stats(
+    returns: Sequence[float],
+    index: Optional[Iterable] = None,
+    window: int = 60,
+    eps: float = 1e-9,
+) -> RollingStats:
+    returns_series = _to_series(returns, index=index, name="returns")
+    if returns_series is None:
+        raise ValueError("Rolling stats require non-empty returns.")
+    wins = max(int(window), 2)
+    roll_mean = returns_series.rolling(wins).mean()
+    roll_std = returns_series.rolling(wins).std(ddof=0).clip(lower=eps)
+
+    sharpe = (roll_mean / roll_std) * np.sqrt(wins)
+    sharpe.name = "rolling_sharpe"
+    volatility = roll_std * np.sqrt(wins)
+    volatility.name = "rolling_volatility"
+    return RollingStats(sharpe=sharpe, volatility=volatility)
+
+
+def normalise_attributions(
+    attribution_df: pd.DataFrame,
+    method: str = "l1",
+) -> pd.DataFrame:
+    df = attribution_df.copy()
+    if df.empty:
+        return df
+    if method == "l1":
+        denom = df.abs().sum(axis=1).replace(0.0, np.nan)
+        df = df.divide(denom, axis=0)
+    elif method == "z":
+        df = (df - df.mean(axis=1).values[:, None]) / df.std(axis=1).replace(0.0, np.nan)
     else:
-        raise ValueError(f"Unsupported cumulative mode: {mode}")
-
-    return cumulative
-
-
-def compute_portfolio_returns(values: np.ndarray) -> np.ndarray:
-    """
-    Compute simple returns from a portfolio value trajectory with safeguards.
-
-    Args:
-        values: Portfolio value series [T].
-
-    Returns:
-        Decimal return series [T-1].
-    """
-    arr = np.asarray(values, dtype=np.float64).reshape(-1)
-    if arr.size < 2:
-        return np.array([], dtype=np.float64)
-
-    prev = np.clip(arr[:-1], 1e-8, None)
-    returns = (arr[1:] - arr[:-1]) / prev
-    return returns
-
-def plot_portfolio_value(values: np.ndarray,
-                        dates: Optional[List] = None,
-                        title: str = "Portfolio Value",
-                        save_path: Optional[str] = None):
-    """
-    포트폴리오 가치 추이 그래프
-
-    Args:
-        values: 포트폴리오 가치 배열 [T]
-        dates: 날짜 리스트 (optional)
-        title: 그래프 제목
-        save_path: 저장 경로 (optional)
-    """
-    fig, ax = plt.subplots(figsize=(12, 6))
-
-    if dates is not None:
-        ax.plot(dates, values, linewidth=2, color='steelblue')
-        ax.set_xlabel('Date')
-    else:
-        ax.plot(values, linewidth=2, color='steelblue')
-        ax.set_xlabel('Step')
-
-    ax.set_ylabel('Portfolio Value ($)')
-    ax.set_title(title, fontsize=14, fontweight='bold')
-    ax.grid(True, alpha=0.3)
-
-    # 초기값과 최종값 표시
-    initial_value = values[0]
-    final_value = values[-1]
-    total_return = (final_value - initial_value) / initial_value * 100
-
-    ax.axhline(y=initial_value, color='gray', linestyle='--', alpha=0.5, label=f'Initial: ${initial_value:,.0f}')
-    ax.axhline(y=final_value, color='green' if final_value > initial_value else 'red',
-               linestyle='--', alpha=0.5, label=f'Final: ${final_value:,.0f} ({total_return:+.1f}%)')
-
-    ax.legend(loc='best')
-    plt.tight_layout()
-
-    if save_path:
-        plt.savefig(save_path, dpi=100, bbox_inches='tight')
-        plt.close()
-    else:
-        plt.show()
+        raise ValueError(f"Unknown normalisation method: {method}")
+    return df.clip(lower=-1.0, upper=1.0)
 
 
-def plot_returns(returns: np.ndarray,
-                title: str = "Daily Returns Distribution",
-                save_path: Optional[str] = None):
-    """
-    일일 수익률 분포 그래프
-
-    Args:
-        returns: 수익률 배열 [T]
-        title: 그래프 제목
-        save_path: 저장 경로 (optional)
-    """
-    returns = np.asarray(returns, dtype=np.float64).reshape(-1)
-    if returns.size == 0:
-        warn("plot_returns received an empty return series; plot skipped.")
-        return
-
-    returns_pct = returns * 100.0
-
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
-
-    # 시계열 그래프
-    ax1.plot(returns_pct, linewidth=1, color='steelblue', alpha=0.7)
-    ax1.axhline(y=0, color='black', linestyle='-', linewidth=0.5)
-    ax1.set_xlabel('Step')
-    ax1.set_ylabel('Daily Return (%)')
-    ax1.set_title('Daily Returns Over Time', fontsize=12)
-    ax1.grid(True, alpha=0.3)
-
-    # 히스토그램
-    ax2.hist(returns_pct, bins=50, color='steelblue', alpha=0.7, edgecolor='black')
-    mean_ret = returns_pct.mean()
-    ax2.axvline(x=mean_ret, color='red', linestyle='--', linewidth=2, label=f'Mean: {mean_ret:.3f}%')
-    ax2.axvline(x=0, color='black', linestyle='-', linewidth=0.5)
-    ax2.set_xlabel('Daily Return (%)')
-    ax2.set_ylabel('Frequency')
-    ax2.set_title('Returns Distribution', fontsize=12)
-    ax2.legend()
-    ax2.grid(True, alpha=0.3, axis='y')
-
-    fig.suptitle(title, fontsize=14, fontweight='bold')
-    plt.tight_layout()
-
-    if save_path:
-        plt.savefig(save_path, dpi=100, bbox_inches='tight')
-        plt.close()
-    else:
-        plt.show()
+def resample_matrix(df: pd.DataFrame, max_rows: int) -> pd.DataFrame:
+    if df.empty or len(df) <= max_rows:
+        return df
+    positions = np.linspace(0, len(df) - 1, num=max_rows, dtype=int)
+    sampled = df.iloc[positions]
+    return sampled
 
 
-def plot_drawdown(values: np.ndarray,
-                 dates: Optional[List] = None,
-                 title: str = "Drawdown",
-                 save_path: Optional[str] = None):
-    """
-    Drawdown 차트
-
-    Args:
-        values: 포트폴리오 가치 배열 [T]
-        dates: 날짜 리스트 (optional)
-        title: 그래프 제목
-        save_path: 저장 경로 (optional)
-    """
-    # Drawdown 계산
-    running_max = np.maximum.accumulate(values)
-    drawdown = (values - running_max) / running_max * 100
-
-    fig, ax = plt.subplots(figsize=(12, 6))
-
-    if dates is not None:
-        ax.fill_between(dates, drawdown, 0, color='red', alpha=0.3)
-        ax.plot(dates, drawdown, linewidth=1, color='darkred')
-        ax.set_xlabel('Date')
-    else:
-        ax.fill_between(range(len(drawdown)), drawdown, 0, color='red', alpha=0.3)
-        ax.plot(drawdown, linewidth=1, color='darkred')
-        ax.set_xlabel('Step')
-
-    ax.set_ylabel('Drawdown (%)')
-    ax.set_title(title, fontsize=14, fontweight='bold')
-    ax.grid(True, alpha=0.3)
-
-    # Max Drawdown 표시
-    max_dd = drawdown.min()
-    max_dd_idx = drawdown.argmin()
-
-    if dates is not None:
-        ax.scatter(dates[max_dd_idx], max_dd, color='darkred', s=100, zorder=5,
-                  label=f'Max Drawdown: {max_dd:.2f}%')
-    else:
-        ax.scatter(max_dd_idx, max_dd, color='darkred', s=100, zorder=5,
-                  label=f'Max Drawdown: {max_dd:.2f}%')
-
-    ax.legend(loc='best')
-    plt.tight_layout()
-
-    if save_path:
-        plt.savefig(save_path, dpi=100, bbox_inches='tight')
-        plt.close()
-    else:
-        plt.show()
-
-
-# ========== IRT 특화 시각화 ==========
-
-def plot_irt_decomposition(w_rep: np.ndarray,
-                           w_ot: np.ndarray,
-                           title: str = "IRT Decomposition",
-                           save_path: Optional[str] = None):
-    """
-    IRT 분해: w = (1-α)·w_rep + α·w_ot
-
-    Args:
-        w_rep: Replicator component [T, N]
-        w_ot: OT component [T, N]
-        title: 그래프 제목
-        save_path: 저장 경로 (optional)
-    """
-    # 시간 축 평균
-    avg_w_rep = w_rep.mean(axis=1)
-    avg_w_ot = w_ot.mean(axis=1)
-
-    fig, axes = plt.subplots(2, 2, figsize=(16, 10))
-
-    # (1) Decomposition Over Time
-    ax1 = axes[0, 0]
-    ax1.plot(avg_w_rep, label='Replicator Component', alpha=0.8, linewidth=2)
-    ax1.plot(avg_w_ot, label='OT Component', alpha=0.8, linewidth=2)
-    ax1.fill_between(range(len(avg_w_rep)), 0, avg_w_rep, alpha=0.2)
-    ax1.fill_between(range(len(avg_w_ot)), 0, avg_w_ot, alpha=0.2)
-    ax1.set_xlabel('Time Step')
-    ax1.set_ylabel('Average Weight')
-    ax1.set_title('IRT Decomposition Over Time', fontsize=12, fontweight='bold')
-    ax1.legend()
-    ax1.grid(True, alpha=0.3)
-
-    # (2) Correlation Scatter
-    ax2 = axes[0, 1]
-    ax2.scatter(avg_w_rep, avg_w_ot, alpha=0.5, s=20)
-    corr = np.corrcoef(avg_w_rep, avg_w_ot)[0, 1]
-    ax2.set_xlabel('Replicator Component')
-    ax2.set_ylabel('OT Component')
-    ax2.set_title(f'Correlation: {corr:.3f}', fontsize=12, fontweight='bold')
-    ax2.grid(True, alpha=0.3)
-
-    # (3) Distribution
-    ax3 = axes[1, 0]
-    # bins를 데이터에 맞게 동적 조정 (범위가 작을 때 대응)
+def ensure_datetime_index(index: Sequence) -> pd.Index:
     try:
-        bins_rep = min(max(len(np.unique(avg_w_rep)), 3), 20)
-        bins_ot = min(max(len(np.unique(avg_w_ot)), 3), 20)
-        ax3.hist(avg_w_rep, bins=bins_rep, alpha=0.6, label='Replicator', edgecolor='black')
-        ax3.hist(avg_w_ot, bins=bins_ot, alpha=0.6, label='OT', edgecolor='black')
-    except ValueError:
-        # 데이터 범위가 너무 작으면 scatter plot 사용
-        ax3.scatter(avg_w_rep, np.zeros_like(avg_w_rep), alpha=0.6, label='Replicator', s=20)
-        ax3.scatter(avg_w_ot, np.ones_like(avg_w_ot) * 0.5, alpha=0.6, label='OT', s=20)
-        ax3.set_ylabel('Component')
-    ax3.set_xlabel('Weight Value')
-    if not isinstance(ax3, plt.Axes) or 'Component' not in ax3.get_ylabel():
-        ax3.set_ylabel('Frequency')
-    ax3.set_title('Component Distribution', fontsize=12, fontweight='bold')
-    ax3.legend()
-    ax3.grid(True, alpha=0.3)
+        datetimes = pd.to_datetime(index)
+        return pd.Index(datetimes)
+    except Exception:
+        return pd.Index(index)
 
-    # (4) Cumulative Contribution
-    ax4 = axes[1, 1]
-    cumsum_rep = np.cumsum(avg_w_rep)
-    cumsum_ot = np.cumsum(avg_w_ot)
-    ax4.plot(cumsum_rep, label='Cumulative Replicator', linewidth=2)
-    ax4.plot(cumsum_ot, label='Cumulative OT', linewidth=2)
-    ax4.set_xlabel('Time Step')
-    ax4.set_ylabel('Cumulative Weight')
-    ax4.set_title('Cumulative Contribution', fontsize=12, fontweight='bold')
-    ax4.legend()
-    ax4.grid(True, alpha=0.3)
 
-    plt.suptitle(title, fontsize=16, fontweight='bold')
-    plt.tight_layout()
+# ---------------------------------------------------------------------------
+# Styling helpers
+# ---------------------------------------------------------------------------
 
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        plt.close()
+FIGSIZE_DEFAULT = (10, 6)
+CAPTION_Y = 0.01
+
+
+def _new_figure(nrows: int = 1, ncols: int = 1, sharex: bool = False) -> Tuple[Figure, np.ndarray]:
+    fig, axes = plt.subplots(
+        nrows=nrows,
+        ncols=ncols,
+        sharex=sharex,
+        figsize=FIGSIZE_DEFAULT,
+        constrained_layout=True,
+    )
+    return fig, axes
+
+
+def _format_percent_axis(ax: Axes, axis: str = "y") -> None:
+    formatter = mticker.PercentFormatter(xmax=1.0, decimals=1)
+    if axis == "y":
+        ax.yaxis.set_major_formatter(formatter)
     else:
-        plt.show()
+        ax.xaxis.set_major_formatter(formatter)
 
 
-def plot_portfolio_weights(weights: np.ndarray,
-                           asset_names: Optional[List[str]] = None,
-                           title: str = "Portfolio Weights Over Time",
-                           save_path: Optional[str] = None):
-    """
-    포트폴리오 가중치 스택 차트
-
-    Args:
-        weights: 포트폴리오 가중치 [T, N]
-        asset_names: 자산 이름 리스트 (optional)
-        title: 그래프 제목
-        save_path: 저장 경로 (optional)
-    """
-    n_assets = weights.shape[1]
-
-    if asset_names is None:
-        asset_names = [f'Asset {i+1}' for i in range(n_assets)]
-
-    fig, ax = plt.subplots(figsize=(14, 8))
-
-    # 스택 영역 차트
-    bottom = np.zeros(len(weights))
-    colors = plt.cm.tab20(np.linspace(0, 1, n_assets))
-
-    for i in range(n_assets):
-        ax.fill_between(range(len(weights)), bottom, bottom + weights[:, i],
-                        alpha=0.8, color=colors[i], label=asset_names[i])
-        bottom += weights[:, i]
-
-    ax.set_title(title, fontsize=14, fontweight='bold')
-    ax.set_xlabel('Time Step')
-    ax.set_ylabel('Weight')
-    ax.set_ylim(0, 1)
-    ax.legend(loc='center left', bbox_to_anchor=(1, 0.5), ncol=2)
-    ax.grid(True, alpha=0.3)
-
-    plt.tight_layout()
-
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        plt.close()
-    else:
-        plt.show()
+def _format_time_axis(ax: Axes, index: pd.Index) -> None:
+    if isinstance(index, pd.DatetimeIndex):
+        locator = mdates.AutoDateLocator()
+        formatter = mdates.ConciseDateFormatter(locator)
+        ax.xaxis.set_major_locator(locator)
+        ax.xaxis.set_major_formatter(formatter)
+    ax.tick_params(axis="x", rotation=0)
 
 
-def plot_crisis_levels(crisis_levels: np.ndarray,
-                       title: str = "Crisis Level Detection",
-                       save_path: Optional[str] = None):
-    """
-    T-Cell 위기 레벨 시각화
-
-    Args:
-        crisis_levels: 위기 레벨 배열 [T]
-        title: 그래프 제목
-        save_path: 저장 경로 (optional)
-    """
-    fig, ax = plt.subplots(figsize=(14, 6))
-
-    ax.plot(crisis_levels, linewidth=2, color='red', label='Crisis Level')
-    ax.fill_between(range(len(crisis_levels)), 0, crisis_levels, alpha=0.3, color='red')
-
-    # 임계값 표시
-    ax.axhline(0.7, color='darkred', linestyle='--', alpha=0.7, label='High Crisis Threshold')
-    ax.axhline(0.3, color='orange', linestyle='--', alpha=0.7, label='Medium Crisis Threshold')
-
-    ax.set_title(title, fontsize=14, fontweight='bold')
-    ax.set_xlabel('Time Step')
-    ax.set_ylabel('Crisis Level')
-    ax.set_ylim(0, 1)
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-
-    plt.tight_layout()
-
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        plt.close()
-    else:
-        plt.show()
+def _add_caption(fig: Figure, text: str) -> None:
+    fig.text(
+        0.01,
+        CAPTION_Y,
+        text,
+        fontsize=9,
+        color="#444444",
+        ha="left",
+        va="bottom",
+    )
 
 
-def plot_prototype_weights(proto_weights: np.ndarray,
-                           title: str = "Prototype Weights",
-                           save_path: Optional[str] = None):
-    """
-    프로토타입 가중치 및 엔트로피 시각화
-
-    Args:
-        proto_weights: 프로토타입 가중치 [T, M]
-        title: 그래프 제목
-        save_path: 저장 경로 (optional)
-    """
-    n_protos = proto_weights.shape[1]
-
-    fig, axes = plt.subplots(2, 1, figsize=(14, 10), sharex=True)
-
-    # 개별 프로토타입 가중치
-    for i in range(n_protos):
-        axes[0].plot(proto_weights[:, i], alpha=0.7, label=f'Proto {i+1}')
-
-    axes[0].set_title('Prototype Weights Over Time', fontsize=14)
-    axes[0].set_ylabel('Weight')
-    axes[0].legend(ncol=4)
-    axes[0].grid(True, alpha=0.3)
-
-    # 프로토타입 엔트로피 (다양성 지표)
-    entropy = -np.sum(proto_weights * np.log(proto_weights + 1e-8), axis=1)
-    axes[1].plot(entropy, linewidth=2, color='purple', label='Entropy')
-    axes[1].fill_between(range(len(entropy)), 0, entropy, alpha=0.3, color='purple')
-
-    axes[1].set_title('Prototype Diversity (Entropy)', fontsize=14)
-    axes[1].set_xlabel('Time Step')
-    axes[1].set_ylabel('Entropy')
-    axes[1].legend()
-    axes[1].grid(True, alpha=0.3)
-
-    plt.suptitle(title, fontsize=16, fontweight='bold')
-    plt.tight_layout()
-
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        plt.close()
-    else:
-        plt.show()
-
-
-def plot_stock_analysis(weights: np.ndarray,
-                       symbols: List[str],
-                       title: str = "Top 10 Holdings",
-                       save_path: Optional[str] = None):
-    """
-    Top 10 holdings 분석
-
-    Args:
-        weights: 포트폴리오 가중치 [T, N]
-        symbols: 주식 심볼 리스트
-        title: 그래프 제목
-        save_path: 저장 경로 (optional)
-    """
-    avg_weights = weights.mean(axis=0)
-    top_indices = np.argsort(avg_weights)[::-1][:10]
-
-    fig, ax = plt.subplots(figsize=(10, 6))
-    top_symbols = [symbols[i] if i < len(symbols) else f'Asset_{i}' for i in top_indices]
-    top_weights = avg_weights[top_indices]
-
-    ax.barh(top_symbols, top_weights, color='steelblue', edgecolor='black')
-    ax.set_xlabel('Average Weight')
-    ax.set_title(title, fontsize=14, fontweight='bold')
-    ax.grid(True, alpha=0.3, axis='x')
-
-    plt.tight_layout()
-
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        plt.close()
-    else:
-        plt.show()
-
-
-def plot_performance_timeline(returns: np.ndarray,
-                              title: str = "Performance Timeline",
-                              save_path: Optional[str] = None,
-                              cumulative_mode: str = "log"):
-    """
-    성능 타임라인 (누적 수익률)
-
-    Args:
-        returns: 수익률 배열 [T]
-        title: 그래프 제목
-        save_path: 저장 경로 (optional)
-    """
-    returns = np.asarray(returns, dtype=np.float64).reshape(-1)
-    if returns.size == 0:
-        warn("plot_performance_timeline received an empty return series; plot skipped.")
-        return
-
-    cumulative = compute_cumulative_returns(returns, mode=cumulative_mode)
-
-    fig, ax = plt.subplots(figsize=(14, 6))
-    ax.plot(cumulative, linewidth=2, label='Cumulative Return')
-    ax.fill_between(range(len(cumulative)), 0, cumulative, alpha=0.3)
-    ax.set_xlabel('Time Step')
-    ax.set_ylabel('Cumulative Return')
-    ax.set_title(title, fontsize=14, fontweight='bold')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-
-    plt.tight_layout()
-
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        plt.close()
-    else:
-        plt.show()
-
-
-def plot_benchmark_comparison(returns: np.ndarray,
-                              benchmark_returns: Optional[np.ndarray] = None,
-                              title: str = "Benchmark Comparison",
-                              save_path: Optional[str] = None,
-                              cumulative_mode: str = "log",
-                              sanitize_cap: float = 0.3):
-    """
-    벤치마크 비교
-
-    Args:
-        returns: 전략 수익률 [T]
-        benchmark_returns: 벤치마크 수익률 [T] (optional)
-        title: 그래프 제목
-        save_path: 저장 경로 (optional)
-    """
-    returns = np.asarray(returns, dtype=np.float64).reshape(-1)
-    if returns.size == 0:
-        warn("plot_benchmark_comparison received an empty return series; plot skipped.")
-        return
-
-    strategy_returns = returns.copy()
-    benchmark_curve = None
-
-    if benchmark_returns is not None:
-        bench = sanitize_returns(benchmark_returns, cap=sanitize_cap)
-        if bench.size == 0:
-            bench = None
+def _textify_metrics(metrics: Dict[str, Optional[float]]) -> str:
+    parts = []
+    for key, value in metrics.items():
+        if value is None or (isinstance(value, float) and np.isnan(value)):
+            continue
+        if "drawdown" in key.lower():
+            parts.append(f"{key}: {value:+.1%}")
+        elif "sharpe" in key.lower() or "sortino" in key.lower():
+            parts.append(f"{key}: {value:.2f}")
+        elif "return" in key.lower() or "reward" in key.lower():
+            parts.append(f"{key}: {value:+.2%}")
+        elif "cvar" in key.lower():
+            parts.append(f"{key}: {value:+.1%}")
         else:
-            min_len = min(strategy_returns.size, bench.size)
-            if min_len == 0:
-                bench = None
-            else:
-                strategy_returns = strategy_returns[-min_len:]
-                bench = bench[-min_len:]
-                benchmark_curve = compute_cumulative_returns(bench, mode=cumulative_mode)
+            parts.append(f"{key}: {value:.3f}")
+    return " | ".join(parts)
 
-    cumulative = compute_cumulative_returns(strategy_returns, mode=cumulative_mode)
 
-    fig, ax = plt.subplots(figsize=(14, 6))
-    ax.plot(cumulative, linewidth=2, label='IRT Strategy', color='blue')
+# ---------------------------------------------------------------------------
+# Plot functions
+# ---------------------------------------------------------------------------
 
-    if benchmark_curve is not None:
-        ax.plot(benchmark_curve, linewidth=2, label='Benchmark', color='gray', alpha=0.7)
+
+def plot_equity(
+    equity: pd.Series,
+    benchmark: Optional[pd.Series] = None,
+    annotations: Optional[Dict[str, Optional[float]]] = None,
+    caption: str = "",
+) -> Figure:
+    fig, ax = _new_figure()
+    idx = equity.index
+    ax.plot(idx, equity, label="Portfolio", linewidth=2.0, color="#2b6cb0")
+    if benchmark is not None and not benchmark.empty:
+        benchmark_aligned = benchmark.reindex(idx, method="pad").dropna()
+        ax.plot(
+            benchmark_aligned.index,
+            benchmark_aligned,
+            label="Benchmark",
+            linewidth=1.5,
+            color="#718096",
+            linestyle="--",
+        )
+    _format_time_axis(ax, idx)
+    ax.set_ylabel("Equity (rel.)")
+    ax.set_xlabel("Step")
+    ax.grid(alpha=0.2)
+    if annotations:
+        txt = _textify_metrics(annotations)
+        if txt:
+            ax.text(0.02, 0.95, txt, transform=ax.transAxes, fontsize=10, va="top")
+    ax.legend(loc="upper left")
+    _add_caption(
+        fig,
+        caption
+        or "Equity curve derived from per_step_returns (portfolio) and benchmark_returns (if available).",
+    )
+    return fig
+
+
+def plot_drawdown(drawdown: pd.Series, caption: str = "") -> Figure:
+    fig, ax = _new_figure()
+    idx = drawdown.index
+    ax.fill_between(idx, drawdown, 0.0, color="#c53030", alpha=0.3)
+    ax.plot(idx, drawdown, color="#822727", linewidth=1.5)
+    _format_time_axis(ax, idx)
+    _format_percent_axis(ax, "y")
+    ax.set_ylabel("Drawdown (%)")
+    ax.set_xlabel("Step")
+    ax.set_title("Drawdown curve")
+    ax.grid(alpha=0.2)
+    _add_caption(
+        fig,
+        caption
+        or "Drawdown computed as equity / rolling_max - 1.0 using cumulative per_step_returns.",
+    )
+    return fig
+
+
+def plot_returns_dist(
+    returns: pd.Series,
+    cvar_5: Optional[float] = None,
+    caption: str = "",
+) -> Figure:
+    fig, axes = _new_figure(nrows=1, ncols=2, sharex=False)
+    axes = np.atleast_1d(axes)
+    idx = returns.index
+    axes[0].plot(idx, returns * 100, color="#2b6cb0", linewidth=1.2)
+    axes[0].axhline(0.0, color="#a0aec0", linewidth=0.8)
+    axes[0].set_ylabel("Return (%)")
+    axes[0].set_xlabel("Step")
+    axes[0].set_title("Per-step returns")
+    axes[0].grid(alpha=0.2)
+    _format_time_axis(axes[0], idx)
+
+    axes[1].hist(returns * 100, bins=40, color="#63b3ed", alpha=0.8, edgecolor="#2c5282")
+    axes[1].set_xlabel("Return (%)")
+    axes[1].set_ylabel("Frequency")
+    axes[1].set_title("Distribution with CVaR marker")
+    if cvar_5 is not None:
+        axes[1].axvline(cvar_5 * 100, color="#c53030", linestyle="--", linewidth=2.0)
+        axes[1].text(
+            cvar_5 * 100,
+            axes[1].get_ylim()[1] * 0.9,
+            f"CVaR@5% = {cvar_5:.2%}",
+            rotation=90,
+            color="#c53030",
+            va="top",
+            ha="right",
+        )
+    _add_caption(
+        fig,
+        caption
+        or "Returns computed from per_step_returns; CVaR line sourced from evaluation_insights.json (cvar_5).",
+    )
+    return fig
+
+
+def plot_rolling_risk_return(
+    sharpe: pd.Series,
+    volatility: pd.Series,
+    window: int,
+    caption: str = "",
+) -> Figure:
+    fig, axes = _new_figure(nrows=2, ncols=1, sharex=True)
+    idx = sharpe.index
+    axes[0].plot(idx, sharpe, color="#2f855a", linewidth=1.5)
+    axes[0].axhline(0.0, color="#a0aec0", linewidth=0.8)
+    axes[0].set_ylabel("Rolling Sharpe")
+    axes[0].set_title(f"{window}-step rolling Sharpe")
+    axes[0].grid(alpha=0.2)
+
+    axes[1].plot(idx, volatility, color="#dd6b20", linewidth=1.5)
+    axes[1].set_ylabel("Annualised Volatility")
+    axes[1].set_xlabel("Step")
+    axes[1].set_title(f"{window}-step rolling volatility (annualised)")
+    axes[1].grid(alpha=0.2)
+    _format_time_axis(axes[1], idx)
+    _add_caption(
+        fig,
+        caption
+        or f"Rolling statistics derived from per_step_returns with window={window}; "
+        "Sharpe = mean/std * sqrt(window).",
+    )
+    return fig
+
+
+def plot_crisis_kappa_cash(
+    crisis: pd.Series,
+    cash_ratio: pd.Series,
+    kappa_sharpe: Optional[pd.Series] = None,
+    kappa_cvar: Optional[pd.Series] = None,
+    threshold: Optional[float] = None,
+    caption: str = "",
+) -> Figure:
+    fig, ax = _new_figure()
+    idx = crisis.index
+    ax.plot(idx, crisis, color="#c53030", linewidth=1.5, label="Crisis level")
+    ax.plot(idx, cash_ratio, color="#2b6cb0", linewidth=1.5, label="Cash ratio")
+    if threshold is not None:
+        ax.axhline(threshold, color="#feb24c", linestyle="--", linewidth=1.0, label="Crisis threshold")
+    ax.set_ylabel("Probability / Ratio")
+    ax.grid(alpha=0.2)
+    _format_time_axis(ax, idx)
+    ax.set_xlabel("Step")
+
+    if kappa_sharpe is not None or kappa_cvar is not None:
+        ax2 = ax.twinx()
+        if kappa_sharpe is not None:
+            ax2.plot(idx, kappa_sharpe.reindex(idx), color="#38a169", linewidth=1.2, label="κ Sharpe")
+        if kappa_cvar is not None:
+            ax2.plot(
+                idx,
+                kappa_cvar.reindex(idx),
+                color="#805ad5",
+                linewidth=1.2,
+                label="κ CVaR",
+                linestyle="--",
+            )
+        ax2.set_ylabel("κ values")
+        ax2.grid(False)
+        lines, labels = ax.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax.legend(lines + lines2, labels + labels2, loc="upper left")
     else:
-        ax.axhline(0, color='gray', linestyle='--', alpha=0.5, label='Zero Return')
+        ax.legend(loc="upper left")
 
-    ax.set_xlabel('Time Step')
-    ax.set_ylabel('Cumulative Return')
-    ax.set_title(title, fontsize=14, fontweight='bold')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-
-    plt.tight_layout()
-
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        plt.close()
-    else:
-        plt.show()
+    _add_caption(
+        fig,
+        caption
+        or "Overlay of crisis_level (xai_prototypes_timeseries) vs cash ratio (holdings_timeseries); "
+        "κ signals plotted when provided.",
+    )
+    return fig
 
 
-def plot_risk_dashboard(returns: np.ndarray,
-                        metrics: dict,
-                        title: str = "Risk Dashboard",
-                        save_path: Optional[str] = None,
-                        cumulative_mode: str = "log"):
+def plot_cash_vs_crisis(
+    crisis: pd.Series,
+    cash_ratio: pd.Series,
+    caption: str = "",
+) -> Figure:
+    fig, ax = _new_figure()
+    data = pd.DataFrame({"crisis": crisis, "cash": cash_ratio}).dropna()
+    hb = ax.hexbin(
+        data["crisis"],
+        data["cash"],
+        gridsize=30,
+        cmap="Blues",
+        mincnt=1,
+    )
+    ax.set_xlabel("Crisis level")
+    ax.set_ylabel("Cash ratio")
+    ax.set_title("Cash deployment vs crisis probability")
+    ax.figure.colorbar(hb, ax=ax, label="Count")
+    _add_caption(
+        fig,
+        caption
+        or "Hexbin density of crisis_level (xai_prototypes_timeseries) against cash ratio (holdings_timeseries).",
+    )
+    return fig
+
+
+def plot_turnover_vs_reward(
+    turnover: pd.Series,
+    rewards: pd.Series,
+    caption: str = "",
+) -> Figure:
+    fig, ax = _new_figure()
+    data = pd.DataFrame({"turnover": turnover, "reward": rewards}).dropna()
+    ax.scatter(data["turnover"], data["reward"] * 100, alpha=0.6, color="#4fd1c5")
+    ax.set_xlabel("Turnover (abs qty * price)")
+    ax.set_ylabel("Return (%)")
+    ax.set_title("Turnover vs return per step")
+    ax.grid(alpha=0.2)
+    if not data.empty:
+        corr = data["turnover"].corr(data["reward"])
+        ax.text(0.02, 0.95, f"Pearson corr = {corr:.2f}", transform=ax.transAxes, va="top")
+    _add_caption(
+        fig,
+        caption
+        or "Turnover aggregated from trades.csv (abs(qty*price) per step) vs per_step_returns.",
+    )
+    return fig
+
+
+def plot_cost_footprint(daily_cost: pd.Series, caption: str = "") -> Figure:
+    fig, ax = _new_figure()
+    idx = daily_cost.index
+    ax.bar(idx, daily_cost, color="#f56565", alpha=0.7, label="Daily transaction cost")
+    cumulative = daily_cost.cumsum()
+    ax2 = ax.twinx()
+    ax2.plot(idx, cumulative, color="#c53030", linewidth=1.5, label="Cumulative cost")
+    ax.set_xlabel("Step")
+    ax.set_ylabel("Cost")
+    ax2.set_ylabel("Cumulative cost")
+    _format_time_axis(ax, idx)
+    ax.grid(alpha=0.2)
+    lines, labels = ax.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax.legend(lines + lines2, labels + labels2, loc="upper left")
+    _add_caption(
+        fig,
+        caption or "Transaction costs sourced from trades.csv (tx_cost column); cumulative overlay highlights footprint.",
+    )
+    return fig
+
+
+def plot_proto_area(
+    topk_weights: pd.DataFrame,
+    caption: str = "",
+) -> Figure:
+    fig, ax = _new_figure()
+    idx = topk_weights.index
+    ax.stackplot(idx, topk_weights.T, labels=topk_weights.columns, alpha=0.85)
+    _format_time_axis(ax, idx)
+    ax.set_ylabel("Weight")
+    ax.set_xlabel("Step")
+    ax.set_ylim(0.0, 1.0)
+    ax.legend(loc="upper left", ncol=2, fontsize=9)
+    ax.set_title("Prototype weight top-K mix")
+    _add_caption(
+        fig,
+        caption
+        or "Prototype weight composition derived from xai_prototypes_timeseries topk_{i}_weight fields (other = residual).",
+    )
+    return fig
+
+
+def plot_entropy_temp(
+    proto_entropy: pd.Series,
+    action_temp: Optional[pd.Series] = None,
+    alpha_c: Optional[pd.Series] = None,
+    caption: str = "",
+) -> Figure:
+    fig, ax = _new_figure()
+    idx = proto_entropy.index
+    ax.plot(idx, proto_entropy, color="#2b6cb0", linewidth=1.5, label="Prototype entropy")
+    if action_temp is not None:
+        ax.plot(idx, action_temp.reindex(idx), color="#dd6b20", linewidth=1.2, label="Action temperature")
+    if alpha_c is not None:
+        ax.plot(idx, alpha_c.reindex(idx), color="#38a169", linewidth=1.2, linestyle="--", label="α_c mean")
+    _format_time_axis(ax, idx)
+    ax.set_xlabel("Step")
+    ax.set_ylabel("Value")
+    ax.grid(alpha=0.2)
+    ax.legend(loc="upper right")
+    ax.set_title("Uncertainty signals (entropy / temperature / α)")
+    _add_caption(
+        fig,
+        caption
+        or "Signals pulled from xai_prototypes_timeseries (proto_entropy, action_temp, alpha_c_mean) highlight exploration vs exploitation.",
+    )
+    return fig
+
+
+def plot_attr_heatmap(
+    attr_matrix: pd.DataFrame,
+    feature_order: Optional[List[str]] = None,
+    regime_marks: Optional[pd.Series] = None,
+    normalisation_note: str = "",
+    caption: str = "",
+) -> Figure:
+    fig, ax = _new_figure()
+    matrix = attr_matrix.copy()
+    if feature_order:
+        existing = [f for f in feature_order if f in matrix.columns]
+        remaining = [f for f in matrix.columns if f not in existing]
+        matrix = matrix[existing + remaining]
+    im = ax.imshow(
+        matrix.values,
+        aspect="auto",
+        cmap="RdBu",
+        vmin=-1.0,
+        vmax=1.0,
+        interpolation="nearest",
+    )
+    ax.set_xlabel("Features")
+    ax.set_ylabel("Sampled steps")
+    ax.set_xticks(np.arange(matrix.shape[1]))
+    ax.set_xticklabels(matrix.columns, rotation=45, ha="right", fontsize=8)
+    ax.set_yticks(np.arange(matrix.shape[0]))
+    ax.set_yticklabels(matrix.index)
+    fig.colorbar(im, ax=ax, label="Normalised attribution")
+    if regime_marks is not None and not regime_marks.empty:
+        crisis_steps = matrix.index.intersection(regime_marks[regime_marks > 0.5].index)
+        for step in crisis_steps:
+            idx = matrix.index.get_loc(step)
+            ax.axhline(idx - 0.5, color="#cbd5e0", linewidth=0.5)
+            ax.axhline(idx + 0.5, color="#cbd5e0", linewidth=0.5)
+    note = normalisation_note or "Rows normalised so that Σ|attr|=1 per step."
+    _add_caption(
+        fig,
+        caption or f"Feature attributions (xai_feature_attributions) heatmap; {note} N={matrix.shape[0]} samples.",
+    )
+    return fig
+
+
+def plot_attr_regime_bars(
+    topk_normal: Dict[str, float],
+    topk_crisis: Dict[str, float],
+    caption: str = "",
+) -> Figure:
+    fig, axes = _new_figure(nrows=1, ncols=2, sharex=False)
+    axes = np.atleast_1d(axes)
+
+    def _plot(ax: Axes, data: Dict[str, float], title: str) -> None:
+        if not data:
+            ax.set_axis_off()
+            ax.set_title(f"{title}\n(no data)")
+            return
+        features = list(data.keys())
+        values = np.array(list(data.values()))
+        ax.barh(features, values, color="#4a5568")
+        ax.set_title(title)
+        ax.invert_yaxis()
+        ax.grid(axis="x", alpha=0.2)
+        ax.set_xlabel("Normalised attribution")
+
+    _plot(axes[0], topk_normal, "Normal regime")
+    _plot(axes[1], topk_crisis, "Crisis regime")
+    _add_caption(
+        fig,
+        caption
+        or "Top-K feature importances from xai_summary.json comparing normal vs crisis regimes (values already normalised).",
+    )
+    return fig
+
+
+def _convert_to_serializable(obj):
+    if isinstance(obj, dict):
+        return {k: _convert_to_serializable(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_convert_to_serializable(v) for v in obj]
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, (np.floating, np.integer)):
+        return obj.item()
+    if isinstance(obj, pd.Series):
+        return obj.tolist()
+    if isinstance(obj, pd.DataFrame):
+        return obj.to_dict(orient="records")
+    if isinstance(obj, (datetime,)):
+        return obj.isoformat()
+    return obj
+
+
+def save_evaluation_results(
+    results: Dict,
+    output_dir: Path,
+    config: Optional[Dict] = None,
+) -> None:
     """
-    리스크 대시보드 (VaR/CVaR, Drawdown)
+    Persist evaluation artefacts in the new XAI-friendly layout.
 
-    Args:
-        returns: 수익률 배열 [T]
-        metrics: 메트릭 딕셔너리
-        title: 그래프 제목
-        save_path: 저장 경로 (optional)
+    - evaluation_results.json: full payload (metrics, configs, arrays)
+    - evaluation_insights.json: lightweight summary consumed by viz CLI
+    - holdings_timeseries.csv: per-step asset/cash weights (optional)
+    - trades.csv: reconstructed trade log (optional)
     """
-    returns = np.asarray(returns, dtype=np.float64).reshape(-1)
-    if returns.size == 0:
-        warn("plot_risk_dashboard received an empty return series; plot skipped.")
-        return
-
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-
-    # (1) Returns Distribution
-    axes[0, 0].hist(returns, bins='auto', alpha=0.7, edgecolor='black', color='steelblue')
-    mean_ret = returns.mean()
-    axes[0, 0].axvline(mean_ret, color='red', linestyle='--', linewidth=2,
-                       label=f'Mean = {mean_ret:.4f}')
-    axes[0, 0].set_xlabel('Return')
-    axes[0, 0].set_ylabel('Frequency')
-    axes[0, 0].set_title('Returns Distribution', fontsize=12, fontweight='bold')
-    axes[0, 0].legend()
-    axes[0, 0].grid(True, alpha=0.3)
-
-    # (2) Metrics Summary
-    axes[0, 1].axis('off')
-    metric_text = f"""
-    Sharpe Ratio: {metrics.get('sharpe_ratio', 0):.3f}
-    Sortino Ratio: {metrics.get('sortino_ratio', 0):.3f}
-    Max Drawdown: {metrics.get('max_drawdown', 0):.3f}
-    Volatility: {metrics.get('volatility', 0):.3f}
-    """
-    axes[0, 1].text(0.1, 0.5, metric_text, fontsize=14, verticalalignment='center',
-                    family='monospace')
-    axes[0, 1].set_title('Key Metrics', fontsize=12, fontweight='bold')
-
-    # (3) Cumulative Returns
-    cumulative = compute_cumulative_returns(returns, mode=cumulative_mode)
-    axes[1, 0].plot(cumulative, linewidth=2, color='green')
-    axes[1, 0].fill_between(range(len(cumulative)), 0, cumulative, alpha=0.3, color='green')
-    axes[1, 0].set_xlabel('Time Step')
-    axes[1, 0].set_ylabel('Cumulative Return')
-    axes[1, 0].set_title('Cumulative Returns', fontsize=12, fontweight='bold')
-    axes[1, 0].grid(True, alpha=0.3)
-
-    # (4) Drawdown
-    cumulative_wealth = 1 + cumulative
-    running_max = np.maximum.accumulate(cumulative_wealth)
-    drawdown = (cumulative_wealth - running_max) / running_max
-
-    axes[1, 1].fill_between(range(len(drawdown)), 0, drawdown, alpha=0.5, color='red')
-    axes[1, 1].plot(drawdown, linewidth=1, color='darkred')
-    axes[1, 1].set_xlabel('Time Step')
-    axes[1, 1].set_ylabel('Drawdown')
-    axes[1, 1].set_title('Drawdown', fontsize=12, fontweight='bold')
-    axes[1, 1].grid(True, alpha=0.3)
-
-    plt.suptitle(title, fontsize=16, fontweight='bold')
-    plt.tight_layout()
-
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        plt.close()
-    else:
-        plt.show()
-
-
-def plot_tcell_analysis(crisis_types: np.ndarray,
-                        crisis_levels: np.ndarray,
-                        title: str = "T-Cell Analysis",
-                        save_path: Optional[str] = None):
-    """
-    T-Cell 위기 타입 분석
-
-    Args:
-        crisis_types: 위기 타입 배열 [T, K]
-        crisis_levels: 위기 레벨 배열 [T]
-        title: 그래프 제목
-        save_path: 저장 경로 (optional)
-    """
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-
-    # (1) Crisis Types Average
-    avg_types = crisis_types.mean(axis=0)
-    axes[0].bar(range(len(avg_types)), avg_types, color='coral', edgecolor='black')
-    axes[0].set_xlabel('Crisis Type Index')
-    axes[0].set_ylabel('Average Activation')
-    axes[0].set_title('Average Crisis Type Distribution', fontsize=12, fontweight='bold')
-    axes[0].grid(True, alpha=0.3, axis='y')
-
-    # (2) Crisis Level Timeline
-    axes[1].plot(crisis_levels, linewidth=2, color='red', label='Crisis Level')
-    axes[1].fill_between(range(len(crisis_levels)), 0, crisis_levels, alpha=0.3, color='red')
-    axes[1].axhline(0.5, color='darkred', linestyle='--', alpha=0.7, label='Threshold = 0.5')
-    axes[1].set_xlabel('Time Step')
-    axes[1].set_ylabel('Crisis Level')
-    axes[1].set_title('Crisis Level Over Time', fontsize=12, fontweight='bold')
-    axes[1].legend()
-    axes[1].grid(True, alpha=0.3)
-
-    plt.suptitle(title, fontsize=16, fontweight='bold')
-    plt.tight_layout()
-
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        plt.close()
-    else:
-        plt.show()
-
-
-def plot_attribution_analysis(weights: np.ndarray,
-                              returns: np.ndarray,
-                              symbols: List[str],
-                              title: str = "Top 10 Contributors",
-                              save_path: Optional[str] = None):
-    """
-    Attribution 분석 (Top 10 contributors)
-
-    Args:
-        weights: 포트폴리오 가중치 [T, N]
-        returns: 수익률 배열 [T]
-        symbols: 주식 심볼 리스트
-        title: 그래프 제목
-        save_path: 저장 경로 (optional)
-    """
-    avg_weights = weights.mean(axis=0)
-    total_return = np.prod(1 + returns) - 1
-    contributions = avg_weights * total_return
-
-    top_indices = np.argsort(np.abs(contributions))[::-1][:10]
-    top_symbols = [symbols[i] if i < len(symbols) else f'Asset_{i}' for i in top_indices]
-    top_contributions = contributions[top_indices]
-
-    fig, ax = plt.subplots(figsize=(10, 6))
-    colors = ['green' if c > 0 else 'red' for c in top_contributions]
-    ax.barh(top_symbols, top_contributions, color=colors, edgecolor='black')
-    ax.set_xlabel('Contribution to Total Return')
-    ax.set_title(title, fontsize=14, fontweight='bold')
-    ax.grid(True, alpha=0.3, axis='x')
-
-    plt.tight_layout()
-
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        plt.close()
-    else:
-        plt.show()
-
-
-def plot_cost_matrix(cost_matrices: np.ndarray,
-                    title: str = "Average Immunological Cost Matrix",
-                    save_path: Optional[str] = None):
-    """
-    Immunological Cost Matrix 히트맵
-
-    Args:
-        cost_matrices: Cost matrix 배열 [T, m, M]
-        title: 그래프 제목
-        save_path: 저장 경로 (optional)
-    """
-    if len(cost_matrices) == 0:
-        print("  Cost matrix 데이터가 없어 시각화를 건너뜁니다.")
-        return
-
-    avg_cost = np.mean(cost_matrices, axis=0)
-    m, M = avg_cost.shape
-
-    fig, ax = plt.subplots(figsize=(10, 8))
-    im = ax.imshow(avg_cost, cmap='RdYlGn_r', aspect='auto')
-    ax.set_xlabel('Prototype Index (M)')
-    ax.set_ylabel('Epitope Index (m)')
-    ax.set_title(title, fontsize=14, fontweight='bold')
-    ax.set_xticks(range(M))
-    ax.set_xticklabels([f'P{i+1}' for i in range(M)])
-    ax.set_yticks(range(m))
-    ax.set_yticklabels([f'E{i+1}' for i in range(m)])
-    plt.colorbar(im, ax=ax, label='Cost')
-
-    plt.tight_layout()
-
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        plt.close()
-    else:
-        plt.show()
-
-
-# ========== 통합 함수 ==========
-
-def plot_all(portfolio_values: np.ndarray,
-            dates: Optional[List] = None,
-            output_dir: str = "evaluation_plots",
-            irt_data: Optional[dict] = None,
-            returns: Optional[np.ndarray] = None,
-            cumulative_mode: str = "log",
-            sanitize_cap: float = 0.3):
-    """
-    모든 시각화를 한 번에 생성
-
-    일반 포트폴리오: 3개 시각화
-    IRT 모델: 14개 시각화 (IRT 데이터 포함 시)
-
-    Args:
-        portfolio_values: 포트폴리오 가치 배열 [T]
-        dates: 날짜 리스트 (optional)
-        output_dir: 저장 디렉토리
-        irt_data: IRT 특화 데이터 (optional)
-            - w_rep: Replicator component [T, N]
-            - w_ot: OT component [T, N]
-            - weights: 포트폴리오 가중치 [T, N]
-            - crisis_levels: 위기 레벨 [T]
-            - crisis_types: 위기 타입 [T, K]
-            - prototype_weights: 프로토타입 가중치 [T, M]
-            - symbols: 주식 심볼 리스트
-            - cost_matrices: Cost matrix [T, m, M] (optional)
-            - benchmark_returns: 벤치마크 수익률 [T] (optional)
-            - metrics: 메트릭 딕셔너리
-    """
-    from pathlib import Path
-
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    # 기본 포트폴리오 시각화 (항상 생성)
-    print(f"시각화를 생성합니다...")
+    def _to_float_array(values) -> np.ndarray:
+        if not _is_non_empty(values):
+            return np.array([], dtype=np.float64)
+        return np.asarray(values, dtype=np.float64).reshape(-1)
 
-    # 1. Portfolio Value
-    plot_portfolio_value(
-        portfolio_values,
-        dates=dates,
-        save_path=str(output_path / "portfolio_value.png")
-    )
+    timestamp = datetime.now(timezone.utc).isoformat()
+    series = results.get("series")
+    if series is None:
+        series = {}
+        for key in (
+            "portfolio_values",
+            "per_step_returns",
+            "per_step_returns_raw",
+            "value_returns",
+            "value_returns_raw",
+            "transaction_costs_series",
+            "turnover_executed_series",
+            "turnover_target_series",
+            "cash_ratio_series",
+            "dates",
+        ):
+            if key in results:
+                series[key] = results[key]
+        results["series"] = series
 
-    # 2. Returns
-    series_returns = None
-    if returns is not None:
-        series_returns = np.asarray(returns, dtype=np.float64).reshape(-1)
-    elif irt_data is not None:
-        for key in ("returns_exec", "returns", "returns_value"):
-            if key in irt_data and irt_data[key] is not None:
-                series_returns = np.asarray(irt_data[key], dtype=np.float64).reshape(-1)
-                if series_returns.size > 0:
-                    break
-    if series_returns is None:
-        series_returns = compute_portfolio_returns(portfolio_values)
+    tables = results.get("tables")
+    if tables is None:
+        tables = {}
+        for key in ("holdings_timeseries", "trades"):
+            if key in results:
+                tables[key] = results[key]
+        results["tables"] = tables
 
-    series_returns = sanitize_returns(series_returns, cap=sanitize_cap)
-    has_returns = series_returns.size >= 1
+    paths = results.get("paths")
+    if paths is None:
+        paths = {}
+        results["paths"] = paths
 
-    if has_returns:
-        plot_returns(
-            series_returns,
-            save_path=str(output_path / "returns_distribution.png")
-        )
+    holdings_records = tables.get("holdings_timeseries")
+    if isinstance(holdings_records, list) and _is_non_empty(holdings_records):
+        holdings_df = pd.DataFrame(holdings_records)
+        if "step" in holdings_df.columns:
+            holdings_df = holdings_df.sort_values("step")
+        holdings_file = "holdings_timeseries.csv"
+        holdings_df.to_csv(output_path / holdings_file, index=False)
+        paths["holdings_csv"] = holdings_file
+        tables["holdings_timeseries"] = {"rows": int(holdings_df.shape[0])}
+        cash_series_from_table = holdings_df.get("CASH")
     else:
-        warn("plot_all could not derive a non-empty return series; skipping return-based plots.")
+        cash_series_from_table = None
+        if "holdings_csv" not in paths:
+            candidate = output_path / "holdings_timeseries.csv"
+            if candidate.is_file():
+                paths["holdings_csv"] = candidate.name
 
-    # 3. Drawdown
-    plot_drawdown(
-        portfolio_values,
-        dates=dates,
-        save_path=str(output_path / "drawdown.png")
-    )
-
-    # IRT 특화 시각화 (irt_data 있을 때만)
-    if irt_data is not None:
-        # 4. IRT Decomposition
-        if 'w_rep' in irt_data and 'w_ot' in irt_data:
-            plot_irt_decomposition(
-                irt_data['w_rep'],
-                irt_data['w_ot'],
-                save_path=str(output_path / "irt_decomposition.png")
-            )
-
-        # 5. Portfolio Weights
-        if 'weights' in irt_data:
-            symbols = irt_data.get('symbols', None)
-            plot_portfolio_weights(
-                irt_data['weights'],
-                asset_names=symbols,
-                save_path=str(output_path / "portfolio_weights.png")
-            )
-
-        # 6. Crisis Levels
-        if 'crisis_levels' in irt_data:
-            plot_crisis_levels(
-                irt_data['crisis_levels'],
-                save_path=str(output_path / "crisis_levels.png")
-            )
-
-        # 7. Prototype Weights
-        if 'prototype_weights' in irt_data:
-            plot_prototype_weights(
-                irt_data['prototype_weights'],
-                save_path=str(output_path / "prototype_weights.png")
-            )
-
-        # 8. Stock Analysis
-        if 'weights' in irt_data and 'symbols' in irt_data:
-            plot_stock_analysis(
-                irt_data['weights'],
-                irt_data['symbols'],
-                save_path=str(output_path / "stock_analysis.png")
-            )
-
-        # 9. Performance Timeline
-        if has_returns:
-            plot_performance_timeline(
-                series_returns,
-                save_path=str(output_path / "performance_timeline.png"),
-                cumulative_mode=cumulative_mode
-            )
-
-        # 10. Benchmark Comparison
-        benchmark_returns = irt_data.get('benchmark_returns', None)
-        if has_returns:
-            plot_benchmark_comparison(
-                series_returns,
-                benchmark_returns=benchmark_returns,
-                save_path=str(output_path / "benchmark_comparison.png"),
-                cumulative_mode=cumulative_mode,
-                sanitize_cap=sanitize_cap
-            )
-
-        # 11. Risk Dashboard
-        if has_returns and 'metrics' in irt_data:
-            plot_risk_dashboard(
-                series_returns,
-                irt_data['metrics'],
-                save_path=str(output_path / "risk_dashboard.png"),
-                cumulative_mode=cumulative_mode
-            )
-
-        # 12. T-Cell Analysis
-        if 'crisis_types' in irt_data and 'crisis_levels' in irt_data:
-            plot_tcell_analysis(
-                irt_data['crisis_types'],
-                irt_data['crisis_levels'],
-                save_path=str(output_path / "tcell_analysis.png")
-            )
-
-        # 13. Attribution Analysis
-        if 'weights' in irt_data and 'symbols' in irt_data and has_returns:
-            plot_attribution_analysis(
-                irt_data['weights'],
-                series_returns,
-                irt_data['symbols'],
-                save_path=str(output_path / "attribution_analysis.png")
-            )
-
-        # 14. Cost Matrix
-        if 'cost_matrices' in irt_data:
-            plot_cost_matrix(
-                irt_data['cost_matrices'],
-                save_path=str(output_path / "cost_matrix.png")
-            )
-
-        print(f"  시각화 14개 생성 완료: {output_dir}")
-        print(f"  일반: portfolio_value, returns_distribution, drawdown")
-        print(f"  IRT: irt_decomposition, portfolio_weights, crisis_levels, prototype_weights,")
-        print(f"       stock_analysis, performance_timeline, benchmark_comparison, risk_dashboard,")
-        print(f"       tcell_analysis, attribution_analysis, cost_matrix")
+    trade_records = tables.get("trades")
+    if isinstance(trade_records, list) and _is_non_empty(trade_records):
+        trades_df = pd.DataFrame(trade_records)
+        columns = ["timestamp", "step", "ticker", "qty", "price", "tx_cost", "side"]
+        trades_df = trades_df.reindex(columns=[col for col in columns if col in trades_df.columns])
+        trades_df = trades_df.sort_values(["step", "ticker"]) if "step" in trades_df.columns else trades_df
+        trades_file = "trades.csv"
+        trades_df.to_csv(output_path / trades_file, index=False)
+        paths["trades_csv"] = trades_file
+        tables["trades"] = {"rows": int(trades_df.shape[0])}
     else:
-        print(f"  시각화 3개 생성 완료: {output_dir}")
-        print(f"  - portfolio_value.png")
-        print(f"  - returns_distribution.png")
-        print(f"  - drawdown.png")
+        if "trades_csv" not in paths:
+            candidate = output_path / "trades.csv"
+            if candidate.is_file():
+                paths["trades_csv"] = candidate.name
 
+    metrics = results.get("metrics", {}) or {}
+    series_portfolio = _to_float_array(series.get("portfolio_values"))
+    returns_arr = _to_float_array(series.get("per_step_returns"))
+    cash_series = _to_float_array(series.get("cash_ratio_series"))
+    if cash_series.size == 0 and cash_series_from_table is not None:
+        cash_series = cash_series_from_table.to_numpy(dtype=float)
 
-def save_evaluation_results(results: dict, save_dir: Path, config: dict = None):
-    """
-    평가 결과를 JSON으로 저장
+    total_return = metrics.get("total_return")
+    if total_return is None and series_portfolio.size > 1:
+        total_return = float(series_portfolio[-1] / series_portfolio[0] - 1.0)
 
-    두 개의 JSON 파일을 생성:
-    - evaluation_results.json: 모든 원시 데이터
-    - evaluation_insights.json: 구조화된 해석 정보
+    final_value = metrics.get("final_value")
+    if final_value is None and series_portfolio.size:
+        final_value = float(series_portfolio[-1])
 
-    Args:
-        results: 평가 결과 딕셔너리 (returns, weights, crisis_levels, ...)
-        save_dir: 저장 디렉토리
-        config: 설정 딕셔너리 (optional, insights 생성용)
-    """
-    import json
-    from datetime import datetime
+    volatility = metrics.get("volatility")
+    if volatility is None and returns_arr.size:
+        volatility = float(np.std(returns_arr) * np.sqrt(252))
 
-    save_dir = Path(save_dir)
-    save_dir.mkdir(parents=True, exist_ok=True)
+    avg_cash = float(np.nanmean(cash_series)) if cash_series.size else None
+    median_cash = float(np.nanmedian(cash_series)) if cash_series.size else None
+    min_cash = float(np.nanmin(cash_series)) if cash_series.size else None
+    max_cash = float(np.nanmax(cash_series)) if cash_series.size else None
 
-    # 1. evaluation_results.json 저장
-    results_copy = results.copy()
+    crisis_series = _to_float_array(series.get("crisis_levels"))
+    if crisis_series.size == 0 and "irt" in results:
+        crisis_series = _to_float_array(results["irt"].get("crisis_levels"))
+    crisis_pct = metrics.get("crisis_regime_pct")
+    if crisis_pct is None and crisis_series.size:
+        crisis_pct = float(np.mean(crisis_series >= 0.5))
 
-    # numpy 배열을 리스트로 변환
-    for key, value in results_copy.items():
-        if isinstance(value, np.ndarray):
-            results_copy[key] = value.tolist()
-        elif isinstance(value, list) and len(value) > 0 and isinstance(value[0], np.ndarray):
-            results_copy[key] = [v.tolist() for v in value]
-        elif key in {"reward_components", "reward_components_scaled"} and isinstance(value, dict):
-            results_copy[key] = {
-                comp_key: np.asarray(comp_values).tolist()
-                for comp_key, comp_values in value.items()
-            }
+    cleaned_dates = []
+    dates_raw = series.get("dates") or []
+    if dates_raw:
+        cleaned_dates = [None if d in (None, "", "None") else str(d) for d in dates_raw]
+        if cleaned_dates and all(d is None for d in cleaned_dates):
+            cleaned_dates = []
 
-    results_path = save_dir / 'evaluation_results.json'
-    with open(results_path, 'w') as f:
-        json.dump(results_copy, f, indent=2)
+    period_start = cleaned_dates[0] if cleaned_dates else None
+    period_end = cleaned_dates[-1] if cleaned_dates else None
 
-    print(f"평가 결과 저장 완료: {results_path}")
-
-    # 2. evaluation_insights.json 생성 및 저장
-    insights = _generate_insights(results, config)
-
-    insights_path = save_dir / 'evaluation_insights.json'
-    with open(insights_path, 'w') as f:
-        json.dump(insights, f, indent=2, ensure_ascii=False)
-
-    print(f"해석 정보 저장 완료: {insights_path}")
-
-
-def _generate_insights(results: dict, config: dict = None) -> dict:
-    """
-    구조화된 해석 정보 생성
-
-    그림 없이도 JSON으로 IRT 의사결정을 해석할 수 있도록
-    핵심 인사이트를 추출한다.
-
-    Args:
-        results: evaluation_results.json과 동일한 구조
-        config: 설정 딕셔너리 (optional)
-
-    Returns:
-        insights: 구조화된 해석 정보
-    """
-    returns = sanitize_returns(results.get('returns', []))
-    weights = np.array(results.get('weights', []))  # 목표가중
-    actual_weights = np.array(results.get('actual_weights', []))  # Phase-1: 실행가중
-    crisis_levels = np.array(results.get('crisis_levels', []))
-    crisis_types = np.array(results.get('crisis_types', []))
-    proto_weights = np.array(results.get('prototype_weights', []))
-    w_rep = np.array(results.get('w_rep', []))
-    w_ot = np.array(results.get('w_ot', []))
-    eta_list = np.array(results.get('eta', []))
-    alpha_c_list = np.array(results.get('alpha_c', []))
-    alpha_c_raw_list = np.array(results.get('alpha_c_raw', []))
-    alpha_c_decay_list = np.array(results.get('alpha_c_decay_factor', []))
-    alpha_crisis_input = np.array(results.get('alpha_crisis_input', []))
-    crisis_levels_pre_guard = np.array(results.get('crisis_levels_pre_guard', []))
-    symbols = results.get('symbols', [])
-    metrics = results.get('metrics', {})
-
-    n_steps = len(returns)
-    n_assets = weights.shape[1] if len(weights.shape) > 1 else 0
-
-    # ===== 1. Summary =====
-    summary = {
-        'total_return': float(metrics.get('total_return', 0.0)),
-        'sharpe_ratio': float(metrics.get('sharpe_ratio', 0.0)),
-        'sortino_ratio': float(metrics.get('sortino_ratio', 0.0)),
-        'calmar_ratio': float(metrics.get('calmar_ratio', 0.0)),
-        'max_drawdown': float(metrics.get('max_drawdown', 0.0)),
-        'avg_crisis_level': float(crisis_levels.mean()) if len(crisis_levels) > 0 else 0.0,
-        'total_steps': int(n_steps)
-    }
-
-    if config:
-        env_cfg = config.get('env', {})
-        if env_cfg:
-            reward_scaling = env_cfg.get('reward_scaling')
-            reward_type = env_cfg.get('reward_type')
-            if reward_scaling is not None:
-                summary['reward_scaling'] = float(reward_scaling)
-            if reward_type is not None:
-                summary['reward_type'] = reward_type
-            if env_cfg.get('use_weighted_action') is not None:
-                summary['use_weighted_action'] = bool(env_cfg.get('use_weighted_action'))
-
-    # ===== 2. Top Holdings =====
-    top_holdings = []
-    contribution_sum = 0.0
-    if n_assets > 0:
-        avg_weights = weights.mean(axis=0)
-        top_indices = np.argsort(avg_weights)[::-1][:10]
-
-        # 수익 기여도 계산 (정규화)
-        total_return = float(metrics.get('total_return', 0.0) or 0.0)
-        raw_contributions = avg_weights * total_return
-        if abs(total_return) > 1e-8:
-            normalized_contributions = raw_contributions / abs(total_return)
-        else:
-            denom = max(avg_weights.sum(), 1e-8)
-            normalized_contributions = avg_weights / denom
-
-        for idx in top_indices:
-            raw_val = float(raw_contributions[idx])
-            norm_val = float(normalized_contributions[idx])
-            top_holdings.append({
-                'symbol': symbols[idx] if idx < len(symbols) else f'Asset_{idx}',
-                'avg_weight': float(avg_weights[idx]),
-                'contribution': norm_val,
-                'contribution_raw': raw_val
-            })
-
-        contribution_sum = float(np.sum(normalized_contributions[top_indices]))
-        contribution_abs_sum = float(np.sum(np.abs(normalized_contributions[top_indices])))
-    else:
-        contribution_sum = 0.0
-        contribution_abs_sum = 0.0
-
-    # ===== 3. Crisis vs Normal Analysis =====
-    # Phase 1.5: crisis_regime (히스테리시스 기반 이진 분류) 사용
-    crisis_regime = np.array(results.get('crisis_regime', []))
-    if len(crisis_regime) > 0:
-        # crisis_regime이 있으면 이를 사용 (0=평시, 1=위기)
-        crisis_mask = crisis_regime == 1
-        normal_mask = crisis_regime == 0
-    else:
-        # Fallback: crisis_level로 임계치 기반 분류
-        crisis_threshold = 0.5
-        crisis_mask = crisis_levels > crisis_threshold if len(crisis_levels) > 0 else np.array([])
-        normal_mask = ~crisis_mask if len(crisis_mask) > 0 else np.array([])
-
-    crisis_returns = returns[crisis_mask] if crisis_mask.sum() > 0 else np.array([0])
-    normal_returns = returns[normal_mask] if normal_mask.sum() > 0 else np.array([0])
-
-    def safe_sharpe(rets):
-        if len(rets) == 0 or rets.std() == 0:
-            return 0.0
-        return float(rets.mean() / rets.std() * np.sqrt(252))
-
-    crisis_vs_normal = {
-        'crisis': {
-            'sharpe': safe_sharpe(crisis_returns),
-            'avg_return': float(crisis_returns.mean()),
-            'volatility': float(crisis_returns.std()),
-            'steps': int(crisis_mask.sum()) if len(crisis_mask) > 0 else 0
-        },
-        'normal': {
-            'sharpe': safe_sharpe(normal_returns),
-            'avg_return': float(normal_returns.mean()),
-            'volatility': float(normal_returns.std()),
-            'steps': int(normal_mask.sum()) if len(normal_mask) > 0 else 0
-        }
-    }
-
-    # ===== 4. IRT Decomposition =====
-    # Phase D 교정: 동적 alpha_c를 사용한 실제 기여도 계산
-    # w = (1 - alpha_c) * tilde_w + alpha_c * p_mass
-    # rep_contribution = (1 - alpha_c).mean()
-    # ot_contribution = alpha_c.mean()
-
-    if len(alpha_c_list) > 0:
-        # 동적 alpha_c 기반 기여도 (혼합 후 실제 기여도)
-        rep_contribution = (1 - alpha_c_list).mean()
-        ot_contribution = alpha_c_list.mean()
-    else:
-        # alpha_c 없으면 후진 호환 (config의 고정 alpha 사용)
-        alpha = config.get('irt', {}).get('alpha', 0.3) if config else 0.3
-        rep_contribution = 1 - alpha
-        ot_contribution = alpha
-
-    # 정규화 검증: rep + ot ≈ 1.0
-    total_contrib = rep_contribution + ot_contribution
-
-    irt_decomposition = {
-        'avg_w_rep_contribution': float(rep_contribution),
-        'avg_w_ot_contribution': float(ot_contribution),
-        'contribution_sum': float(total_contrib),
-        'correlation_w_rep_w_ot': float(np.corrcoef(w_rep.flatten(), w_ot.flatten())[0, 1]) if len(w_rep.flatten()) > 1 else 0.0,
-        'avg_eta': float(eta_list.mean()) if len(eta_list) > 0 else 0.0,
-        'max_eta': float(eta_list.max()) if len(eta_list) > 0 else 0.0,
-        'min_eta': float(eta_list.min()) if len(eta_list) > 0 else 0.0,
-        'avg_alpha_c': float(alpha_c_list.mean()) if len(alpha_c_list) > 0 else 0.0,
-        'std_alpha_c': float(alpha_c_list.std()) if len(alpha_c_list) > 0 else 0.0,
-        'std_alpha_c_raw': float(alpha_c_raw_list.std()) if len(alpha_c_raw_list) > 0 else 0.0,
-        'avg_alpha_crisis_input': float(alpha_crisis_input.mean()) if len(alpha_crisis_input) > 0 else 0.0,
-        'std_alpha_crisis_input': float(alpha_crisis_input.std()) if len(alpha_crisis_input) > 0 else 0.0,
-        'std_crisis_level_pre_guard': float(crisis_levels_pre_guard.std()) if len(crisis_levels_pre_guard) > 0 else 0.0,
-        'avg_alpha_c_decay_factor': float(alpha_c_decay_list.mean()) if len(alpha_c_decay_list) > 0 else 0.0,
-        'min_alpha_c_decay_factor': float(alpha_c_decay_list.min()) if len(alpha_c_decay_list) > 0 else 0.0,
-        'max_alpha_c_decay_factor': float(alpha_c_decay_list.max()) if len(alpha_c_decay_list) > 0 else 0.0,
-        'max_alpha_c': float(alpha_c_list.max()) if len(alpha_c_list) > 0 else 0.0,
-        'min_alpha_c': float(alpha_c_list.min()) if len(alpha_c_list) > 0 else 0.0
-    }
-
-    # ===== 5. Prototype Analysis =====
-    avg_proto_weights = proto_weights.mean(axis=0) if len(proto_weights.shape) > 1 else np.array([])
-    top_proto_indices = np.argsort(avg_proto_weights)[::-1][:3].tolist() if len(avg_proto_weights) > 0 else []
-
-    # Entropy: -Σ p·log(p)
-    entropy = -np.sum(proto_weights * np.log(proto_weights + 1e-8), axis=1) if len(proto_weights.shape) > 1 else np.array([])
-
-    max_weight_series = np.max(proto_weights, axis=1) if len(proto_weights.shape) > 1 else np.array([])
-
-    prototype_analysis = {
-        'most_used_prototypes': top_proto_indices,
-        'prototype_avg_weights': avg_proto_weights.tolist() if len(avg_proto_weights) > 0 else [],
-        'avg_entropy': float(entropy.mean()) if len(entropy) > 0 else 0.0,
-        'max_entropy': float(entropy.max()) if len(entropy) > 0 else 0.0,
-        'min_entropy': float(entropy.min()) if len(entropy) > 0 else 0.0,
-        'mean_max_weight': float(max_weight_series.mean()) if len(max_weight_series) > 0 else 0.0,
-        'max_prototype_weight': float(max_weight_series.max()) if len(max_weight_series) > 0 else 0.0
-    }
-
-    # ===== 6. Risk Metrics =====
-    # Phase-1: Turnover 분해 (목표 vs 실행)
-    turnover_actual = float(metrics.get('avg_turnover_executed', metrics.get('avg_turnover', 0.0)))
-    turnover_target = float(
-        metrics.get('avg_turnover_target_env', metrics.get('avg_turnover_target', 0.0))
-    )
-    turnover_execution_gap = abs(turnover_actual - turnover_target)
-
-    # Phase-F2': 균등 이탈도 (L1 distance from uniform)
-    # d^{(1)}(w, U) = 0.5 * Σ|w_i - 1/N|
-    def l1_from_uniform(w_array):
-        if len(w_array) == 0 or len(w_array.shape) < 2:
-            return 0.0
-        N = w_array.shape[1]
-        uniform = 1.0 / N
-        distances = 0.5 * np.sum(np.abs(w_array - uniform), axis=1)
-        return float(distances.mean())
-
-    target_l1_from_uniform = l1_from_uniform(weights)
-    actual_l1_from_uniform = l1_from_uniform(actual_weights)
-
-    # Phase-F2': 목표-실행 정합도 (delta correlation)
-    # corr(Δw_target, Δw_actual)
-    def delta_corr(ws_a, ws_b):
-        if len(ws_a) < 2 or len(ws_b) < 2:
-            return 0.0
-        A = np.diff(ws_a, axis=0)
-        B = np.diff(ws_b, axis=0)
-        v1 = A.reshape(-1)
-        v2 = B.reshape(-1)
-        if len(v1) < 2 or len(v2) < 2:
-            return 0.0
-        corr_matrix = np.corrcoef(v1, v2)
-        if corr_matrix.shape == (2, 2):
-            return float(corr_matrix[0, 1])
-        return 0.0
-
-    target_actual_delta_correlation = delta_corr(weights, actual_weights)
-
-    risk_metrics = {
-        'VaR_5': float(metrics.get('var_5', 0.0)),
-        'CVaR_5': float(metrics.get('cvar_5', 0.0)),
-        'downside_deviation': float(metrics.get('downside_deviation', 0.0)),
-        'avg_turnover': float(metrics.get('avg_turnover', turnover_actual)),
-        'avg_turnover_target': float(metrics.get('avg_turnover_target_env', turnover_target)),
-        'turnover_target': float(turnover_target),  # Phase-1: 목표가중 기반 turnover
-        'turnover_actual': float(turnover_actual),  # Phase-1: 실행가중 기반 turnover
-        'turnover_execution_gap': float(turnover_execution_gap),  # Phase-1: 목표 vs 실행 격차
-        'turnover_gap_abs': float(metrics.get('turnover_gap_abs', abs(turnover_execution_gap))),
-        'turnover_transmission_rate': float(turnover_actual / (turnover_target + 1e-8)),  # Phase-1: 전달률
-        'target_l1_from_uniform': target_l1_from_uniform,  # Phase-F2': 목표가중 균등 이탈도
-        'actual_l1_from_uniform': actual_l1_from_uniform,  # Phase-F2': 실행가중 균등 이탈도
-        'target_actual_delta_correlation': target_actual_delta_correlation  # Phase-F2': 목표-실행 정합도
-    }
-
-    # ===== 7. T-Cell Insights =====
-    crisis_regime_pct = crisis_mask.sum() / len(crisis_mask) if len(crisis_mask) > 0 else 0.0
-
-    # Crisis types: [n_steps, K] → K차원별 평균
-    avg_crisis_types = crisis_types.mean(axis=0) if len(crisis_types.shape) > 1 else np.array([])
-    top_crisis_type_indices = np.argsort(avg_crisis_types)[::-1][:3].tolist() if len(avg_crisis_types) > 0 else []
-
-    avg_crisis_level = float(crisis_levels.mean()) if len(crisis_levels) > 0 else 0.0
-    tcell_insights = {
-        'crisis_regime_pct': float(crisis_regime_pct),
-        'top_crisis_types': top_crisis_type_indices,
-        'avg_crisis_type_distribution': avg_crisis_types.tolist() if len(avg_crisis_types) > 0 else [],
-        'avg_crisis_level': avg_crisis_level,
-        'avg_danger_level': avg_crisis_level,  # Legacy alias (deprecated)
-        'steps_crisis': int(crisis_vs_normal['crisis']['steps']),
-        'steps_normal': int(crisis_vs_normal['normal']['steps'])
-    }
-
-    # ===== 종합 =====
     insights = {
-        'summary': summary,
-        'top_holdings': top_holdings,
-        'top_holdings_contribution_sum': float(contribution_sum),
-        'top_holdings_contribution_abs_sum': float(contribution_abs_sum),
-        'crisis_vs_normal': crisis_vs_normal,
-        'irt_decomposition': irt_decomposition,
-        'prototype_analysis': prototype_analysis,
-        'risk_metrics': risk_metrics,
-        'tcell_insights': tcell_insights,
-        'timestamp': str(pd.Timestamp.now())
+        "timestamp": timestamp,
+        "total_return": total_return,
+        "annualized_return": metrics.get("annualized_return"),
+        "volatility": volatility,
+        "sharpe_ratio": metrics.get("sharpe_ratio"),
+        "sortino_ratio": metrics.get("sortino_ratio"),
+        "max_drawdown": metrics.get("max_drawdown"),
+        "cvar_5": metrics.get("cvar_5"),
+        "final_value": final_value,
+        "steps": metrics.get("n_steps"),
+        "crisis_regime_pct": crisis_pct,
+        "crisis_activation_rate": metrics.get("crisis_activation_rate"),
+        "avg_cash_weight": avg_cash,
+        "median_cash_weight": median_cash,
+        "cash_weight_min": min_cash,
+        "cash_weight_max": max_cash,
+        "avg_turnover_executed": metrics.get("avg_turnover"),
+        "avg_turnover_target": metrics.get("avg_turnover_target"),
+        "files": paths.copy(),
+        "period_start": period_start,
+        "period_end": period_end,
     }
 
-    return insights
+    (output_path / "evaluation_insights.json").write_text(
+        json.dumps(insights, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+    serialisable_results = _convert_to_serializable(results)
+    payload = {
+        "timestamp": timestamp,
+        "config": _convert_to_serializable(config) if config is not None else None,
+        "results": serialisable_results,
+    }
+    (output_path / "evaluation_results.json").write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+
+def plot_all(
+    portfolio_values: Optional[Sequence[float]],
+    returns: Optional[Sequence[float]],
+    output_dir: str,
+    benchmark_returns: Optional[Sequence[float]] = None,
+    metrics: Optional[Dict[str, float]] = None,
+    **_,  # ignore legacy kwargs
+) -> None:
+    """
+    Backwards-compatible helper used by legacy training scripts.
+
+    Generates the three core plots (equity, drawdown, return distribution)
+    in ``output_dir`` and emits a deprecation warning directing callers to the
+    new reporting pipeline.
+    """
+    warnings.warn(
+        "plot_all is deprecated; invoke scripts/visualize_from_json.py for the new XAI dashboard.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    out_path = Path(output_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+
+    values_arr = (
+        np.asarray(portfolio_values, dtype=float).reshape(-1)
+        if portfolio_values is not None
+        else np.array([], dtype=float)
+    )
+    returns_arr = (
+        np.asarray(returns, dtype=float).reshape(-1)
+        if returns is not None
+        else np.array([], dtype=float)
+    )
+    if returns_arr.size == 0 and values_arr.size >= 2:
+        prev = np.clip(values_arr[:-1], 1e-8, None)
+        returns_arr = (values_arr[1:] - values_arr[:-1]) / prev
+
+    index = np.arange(max(len(values_arr), len(returns_arr)))
+    if values_arr.size > 0:
+        equity = pd.Series(values_arr / max(values_arr[0], 1e-8), index=np.arange(values_arr.size))
+    else:
+        equity = compute_equity_curve(returns_arr, index=index[: returns_arr.size])
+    drawdown = compute_drawdown(equity)
+    returns_series = pd.Series(returns_arr, index=np.arange(returns_arr.size))
+
+    benchmark = None
+    if benchmark_returns is not None:
+        bench_arr = np.asarray(benchmark_returns, dtype=float).reshape(-1)
+        if bench_arr.size:
+            benchmark = compute_equity_curve(
+                bench_arr,
+                base_value=1.0,
+                index=np.arange(min(len(bench_arr), len(equity))),
+            )
+
+    annotation = metrics or {}
+    fig = plot_equity(equity, benchmark=benchmark, annotations=annotation)
+    fig.savefig(out_path / "legacy_equity.png", dpi=120, bbox_inches="tight")
+    plt.close(fig)
+
+    fig = plot_drawdown(drawdown)
+    fig.savefig(out_path / "legacy_drawdown.png", dpi=120, bbox_inches="tight")
+    plt.close(fig)
+
+    if not returns_series.empty:
+        fig = plot_returns_dist(returns_series, cvar_5=annotation.get("CVaR@5%"))
+        fig.savefig(out_path / "legacy_returns.png", dpi=120, bbox_inches="tight")
+        plt.close(fig)
+
+
+__all__ = [
+    "sanitize_returns",
+    "compute_equity_curve",
+    "compute_drawdown",
+    "compute_rolling_stats",
+    "normalise_attributions",
+    "resample_matrix",
+    "ensure_datetime_index",
+    "plot_equity",
+    "plot_drawdown",
+    "plot_returns_dist",
+    "plot_rolling_risk_return",
+    "plot_crisis_kappa_cash",
+    "plot_cash_vs_crisis",
+    "plot_turnover_vs_reward",
+    "plot_cost_footprint",
+    "plot_proto_area",
+    "plot_entropy_temp",
+    "plot_attr_heatmap",
+    "plot_attr_regime_bars",
+    "plot_all",
+    "save_evaluation_results",
+]

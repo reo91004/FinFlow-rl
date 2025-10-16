@@ -25,9 +25,15 @@ import pandas as pd
 
 from finrl.config import (
     INDICATORS,
-    SAC_PARAMS, PPO_PARAMS, A2C_PARAMS, TD3_PARAMS, DDPG_PARAMS,
-    TRAIN_START_DATE, TRAIN_END_DATE,
-    TEST_START_DATE, TEST_END_DATE
+    SAC_PARAMS,
+    PPO_PARAMS,
+    A2C_PARAMS,
+    TD3_PARAMS,
+    DDPG_PARAMS,
+    TRAIN_START_DATE,
+    TRAIN_END_DATE,
+    TEST_START_DATE,
+    TEST_END_DATE,
 )
 from finrl.config_tickers import DOW_30_TICKER
 from finrl.meta.preprocessor.yahoodownloader import YahooDownloader
@@ -41,39 +47,34 @@ from stable_baselines3.common.vec_env import DummyVecEnv
 
 # Import evaluation function
 import sys
+
 sys.path.insert(0, os.path.dirname(__file__))
 from evaluate import evaluate_model
 
 
 # 모델 클래스 및 파라미터 매핑
-MODEL_CLASSES = {
-    'sac': SAC,
-    'ppo': PPO,
-    'a2c': A2C,
-    'td3': TD3,
-    'ddpg': DDPG
-}
+MODEL_CLASSES = {"sac": SAC, "ppo": PPO, "a2c": A2C, "td3": TD3, "ddpg": DDPG}
 
 MODEL_PARAMS = {
-    'sac': SAC_PARAMS,
-    'ppo': PPO_PARAMS,
-    'a2c': A2C_PARAMS,
-    'td3': TD3_PARAMS,
-    'ddpg': DDPG_PARAMS
+    "sac": SAC_PARAMS,
+    "ppo": PPO_PARAMS,
+    "a2c": A2C_PARAMS,
+    "td3": TD3_PARAMS,
+    "ddpg": DDPG_PARAMS,
 }
 
 
 def save_metadata(output_dir, tickers, train_start, train_end, test_start, test_end):
     """학습 메타데이터 저장 (평가 시 재사용)"""
     metadata = {
-        'tickers': tickers,
-        'train_period': {'start': train_start, 'end': train_end},
-        'test_period': {'start': test_start, 'end': test_end},
-        'n_stocks': len(tickers)
+        "tickers": tickers,
+        "train_period": {"start": train_start, "end": train_end},
+        "test_period": {"start": test_start, "end": test_end},
+        "n_stocks": len(tickers),
     }
 
-    metadata_path = os.path.join(output_dir, 'metadata.json')
-    with open(metadata_path, 'w') as f:
+    metadata_path = os.path.join(output_dir, "metadata.json")
+    with open(metadata_path, "w") as f:
         json.dump(metadata, f, indent=2)
 
     print(f"  메타데이터 저장됨: {metadata_path}")
@@ -81,7 +82,7 @@ def save_metadata(output_dir, tickers, train_start, train_end, test_start, test_
 
 def load_metadata(model_dir):
     """저장된 메타데이터 로드"""
-    metadata_path = os.path.join(model_dir, 'metadata.json')
+    metadata_path = os.path.join(model_dir, "metadata.json")
 
     if not os.path.exists(metadata_path):
         raise FileNotFoundError(
@@ -89,7 +90,7 @@ def load_metadata(model_dir):
             f"학습 시 사용된 주식 목록을 알 수 없어 평가를 진행할 수 없습니다."
         )
 
-    with open(metadata_path, 'r') as f:
+    with open(metadata_path, "r") as f:
         return json.load(f)
 
 
@@ -110,7 +111,7 @@ def create_env(df, stock_dim, tech_indicators):
         "state_space": state_space,
         "action_space": stock_dim,
         "tech_indicator_list": tech_indicators,
-        "print_verbosity": 500
+        "print_verbosity": 500,
     }
 
     return StockTradingEnv(**env_kwargs)
@@ -122,11 +123,11 @@ def preprocess_params(model_name, params):
     processed = params.copy()
 
     # SAC의 ent_coef 처리
-    if model_name == 'sac' and 'ent_coef' in processed:
-        if isinstance(processed['ent_coef'], str):
-            if processed['ent_coef'].startswith('auto'):
+    if model_name == "sac" and "ent_coef" in processed:
+        if isinstance(processed["ent_coef"], str):
+            if processed["ent_coef"].startswith("auto"):
                 # "auto_0.1" -> "auto"로 변환 (SB3는 초기값 지정 불가)
-                processed['ent_coef'] = 'auto'
+                processed["ent_coef"] = "auto"
 
     return processed
 
@@ -154,9 +155,7 @@ def train_model(args):
     # 1. 데이터 다운로드
     print(f"\n[1/5] Downloading data...")
     df = YahooDownloader(
-        start_date=args.train_start,
-        end_date=args.test_end,
-        ticker_list=DOW_30_TICKER
+        start_date=args.train_start, end_date=args.test_end, ticker_list=DOW_30_TICKER
     ).fetch_data()
     print(f"  Downloaded: {df.shape[0]} rows")
 
@@ -166,7 +165,7 @@ def train_model(args):
         use_technical_indicator=True,
         tech_indicator_list=INDICATORS,
         use_turbulence=False,
-        user_defined_feature=False
+        user_defined_feature=False,
     )
     df_processed = fe.preprocess_data(df)
     print(f"  Features: {df_processed.shape[1]} columns")
@@ -204,7 +203,7 @@ def train_model(args):
     checkpoint_callback = CheckpointCallback(
         save_freq=10000,
         save_path=os.path.join(log_dir, "checkpoints"),
-        name_prefix=f"{args.model}_model"
+        name_prefix=f"{args.model}_model",
     )
 
     # Monitor wrapper로 평가 환경 래핑
@@ -216,7 +215,7 @@ def train_model(args):
         log_path=os.path.join(log_dir, "eval"),
         eval_freq=5000,
         deterministic=True,
-        render=False
+        render=False,
     )
 
     # 모델 파라미터 준비
@@ -231,7 +230,7 @@ def train_model(args):
         train_env,
         **model_params,
         verbose=1,
-        tensorboard_log=os.path.join(log_dir, "tensorboard")
+        tensorboard_log=os.path.join(log_dir, "tensorboard"),
     )
 
     # 총 timesteps 계산
@@ -243,7 +242,7 @@ def train_model(args):
     model.learn(
         total_timesteps=total_timesteps,
         callback=[checkpoint_callback, eval_callback],
-        progress_bar=True
+        progress_bar=True,
     )
 
     # 최종 모델 저장
@@ -257,7 +256,7 @@ def train_model(args):
         train_start=args.train_start,
         train_end=args.train_end,
         test_start=args.test_start,
-        test_end=args.test_end
+        test_end=args.test_end,
     )
 
     print(f"\n" + "=" * 70)
@@ -287,7 +286,7 @@ def test_model(args, model_path=None):
     # 메타데이터 로드 (학습 시 사용된 ticker 정보)
     model_dir = os.path.dirname(model_path)
     metadata = load_metadata(model_dir)
-    train_tickers = metadata['tickers']
+    train_tickers = metadata["tickers"]
 
     print(f"\n[Config]")
     print(f"  Model: {model_path}")
@@ -298,21 +297,23 @@ def test_model(args, model_path=None):
     print(f"  주식 목록: {train_tickers[:5]}... (생략)")
 
     # evaluate.py의 evaluate_model() 재사용
-    portfolio_values, exec_returns, value_returns, irt_data, metrics = evaluate_model(
-        model_path=model_path,
-        model_class=MODEL_CLASSES[args.model],
-        test_start=args.test_start,
-        test_end=args.test_end,
-        stock_tickers=train_tickers,  # 학습 시 사용된 ticker만
-        tech_indicators=INDICATORS,
-        initial_amount=1000000,
-        verbose=True
+    portfolio_values, exec_returns, value_returns, irt_data, metrics, _artefacts = (
+        evaluate_model(
+            model_path=model_path,
+            model_class=MODEL_CLASSES[args.model],
+            test_start=args.test_start,
+            test_end=args.test_end,
+            stock_tickers=train_tickers,  # 학습 시 사용된 ticker만
+            tech_indicators=INDICATORS,
+            initial_amount=1000000,
+            verbose=True,
+        )
     )
 
     # 결과 추출
     final_value = portfolio_values[-1]
-    total_return = metrics['total_return']
-    step = metrics['n_steps']
+    total_return = metrics["total_return"]
+    step = metrics["n_steps"]
 
     print(f"\n" + "=" * 70)
     print(f"Evaluation Results")
@@ -343,11 +344,11 @@ def test_model(args, model_path=None):
     print(f"\n" + "=" * 70)
 
     return {
-        'portfolio_values': portfolio_values,
-        'final_value': final_value,
-        'total_return': total_return,
-        'metrics': metrics,
-        'steps': step
+        "portfolio_values": portfolio_values,
+        "final_value": final_value,
+        "total_return": total_return,
+        "metrics": metrics,
+        "steps": step,
     }
 
 
@@ -355,32 +356,62 @@ def main():
     parser = argparse.ArgumentParser(description="통합 RL 학습/평가 스크립트")
 
     # 모델 및 모드
-    parser.add_argument("--model", type=str, required=True,
-                        choices=['sac', 'ppo', 'a2c', 'td3', 'ddpg'],
-                        help="RL 알고리즘 선택")
-    parser.add_argument("--mode", type=str, default="both",
-                        choices=['train', 'test', 'both'],
-                        help="실행 모드 (default: both)")
+    parser.add_argument(
+        "--model",
+        type=str,
+        required=True,
+        choices=["sac", "ppo", "a2c", "td3", "ddpg"],
+        help="RL 알고리즘 선택",
+    )
+    parser.add_argument(
+        "--mode",
+        type=str,
+        default="both",
+        choices=["train", "test", "both"],
+        help="실행 모드 (default: both)",
+    )
 
     # 데이터 기간 (config.py 기본값)
-    parser.add_argument("--train-start", type=str, default=TRAIN_START_DATE,
-                        help=f"Training start date (default: {TRAIN_START_DATE})")
-    parser.add_argument("--train-end", type=str, default=TRAIN_END_DATE,
-                        help=f"Training end date (default: {TRAIN_END_DATE})")
-    parser.add_argument("--test-start", type=str, default=TEST_START_DATE,
-                        help=f"Test start date (default: {TEST_START_DATE})")
-    parser.add_argument("--test-end", type=str, default=TEST_END_DATE,
-                        help=f"Test end date (default: {TEST_END_DATE})")
+    parser.add_argument(
+        "--train-start",
+        type=str,
+        default=TRAIN_START_DATE,
+        help=f"Training start date (default: {TRAIN_START_DATE})",
+    )
+    parser.add_argument(
+        "--train-end",
+        type=str,
+        default=TRAIN_END_DATE,
+        help=f"Training end date (default: {TRAIN_END_DATE})",
+    )
+    parser.add_argument(
+        "--test-start",
+        type=str,
+        default=TEST_START_DATE,
+        help=f"Test start date (default: {TEST_START_DATE})",
+    )
+    parser.add_argument(
+        "--test-end",
+        type=str,
+        default=TEST_END_DATE,
+        help=f"Test end date (default: {TEST_END_DATE})",
+    )
 
     # 학습 설정
-    parser.add_argument("--episodes", type=int, default=200,
-                        help="Number of episodes (default: 200)")
-    parser.add_argument("--output", type=str, default="logs",
-                        help="Output directory (default: logs)")
+    parser.add_argument(
+        "--episodes", type=int, default=200, help="Number of episodes (default: 200)"
+    )
+    parser.add_argument(
+        "--output", type=str, default="logs", help="Output directory (default: logs)"
+    )
 
     # 평가 전용
-    parser.add_argument("--checkpoint", type=str, default=None,
-                        help="Checkpoint path for evaluation (required for --mode test)")
+    parser.add_argument(
+        "--checkpoint",
+        type=str,
+        default=None,
+        help="Checkpoint path for evaluation (required for --mode test)",
+    )
 
     args = parser.parse_args()
 
