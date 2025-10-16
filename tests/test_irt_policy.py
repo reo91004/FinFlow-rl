@@ -67,7 +67,7 @@ def test_irt_forward_pass(irt_config, sample_state):
     # 가중치 차원 체크
     assert info['w'].shape == (sample_state.shape[0], irt_config['M_proto'])
 
-    print("✅ Test 1 passed: IRT forward pass 정상 작동")
+    print("✅ Test 1 passed: IRT forward pass executed correctly")
 
 
 def test_simplex_constraint(irt_config, sample_state):
@@ -86,22 +86,22 @@ def test_simplex_constraint(irt_config, sample_state):
     # 1. 합 = 1
     weight_sums = action.sum(dim=-1)
     assert torch.allclose(weight_sums, torch.ones_like(weight_sums), atol=1e-5), \
-        f"Weight sums: {weight_sums}, expected all 1.0"
+        f"가중치 합이 1이 아닙니다: {weight_sums}"
 
     # 2. 모든 원소 >= 0
-    assert (action >= 0).all(), f"Negative weights found: {action.min()}"
+    assert (action >= 0).all(), f"음수 가중치가 발견되었습니다: {action.min()}"
 
     # 3. 모든 원소 <= 1
-    assert (action <= 1).all(), f"Weights > 1 found: {action.max()}"
+    assert (action <= 1).all(), f"1을 초과하는 가중치가 발견되었습니다: {action.max()}"
 
-    print("✅ Test 2 passed: Simplex 제약 만족")
+    print("✅ Test 2 passed: simplex constraints satisfied")
 
 
 def test_sb3_integration(irt_config):
     """
     테스트 3: SB3 환경에서 IRTPolicy가 정상 작동하는가?
     """
-    # Observation space (Box)
+    # 관측 공간(Box)
     obs_space = spaces.Box(
         low=-np.inf,
         high=np.inf,
@@ -109,7 +109,7 @@ def test_sb3_integration(irt_config):
         dtype=np.float32
     )
 
-    # Action space (Box, simplex)
+    # 행동 공간(Box, simplex)
     action_space = spaces.Box(
         low=0.0,
         high=1.0,
@@ -144,7 +144,7 @@ def test_sb3_integration(irt_config):
     assert torch.allclose(action.sum(dim=-1), torch.ones(4), atol=1e-5)
     assert (action >= 0).all()
 
-    print("✅ Test 3 passed: SB3 통합 성공")
+    print("✅ Test 3 passed: SB3 integration path works")
 
 
 def test_device_compatibility(irt_config, sample_state):
@@ -163,7 +163,7 @@ def test_device_compatibility(irt_config, sample_state):
     assert action_cpu.device.type == 'cpu'
     assert info_cpu['w'].device.type == 'cpu'
 
-    print("✅ Test 4 (CPU) passed: CPU 호환성 확인")
+    print("✅ Test 4 (CPU) passed: CPU execution path works")
 
     # GPU 테스트 (가능한 경우)
     if torch.cuda.is_available():
@@ -176,7 +176,7 @@ def test_device_compatibility(irt_config, sample_state):
         assert action_gpu.device.type == 'cuda'
         assert info_gpu['w'].device.type == 'cuda'
 
-        print("✅ Test 4 (GPU) passed: GPU 호환성 확인")
+        print("✅ Test 4 (GPU) passed: GPU execution path works")
     else:
         print("⚠️ Test 4 (GPU) skipped: CUDA not available")
 
@@ -205,9 +205,9 @@ def test_irt_decomposition(irt_config, sample_state):
     diff = torch.norm(w - w_expected, dim=-1).mean()
 
     # 정규화 전후 차이는 작아야 함 (< 0.1)
-    assert diff < 0.1, f"IRT decomposition mismatch: L2 diff = {diff:.4f}"
+    assert diff < 0.1, f"IRT 결합 결과가 예상과 다릅니다: L2 차이 = {diff:.4f}"
 
-    print("✅ Test 5 passed: IRT 분해 공식 검증")
+    print("✅ Test 5 passed: IRT combination formula holds")
 
 
 def test_fitness_calculation(irt_config):
@@ -273,7 +273,7 @@ def test_fitness_calculation(irt_config):
     assert action.shape == (4, irt_config['action_dim'])
     assert log_prob.shape == (4, 1)
 
-    print("✅ Test 6 passed: Fitness 계산 검증")
+    print("✅ Test 6 passed: Critic-based fitness computation works")
 
 
 def test_replicator_activation(irt_config):
@@ -307,9 +307,9 @@ def test_replicator_activation(irt_config):
     uniform_weight = 1.0 / M
 
     assert avg_w0 > uniform_weight, \
-        f"Replicator not activated: w_rep[0] = {avg_w0:.4f}, expected > {uniform_weight:.4f}"
+        f"Replicator가 활성화되지 않았습니다: w_rep[0]={avg_w0:.4f}, 예상>{uniform_weight:.4f}"
 
-    print(f"✅ Test 7 passed: Replicator 작동 확인 (w_rep[0] = {avg_w0:.4f} > {uniform_weight:.4f})")
+    print(f"✅ Test 7 passed: Replicator responds as expected (w_rep[0]={avg_w0:.4f} > {uniform_weight:.4f})")
 
 
 if __name__ == '__main__':
@@ -317,7 +317,7 @@ if __name__ == '__main__':
     import sys
 
     print("=" * 70)
-    print("IRT Policy 단위 테스트")
+    print("IRT Policy unit tests")
     print("=" * 70)
 
     config = {

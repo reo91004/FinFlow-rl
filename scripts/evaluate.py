@@ -1,13 +1,14 @@
 # scripts/evaluate.py
+# 학습된 모델을 다양한 방식으로 평가하고 시각화 결과를 생성하는 유틸리티를 제공한다.
 
 """
 모델 상세 평가 및 시각화 스크립트
 
-두 가지 평가 방식 지원:
-- direct: SB3 모델 직접 사용 (scripts/train.py 결과용)
-- drlagent: DRLAgent.DRL_prediction() 사용 (scripts/train_finrl_standard.py 결과용)
+지원하는 평가 방식:
+- direct: Stable Baselines3 모델을 직접 로드하여 평가 (scripts/train.py와 연동)
+- drlagent: FinRL DRLAgent의 `DRL_prediction()`을 사용한 표준 평가
 
-Usage:
+사용 예:
     # Direct 방식 (기본)
     python scripts/evaluate.py --model logs/sac/20251004_120000/sac_final.zip --save-plot
 
@@ -42,7 +43,7 @@ from sb3_contrib.tqc import TQC
 
 
 def _unwrap_env(env):
-    """Extract the underlying base environment from VecEnv/wrappers."""
+    """VecEnv 및 래퍼 체인을 모두 제거하고 실제 환경 인스턴스를 반환한다."""
     env_ref = env
     visited = set()
     while True:
@@ -77,10 +78,10 @@ def create_env(
     adaptive_crisis_gain_cvar: float = 0.25,
     adaptive_dsr_beta: float = 0.92,
     adaptive_cvar_window: int = 40,
-):
-    """환경 생성 (Phase 3.5: reward_type 지원)"""
-    # State space: balance(1) + prices(N) + shares(N) + tech_indicators(K*N)
-    # Phase 3.5: reward_type='dsr_cvar'일 때 환경 내부에서 +2 (DSR/CVaR)
+) -> StockTradingEnv:
+    """평가용 StockTradingEnv를 생성하고 보상 구성 옵션을 설정한다."""
+    # 상태 공간 구성: 잔고(1) + 가격(N) + 보유량(N) + 기술지표(K*N) 구조
+    # reward_type이 'dsr_cvar'이면 상태 벡터에 DSR·CVaR 특성이 추가된다.
     state_space = 1 + (len(tech_indicators) + 2) * stock_dim
 
     env_kwargs = {
@@ -96,7 +97,7 @@ def create_env(
         "action_space": stock_dim,
         "tech_indicator_list": tech_indicators,
         "print_verbosity": 500,
-        # Phase 3.5: 리스크 민감 보상
+        # 리스크 민감형 보상 조정 파라미터
         "reward_type": reward_type,
         "lambda_dsr": lambda_dsr,
         "lambda_cvar": lambda_cvar,
@@ -124,15 +125,18 @@ def calculate_metrics(
     turnover_target_series=None,
 ):
     """
-    성능 지표 계산 (상세 메트릭 포함)
+    포트폴리오 가치 흐름을 기반으로 주요 수익·위험 지표를 계산한다.
 
     Args:
-        portfolio_values: 포트폴리오 가치 배열
-        initial_amount: 초기 자본
-        weights_history: 포트폴리오 가중치 히스토리 (optional, turnover 계산용)
+        portfolio_values: 시점별 포트폴리오 총 가치를 담은 배열
+        initial_amount: 초기 투자 금액
+        weights_history: 시점별 포트폴리오 비중 기록 (회전율 계산 시 사용)
+        returns: 사전 계산된 수익률 (없으면 함수 내에서 계산)
+        executed_weights_history: 실행된 거래 후 비중 기록
+        turnover_target_series: 목표 회전율 시계열 (옵션)
 
     Returns:
-        dict: 성능 지표 딕셔너리
+        dict: Sharpe, Sortino, CVaR 등 평가 지표를 포함한 사전
     """
     from finrl.evaluation.metrics import (
         calculate_sharpe_ratio,
@@ -146,7 +150,7 @@ def calculate_metrics(
 
     pv = np.asarray(portfolio_values, dtype=np.float64).reshape(-1)
 
-    # Daily returns
+    # 일별 수익률 계산 (입력이 없으면 내부에서 산출)
     if returns is None:
         if pv.size > 1:
             prev_values = np.clip(pv[:-1], 1e-8, None)
@@ -166,37 +170,37 @@ def calculate_metrics(
         elif expected_len == 0:
             returns = np.array([], dtype=np.float64)
 
-    # Total return
+    # 총 수익률
     total_return = (pv[-1] - initial_amount) / initial_amount
 
-    # Annualized return (assuming 252 trading days)
+    # 연환산 수익률 (거래일 252일 가정)
     n_days = returns.size
     annualized_return = (1 + total_return) ** (252 / n_days) - 1 if n_days > 0 else 0
 
-    # Volatility (annualized)
+    # 연환산 변동성
     volatility = np.std(returns) * np.sqrt(252)
 
-    # Sharpe Ratio (using detailed calculation from metrics.py)
+    # Sharpe 지수 (추가 계산 로직은 metrics.py 참조)
     sharpe_ratio = calculate_sharpe_ratio(
         returns, risk_free_rate=0.02, periods_per_year=252
     )
 
-    # Maximum Drawdown (using detailed calculation from metrics.py)
+    # 최대 낙폭
     max_drawdown = calculate_max_drawdown(pv)
 
-    # Calmar Ratio (using detailed calculation from metrics.py)
+    # 칼마 지수
     calmar_ratio = calculate_calmar_ratio(returns, periods_per_year=252)
 
-    # Sortino Ratio (using detailed calculation from metrics.py)
+    # 소르티노 지수
     sortino_ratio = calculate_sortino_ratio(
         returns, target_return=0.02, periods_per_year=252
     )
 
-    # VaR and CVaR (5% level)
+    # VaR 및 CVaR (5% 신뢰수준)
     var_5 = calculate_var(returns, alpha=0.05)
     cvar_5 = calculate_cvar(returns, alpha=0.05)
 
-    # Downside deviation
+    # 하방 표준편차
     downside_returns = returns[returns < 0]
     downside_deviation = (
         np.std(downside_returns) * np.sqrt(252) if len(downside_returns) > 0 else 0
@@ -382,20 +386,20 @@ def evaluate_model(
         metrics: 성능 지표 딕셔너리
     """
     if verbose:
-        print(f"\n[Method: Direct - SB3 predict()]")
+        print(f"\n[평가 방식: Direct - SB3 predict()]")
 
     # 1. 데이터 준비
     if verbose:
-        print(f"\n[1/4] Downloading test data...")
+        print(f"\n[1/4] 평가 데이터 다운로드 중...")
     df = YahooDownloader(
         start_date=test_start, end_date=test_end, ticker_list=stock_tickers
     ).fetch_data()
     if verbose:
-        print(f"  Downloaded: {df.shape[0]} rows")
+        print(f"  다운로드 완료: {df.shape[0]}행")
 
     # 2. Feature Engineering
     if verbose:
-        print(f"\n[2/4] Feature Engineering...")
+        print(f"\n[2/4] 피처 엔지니어링 수행 중...")
     fe = FeatureEngineer(
         use_technical_indicator=True,
         tech_indicator_list=tech_indicators,
@@ -405,23 +409,23 @@ def evaluate_model(
     df_processed = fe.preprocess_data(df)
     test_df = data_split(df_processed, test_start, test_end)
     if verbose:
-        print(f"  Test rows: {len(test_df)}")
+        print(f"  평가 샘플 수: {len(test_df)}")
 
     # 3. 환경 및 모델 로드
     if verbose:
-        print(f"\n[3/4] Loading model...")
+        print(f"\n[3/4] 모델 및 환경 설정 중...")
     stock_dim = len(test_df.tic.unique())
     if verbose:
-        print(f"  실제 주식 수: {stock_dim}")
+        print(f"  실제 사용 종목 수: {stock_dim}")
 
-    # Phase 3.5 & H1: IRT 모델은 학습 시점 보상 타입을 그대로 사용해야 함
+    # IRT 모델은 학습 시 사용한 보상 구성을 유지해야 하므로 메타데이터와 일치시키는 것을 우선한다.
     is_irt = "irt" in model_path.lower()
     requested_reward_type = reward_type
 
     xai_level_normalized = (xai_level or "off").lower()
     xai_target_normalized = (xai_target or "critic_q").lower()
     if xai_target_normalized == "both":
-        # critic_q: 가치 기반 설명, log_prob: 정책 확률 관점 → both면 두 타깃 모두 계산
+        # critic_q: 가치 기반 설명용, log_prob: 정책 확률 관점 → both면 두 타깃 모두 계산
         xai_targets_to_use = ["critic_q", "log_prob"]
     else:
         xai_targets_to_use = [xai_target_normalized]
@@ -429,12 +433,14 @@ def evaluate_model(
     xai_collect_features = xai_level_normalized == "full"
     if xai_enabled and not is_irt:
         if verbose:
-            print("  XAI outputs requested but model is not IRT; disabling XAI.")
+            print(
+                "  XAI 옵션이 요청되었지만 IRT 모델이 아니므로 XAI 기능을 비활성화합니다."
+            )
         xai_enabled = False
         xai_collect_features = False
         xai_targets_to_use = []
 
-    # Phase 1.5: Load checkpoint metadata first (reward scale, action mode, obs dim, etc.)
+    # 체크포인트에 저장된 환경 메타데이터를 먼저 로드해 보상 설정과 관측 차원을 검증한다.
     env_meta = {}
     feature_columns = None
     meta_candidates = []
@@ -459,8 +465,8 @@ def evaluate_model(
 
     if not env_meta:
         raise FileNotFoundError(
-            "env_meta.json not found alongside the checkpoint; evaluation requires metadata "
-            "to verify reward configuration, action mode, and observation layout."
+            "체크포인트와 같은 디렉터리에 env_meta.json이 없습니다. 평가를 위해서는 보상 설정, "
+            "행동 모드, 관측 공간 구성을 검증할 메타데이터가 필요합니다."
         )
 
     if env_meta:
@@ -477,7 +483,7 @@ def evaluate_model(
                 and verbose
             ):
                 print(
-                    f"  Overriding requested reward_type '{requested_reward_type}' with checkpoint value '{meta_reward_type}'"
+                    f"  요청된 reward_type '{requested_reward_type}' 대신 체크포인트 값 '{meta_reward_type}'을 사용합니다."
                 )
             requested_reward_type = str(meta_reward_type)
         if expected_obs_dim is None and env_meta.get("obs_dim") is not None:
@@ -513,7 +519,7 @@ def evaluate_model(
             env_meta.get("adaptive_cvar_window", adaptive_cvar_window)
         )
 
-    # Auto-detect reward type when loading IRT models (fallback if mismatch occurs)
+    # IRT 모델은 메타데이터를 기반으로 보상 타입을 자동 감지하며, 불일치시 해당 값을 우선한다.
     if is_irt:
         candidate_reward_types = []
         if requested_reward_type:
@@ -569,7 +575,7 @@ def evaluate_model(
             env_reward_type = candidate_reward_type
             break
         except ValueError as exc:
-            # Observation space mismatch → try next reward type
+            # 관측 공간이 맞지 않으면 다음 후보 보상 타입을 시도한다.
             if "Observation spaces do not match" not in str(exc):
                 raise
             load_error = exc
@@ -588,28 +594,28 @@ def evaluate_model(
         )
 
     if verbose:
-        print(f"  Model loaded successfully")
+        print(f"  모델 로드에 성공했습니다")
         if is_irt:
             if env_reward_type != requested_reward_type:
                 print(
-                    f"  Detected reward type from model: {env_reward_type} "
-                    f"(requested: {requested_reward_type})"
+                    f"  모델에서 감지된 reward_type: {env_reward_type} "
+                    f"(요청 값: {requested_reward_type})"
                 )
             else:
-                print(f"  Reward type: {env_reward_type}")
+                print(f"  reward_type: {env_reward_type}")
 
     base_env = _unwrap_env(test_env) if test_env is not None else None
 
     if verbose:
         print(
-            f"  Env settings → reward_scale={getattr(base_env, 'reward_scaling', None)}, "
+            f"  환경 설정 → reward_scaling={getattr(base_env, 'reward_scaling', None)}, "
             f"use_weighted_action={getattr(base_env, 'use_weighted_action', False)}, "
             f"slippage={getattr(base_env, 'weight_slippage', None)}, "
-            f"tx_cost={getattr(base_env, 'weight_transaction_cost', None)}"
+            f"transaction_cost={getattr(base_env, 'weight_transaction_cost', None)}"
         )
 
     def _apply_crisis_level(env_obj, level_value) -> None:
-        """Synchronize crisis level into the evaluation environment."""
+        """정책이 계산한 위기 레벨을 평가 환경에 동기화한다."""
         if env_obj is None:
             return
         try:
@@ -628,7 +634,7 @@ def evaluate_model(
             env_obj.last_crisis_level = crisis_float
 
     class _CrisisBridgeMonitor:
-        """Track crisis thresholds, regime state, and sync with environment."""
+        """위기 임계값과 레짐 상태를 추적하고 환경과 동기화하는 보조 클래스"""
 
         def __init__(
             self,
@@ -663,7 +669,7 @@ def evaluate_model(
                 return fallback
 
         def observe_policy(self, info_dict) -> None:
-            """Ingest policy-side statistics prior to env update."""
+            """정책에서 전달된 통계를 수집해 환경 업데이트에 반영한다."""
             if not info_dict or "crisis_level" not in info_dict:
                 self.latest_level = None
                 return
@@ -678,14 +684,14 @@ def evaluate_model(
                 self.hysteresis_down = hysteresis_down_val
 
         def inject_env(self) -> None:
-            """Push latest crisis level into the environment via bridge."""
+            """가장 최근 위기 레벨을 환경으로 전달한다."""
             if self.latest_level is None:
                 return
             env_target = self.base_env if self.base_env is not None else self.vec_env
             _apply_crisis_level(env_target, self.latest_level)
 
         def classify(self):
-            """Compute hysteresis-based regime label and update counters."""
+            """히스테리시스 규칙에 따라 레짐 레이블을 계산하고 카운터를 업데이트한다."""
             if self.latest_level is None:
                 return None
 
@@ -711,7 +717,7 @@ def evaluate_model(
 
     # 4. 평가 실행
     if verbose:
-        print(f"\n[4/4] Running evaluation...")
+        print(f"\n[4/4] 평가 시뮬레이션 실행 중...")
     obs, _ = test_env.reset()
     if is_irt and env_reward_type == "adaptive_risk":
         target_env = base_env if base_env is not None else test_env
@@ -761,18 +767,18 @@ def evaluate_model(
             "crisis_types": [],
             "cost_matrices": [],
             "weights": [],
-            "actual_weights": [],  # Phase-1: 실행가중 기록
+            "actual_weights": [],  # 체결 후 실제 비중 기록
             "eta": [],
             "alpha_c": [],
-            "alpha_c_raw": [],  # Phase 1.5: raw alpha before clamp
-            "alpha_c_prev": [],  # Phase 1.5: previous alpha
+            "alpha_c_raw": [],  # 클램프 적용 전 α 값 기록
+            "alpha_c_prev": [],  # 직전 스텝의 α 값 기록
             "alpha_c_decay_factor": [],
             "alpha_crisis_input": [],
             "hysteresis_up": [],
             "hysteresis_down": [],
             "turnover_target": [],
             "top_snapshots": [],
-            "crisis_regime": [],  # Phase 1.5: 이진 레짐 분류 결과 (0/1)
+            "crisis_regime": [],  # 히스테리시스 기반 이진 레짐 결과 (0/1)
             "reward_components": {},
             "reward_components_scaled": {},
         }
@@ -844,7 +850,7 @@ def evaluate_model(
                 irt_data_list["eta"].append(info_dict["eta"][0].cpu().numpy())
                 irt_data_list["alpha_c"].append(info_dict["alpha_c"][0].cpu().numpy())
 
-                # Phase 1.5: alpha_c 상세 정보 수집
+                # α 관련 상세 정보를 함께 저장한다.
                 if "alpha_c_raw" in info_dict:
                     irt_data_list["alpha_c_raw"].append(
                         info_dict["alpha_c_raw"][0].cpu().numpy()
@@ -862,7 +868,7 @@ def evaluate_model(
                         info_dict["alpha_crisis_input"][0].cpu().numpy()
                     )
 
-                # Phase 1.5: 히스테리시스 임계치 수집
+                # 히스테리시스 임계값을 저장해 추후 분석에 활용한다.
                 hysteresis_up_val = 0.55  # 기본값
                 hysteresis_down_val = 0.45  # 기본값
                 if "hysteresis_up" in info_dict:
@@ -933,7 +939,7 @@ def evaluate_model(
         next_obs, reward, done_step, truncated, info = test_env.step(action)
         done = done_step or truncated
 
-        # Phase-H1: Crisis bridge during evaluation (policy → env) & hysteresis classify
+        # 정책이 제공한 위기 정보를 환경에 반영하고 히스테리시스 기반 레짐을 분류한다.
         if bridge_monitor is not None:
             if env_reward_type == "adaptive_risk":
                 bridge_monitor.inject_env()
@@ -1022,7 +1028,7 @@ def evaluate_model(
                     ].setdefault(key, [])
                     bucket_scaled.append(component_value * scaling_factor)
 
-        # Phase-1: 실행가중(actual_weights) 계산 및 기록
+        # 체결 이후 실제 포트폴리오 비중을 계산해 기록한다.
         actual_weights = None
         if is_irt:
             # w^{exec}_t = (p_t ⊙ h_t) / (cash_t + Σ p_{t,i} h_{t,i} + ε)
@@ -1187,10 +1193,10 @@ def evaluate_model(
         irt_data = {
             "w_rep": np.array(irt_data_list["w_rep"]),  # [T, M]
             "w_ot": np.array(irt_data_list["w_ot"]),  # [T, M]
-            "weights": np.array(irt_data_list["weights"]),  # [T, N] 목표가중
+            "weights": np.array(irt_data_list["weights"]),  # [T, N] 목표 비중
             "actual_weights": np.array(
                 irt_data_list["actual_weights"]
-            ),  # [T, N] Phase-1: 실행가중
+            ),  # [T, N] 체결 후 실제 비중
             "crisis_levels": np.array(irt_data_list["crisis_levels"]).squeeze(),  # [T]
             "crisis_levels_pre_guard": (
                 np.array(irt_data_list["crisis_levels_pre_guard"]).squeeze()
@@ -1199,7 +1205,7 @@ def evaluate_model(
             ),
             "crisis_regime": np.array(
                 irt_data_list["crisis_regime"], dtype=np.int32
-            ),  # Phase 1.5: [T] 이진 분류
+            ),  # [T] 히스테리시스 기반 이진 분류 결과
             "crisis_types": np.array(irt_data_list["crisis_types"]),  # [T, K]
             "prototype_weights": np.array(irt_data_list["w"]),  # [T, M]
             "cost_matrices": np.array(irt_data_list["cost_matrices"]),  # [T, m, M]
@@ -1241,7 +1247,7 @@ def evaluate_model(
             "holdings_timeseries": holdings_records.copy(),
             "trades": trade_records.copy(),
         }
-        # Phase 1.5: alpha_c 상세 정보 추가
+        # α 관련 보조 정보를 irt_data에 포함시킨다.
         if irt_data_list["alpha_c_raw"]:
             irt_data["alpha_c_raw"] = np.array(irt_data_list["alpha_c_raw"]).squeeze()
         if irt_data_list["alpha_c_prev"]:
@@ -1367,7 +1373,7 @@ def evaluate_model(
             metrics["alpha_c_min_eval"] = float(np.min(alpha_vals))
             metrics["alpha_c_max_eval"] = float(np.max(alpha_vals))
 
-        # Phase 1.5: alpha_c 상세 정보 (raw, prev 포함)
+        # α 원본 값과 이전 값에 대한 통계를 추가 계산한다.
         alpha_raw_vals = _safe_array("alpha_c_raw")
         alpha_prev_vals = _safe_array("alpha_c_prev")
         if alpha_raw_vals is not None:
@@ -1393,7 +1399,7 @@ def evaluate_model(
             metrics["crisis_level_median_eval"] = float(np.median(crisis_vals))
             metrics["crisis_activation_rate"] = float(np.mean(crisis_vals >= 0.55))
 
-        # Phase 1.5: 레짐 기반 분리 통계
+        # 레짐 분류 결과를 활용해 위기·평시 구간별 통계를 산출한다.
         crisis_regime_vals = _safe_array("crisis_regime")
         if crisis_regime_vals is not None and len(crisis_regime_vals) > 0:
             crisis_mask = crisis_regime_vals == 1
@@ -1458,7 +1464,7 @@ def evaluate_model(
         ):
             metrics["hysteresis_up_mean"] = float(np.mean(hyst_up_vals))
             metrics["hysteresis_down_mean"] = float(np.mean(hyst_down_vals))
-            # Phase 1.5: 히스테리시스 범위 추적
+            # 히스테리시스 상·하한 및 폭을 함께 기록한다.
             metrics["hysteresis_up_min"] = float(np.min(hyst_up_vals))
             metrics["hysteresis_up_max"] = float(np.max(hyst_up_vals))
             metrics["hysteresis_down_min"] = float(np.min(hyst_down_vals))
@@ -1475,16 +1481,10 @@ def evaluate_model(
             proto_var = np.var(weights_clipped, axis=1)
             metrics["prototype_entropy_mean_eval"] = float(np.mean(proto_entropy))
             metrics["prototype_entropy_std_eval"] = float(np.std(proto_entropy))
-            metrics["prototype_entropy_min_eval"] = float(
-                np.min(proto_entropy)
-            )  # Phase 1.5
-            metrics["prototype_entropy_max_eval"] = float(
-                np.max(proto_entropy)
-            )  # Phase 1.5
+            metrics["prototype_entropy_min_eval"] = float(np.min(proto_entropy))
+            metrics["prototype_entropy_max_eval"] = float(np.max(proto_entropy))
             metrics["prototype_max_weight_mean_eval"] = float(np.mean(proto_max))
-            metrics["prototype_max_weight_max_eval"] = float(
-                np.max(proto_max)
-            )  # Phase 1.5
+            metrics["prototype_max_weight_max_eval"] = float(np.max(proto_max))
             metrics["prototype_var_mean_eval"] = float(np.mean(proto_var))
 
     xai_dir_path: Optional[Path] = None
@@ -1972,17 +1972,17 @@ def evaluate_direct(args, model_name, model_class):
 def evaluate_drlagent(args, model_name, model_class):
     """DRLAgent 방식: DRLAgent.DRL_prediction() 사용"""
 
-    print(f"\n[Method: DRLAgent - DRL_prediction()]")
+    print(f"\n[평가 방식: DRLAgent - DRL_prediction()]")
 
     # 1. 데이터 준비
-    print(f"\n[1/4] Downloading test data...")
+    print(f"\n[1/4] 평가 데이터 다운로드 중...")
     df = YahooDownloader(
         start_date=args.test_start, end_date=args.test_end, ticker_list=DOW_30_TICKER
     ).fetch_data()
-    print(f"  Downloaded: {df.shape[0]} rows")
+    print(f"  다운로드 완료: {df.shape[0]}행")
 
     # 2. Feature Engineering
-    print(f"\n[2/4] Feature Engineering...")
+    print(f"\n[2/4] 피처 엔지니어링 수행 중...")
     fe = FeatureEngineer(
         use_technical_indicator=True,
         tech_indicator_list=INDICATORS,
@@ -1991,19 +1991,18 @@ def evaluate_drlagent(args, model_name, model_class):
     )
     df_processed = fe.preprocess_data(df)
     test_df = data_split(df_processed, args.test_start, args.test_end)
-    print(f"  Test rows: {len(test_df)}")
+    print(f"  평가 샘플 수: {len(test_df)}")
 
     # 3. 환경 생성 및 모델 로드
-    print(f"\n[3/4] Loading model...")
+    print(f"\n[3/4] 모델 및 환경을 준비합니다...")
     stock_dim = len(test_df.tic.unique())
-    print(f"  실제 주식 수: {stock_dim}")
+    print(f"  실제 사용 종목 수: {stock_dim}")
 
-    # Phase 3.5: IRT 모델은 dsr_cvar 보상 사용
+    # IRT 모델은 dsr_cvar 보상을 사용하므로 자동으로 보상 타입을 전환한다.
     is_irt = "irt" in args.model.lower()
     reward_type = "dsr_cvar" if is_irt else "basic"
 
-    # State space: balance(1) + prices(N) + shares(N) + tech_indicators(K*N)
-    # Phase 3.5: reward_type='dsr_cvar'일 때 환경 내부에서 +2 (DSR/CVaR)
+    # 상태 공간: 잔고(1) + 가격(N) + 보유량(N) + 기술지표(K*N); dsr_cvar 사용 시 추가 특징이 포함된다.
     state_space = 1 + (len(INDICATORS) + 2) * stock_dim
 
     env_kwargs = {
@@ -2019,7 +2018,7 @@ def evaluate_drlagent(args, model_name, model_class):
         "action_space": stock_dim,
         "tech_indicator_list": INDICATORS,
         "print_verbosity": 500,
-        # Phase 3.5: 리스크 민감 보상
+        # 리스크 민감 보상 설정
         "reward_type": reward_type,
         "lambda_dsr": 0.1,
         "lambda_cvar": 0.05,
@@ -2028,17 +2027,17 @@ def evaluate_drlagent(args, model_name, model_class):
     e_test_gym = StockTradingEnv(**env_kwargs)
 
     model = model_class.load(args.model)
-    print(f"  Model loaded successfully")
+    print(f"  모델 로드에 성공했습니다")
     if is_irt:
-        print(f"  Reward type: {reward_type}")
+        print(f"  reward_type: {reward_type}")
 
     # 4. DRL_prediction 실행
-    print(f"\n[4/4] Running DRL_prediction...")
+    print(f"\n[4/4] DRL_prediction 실행 중...")
     account_memory, actions_memory = DRLAgent.DRL_prediction(
         model=model, environment=e_test_gym, deterministic=True
     )
 
-    print(f"  Evaluation completed: {len(account_memory)} steps")
+    print(f"  평가 완료: 총 {len(account_memory)} 스텝")
 
     # account_memory에서 portfolio_values 추출
     portfolio_values = account_memory["account_value"].tolist()
@@ -2091,31 +2090,31 @@ def evaluate_drlagent(args, model_name, model_class):
 
 def main(args):
     print("=" * 70)
-    print("Model Evaluation")
+    print("모델 평가")
     print("=" * 70)
 
     # 모델 타입 감지
     if args.model_type is None:
         model_name, model_class = detect_model_type(args.model)
-        print(f"\n  Auto-detected model type: {model_name.upper()}")
+        print(f"\n  자동 감지된 모델 유형: {model_name.upper()}")
     else:
         model_name = args.model_type
         model_class = {"sac": SAC, "ppo": PPO, "a2c": A2C, "td3": TD3, "ddpg": DDPG}[
             model_name
         ]
 
-    print(f"\n[Config]")
-    print(f"  Model: {args.model}")
-    print(f"  Type: {model_name.upper()}")
-    print(f"  Method: {args.method}")
-    print(f"  Test: {args.test_start} ~ {args.test_end}")
+    print(f"\n[평가 설정]")
+    print(f"  모델 경로: {args.model}")
+    print(f"  모델 유형: {model_name.upper()}")
+    print(f"  평가 방식: {args.method}")
+    print(f"  평가 구간: {args.test_start} ~ {args.test_end}")
 
     if args.xai_level != "off" and args.method != "direct":
-        print("\n[Notice] XAI 출력은 direct 방식 평가에서만 지원되므로 비활성화합니다.")
+        print("\n[알림] XAI 출력은 direct 방식 평가에서만 지원되어 비활성화합니다.")
         args.xai_level = "off"
     elif args.xai_level != "off":
         print(
-            f"  XAI: level={args.xai_level}, target={args.xai_target}, samples={args.xai_k}, ig_steps={args.xai_ig_steps}"
+            f"  XAI 설정: level={args.xai_level}, target={args.xai_target}, samples={args.xai_k}, ig_steps={args.xai_ig_steps}"
         )
 
     # 평가 방식 선택
@@ -2142,30 +2141,30 @@ def main(args):
 
     # 6. 결과 출력
     print(f"\n" + "=" * 70)
-    print(f"Performance Metrics")
+    print(f"핵심 성능 지표")
     print("=" * 70)
-    print(f"\n[Period]")
-    print(f"  Start: {args.test_start}")
-    print(f"  End: {args.test_end}")
-    print(f"  Steps: {metrics['n_steps']}")
+    print(f"\n[평가 기간]")
+    print(f"  시작일: {args.test_start}")
+    print(f"  종료일: {args.test_end}")
+    print(f"  스텝 수: {metrics['n_steps']}")
 
-    print(f"\n[Returns]")
-    print(f"  Total Return: {metrics['total_return']*100:.2f}%")
-    print(f"  Annualized Return: {metrics['annualized_return']*100:.2f}%")
+    print(f"\n[수익 지표]")
+    print(f"  총 수익률: {metrics['total_return']*100:.2f}%")
+    print(f"  연환산 수익률: {metrics['annualized_return']*100:.2f}%")
 
-    print(f"\n[Risk Metrics]")
-    print(f"  Volatility (annualized): {metrics['volatility']*100:.2f}%")
-    print(f"  Maximum Drawdown: {metrics['max_drawdown']*100:.2f}%")
+    print(f"\n[위험 지표]")
+    print(f"  연환산 변동성: {metrics['volatility']*100:.2f}%")
+    print(f"  최대 손실폭: {metrics['max_drawdown']*100:.2f}%")
 
-    print(f"\n[Risk-Adjusted Returns]")
-    print(f"  Sharpe Ratio: {metrics['sharpe_ratio']:.3f}")
-    print(f"  Sortino Ratio: {metrics['sortino_ratio']:.3f}")
-    print(f"  Calmar Ratio: {metrics['calmar_ratio']:.3f}")
+    print(f"\n[위험조정 수익]")
+    print(f"  샤프 지수: {metrics['sharpe_ratio']:.3f}")
+    print(f"  소르티노 지수: {metrics['sortino_ratio']:.3f}")
+    print(f"  칼마 지수: {metrics['calmar_ratio']:.3f}")
 
-    print(f"\n[Portfolio Value]")
-    print(f"  Initial: ${1000000:,.2f}")
-    print(f"  Final: ${metrics['final_value']:,.2f}")
-    print(f"  Profit/Loss: ${metrics['final_value'] - 1000000:,.2f}")
+    print(f"\n[포트폴리오 가치]")
+    print(f"  초기 자산: ${1000000:,.2f}")
+    print(f"  최종 자산: ${metrics['final_value']:,.2f}")
+    print(f"  손익: ${metrics['final_value'] - 1000000:,.2f}")
 
     print(f"\n" + "=" * 70)
 
@@ -2286,7 +2285,7 @@ def main(args):
 
     if args.viz != "off":
         if artefact_dir is None:
-            print("[viz] Visualization skipped: JSON artefacts were not generated.")
+            print("[viz] 시각화를 건너뜁니다: JSON 결과가 생성되지 않았습니다.")
         else:
             run_dir = artefact_dir
             out_dir = (
@@ -2314,9 +2313,9 @@ def main(args):
             cmd.append("--include-xai" if include_xai else "--no-xai")
             try:
                 subprocess.run(cmd, check=True)
-                print(f"[viz] Visualization generated at: {out_dir}")
+                print(f"[viz] 시각화 결과가 {out_dir} 위치에 저장되었습니다.")
             except Exception as exc:
-                print(f"[viz] Visualization skipped (error: {exc})")
+                print(f"[viz] 시각화를 건너뜁니다 (오류: {exc})")
 
     return metrics
 
@@ -2340,63 +2339,63 @@ if __name__ == "__main__":
         type=str,
         default="direct",
         choices=["direct", "drlagent"],
-        help="평가 방식 (default: direct)",
+        help="평가 방식 (기본: direct)",
     )
 
     parser.add_argument(
         "--test-start",
         type=str,
         default=TEST_START_DATE,
-        help=f"Test start date (default: {TEST_START_DATE})",
+        help=f"테스트 시작일 (기본: {TEST_START_DATE})",
     )
     parser.add_argument(
         "--test-end",
         type=str,
         default=TEST_END_DATE,
-        help=f"Test end date (default: {TEST_END_DATE})",
+        help=f"테스트 종료일 (기본: {TEST_END_DATE})",
     )
     parser.add_argument(
         "--adaptive-lambda-sharpe",
         type=float,
         default=0.20,
-        help="Adaptive risk reward Sharpe weight λ_S (default: 0.20)",
+        help="적응형 위험 보상 Sharpe 가중치 λ_S (기본: 0.20)",
     )
     parser.add_argument(
         "--adaptive-lambda-cvar",
         type=float,
         default=0.40,
-        help="Adaptive risk reward CVaR weight β (default: 0.40)",
+        help="적응형 위험 보상 CVaR 가중치 β (기본: 0.40)",
     )
     parser.add_argument(
         "--adaptive-lambda-turnover",
         type=float,
         default=0.0,
-        help="Adaptive risk reward turnover penalty μ (default: 0.0; set >0 only if NAV lacks transaction costs)",
+        help="적응형 위험 보상의 회전율 패널티 μ (기본: 0.0; NAV에 거래비용이 미포함인 경우에만 양수로 설정)",
     )
     parser.add_argument(
         "--adaptive-crisis-gain",
         dest="adaptive_crisis_gain_sharpe",
         type=float,
         default=-0.15,
-        help="Adaptive risk reward Sharpe crisis gain g_S (default: -0.15, keep negative)",
+        help="적응형 위험 보상 Sharpe 위기 보정 g_S (기본: -0.15, 음수 유지)",
     )
     parser.add_argument(
         "--adaptive-crisis-gain-cvar",
         type=float,
         default=0.25,
-        help="Adaptive risk reward CVaR crisis gain g_C (default: 0.25)",
+        help="적응형 위험 보상 CVaR 위기 보정 g_C (기본: 0.25)",
     )
     parser.add_argument(
         "--adaptive-dsr-beta",
         type=float,
         default=0.92,
-        help="Adaptive risk reward DSR EMA β (default: 0.92)",
+        help="적응형 위험 보상 DSR EMA β (기본: 0.92)",
     )
     parser.add_argument(
         "--adaptive-cvar-window",
         type=int,
         default=40,
-        help="Adaptive risk reward CVaR window length (default: 40)",
+        help="적응형 위험 보상 CVaR 윈도우 길이 (기본: 40)",
     )
 
     parser.set_defaults(no_cap_metrics=True)
@@ -2426,7 +2425,7 @@ if __name__ == "__main__":
         "--output",
         type=str,
         default=None,
-        help="Plot 출력 디렉토리 (기본: 모델 디렉토리/evaluation_plots)",
+        help="플롯 출력 디렉터리 (기본: 모델 디렉토리/evaluation_plots)",
     )
     parser.add_argument(
         "--output-json",
@@ -2452,19 +2451,19 @@ if __name__ == "__main__":
         "--xai-k",
         type=int,
         default=20,
-        help="특징 기여도 샘플링 최대 스텝 수 (default: 20)",
+        help="특징 기여도 샘플링 최대 스텝 수 (기본: 20)",
     )
     parser.add_argument(
         "--xai-ig-steps",
         type=int,
         default=20,
-        help="Integrated Gradients 분할 스텝 수 (default: 20; 1이면 Grad×Input)",
+        help="Integrated Gradients 분할 스텝 수 (기본: 20; 1이면 Grad×Input)",
     )
     parser.add_argument(
         "--xai-log-interval",
         type=int,
         default=10,
-        help="프로토타입 시계열 기록 간격 (스텝 단위, default: 10)",
+        help="프로토타입 시계열 기록 간격 (스텝 단위, 기본: 10)",
     )
     parser.add_argument(
         "--xai-output",

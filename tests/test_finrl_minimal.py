@@ -28,11 +28,11 @@ def test_minimal():
     """최소 실행 테스트: 소수 종목, 짧은 기간"""
 
     print("=" * 60)
-    print("FinRL 최소 실행 테스트 시작")
+    print("Starting FinRL minimal smoke test")
     print("=" * 60)
 
     # 1. 데이터 다운로드 (소수 종목, 짧은 기간)
-    print("\n[1/5] 데이터 다운로드 중...")
+    print("\n[1/5] Downloading data...")
     ticker_list = DOW_30_TICKER[:5]  # 5개 종목만
     start_date = '2023-01-01'
     end_date = '2024-01-01'
@@ -43,10 +43,10 @@ def test_minimal():
         ticker_list=ticker_list
     ).fetch_data()
 
-    print(f"  다운로드 완료: {df.shape[0]} rows, {len(ticker_list)} stocks")
+    print(f"  Downloaded: {df.shape[0]} rows, {len(ticker_list)} tickers")
 
     # 2. Feature Engineering
-    print("\n[2/5] Feature Engineering 중...")
+    print("\n[2/5] Running feature engineering...")
     fe = FeatureEngineer(
         use_technical_indicator=True,
         tech_indicator_list=INDICATORS[:4],  # 4개 지표만
@@ -54,16 +54,16 @@ def test_minimal():
         user_defined_feature=False
     )
     df_processed = fe.preprocess_data(df)
-    print(f"  Feature Engineering 완료: {df_processed.shape[1]} features")
+    print(f"  Feature engineering completed: {df_processed.shape[1]} features")
 
     # 3. Train/Test Split
-    print("\n[3/5] Train/Test 데이터 분할 중...")
+    print("\n[3/5] Splitting train/test data...")
     train_df = data_split(df_processed, start_date, '2023-10-01')
 
-    print(f"  Train 데이터: {len(train_df)} rows")
+    print(f"  Train samples: {len(train_df)}")
 
     # 4. 환경 생성
-    print("\n[4/5] StockTradingEnv 생성 중...")
+    print("\n[4/5] Creating StockTradingEnv...")
 
     stock_dim = len(ticker_list)
 
@@ -88,12 +88,12 @@ def test_minimal():
     }
 
     env = StockTradingEnv(**env_kwargs)
-    print(f"  환경 생성 완료")
+    print("  Environment created")
     print(f"    State space: {state_space}")
     print(f"    Action space: {stock_dim}")
 
     # 5. SAC 학습 (짧게)
-    print("\n[5/5] SAC 학습 시작 (10k steps)...")
+    print("\n[5/5] Training SAC for 10k steps...")
 
     model = SAC(
         "MlpPolicy",
@@ -108,11 +108,11 @@ def test_minimal():
     model.learn(total_timesteps=10000, progress_bar=True)
 
     print("\n" + "=" * 60)
-    print("✅ FinRL 최소 실행 테스트 성공!")
+    print("✅ FinRL minimal smoke test succeeded!")
     print("=" * 60)
 
     # 간단한 평가
-    print("\n[보너스] 학습된 모델 평가...")
+    print("\n[Bonus] Evaluating the trained model...")
     obs, _ = env.reset()
     total_reward = 0
     done = False
@@ -130,8 +130,8 @@ def test_minimal():
     holdings = state[stock_dim+1:2*stock_dim+1]
     portfolio_value = cash + np.sum(prices * holdings)
 
-    print(f"  Total Portfolio Value: ${portfolio_value:.2f}")
-    print(f"  Total Reward: {total_reward:.4f}")
+    print(f"  Final portfolio value: ${portfolio_value:.2f}")
+    print(f"  Total reward: {total_reward:.4f}")
 
     return True
 

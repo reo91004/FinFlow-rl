@@ -1,16 +1,16 @@
 # finrl/agents/irt/bcell_actor.py
+# 상태 인코딩, IRT 연산, Dirichlet 디코딩을 결합한 B-Cell Actor 구현을 제공한다.
 
 """
-B-Cell Actor with IRT (Immune Replicator Transport)
+IRT(Immune Replicator Transport) 기반 B-Cell Actor
 
-핵심 기능:
-1. 에피토프 인코딩: 상태 → 다중 토큰
-2. IRT 연산: OT + Replicator 혼합
-3. Dirichlet 디코딩: 혼합 → 포트폴리오 가중치
-4. EMA 메모리: w_prev 관리
+구성 요소:
+1. 상태 임베딩 → 다중 에피토프 토큰 인코딩
+2. T-Cell을 통한 위기 감지 및 공자극 임베딩 생성
+3. IRT 연산자를 이용한 Replicator·Optimal Transport 혼합
+4. Dirichlet 디코더와 EMA 메모리를 통해 포트폴리오 가중치 산출
 
-의존성: IRT, TCellMinimal
-사용처: IRTPolicy
+해당 Actor는 `IRTPolicy`가 Stable Baselines3와 연동될 때 사용되는 핵심 모듈이다.
 """
 
 import math
@@ -25,7 +25,7 @@ from finrl.agents.irt.t_cell import TCellMinimal
 
 
 class BCellIRTActor(nn.Module):
-    """IRT 기반 B-Cell Actor (간소화 버전)"""
+    """상태 인코딩, 위기 감지, IRT 연산, Dirichlet 디코더를 결합한 포트폴리오 Actor"""
 
     def __init__(
         self,
@@ -37,7 +37,7 @@ class BCellIRTActor(nn.Module):
         alpha: float = 0.3,
         alpha_min: float = 0.06,
         alpha_max: Optional[float] = None,
-        ema_beta: float = 0.55,  # Phase 1.5: 0.65 → 0.55 (faster adaptation to fitness signals)
+        ema_beta: float = 0.55,  # 혼합 가중치가 적합도 변화에 빠르게 반응하도록 설정된 EMA 계수
         market_feature_dim: Optional[int] = None,
         stock_dim: Optional[int] = None,
         tech_indicator_count: Optional[int] = None,
@@ -45,11 +45,11 @@ class BCellIRTActor(nn.Module):
         dirichlet_min: float = 0.05,
         dirichlet_max: float = 6.0,
         action_temp: float = 0.50,
-        # Phase 3.5 Step 2: 다중 신호 위기 감지
+        # 다중 신호 기반 위기 감지 가중치
         w_r: float = 0.55,
         w_s: float = -0.25,
         w_c: float = 0.20,
-        # Phase B: 바이어스 EMA 보정
+        # 위기 바이어스 EMA 보정 파라미터
         eta_b: float = 0.02,
         eta_b_min: float = 0.002,
         eta_b_decay_steps: int = 30000,
@@ -61,11 +61,11 @@ class BCellIRTActor(nn.Module):
         crisis_guard_rate_init: float = 0.07,
         crisis_guard_rate_final: float = 0.02,
         crisis_guard_warmup_steps: int = 7500,
-        # Phase 1.5: 히스테리시스 임계치 재조정 (0.55/0.45 → 0.52/0.42)
+        # 히스테리시스 임계치 기본값
         hysteresis_up: float = 0.52,
         hysteresis_down: float = 0.42,
         adaptive_hysteresis: bool = True,
-        # Phase 1.5: 분위수 상향 (0.65 → 0.72)
+        # 적응형 히스테리시스를 제어하는 분위수
         hysteresis_quantile: float = 0.72,
         hysteresis_min_gap: float = 0.03,
         crisis_history_len: int = 512,
@@ -82,23 +82,51 @@ class BCellIRTActor(nn.Module):
     ):
         """
         Args:
-            state_dim: 상태 차원 (예: 181 for Dow 30)
-            action_dim: 행동 차원 (예: 30)
-            emb_dim: 임베딩 차원
-            m_tokens: 에피토프 토큰 수
-            M_proto: 프로토타입 수
-            alpha: OT-Replicator 결합 비율 (후진 호환, alpha_max로 사용됨)
-            alpha_min: 위기 시 최소 α (default: 0.06, Replicator 가중)
-            alpha_max: 평시 최대 α (default: None → alpha 사용, OT 가중)
-            ema_beta: EMA 메모리 계수
-            market_feature_dim: 시장 특성 차원 (T-Cell 입력, 기본 12)
-            dirichlet_min: Dirichlet concentration minimum (핸드오버: 0.5)
-            dirichlet_max: Dirichlet concentration maximum (핸드오버: 5.0)
-            w_r: 시장 위기 신호 가중치 (T-Cell 출력)
-            w_s: Sharpe 신호 가중치 (DSR bonus)
-            w_c: CVaR 신호 가중치
-            eta_b: 바이어스 학습률 (crisis_regime_pct 중립화용)
-            **irt_kwargs: IRT 파라미터 (eps, eta_0, eta_1 등)
+            state_dim: 관측 상태 벡터 차원
+            action_dim: 포트폴리오 가중치 개수
+            emb_dim: 에피토프 임베딩 차원
+            m_tokens: 에피토프 토큰 개수
+            M_proto: 학습되는 프로토타입 전략 개수
+            alpha: OT-Replicator 혼합 비율의 기본값 (alpha_max 초기값으로 사용)
+            alpha_min: 위기 상황에서 Replicator가 보장해야 하는 최소 비중
+            alpha_max: 평시 허용되는 α 상한 (None이면 alpha를 사용)
+            ema_beta: 혼합 가중치 EMA 메모리 계수
+            market_feature_dim: T-Cell 입력으로 사용하는 시장 특성 차원
+            stock_dim: 종목 수 (지정하지 않으면 action_dim으로 설정)
+            tech_indicator_count: 기술 지표 개수 (자동 추정 가능)
+            has_dsr_cvar: 상태에 DSR·CVaR 특성을 포함하는지 여부
+            dirichlet_min: Dirichlet 집중도 하한
+            dirichlet_max: Dirichlet 집중도 상한
+            action_temp: Dirichlet 샘플 온도
+            w_r: 시장 기반 위기 신호 가중치
+            w_s: Sharpe 기반 위기 신호 가중치
+            w_c: CVaR 기반 위기 신호 가중치
+            eta_b: 위기 바이어스 학습률 최대값
+            eta_b_min: 위기 바이어스 학습률 최소값
+            eta_b_decay_steps: 학습률이 최대값에서 최소값으로 감쇠되는 스텝 수
+            eta_T: 위기 온도 보정 학습률
+            eta_b_warmup_steps: 위기 바이어스 학습률 워밍업 기간
+            eta_b_warmup_value: 워밍업 기간 동안 사용할 학습률
+            crisis_target: 목표 위기 비중
+            crisis_guard_rate_init: 초기 위기 가드 강도
+            crisis_guard_rate_final: 최종 위기 가드 강도
+            crisis_guard_warmup_steps: 위기 가드 강도 전환 기간
+            hysteresis_up: 위기 진입 히스테리시스 상한
+            hysteresis_down: 위기 해제 히스테리시스 하한
+            adaptive_hysteresis: 히스테리시스 임계값을 적응적으로 조정할지 여부
+            hysteresis_quantile: 적응형 히스테리시스에서 사용할 분위수
+            hysteresis_min_gap: 적응형 상·하한 사이 최소 간격
+            crisis_history_len: 위기 히스토리 버퍼 길이
+            crisis_guard_rate: 고정된 위기 가드 강도를 강제할 때 사용
+            k_s: Sharpe 신호 변환 기울기
+            k_c: CVaR 신호 변환 기울기
+            k_b: 기본 위기 신호 변환 기울기
+            p_star: 목표 위기 점유율
+            temperature_min: 위기 온도 하한
+            temperature_max: 위기 온도 상한
+            stat_momentum: 위기 통계 EMA 모멘텀
+            alpha_crisis_source: α 계산에 사용할 위기 신호 시점
+            **irt_kwargs: IRT 연산자에 전달할 추가 파라미터 (예: eps, eta_0 등)
         """
         super().__init__()
 
@@ -110,7 +138,7 @@ class BCellIRTActor(nn.Module):
         self.ema_beta = ema_beta
         self.dirichlet_min = dirichlet_min
         self.dirichlet_max = dirichlet_max
-        self.action_temp = action_temp  # Phase-2
+        self.action_temp = action_temp  # Dirichlet 샘플 온도
         self.has_dsr_cvar = bool(has_dsr_cvar)
         self.stock_dim = int(stock_dim) if stock_dim is not None else action_dim
         if self.stock_dim <= 0:
@@ -128,17 +156,17 @@ class BCellIRTActor(nn.Module):
             self.market_feature_dim = computed_market_dim
         self.market_feature_dim = max(self.market_feature_dim, 4)
 
-        # Phase 3.5 Step 2: 위기 신호 가중치
+        # 위기 신호 결합에 사용되는 가중치
         self.w_r = w_r
         self.w_s = w_s
         self.w_c = w_c
 
-        # Phase 1: 신호 스케일 파라미터
+        # 위기 신호를 시그모이드로 변환할 때 사용하는 기울기
         self.k_s = k_s
         self.k_c = k_c
         self.k_b = k_b
 
-        # Phase B: 바이어스/온도 보정
+        # 위기 바이어스와 온도 보정을 위한 하이퍼파라미터
         self.eta_b_max = eta_b
         self.eta_b_min = eta_b_min
         self.eta_b_decay_steps = eta_b_decay_steps
@@ -210,8 +238,7 @@ class BCellIRTActor(nn.Module):
         self.proto_keys = nn.Parameter(torch.randn(M_proto, emb_dim) / (emb_dim**0.5))
 
         # ===== 프로토타입별 Dirichlet 디코더 =====
-        # 각 프로토타입은 독립적인 정책 (전문가)
-        # Phase 3.1: Tanh transformation to allow prototype suppression
+        # 각 프로토타입이 독립적인 행동 전문가처럼 작동하도록 구성한다.
         self.decoders = nn.ModuleList(
             [
                 nn.Sequential(
@@ -219,19 +246,19 @@ class BCellIRTActor(nn.Module):
                     nn.ReLU(),
                     nn.Dropout(0.1),
                     nn.Linear(128, action_dim),
-                    nn.Tanh(),  # [-1, 1] allows both positive and negative logits
+                    nn.Tanh(),  # [-1, 1] 범위로 출력해 프로토타입 억제·강화를 모두 허용한다.
                 )
                 for _ in range(M_proto)
             ]
         )
 
-        # Phase 3.1: Initialize with diversity (keep from 2.2a)
+        # 초기 편향을 다양화하여 프로토타입이 서로 다른 전략을 학습하도록 돕는다.
         for decoder_idx, decoder in enumerate(self.decoders):
-            # decoder[-2] is the final Linear(128, action_dim) layer before Tanh
+            # decoder[-2]는 Tanh 이전의 마지막 선형 계층이다.
             final_linear = decoder[-2]
-            # Initialize with variance to break symmetry
+            # 분산이 있는 초기화를 사용해 대칭 해를 피한다.
             torch.nn.init.normal_(final_linear.bias, mean=0.0, std=0.5)
-            # Offset each prototype differently
+            # 프로토타입마다 서로 다른 초기 편향을 부여한다.
             final_linear.bias.data += (decoder_idx - self.M / 2) * 0.2
 
         # ===== IRT 연산자 =====
@@ -262,8 +289,9 @@ class BCellIRTActor(nn.Module):
         error_msgs: List[str],
     ) -> None:
         """
-        Backward compatibility for checkpoints saved before Phase 1 buffers were added.
-        Missing buffers are initialized to sensible defaults instead of raising.
+        초기 버전 체크포인트와의 호환성을 유지하기 위한 로더
+
+        누락된 버퍼는 기본값으로 채운 뒤 상위 클래스를 호출한다.
         """
         compatibility_buffers = [
             "crisis_bias",
@@ -397,8 +425,8 @@ class BCellIRTActor(nn.Module):
         if not self._crisis_initialized:
             self._crisis_initialized = True
 
-        # ===== Step 1: T-Cell 위기 감지 =====
-        # FinRL state 구조: [balance(1), prices(N), shares(N), tech_indicators(K*N), ... optional extras ...]
+        # --- 1단계: T-Cell 위기 감지 ---
+        # FinRL 상태 벡터는 [balance(1), prices(N), shares(N), tech_indicators(K*N), ... 추가 항목] 구조를 따른다.
 
         balance = state[:, 0:1]  # [B, 1]
         stock_dim = self.stock_dim
@@ -416,7 +444,7 @@ class BCellIRTActor(nn.Module):
         total_value = balance + (prices * shares).sum(dim=1, keepdim=True)  # [B, 1]
         cash_ratio = balance / (total_value + 1e-8)  # [B, 1]
 
-        # Technical indicators (각 지표의 첫 번째 주식 값)
+        # 기술 지표는 각 지표별 첫 번째 종목 값을 사용한다.
         tech_start = shares_end
         dsr_offset = 2 if self.has_dsr_cvar else 0
         available = max(state.size(1) - dsr_offset - tech_start, 0)
@@ -472,7 +500,7 @@ class BCellIRTActor(nn.Module):
                 )
                 var_buf.clamp_(min=self.stats_eps)
 
-        # Base crisis component (T-Cell)
+        # T-Cell 기반 기본 위기 신호를 계산한다.
         _update_running_stats(
             crisis_affine_raw, self.crisis_base_mean, self.crisis_base_var
         )
@@ -481,7 +509,7 @@ class BCellIRTActor(nn.Module):
         base_z = (crisis_affine_raw - base_mean) / base_std
         crisis_base_component = torch.sigmoid(self.k_b * base_z)
 
-        # Phase 3.5 Step 2: DSR/CVaR 신호 추출 및 위기 레벨 결합
+        # DSR/CVaR 신호를 추출해 위기 레벨 계산에 반영한다.
         # state 마지막 2개 차원: [dsr_bonus, cvar_value]
         # state_dim은 reward_type='dsr_cvar'일 때 +2 되어 있음
         # 따라서 항상 마지막 2개 차원을 시도하되, 존재하지 않으면 0으로 처리
@@ -598,21 +626,21 @@ class BCellIRTActor(nn.Module):
         delta_sharpe = delta_sharpe_raw
         cvar = cvar_raw
 
-        # ===== Step 2: 에피토프 인코딩 =====
+        # --- 2단계: 에피토프 인코딩 ---
         E = self.epitope_encoder(state).view(B, self.m, self.emb_dim)  # [B, m, D]
 
-        # ===== Step 3: 프로토타입 확장 =====
+        # --- 3단계: 프로토타입 확장 ---
         K = self.proto_keys.unsqueeze(0).expand(B, -1, -1)  # [B, M, D]
 
-        # ===== Step 4: Fitness 설정 =====
+        # --- 4단계: 프로토타입 적합도 설정 ---
         if fitness is None:
-            # Critic 없음: 균등 fitness
+            # Critic이 없으면 프로토타입 적합도를 균등 분포로 설정한다.
             fitness = torch.ones(B, self.M, device=state.device)
 
-        # ===== Step 5: IRT 연산 =====
+        # --- 5단계: IRT 연산 수행 ---
         w_prev_batch = self.w_prev.expand(B, -1)  # [B, M]
 
-        # Phase A: delta_sharpe 전달 보증 (이미 line 186-207에서 추출됨)
+        # Sharpe 추세 변화를 α 조정 단계에 전달한다.
         delta_sharpe_tensor = delta_sharpe
 
         if self.alpha_crisis_source == "pre_guard":
@@ -631,14 +659,14 @@ class BCellIRTActor(nn.Module):
             proto_conf=None,
         )
 
-        # ===== Step 6: Dirichlet 혼합 정책 =====
-        # 각 프로토타입의 concentration 계산
-        # Phase 3.1: Tanh output [-1, 1] → scale to [-5, 10] → clamp [0.01, 10]
+        # --- 6단계: Dirichlet 혼합 정책 계산 ---
+        # 각 프로토타입의 concentration을 계산한다.
+        # Tanh 출력 [-1, 1]을 확장하여 비대칭 bias를 적용하고 0.02 이상으로 클램프한다.
         concentrations_raw = torch.stack(
             [self.decoders[j](K[:, j, :]) for j in range(self.M)], dim=1
-        )  # [B, M, A] with Tanh output ∈ [-1, 1]
+        )  # [B, M, A] - Tanh 출력은 [-1, 1] 범위에 위치한다.
 
-        # Transform: encourage sparsity via softplus + asymmetric bias
+        # Softplus와 비대칭 bias로 희소한 포트폴리오를 유도한다.
         concentrations = torch.nn.functional.softplus(concentrations_raw * 2.0) + 0.02
         proto_bias = torch.linspace(
             -0.5, 0.5, steps=self.M, device=concentrations.device, dtype=concentrations.dtype
@@ -650,16 +678,13 @@ class BCellIRTActor(nn.Module):
         mixed_conc = torch.einsum("bm,bma->ba", w, concentrations)  # [B, A]
 
         if deterministic:
-            # 결정적: softmax with temperature (logit-based, NOT Dirichlet)
-            # Phase 3.1: mixed_conc ∈ [0.01, 10] can be used as logits
-            # Lower temp → sharper (amplifies differences)
-            # Higher temp → flatter (smooths differences)
+            # 결정적 모드: 혼합된 농도를 로그릿으로 보고 온도 조절 소프트맥스를 적용한다.
+            # 온도가 낮을수록 집중도가 높아지고, 높을수록 분산된 행동이 만들어진다.
             action = F.softmax(mixed_conc / self.action_temp, dim=-1)
         else:
-            # 확률적: Dirichlet 샘플 (probability-based, different from deterministic!)
-            # Phase 3.1: mixed_conc already positive after clamp, use directly as α
-            # α < 1: Sparse (corners), α = 1: Uniform, α > 1: Peaked near uniform
-            # Clamp to [dirichlet_min, dirichlet_max] for numerical stability
+            # 확률적 모드: 클램프된 농도를 Dirichlet 파라미터로 사용해 행동을 샘플링한다.
+            # α < 1이면 희소한 분포, α = 1이면 균등, α > 1이면 균등 인근에 모인다.
+            # 수치 안정성을 위해 [dirichlet_min, dirichlet_max] 범위로 제한한다.
             mixed_conc_clamped = torch.clamp(
                 mixed_conc, min=self.dirichlet_min, max=self.dirichlet_max
             )
@@ -670,14 +695,14 @@ class BCellIRTActor(nn.Module):
         action = torch.clamp(action, min=0.0, max=1.0)
         action = action / (action.sum(dim=-1, keepdim=True) + 1e-8)
 
-        # ===== Step 7: EMA 업데이트 (w_prev) =====
+        # --- 7단계: EMA 기반 w_prev 업데이트 ---
         if self.training:
             with torch.no_grad():
                 self.w_prev = self.ema_beta * self.w_prev + (
                     1 - self.ema_beta
                 ) * w.detach().mean(dim=0, keepdim=True)
 
-        # ===== Step 8: 해석 정보 수집 =====
+        # --- 8단계: 해석 정보 수집 ---
         mixed_conc_det = mixed_conc.detach()
         mixed_conc_clamped_det = (
             mixed_conc_clamped.detach() if not deterministic else mixed_conc_det
@@ -707,28 +732,28 @@ class BCellIRTActor(nn.Module):
             "w_rep": irt_debug["w_rep"].detach(),  # [B, M] - Replicator 출력
             "w_ot": irt_debug["w_ot"].detach(),  # [B, M] - OT 출력
             "cost_matrix": irt_debug["cost_matrix"].detach(),  # [B, m, M]
-            "eta": irt_debug["eta"].detach(),  # [B, 1] - Crisis learning rate
+            "eta": irt_debug["eta"].detach(),  # [B, 1] - 위기 적응형 학습률
             "alpha_c": irt_debug[
                 "alpha_c"
-            ].detach(),  # [B, 1] - Dynamic OT-Replicator mixing ratio
+            ].detach(),  # [B, 1] - 동적으로 조정된 OT-Replicator 혼합 비율
             "alpha_c_raw": irt_debug.get(
                 "alpha_c_raw", irt_debug["alpha_c"]
-            ).detach(),  # Phase 1.5: raw alpha
+            ).detach(),  # [B, 1] - 클램프 전 α 값
             "alpha_c_prev": irt_debug.get(
                 "alpha_c_prev", irt_debug["alpha_c"]
-            ).detach(),  # Phase 1.5: prev alpha
+            ).detach(),  # [B, 1] - 직전 배치의 α
             "alpha_c_star": irt_debug.get(
                 "alpha_c_star", irt_debug["alpha_c"]
-            ).detach(),  # Phase 1.5: target alpha
+            ).detach(),  # [B, 1] - 노이즈 적용 전 목표 α
             "alpha_c_decay_factor": irt_debug.get(
                 "alpha_c_decay_factor", torch.ones_like(irt_debug["alpha_c"])
-            ).detach(),  # Phase 1.5: decay
+            ).detach(),  # [B, 1] - 방향성 감쇠 계수
             "pct_clamped_min": irt_debug.get(
                 "pct_clamped_min", 0.0
-            ),  # Phase 1.5: clamp 검증
+            ),  # α가 하한에 도달한 비율
             "pct_clamped_max": irt_debug.get(
                 "pct_clamped_max", 0.0
-            ),  # Phase 1.5: clamp 검증
+            ),  # α가 상한에 도달한 비율
             "alpha_candidate": irt_debug.get(
                 "alpha_candidate", irt_debug["alpha_c"]
             ).detach(),
@@ -750,11 +775,11 @@ class BCellIRTActor(nn.Module):
                 "directional_decay_min",
                 torch.tensor(getattr(self.irt, "directional_decay_min", 0.0), device=state.device),
             ).detach(),
-            # Dirichlet 정보 (log_prob 계산용)
+            # Dirichlet 정보 (로그 확률 계산용)
             "concentrations": concentrations.detach(),  # [B, M, A] - 프로토타입별 concentration
-            "mixed_conc": mixed_conc_det,  # [B, A] - 혼합된 concentration (raw)
+            "mixed_conc": mixed_conc_det,  # [B, A] - 혼합된 concentration (원본)
             "mixed_conc_clamped": mixed_conc_clamped_det,  # [B, A]
-            # Phase 1.5: 프로토타입 전방 반영 검증
+            # 프로토타입 디코더의 통계 정보를 기록한다.
             "concentrations_mean": concentrations.mean(
                 dim=0
             ).detach(),  # [M, A] - 프로토타입별 평균
@@ -763,13 +788,13 @@ class BCellIRTActor(nn.Module):
                 if B > 1
                 else torch.zeros_like(concentrations[0]).detach()
             ),
-            "mixed_conc_mean": mixed_conc.mean().detach(),  # scalar - 혼합 후 평균
+            "mixed_conc_mean": mixed_conc.mean().detach(),  # 스칼라 - 혼합 후 평균
             "mixed_conc_std": (
                 mixed_conc.std(unbiased=False).detach()
                 if mixed_conc.numel() > 1
                 else mixed_conc.new_tensor(0.0).detach()
             ),
-            # Phase 3.5 Step 2: 다중 신호 위기 감지 정보
+            # 위기 감지와 입력 신호 통계를 함께 제공한다.
             "crisis_base": crisis_base_sigmoid.detach(),  # [B, 1] - T-Cell 기본 위기 신호 (sigmoid)
             "crisis_base_raw": crisis_affine_raw.detach(),  # [B, 1] - T-Cell affine
             "crisis_robust_loc": self.crisis_robust_loc.detach().to(state.device),

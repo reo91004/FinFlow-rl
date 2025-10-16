@@ -1,18 +1,20 @@
 # scripts/train.py
+# 여러 강화학습 알고리즘을 학습·평가하는 공통 실행 스크립트를 정의한다.
 
 """
 통합 강화학습 학습 스크립트
 
-config.py의 하이퍼파라미터를 활용하여 여러 RL 알고리즘을 학습 및 평가한다.
+`config.py`에 정의된 하이퍼파라미터를 바탕으로 Stable Baselines3 알고리즘을 학습하고,
+학습한 모델을 평가하거나 저장하는 전체 파이프라인을 제공한다.
 
-Usage:
-    # SAC 학습 및 평가
+사용 예:
+    # SAC 학습 후 평가까지 수행
     python scripts/train.py --model sac --mode both
 
-    # PPO 학습만
+    # PPO 모델을 학습만 진행
     python scripts/train.py --model ppo --mode train --episodes 100
 
-    # 저장된 모델 평가만
+    # 저장된 SAC 모델을 평가
     python scripts/train.py --model sac --mode test --checkpoint logs/sac/20251004_120000/best_model.zip
 """
 
@@ -45,16 +47,17 @@ from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv
 
-# Import evaluation function
+# 평가 함수 로드를 위해 현재 디렉터리를 우선 추가한다.
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
 from evaluate import evaluate_model
 
 
-# 모델 클래스 및 파라미터 매핑
+# 지원 알고리즘명과 Stable Baselines3 클래스 매핑
 MODEL_CLASSES = {"sac": SAC, "ppo": PPO, "a2c": A2C, "td3": TD3, "ddpg": DDPG}
 
+# 알고리즘별 기본 하이퍼파라미터
 MODEL_PARAMS = {
     "sac": SAC_PARAMS,
     "ppo": PPO_PARAMS,
@@ -65,7 +68,7 @@ MODEL_PARAMS = {
 
 
 def save_metadata(output_dir, tickers, train_start, train_end, test_start, test_end):
-    """학습 메타데이터 저장 (평가 시 재사용)"""
+    """학습 시 사용한 종목·기간 정보를 JSON으로 저장해 평가 단계에서 재사용한다."""
     metadata = {
         "tickers": tickers,
         "train_period": {"start": train_start, "end": train_end},
@@ -77,11 +80,11 @@ def save_metadata(output_dir, tickers, train_start, train_end, test_start, test_
     with open(metadata_path, "w") as f:
         json.dump(metadata, f, indent=2)
 
-    print(f"  메타데이터 저장됨: {metadata_path}")
+    print(f"  Metadata saved to: {metadata_path}")
 
 
 def load_metadata(model_dir):
-    """저장된 메타데이터 로드"""
+    """저장된 메타데이터를 로드하여 평가 시 동일한 종목 구성을 복원한다."""
     metadata_path = os.path.join(model_dir, "metadata.json")
 
     if not os.path.exists(metadata_path):
@@ -95,7 +98,7 @@ def load_metadata(model_dir):
 
 
 def create_env(df, stock_dim, tech_indicators):
-    """StockTradingEnv 생성"""
+    """주어진 데이터프레임을 기반으로 FinRL 주식 거래 환경을 생성한다."""
 
     state_space = 1 + (len(tech_indicators) + 2) * stock_dim
 
@@ -118,7 +121,7 @@ def create_env(df, stock_dim, tech_indicators):
 
 
 def preprocess_params(model_name, params):
-    """config.py의 파라미터를 Stable Baselines3 호환 형식으로 변환"""
+    """config.py에서 불러온 하이퍼파라미터를 Stable Baselines3 형식에 맞게 정제한다."""
 
     processed = params.copy()
 
@@ -133,7 +136,7 @@ def preprocess_params(model_name, params):
 
 
 def train_model(args):
-    """모델 학습"""
+    """입력된 인자를 바탕으로 선택한 알고리즘을 학습하고 결과물을 저장한다."""
 
     print("=" * 70)
     print(f"{args.model.upper()} Training - Dow Jones 30")
@@ -144,23 +147,23 @@ def train_model(args):
     log_dir = os.path.join(args.output, args.model, timestamp)
     os.makedirs(log_dir, exist_ok=True)
 
-    print(f"\n[Config]")
+    print("\n[Config]")
     print(f"  Model: {args.model.upper()}")
     print(f"  Stocks: Dow Jones 30 ({len(DOW_30_TICKER)} tickers)")
-    print(f"  Train: {args.train_start} ~ {args.train_end}")
-    print(f"  Test: {args.test_start} ~ {args.test_end}")
+    print(f"  Train period: {args.train_start} ~ {args.train_end}")
+    print(f"  Test period: {args.test_start} ~ {args.test_end}")
     print(f"  Episodes: {args.episodes}")
-    print(f"  Output: {log_dir}")
+    print(f"  Output directory: {log_dir}")
 
     # 1. 데이터 다운로드
-    print(f"\n[1/5] Downloading data...")
+    print("\n[1/5] Downloading data...")
     df = YahooDownloader(
         start_date=args.train_start, end_date=args.test_end, ticker_list=DOW_30_TICKER
     ).fetch_data()
     print(f"  Downloaded: {df.shape[0]} rows")
 
     # 2. Feature Engineering
-    print(f"\n[2/5] Feature Engineering...")
+    print("\n[2/5] Running feature engineering...")
     fe = FeatureEngineer(
         use_technical_indicator=True,
         tech_indicator_list=INDICATORS,
@@ -168,17 +171,17 @@ def train_model(args):
         user_defined_feature=False,
     )
     df_processed = fe.preprocess_data(df)
-    print(f"  Features: {df_processed.shape[1]} columns")
+    print(f"  Feature columns: {df_processed.shape[1]}")
 
     # 3. Train/Test Split
-    print(f"\n[3/5] Splitting data...")
+    print("\n[3/5] Splitting train/test data...")
     train_df = data_split(df_processed, args.train_start, args.train_end)
     test_df = data_split(df_processed, args.test_start, args.test_end)
-    print(f"  Train: {len(train_df)} rows")
-    print(f"  Test: {len(test_df)} rows")
+    print(f"  Train samples: {len(train_df)}")
+    print(f"  Test samples: {len(test_df)}")
 
     # 4. 환경 생성
-    print(f"\n[4/5] Creating environments...")
+    print("\n[4/5] Creating environments...")
     actual_tickers = train_df.tic.unique().tolist()
     stock_dim = len(actual_tickers)
 
@@ -186,11 +189,11 @@ def train_model(args):
     if stock_dim != len(DOW_30_TICKER):
         removed_count = len(DOW_30_TICKER) - stock_dim
         excluded_tickers = set(DOW_30_TICKER) - set(actual_tickers)
-        print(f"  ⚠️  주의: {removed_count}개 주식이 데이터 부족으로 제외됨")
-        print(f"      제외된 종목: {sorted(excluded_tickers)}")
+        print(f"  ⚠️ Warning: {removed_count} tickers were excluded due to missing data")
+        print(f"      Excluded tickers: {sorted(excluded_tickers)}")
 
-    print(f"  실제 주식 수: {stock_dim}")
-    print(f"  사용된 종목: {actual_tickers[:5]}... (생략)")
+    print(f"  Effective stock count: {stock_dim}")
+    print(f"  Sample tickers: {actual_tickers[:5]}... (truncated)")
     train_env = create_env(train_df, stock_dim, INDICATORS)
     test_env = create_env(test_df, stock_dim, INDICATORS)
     print(f"  State space: {train_env.state_space}")
@@ -236,7 +239,7 @@ def train_model(args):
     # 총 timesteps 계산
     total_timesteps = 250 * args.episodes
     print(f"  Total timesteps: {total_timesteps}")
-    print(f"  Starting training...")
+    print(f"  Starting training loop...")
 
     # 학습
     model.learn(
@@ -259,8 +262,8 @@ def train_model(args):
         test_end=args.test_end,
     )
 
-    print(f"\n" + "=" * 70)
-    print(f"Training completed!")
+    print("\n" + "=" * 70)
+    print("Training completed!")
     print("=" * 70)
     print(f"  Final model: {final_model_path}")
     print(f"  Best model: {os.path.join(log_dir, 'best_model', 'best_model.zip')}")
@@ -271,7 +274,7 @@ def train_model(args):
 
 
 def test_model(args, model_path=None):
-    """모델 평가"""
+    """학습된 모델을 불러와 동일한 종목 구성을 기준으로 테스트 구간을 평가한다."""
 
     print("=" * 70)
     print(f"{args.model.upper()} Evaluation")
@@ -280,7 +283,7 @@ def test_model(args, model_path=None):
     # 모델 경로 결정
     if model_path is None:
         if args.checkpoint is None:
-            raise ValueError("--checkpoint가 필요합니다 (--mode test 실행 시)")
+            raise ValueError("--checkpoint is required when --mode test is used")
         model_path = args.checkpoint
 
     # 메타데이터 로드 (학습 시 사용된 ticker 정보)
@@ -288,13 +291,13 @@ def test_model(args, model_path=None):
     metadata = load_metadata(model_dir)
     train_tickers = metadata["tickers"]
 
-    print(f"\n[Config]")
-    print(f"  Model: {model_path}")
-    print(f"  Test: {args.test_start} ~ {args.test_end}")
+    print("\n[Config]")
+    print(f"  Model path: {model_path}")
+    print(f"  Test period: {args.test_start} ~ {args.test_end}")
 
-    print(f"\n[메타데이터]")
-    print(f"  학습 시 사용된 주식: {len(train_tickers)}개")
-    print(f"  주식 목록: {train_tickers[:5]}... (생략)")
+    print("\n[Metadata]")
+    print(f"  Training tickers: {len(train_tickers)}")
+    print(f"  Sample tickers: {train_tickers[:5]}... (truncated)")
 
     # evaluate.py의 evaluate_model() 재사용
     portfolio_values, exec_returns, value_returns, irt_data, metrics, _artefacts = (
@@ -315,33 +318,33 @@ def test_model(args, model_path=None):
     total_return = metrics["total_return"]
     step = metrics["n_steps"]
 
-    print(f"\n" + "=" * 70)
-    print(f"Evaluation Results")
+    print("\n" + "=" * 70)
+    print("Evaluation Results")
     print("=" * 70)
-    print(f"\n[Period]")
+    print("\n[Period]")
     print(f"  Start: {args.test_start}")
     print(f"  End: {args.test_end}")
     print(f"  Steps: {step}")
 
-    print(f"\n[Returns]")
-    print(f"  Total Return: {total_return*100:.2f}%")
-    print(f"  Annualized Return: {metrics['annualized_return']*100:.2f}%")
+    print("\n[Returns]")
+    print(f"  Total return: {total_return*100:.2f}%")
+    print(f"  Annualized return: {metrics['annualized_return']*100:.2f}%")
 
-    print(f"\n[Risk Metrics]")
+    print("\n[Risk Metrics]")
     print(f"  Volatility (annualized): {metrics['volatility']*100:.2f}%")
-    print(f"  Maximum Drawdown: {metrics['max_drawdown']*100:.2f}%")
+    print(f"  Maximum drawdown: {metrics['max_drawdown']*100:.2f}%")
 
-    print(f"\n[Risk-Adjusted Returns]")
-    print(f"  Sharpe Ratio: {metrics['sharpe_ratio']:.3f}")
-    print(f"  Sortino Ratio: {metrics['sortino_ratio']:.3f}")
-    print(f"  Calmar Ratio: {metrics['calmar_ratio']:.3f}")
+    print("\n[Risk-Adjusted Returns]")
+    print(f"  Sharpe ratio: {metrics['sharpe_ratio']:.3f}")
+    print(f"  Sortino ratio: {metrics['sortino_ratio']:.3f}")
+    print(f"  Calmar ratio: {metrics['calmar_ratio']:.3f}")
 
-    print(f"\n[Portfolio Value]")
-    print(f"  Initial: $1,000,000.00")
+    print("\n[Portfolio Value]")
+    print("  Initial: $1,000,000.00")
     print(f"  Final: ${final_value:,.2f}")
     print(f"  Profit/Loss: ${final_value - 1000000:,.2f}")
 
-    print(f"\n" + "=" * 70)
+    print("\n" + "=" * 70)
 
     return {
         "portfolio_values": portfolio_values,
@@ -353,56 +356,58 @@ def test_model(args, model_path=None):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="통합 RL 학습/평가 스크립트")
+    parser = argparse.ArgumentParser(
+        description="통합 RL 학습/평가 파이프라인"
+    )
 
-    # 모델 및 모드
+    # model and mode
     parser.add_argument(
         "--model",
         type=str,
         required=True,
         choices=["sac", "ppo", "a2c", "td3", "ddpg"],
-        help="RL 알고리즘 선택",
+        help="학습/평가할 RL 알고리즘",
     )
     parser.add_argument(
         "--mode",
         type=str,
         default="both",
         choices=["train", "test", "both"],
-        help="실행 모드 (default: both)",
+        help="실행 모드 (기본: both)",
     )
 
-    # 데이터 기간 (config.py 기본값)
+    # data periods (defaults defined in config.py)
     parser.add_argument(
         "--train-start",
         type=str,
         default=TRAIN_START_DATE,
-        help=f"Training start date (default: {TRAIN_START_DATE})",
+        help=f"훈련 시작일 (기본: {TRAIN_START_DATE})",
     )
     parser.add_argument(
         "--train-end",
         type=str,
         default=TRAIN_END_DATE,
-        help=f"Training end date (default: {TRAIN_END_DATE})",
+        help=f"훈련 종료일 (기본: {TRAIN_END_DATE})",
     )
     parser.add_argument(
         "--test-start",
         type=str,
         default=TEST_START_DATE,
-        help=f"Test start date (default: {TEST_START_DATE})",
+        help=f"평가 시작일 (기본: {TEST_START_DATE})",
     )
     parser.add_argument(
         "--test-end",
         type=str,
         default=TEST_END_DATE,
-        help=f"Test end date (default: {TEST_END_DATE})",
+        help=f"평가 종료일 (기본: {TEST_END_DATE})",
     )
 
     # 학습 설정
     parser.add_argument(
-        "--episodes", type=int, default=200, help="Number of episodes (default: 200)"
+        "--episodes", type=int, default=200, help="학습 에피소드 수 (기본값: 200)"
     )
     parser.add_argument(
-        "--output", type=str, default="logs", help="Output directory (default: logs)"
+        "--output", type=str, default="logs", help="출력 디렉터리 (기본값: logs)"
     )
 
     # 평가 전용
@@ -410,7 +415,7 @@ def main():
         "--checkpoint",
         type=str,
         default=None,
-        help="Checkpoint path for evaluation (required for --mode test)",
+        help="평가 시 사용할 체크포인트 경로 (--mode test에 필수)",
     )
 
     args = parser.parse_args()
@@ -418,19 +423,23 @@ def main():
     # 실행
     if args.mode == "train":
         log_dir, model_path = train_model(args)
-        print(f"\n완료! 결과: {log_dir}")
+        print(f"\nTraining complete. Results directory: {log_dir}")
 
     elif args.mode == "test":
         results = test_model(args)
-        print(f"\n완료! Final return: {results['total_return']*100:.2f}%")
+        print(
+            f"\nEvaluation complete. Final return: {results['total_return']*100:.2f}%"
+        )
 
     elif args.mode == "both":
         log_dir, model_path = train_model(args)
-        print(f"\n학습 완료. 이어서 평가 시작...\n")
+        print(
+            f"\nTraining finished. Starting evaluation with the same configuration...\n"
+        )
         results = test_model(args, model_path=model_path)
-        print(f"\n모든 작업 완료!")
-        print(f"  학습 결과: {log_dir}")
-        print(f"  최종 수익률: {results['total_return']*100:.2f}%")
+        print(f"\nFull pipeline completed.")
+        print(f"  Training outputs: {log_dir}")
+        print(f"  Final return: {results['total_return']*100:.2f}%")
 
 
 if __name__ == "__main__":

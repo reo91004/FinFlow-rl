@@ -1,4 +1,5 @@
 # finrl/agents/irt/__init__.py
+# IRT 관련 핵심 클래스와 함수들을 패키지 수준에서 노출한다.
 
 """
 IRT (Immune Replicator Transport) 모듈
@@ -22,7 +23,7 @@ IRT (Immune Replicator Transport) 모듈
         alpha=0.3
     )
 
-    # Forward pass
+    # Forward 수행
     action, info = actor(state)
 """
 

@@ -1,29 +1,34 @@
 # finrl/agents/irt/irt_policy.py
+# Stable Baselines3 정책과 IRT Actor를 결합하여 위기 적응형 포트폴리오 정책을 제공한다.
 
 """
-Stable Baselines3용 IRT Custom Policy
+Stable Baselines3에서 사용할 수 있는 IRT 커스텀 정책 모듈
 
-SB3의 SACPolicy를 상속하여 IRT Actor를 통합한다.
+이 모듈은 SACPolicy를 확장하여 IRT 기반 Actor를 연결하고,
+기존의 Twin Critic 구조를 재사용하면서 면역학적 위기 감지·혼합 로직을 통합한다.
 
-핵심 설계:
-- SAC의 기본 Critic (2 Q-networks) 재사용
-- Actor만 IRT로 교체 (BCellIRTActor)
-- Value network는 SB3 기본 사용
+주요 특징:
+- SAC의 Critic 두 개를 그대로 활용하여 Q-value를 계산한다.
+- Actor 경로는 BCellIRTActor로 대체하여 IRT 연산자를 통한 행동 생성을 수행한다.
+- 평가·시각화 시 필요한 IRT 내부 정보를 Actor 래퍼가 유지한다.
 
-사용법:
-    from stable_baselines3 import SAC
-    from finrl.agents.irt.irt_policy import IRTPolicy
+간단한 사용 예시는 다음과 같다.
 
-    model = SAC(
-        policy=IRTPolicy,
-        env=env,
-        policy_kwargs={
-            "emb_dim": 128,
-            "m_tokens": 6,
-            "M_proto": 8,
-            "alpha": 0.3
-        }
-    )
+```python
+from stable_baselines3 import SAC
+from finrl.agents.irt.irt_policy import IRTPolicy
+
+model = SAC(
+    policy=IRTPolicy,
+    env=env,
+    policy_kwargs={
+        "emb_dim": 128,
+        "m_tokens": 6,
+        "M_proto": 8,
+        "alpha": 0.3,
+    },
+)
+```
 """
 
 import torch
@@ -42,11 +47,12 @@ from finrl.agents.irt.bcell_actor import BCellIRTActor
 
 class IRTActorWrapper(Actor):
     """
-    BCellIRTActor를 SB3의 Actor 인터페이스로 wrapping
+    BCellIRTActor 출력을 Stable Baselines3 Actor 인터페이스에 맞게 노출하는 래퍼
 
-    SAC가 기대하는 메서드들을 제공한다:
-    - forward(): mean actions 반환
-    - action_log_prob(): action과 log_prob 반환
+    주요 기능:
+    - forward(): 결정적 또는 평균 행동을 반환한다.
+    - action_log_prob(): Dirichlet 샘플과 로그 확률을 함께 계산한다.
+    - Critic을 활용해 프로토타입별 fitness(적합도)를 추정한다.
     """
 
     def __init__(
@@ -85,26 +91,26 @@ class IRTActorWrapper(Actor):
         self, obs: torch.Tensor, requires_grad: bool = False
     ) -> Optional[torch.Tensor]:
         """
-        Critic 기반 fitness 계산 (공통 helper method)
+        Critic을 이용해 프로토타입별 적합도를 산출한다.
 
         Args:
-            obs: [B, features_dim]
+            obs: [B, features_dim] 형태의 관측 배치
 
         Returns:
-            fitness: [B, M] - 프로토타입별 Q-value, None if critic unavailable
+            fitness: [B, M] - 프로토타입별 최소 Q-value, Critic이 없으면 None
         """
         B = obs.size(0)
         M = self.irt_actor.M
 
         fitness = None
 
-        # Weakref로부터 policy 가져오기
+        # WeakRef로부터 policy 인스턴스를 안전하게 꺼낸다.
         policy = self._policy_ref() if self._policy_ref is not None else None
 
         if policy is not None and hasattr(policy, 'critic'):
             ctx = torch.enable_grad if requires_grad else torch.no_grad
             with ctx():
-                # 각 프로토타입의 샘플 행동 생성
+                # 각 프로토타입에서 행동 후보를 생성한다.
                 K = self.irt_actor.proto_keys  # [M, D]
                 proto_actions = []
 
@@ -131,22 +137,22 @@ class IRTActorWrapper(Actor):
 
     def forward(self, obs: torch.Tensor, deterministic: bool = False) -> torch.Tensor:
         """
-        Forward pass - mean actions 반환
+        평균 행동을 계산하여 SAC Actor와 동일한 인터페이스로 반환한다.
 
         Args:
-            obs: [B, features_dim]
-            deterministic: 결정적 행동 여부
+            obs: [B, features_dim] 형태의 관측 텐서
+            deterministic: True일 때는 탐색 없이 평균 행동만 사용한다.
 
         Returns:
-            mean_actions: [B, action_dim]
+            mean_actions: [B, action_dim] 텐서
         """
-        # Ensure float32 dtype (환경에서 float64로 들어올 수 있음)
+        # 입력 dtype을 float32로 맞춰 연산 안정성을 확보한다.
         obs = obs.float()
 
-        # Critic 기반 fitness 계산
+        # Critic 기반 적합도를 계산한다.
         fitness = self._compute_fitness(obs, requires_grad=False)
 
-        # IRT Actor forward
+        # IRT Actor를 통해 Dirichlet 혼합 행동을 얻는다.
         action, info = self.irt_actor(
             state=obs,
             fitness=fitness,
@@ -154,29 +160,29 @@ class IRTActorWrapper(Actor):
             retain_grad=False,
         )
 
-        # 마지막 IRT info 저장 (평가/시각화용)
+        # 평가 및 시각화를 위해 마지막 IRT 결과를 저장한다.
         self._last_irt_info = info
 
         return action
 
     def action_log_prob(self, obs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Sample action and compute log probability
+        행동을 샘플링하고 해당 로그 확률을 계산한다.
 
         Args:
-            obs: [B, features_dim]
+            obs: [B, features_dim] 형태의 관측 텐서
 
         Returns:
-            action: [B, action_dim]
-            log_prob: [B, 1]
+            action: [B, action_dim] - Dirichlet에서 샘플링된 행동
+            log_prob: [B, 1] - 해당 행동의 로그 확률
         """
-        # Ensure float32 dtype (환경에서 float64로 들어올 수 있음)
+        # 입력 dtype을 float32로 맞춘다.
         obs = obs.float()
 
-        # ===== Step 1: Fitness 계산 (Critic Q-network 사용) =====
+        # --- 1단계: Critic으로 프로토타입 적합도를 계산한다. ---
         fitness = self._compute_fitness(obs, requires_grad=False)
 
-        # ===== Step 2: IRT forward with fitness =====
+        # --- 2단계: 적합도를 반영한 IRT Actor forward를 수행한다. ---
         action, info = self.irt_actor(
             state=obs,
             fitness=fitness,
@@ -184,14 +190,13 @@ class IRTActorWrapper(Actor):
             retain_grad=False,
         )
 
-        # 마지막 IRT info 저장 (평가/시각화용)
+        # 해석을 위해 마지막 IRT 결과를 저장한다.
         self._last_irt_info = info
 
-        # ===== Step 3: Log probability 계산 =====
-        # info에서 Dirichlet concentration 가져오기
+        # --- 3단계: Dirichlet 집중도를 사용해 로그 확률을 계산한다. ---
         mixed_conc_clamped = info['mixed_conc_clamped']
 
-        # Dirichlet distribution으로 log_prob 계산
+        # Dirichlet 분포의 log_prob를 계산한다.
         dist = torch.distributions.Dirichlet(mixed_conc_clamped)
         log_prob = dist.log_prob(action).unsqueeze(-1)  # [B, 1]
 
@@ -199,20 +204,20 @@ class IRTActorWrapper(Actor):
 
     def get_std(self) -> torch.Tensor:
         """
-        Return standard deviation (Dirichlet의 경우 approximation)
+        SAC의 Actor 인터페이스 호환을 위한 표준편차 근사값을 반환한다.
 
-        Dirichlet의 variance는 α_i(α_0 - α_i) / (α_0^2 * (α_0 + 1))
-        여기서는 간단히 0.1 반환 (SAC의 log_std 학습을 우회)
+        Dirichlet 분포의 분산은 α_i(α_0 - α_i) / (α_0^2(α_0 + 1)) 구조를 갖지만,
+        여기서는 SAC의 log_std 학습 경로를 사용하지 않으므로 고정값 0.1을 제공한다.
         """
         return torch.ones(self.action_dim) * 0.1
 
 
 class IRTPolicy(SACPolicy):
     """
-    IRT Policy for SAC
+    SAC에서 IRT 기반 Actor를 사용하도록 확장한 정책 클래스
 
-    SB3의 SACPolicy를 상속하여 IRT Actor를 통합한다.
-    SAC의 기본 Critic을 재사용하고, Actor만 IRT로 교체한다.
+    Stable Baselines3의 SACPolicy를 상속하여 Critic 구조는 유지하고,
+    Actor 경로를 면역학 기반 BCellIRTActor로 치환한다.
     """
 
     def __init__(
@@ -237,10 +242,10 @@ class IRTPolicy(SACPolicy):
         emb_dim: int = 128,
         m_tokens: int = 6,
         M_proto: int = 8,
-        alpha: float = 0.45,  # Phase F: alpha_max 기본값
-        alpha_min: float = 0.08,  # Phase F: Rep 경로 확보
+        alpha: float = 0.45,  # 평시 기준의 OT 혼합 상한
+        alpha_min: float = 0.08,  # 위기 시 Replicator가 최소한 확보해야 하는 비중
         alpha_max: Optional[float] = None,
-        ema_beta: float = 0.55,  # Phase 1.5: 0.70 → 0.55 (faster responsiveness)
+        ema_beta: float = 0.55,  # IRT Actor EMA 메모리 계수
         market_feature_dim: Optional[int] = None,
         stock_dim: Optional[int] = None,
         tech_indicator_count: Optional[int] = None,
@@ -248,18 +253,18 @@ class IRTPolicy(SACPolicy):
         dirichlet_min: float = 0.05,
         dirichlet_max: float = 6.0,
         action_temp: float = 0.50,
-        eps: float = 0.03,  # Phase-F2': 0.05 → 0.03 (OT 평탄화 완화)
+        eps: float = 0.03,  # Sinkhorn 엔트로피 계수
         max_iters: int = 30,
         replicator_temp: float = 0.4,
         eta_0: float = 0.05,
-        eta_1: float = 0.12,  # Phase E: 민감도 완화
+        eta_1: float = 0.12,  # 위기 레벨에 따라 추가되는 Replicator 학습률
         alpha_update_rate: float = 0.85,
         alpha_feedback_gain: float = 0.25,
         alpha_feedback_bias: float = 0.0,
         directional_decay_min: float = 0.05,
         alpha_noise_std: float = 0.0,
-        gamma: float = 0.90,  # Phase 1.5: cost responsiveness ↑ (0.85 → 0.90)
-        # Phase 1: Crisis calibration defaults
+        gamma: float = 0.90,  # 면역 비용 함수에서 공자극 내적을 차감할 때 사용하는 가중치
+        # 위기 감지·보정 기본값
         w_r: float = 0.55,
         w_s: float = -0.25,
         w_c: float = 0.20,
@@ -279,11 +284,9 @@ class IRTPolicy(SACPolicy):
         crisis_guard_rate_init: float = 0.07,
         crisis_guard_rate_final: float = 0.02,
         crisis_guard_warmup_steps: int = 7500,
-        # Phase 1.5: 히스테리시스 임계치 재조정 (0.55/0.45 → 0.52/0.42)
         hysteresis_up: float = 0.52,
         hysteresis_down: float = 0.42,
         adaptive_hysteresis: bool = True,
-        # Phase 1.5: 분위수 상향 (0.65 → 0.72)
         hysteresis_quantile: float = 0.72,
         hysteresis_min_gap: float = 0.03,
         crisis_history_len: int = 512,
@@ -294,41 +297,75 @@ class IRTPolicy(SACPolicy):
     ):
         """
         Args:
-            observation_space: 관측 공간
-            action_space: 행동 공간
-            lr_schedule: 학습률 스케줄
-            (SACPolicy 기본 파라미터들...)
+            observation_space: 강화학습 환경의 관측 공간
+            action_space: 포트폴리오 가중치가 속한 행동 공간
+            lr_schedule: 학습률 스케줄 함수
+            net_arch: Critic 신경망 구조 정의
+            activation_fn: Critic 활성화 함수
+            use_sde: 상태 의존적 탐색 사용 여부
+            log_std_init: SAC 기본 Actor용 로그 표준편차 초기값
+            use_expln: SAC 기본 Actor의 expln 변환 사용 여부
+            clip_mean: SAC 기본 Actor 평균값 클리핑 한계
+            features_extractor_class: 특징 추출기 클래스
+            features_extractor_kwargs: 특징 추출기 인자
+            normalize_images: 이미지 정규화 여부
+            optimizer_class: 최적화 알고리즘 클래스
+            optimizer_kwargs: 최적화 알고리즘 추가 인자
+            n_critics: Critic 개수
+            share_features_extractor: Actor·Critic 특징 추출기 공유 여부
             emb_dim: IRT 임베딩 차원
-            m_tokens: 에피토프 토큰 수
-            M_proto: 프로토타입 수
-            alpha: OT-Replicator 혼합 비율 (후진 호환, alpha_max 기본값)
-            alpha_min: 위기 시 최소 α (Phase F: 0.08)
-            alpha_max: 평시 최대 α (Phase F: 0.45)
-            ema_beta: EMA 메모리 계수
-            market_feature_dim: 시장 특성 차원
-            dirichlet_min: Dirichlet concentration minimum
-            dirichlet_max: Dirichlet concentration maximum
-            eps: Sinkhorn 엔트로피
-            replicator_temp: Replicator softmax 온도 (Phase F: 1.4, >1이면 평탄화)
-            eta_0: 기본 학습률 (Replicator)
-            eta_1: 위기 증가량 (Replicator, Phase E: 0.12)
-            gamma: 공자극 가중치 (OT 비용 함수, Phase E: 0.85)
-            w_r: 시장 위기 신호 가중치 (Phase 1 재조정 기본값 0.55)
-            w_s: Sharpe 신호 가중치 (Phase 1: 음수로 위기 완화 반영)
-            w_c: CVaR 신호 가중치 (Phase 1: 0.20)
-            eta_b: 바이어스 초기 학습률 (Phase 1: 0.02)
-            eta_b_min: 코사인 감쇠 후 최소 학습률
-            eta_b_decay_steps: 바이어스 학습률 감쇠 스텝
-            eta_T: 온도 적응 학습률
+            m_tokens: 에피토프 토큰 개수
+            M_proto: 프로토타입 전략 개수
+            alpha: OT-Replicator 혼합 비율 기본값 (alpha_max의 초기값으로 활용)
+            alpha_min: 위기 상황에서 허용되는 α 최소값
+            alpha_max: 평시 α 상한 (None이면 alpha 값을 사용)
+            ema_beta: IRT Actor에서 사용하는 EMA 계수
+            market_feature_dim: T-Cell 입력으로 사용하는 시장 특성 차원
+            stock_dim: 종목 수 (명시하지 않으면 행동 차원에서 유추)
+            tech_indicator_count: 기술 지표 개수 (명시하지 않으면 상태 차원에서 유추)
+            has_dsr_cvar: 상태에 DSR·CVaR 추가 여부
+            dirichlet_min: Dirichlet 집중도 하한 (수치 안정성 확보용)
+            dirichlet_max: Dirichlet 집중도 상한
+            action_temp: Dirichlet 샘플링 온도
+            eps: Sinkhorn 알고리즘의 엔트로피 계수
+            max_iters: Sinkhorn 반복 횟수
+            replicator_temp: Replicator softmax 온도
+            eta_0: Replicator 기본 학습률
+            eta_1: 위기 레벨에 비례해 가열되는 추가 학습률
+            alpha_update_rate: α 상태 업데이트 속도
+            alpha_feedback_gain: Sharpe 변화에 대한 α 증폭 계수
+            alpha_feedback_bias: Sharpe 변화에 곱해지는 α 편향 계수
+            directional_decay_min: α 방향성 감쇠 최소값
+            alpha_noise_std: 학습 시 α에 주입할 가우시안 노이즈 표준편차
+            gamma: 면역 비용 함수에서 공자극 내적을 차감할 때 사용하는 가중치
+            w_r: 시장 기반 위기 신호 가중치
+            w_s: Sharpe 기반 위기 신호 가중치
+            w_c: CVaR 기반 위기 신호 가중치
+            eta_b: 위기 바이어스를 보정하는 학습률
+            eta_b_min: 바이어스 학습률 감쇠 하한
+            eta_b_decay_steps: 바이어스 학습률 감쇠에 걸리는 스텝 수
+            eta_T: 온도 보정 학습률
             p_star: 목표 위기 점유율
-            temperature_min/temperature_max: 온도 클램프 범위
-            stat_momentum: 위기 신호 통계용 EMA 모멘텀
-            eta_b_warmup_steps/value: 바이어스 초기 워밍업 설정
-            crisis_guard_rate_init/final: 가드 강도 스케줄
-            crisis_guard_warmup_steps: 가드 스케줄 워밍업 스텝
-            hysteresis_up/down: 위기 전환 히스테리시스 임계값
-            k_s/k_c/k_b: Sharpe·CVaR·기본 위기 시그모이드 기울기
-            crisis_guard_rate: (선택) 기존 고정 가드 비율 호환성 오버라이드
+            temperature_min: 위기 온도 하한
+            temperature_max: 위기 온도 상한
+            stat_momentum: 위기 통계 EMA 모멘텀
+            eta_b_warmup_steps: 바이어스 학습률 워밍업 기간
+            eta_b_warmup_value: 워밍업 동안 사용할 학습률
+            alpha_crisis_source: α 계산에 사용할 위기 신호 시점 (pre_guard 또는 post_guard)
+            crisis_target: 위기 레벨이 수렴해야 하는 목표 값
+            crisis_guard_rate_init: 초기 위기 가드 강도
+            crisis_guard_rate_final: 최종 위기 가드 강도
+            crisis_guard_warmup_steps: 위기 가드 강도 전환 기간
+            hysteresis_up: 위기 진입 임계값
+            hysteresis_down: 위기 해제 임계값
+            adaptive_hysteresis: 히스테리시스 임계값의 적응 여부
+            hysteresis_quantile: 적응형 히스테리시스에서 사용할 분위수
+            hysteresis_min_gap: 적응형 상·하한 사이 최소 간격
+            crisis_history_len: 위기 히스토리 버퍼 크기
+            k_s: Sharpe 신호 시그모이드 기울기
+            k_c: CVaR 신호 시그모이드 기울기
+            k_b: 기본 위기 신호 시그모이드 기울기
+            crisis_guard_rate: 고정 가드 강도를 강제할 때 사용하는 값
         """
         # IRT 파라미터 저장
         self.emb_dim = emb_dim
@@ -351,7 +388,7 @@ class IRTPolicy(SACPolicy):
             self.market_feature_dim = 12
         self.dirichlet_min = dirichlet_min
         self.dirichlet_max = dirichlet_max
-        self.action_temp = action_temp  # Phase-2
+        self.action_temp = action_temp  # Dirichlet 샘플을 부드럽게 하는 온도 계수
         self.eps = eps
         self.max_iters = max_iters
         self.replicator_temp = replicator_temp
@@ -394,7 +431,7 @@ class IRTPolicy(SACPolicy):
         self.k_s = k_s
         self.k_c = k_c
         self.k_b = k_b
-        self.crisis_guard_rate = crisis_guard_rate  # Optional legacy override
+        self.crisis_guard_rate = crisis_guard_rate  # 지정된 경우 과거 설정과 동일한 고정 가드 비율을 사용한다.
 
         # SACPolicy 초기화
         super().__init__(
@@ -418,18 +455,19 @@ class IRTPolicy(SACPolicy):
 
     def make_actor(self, features_extractor: Optional[BaseFeaturesExtractor] = None) -> IRTActorWrapper:
         """
-        Create IRT Actor
+        IRT Actor를 생성한 뒤 Stable Baselines3 형식으로 감싼 객체를 반환한다.
 
-        SACPolicy의 make_actor를 override하여 IRT Actor를 생성한다.
+        SACPolicy의 make_actor를 재정의하여 BCellIRTActor를 구성하고,
+        Critic 정보에 접근할 수 있도록 IRTActorWrapper와 결합한다.
         """
-        # Features extractor가 없으면 기본 생성
+        # 특징 추출기가 지정되지 않은 경우 기본 구현을 사용한다.
         if features_extractor is None:
             features_extractor = self.make_features_extractor()
 
         features_dim = features_extractor.features_dim
         action_dim = get_action_dim(self.action_space)
 
-        # BCellIRTActor 생성
+        # 포트폴리오 행동 생성을 담당할 BCellIRTActor를 초기화한다.
         bcell_actor = BCellIRTActor(
             state_dim=features_dim,
             action_dim=action_dim,
@@ -446,7 +484,7 @@ class IRTPolicy(SACPolicy):
             has_dsr_cvar=self.has_dsr_cvar,
             dirichlet_min=self.dirichlet_min,
             dirichlet_max=self.dirichlet_max,
-            action_temp=self.action_temp,  # Phase-2
+            action_temp=self.action_temp,  # Dirichlet 샘플 온도
             eps=self.eps,
             max_iters=self.max_iters,
             replicator_temp=self.replicator_temp,
@@ -485,10 +523,10 @@ class IRTPolicy(SACPolicy):
             k_s=self.k_s,
             k_c=self.k_c,
             k_b=self.k_b,
-            crisis_guard_rate=self.crisis_guard_rate  # Legacy override if provided
+            crisis_guard_rate=self.crisis_guard_rate  # 지정된 경우 고정된 가드 강도를 사용한다.
         )
 
-        # Wrapper로 감싸기 (self 전달: Critic 참조용)
+        # Critic 참조를 유지하기 위해 현재 정책을 전달한 래퍼를 생성한다.
         actor = IRTActorWrapper(
             irt_actor=bcell_actor,
             features_dim=features_dim,
@@ -561,30 +599,30 @@ class IRTPolicy(SACPolicy):
 
     def get_irt_info(self) -> Optional[Dict]:
         """
-        마지막 forward의 IRT 정보 반환 (평가/시각화용)
+        최근 forward 호출에서 수집된 IRT 해석 정보를 반환한다.
 
         Returns:
-            dict: IRT info containing:
-                - w: [B, M] - 프로토타입 혼합 가중치
-                - w_rep: [B, M] - Replicator 출력
-                - w_ot: [B, M] - OT 출력
-                - crisis_level: [B, 1] - 위기 레벨 (guard 후)
-                - crisis_level_pre_guard: [B, 1] - guard 적용 전 확률
-                - crisis_raw: [B, 1] - 가중 합산 결과
-                - crisis_bias / crisis_temperature: [1] - EMA 보정 상태
-                - crisis_prev_regime: [1] - 이전 레짐 플래그
-                - crisis_base_component / delta_component / cvar_component: [B, 1] - 신호별 기여
-                - crisis_regime: [B, 1] - 히스테리시스 기반 레짐
-                - crisis_guard_rate: float - 현재 guard 비율
-                - crisis_types: [B, K] - 위기 타입
-                - cost_matrix: [B, m, M] - Immunological cost
+            dict: 아래 항목을 포함하는 사전
+                - w: [B, M] - 최종 프로토타입 혼합 가중치
+                - w_rep: [B, M] - Replicator 경로 결과
+                - w_ot: [B, M] - Optimal Transport 경로 질량
+                - crisis_level: [B, 1] - 가드 적용 이후의 위기 레벨
+                - crisis_level_pre_guard: [B, 1] - 가드 적용 이전 위기 확률
+                - crisis_raw: [B, 1] - 위기 신호 가중합
+                - crisis_bias / crisis_temperature: [1] - EMA 기반 보정 상태
+                - crisis_prev_regime: [1] - 직전 레짐 플래그
+                - crisis_base_component / delta_component / cvar_component: [B, 1] - 개별 신호 기여도
+                - crisis_regime: [B, 1] - 히스테리시스 기반 레짐 판단
+                - crisis_guard_rate: float - 현재 가드 강도
+                - crisis_types: [B, K] - 위기 타입별 점수
+                - cost_matrix: [B, m, M] - 면역 비용 행렬
                 - P: [B, m, M] - 수송 계획
                 - fitness: [B, M] - 프로토타입 적합도
-                - eta: [B, 1] - Crisis-adaptive learning rate
-                - alpha_c: [B, 1] - Dynamic OT-Replicator mixing ratio
-                - crisis_base / crisis_base_raw: [B, 1] - T-Cell baseline (sigmoid/logit)
-                - delta_sharpe / cvar: [B, 1] - 입력 Sharpe, CVaR 신호
-            None: IRTPolicy가 아니거나 아직 forward 안 함
+                - eta: [B, 1] - 위기 적응형 Replicator 학습률
+                - alpha_c: [B, 1] - 동적 OT-Replicator 혼합 비율
+                - crisis_base / crisis_base_raw: [B, 1] - T-Cell 기준 신호 (sigmoid/logit)
+                - delta_sharpe / cvar: [B, 1] - 입력 Sharpe·CVaR 변화량
+            None: 정책이 아직 행동을 생성하지 않았을 때
         """
         if hasattr(self, 'actor') and hasattr(self.actor, '_last_irt_info'):
             return self.actor._last_irt_info
@@ -593,15 +631,15 @@ class IRTPolicy(SACPolicy):
 
 class IRTActorCriticPolicy(IRTPolicy):
     """
-    IRT Actor + SB3 기본 Critic
+    IRT Actor와 SB3 기본 Critic 구성을 그대로 유지하기 위한 호환성 클래스
 
-    SAC는 Actor와 Critic을 별도로 관리하므로, 이 클래스는 주로 호환성을 위한 것이다.
-    실제로는 IRTPolicy를 SAC의 policy로 사용하면 된다.
+    SAC는 Actor와 Critic을 분리해 관리하므로, 대부분의 사용자는 IRTPolicy만 지정하면 된다.
+    다만 SB3의 일부 API와의 호환을 위해 명시적 ActorCritic 정책을 제공한다.
     """
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
 
-# Alias for compatibility
+# 과거 버전과의 호환을 위한 별칭
 IRT_Policy = IRTPolicy

@@ -110,25 +110,35 @@ def parse_args() -> argparse.Namespace:
         description="FinFlow 평가 산출물을 기반으로 정적 XAI 리포트를 생성합니다.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--input-dir", required=True, help="평가 산출물이 위치한 디렉토리")
+    parser.add_argument(
+        "--input-dir", required=True, help="평가 산출물이 위치한 디렉토리"
+    )
     parser.add_argument(
         "--out-dir",
         default=None,
         help="시각화 출력 디렉토리 (기본: <input-dir>/viz)",
     )
-    parser.add_argument("--include-core", dest="include_core", action="store_true", default=True)
+    parser.add_argument(
+        "--include-core", dest="include_core", action="store_true", default=True
+    )
     parser.add_argument("--no-core", dest="include_core", action="store_false")
-    parser.add_argument("--include-xai", dest="include_xai", action="store_true", default=True)
+    parser.add_argument(
+        "--include-xai", dest="include_xai", action="store_true", default=True
+    )
     parser.add_argument("--no-xai", dest="include_xai", action="store_false")
     parser.add_argument("--crisis-threshold", type=float, default=0.5)
     parser.add_argument("--crisis-quantile", type=float, default=None)
     parser.add_argument("--max-topk", type=int, default=5)
     parser.add_argument("--heatmap-steps", type=int, default=300)
     parser.add_argument("--benchmark", choices=["auto", "none"], default="auto")
-    parser.add_argument("--format", dest="img_format", choices=["png", "pdf"], default="png")
+    parser.add_argument(
+        "--format", dest="img_format", choices=["png", "pdf"], default="png"
+    )
     parser.add_argument("--dpi", type=int, default=160)
     parser.add_argument("--rolling-window", type=int, default=60)
-    parser.add_argument("--html-index", action="store_true", help="HTML 썸네일 인덱스 생성")
+    parser.add_argument(
+        "--html-index", action="store_true", help="HTML 썸네일 인덱스 생성"
+    )
     return parser.parse_args()
 
 
@@ -139,7 +149,9 @@ def _load_json(path: Path) -> Dict:
     return {}
 
 
-def _resolve_path(root: Path, candidate: Optional[str], *fallbacks: str) -> Optional[Path]:
+def _resolve_path(
+    root: Path, candidate: Optional[str], *fallbacks: str
+) -> Optional[Path]:
     candidates: List[Path] = []
     if candidate:
         c_path = Path(candidate)
@@ -167,7 +179,9 @@ def _load_prototypes(path: Optional[Path]) -> Optional[pd.DataFrame]:
     return None
 
 
-def _load_attributions(parquet_path: Optional[Path], csv_path: Optional[Path]) -> Optional[pd.DataFrame]:
+def _load_attributions(
+    parquet_path: Optional[Path], csv_path: Optional[Path]
+) -> Optional[pd.DataFrame]:
     if parquet_path is not None and parquet_path.is_file():
         try:
             return pd.read_parquet(parquet_path)
@@ -181,7 +195,9 @@ def _load_attributions(parquet_path: Optional[Path], csv_path: Optional[Path]) -
     return None
 
 
-def _map_index_to_dates(series: pd.Series, mapper: Dict[int, pd.Timestamp]) -> pd.Series:
+def _map_index_to_dates(
+    series: pd.Series, mapper: Dict[int, pd.Timestamp]
+) -> pd.Series:
     if series.empty:
         return series
     mapped = [mapper.get(int(idx), idx) for idx in series.index]
@@ -189,7 +205,9 @@ def _map_index_to_dates(series: pd.Series, mapper: Dict[int, pd.Timestamp]) -> p
     return series.sort_index()
 
 
-def _map_df_index_to_dates(df: pd.DataFrame, mapper: Dict[int, pd.Timestamp]) -> pd.DataFrame:
+def _map_df_index_to_dates(
+    df: pd.DataFrame, mapper: Dict[int, pd.Timestamp]
+) -> pd.DataFrame:
     if df.empty:
         return df
     mapped = [mapper.get(int(idx), idx) for idx in df.index]
@@ -212,7 +230,9 @@ def _extract_topk(summary: Dict, regime: str, limit: int) -> Dict[str, float]:
         for entry in candidates:
             if isinstance(entry, dict):
                 name = entry.get("feature") or entry.get("name")
-                value = entry.get("score") or entry.get("importance") or entry.get("weight")
+                value = (
+                    entry.get("score") or entry.get("importance") or entry.get("weight")
+                )
                 if name is not None and value is not None:
                     items.append((str(name), float(value)))
     for name, value in items:
@@ -223,10 +243,14 @@ def _extract_topk(summary: Dict, regime: str, limit: int) -> Dict[str, float]:
     return result
 
 
-def _prepare_proto_weights(df: Optional[pd.DataFrame], cfg: PlotConfig, date_map: Dict[int, pd.Timestamp]) -> Optional[pd.DataFrame]:
+def _prepare_proto_weights(
+    df: Optional[pd.DataFrame], cfg: PlotConfig, date_map: Dict[int, pd.Timestamp]
+) -> Optional[pd.DataFrame]:
     if df is None or df.empty:
         return None
-    step_col = next((c for c in df.columns if c.lower() in {"step", "t", "index"}), None)
+    step_col = next(
+        (c for c in df.columns if c.lower() in {"step", "t", "index"}), None
+    )
     if step_col is None:
         return None
     records: List[pd.Series] = []
@@ -242,7 +266,11 @@ def _prepare_proto_weights(df: Optional[pd.DataFrame], cfg: PlotConfig, date_map
             if weight <= 0:
                 continue
             id_col = f"topk_{rank}_id"
-            label = str(row[id_col]) if id_col in row and pd.notna(row[id_col]) else f"Proto {rank}"
+            label = (
+                str(row[id_col])
+                if id_col in row and pd.notna(row[id_col])
+                else f"Proto {rank}"
+            )
             weights[label] = weight
             other_total += weight
         if weights:
@@ -287,15 +315,21 @@ def build_report_data(root: Path, cfg: PlotConfig) -> Optional[ReportData]:
     drawdown = compute_drawdown(equity)
     rolling = None
     if returns.size >= max(5, cfg.rolling_window):
-        rolling = compute_rolling_stats(returns, index=date_index, window=cfg.rolling_window)
+        rolling = compute_rolling_stats(
+            returns, index=date_index, window=cfg.rolling_window
+        )
 
     benchmark = None
     if cfg.benchmark_mode == "auto":
-        benchmark_candidates = _first_non_empty(series.get("benchmark_returns"), insights.get("benchmark_returns"))
+        benchmark_candidates = _first_non_empty(
+            series.get("benchmark_returns"), insights.get("benchmark_returns")
+        )
         if _is_non_empty(benchmark_candidates):
             bench_arr = np.asarray(benchmark_candidates, dtype=float)
             length = min(len(bench_arr), len(date_index))
-            benchmark = compute_equity_curve(bench_arr[:length], index=date_index[:length])
+            benchmark = compute_equity_curve(
+                bench_arr[:length], index=date_index[:length]
+            )
 
     metrics_summary = {
         "Sharpe": metrics_full.get("sharpe_ratio"),
@@ -307,7 +341,9 @@ def build_report_data(root: Path, cfg: PlotConfig) -> Optional[ReportData]:
     }
 
     crisis_series = None
-    crisis_candidates = _first_non_empty(series.get("crisis_levels"), payload.get("irt", {}).get("crisis_levels"))
+    crisis_candidates = _first_non_empty(
+        series.get("crisis_levels"), payload.get("irt", {}).get("crisis_levels")
+    )
     if _is_non_empty(crisis_candidates):
         crisis_array = np.asarray(crisis_candidates, dtype=float)
         crisis_series = pd.Series(crisis_array, index=date_index[: len(crisis_array)])
@@ -315,22 +351,32 @@ def build_report_data(root: Path, cfg: PlotConfig) -> Optional[ReportData]:
 
     kappa_sharpe = None
     irt_payload = payload.get("irt", {}) or {}
-    kappa_candidates = _first_non_empty(irt_payload.get("env_kappa"), series.get("kappa_sharpe"))
+    kappa_candidates = _first_non_empty(
+        irt_payload.get("env_kappa"), series.get("kappa_sharpe")
+    )
     if _is_non_empty(kappa_candidates):
         arr = np.asarray(kappa_candidates, dtype=float)
-        kappa_sharpe = pd.Series(arr, index=date_index[: len(arr)]).reindex(date_index, method="pad")
+        kappa_sharpe = pd.Series(arr, index=date_index[: len(arr)]).reindex(
+            date_index, method="pad"
+        )
 
     kappa_cvar = None
     kappa_cvar_candidates = series.get("kappa_cvar")
     if _is_non_empty(kappa_cvar_candidates):
         arr = np.asarray(kappa_cvar_candidates, dtype=float)
-        kappa_cvar = pd.Series(arr, index=date_index[: len(arr)]).reindex(date_index, method="pad")
+        kappa_cvar = pd.Series(arr, index=date_index[: len(arr)]).reindex(
+            date_index, method="pad"
+        )
 
     paths = payload.get("paths", {}) or {}
-    holdings_path = _resolve_path(root, paths.get("holdings_csv"), "holdings_timeseries.csv")
+    holdings_path = _resolve_path(
+        root, paths.get("holdings_csv"), "holdings_timeseries.csv"
+    )
     trades_path = _resolve_path(root, paths.get("trades_csv"), "trades.csv")
     prototypes_path = _resolve_path(root, None, "xai/xai_prototypes_timeseries.csv")
-    attr_parquet_path = _resolve_path(root, None, "xai/xai_feature_attributions.parquet")
+    attr_parquet_path = _resolve_path(
+        root, None, "xai/xai_feature_attributions.parquet"
+    )
     attr_csv_path = _resolve_path(root, None, "xai/xai_feature_attributions.csv")
     summary_path = _resolve_path(root, None, "xai/xai_summary.json")
 
@@ -338,10 +384,16 @@ def build_report_data(root: Path, cfg: PlotConfig) -> Optional[ReportData]:
     cash_ratio = None
     if _is_non_empty(series.get("cash_ratio_series")):
         arr = np.asarray(series["cash_ratio_series"], dtype=float)
-        cash_ratio = pd.Series(arr, index=date_index[: len(arr)]).reindex(date_index, method="pad")
-    elif holdings_df is not None and not holdings_df.empty and "CASH" in holdings_df.columns:
+        cash_ratio = pd.Series(arr, index=date_index[: len(arr)]).reindex(
+            date_index, method="pad"
+        )
+    elif (
+        holdings_df is not None
+        and not holdings_df.empty
+        and "CASH" in holdings_df.columns
+    ):
         if "step" in holdings_df.columns:
-            grouped = holdings_df.groupby("step")['CASH'].mean()
+            grouped = holdings_df.groupby("step")["CASH"].mean()
             cash_ratio = pd.Series(
                 grouped.values,
                 index=[step_to_date.get(int(idx), idx) for idx in grouped.index],
@@ -357,49 +409,88 @@ def build_report_data(root: Path, cfg: PlotConfig) -> Optional[ReportData]:
     tx_cost = None
     if _is_non_empty(series.get("turnover_executed")):
         arr = np.asarray(series["turnover_executed"], dtype=float)
-        turnover = pd.Series(arr, index=date_index[: len(arr)]).reindex(date_index, method="pad")
+        turnover = pd.Series(arr, index=date_index[: len(arr)]).reindex(
+            date_index, method="pad"
+        )
     elif trades_df is not None and not trades_df.empty:
-        step_col = next((c for c in trades_df.columns if c.lower() in {"step", "episode_step"}), None)
-        qty_col = next((c for c in trades_df.columns if c.lower() in {"qty", "quantity"}), None)
+        step_col = next(
+            (c for c in trades_df.columns if c.lower() in {"step", "episode_step"}),
+            None,
+        )
+        qty_col = next(
+            (c for c in trades_df.columns if c.lower() in {"qty", "quantity"}), None
+        )
         price_col = next((c for c in trades_df.columns if c.lower() == "price"), None)
         if step_col and qty_col and price_col:
             trades_df[step_col] = pd.to_numeric(trades_df[step_col], errors="coerce")
             trades_df = trades_df.dropna(subset=[step_col])
-            grouped = (trades_df[qty_col].abs() * trades_df[price_col].abs()).groupby(trades_df[step_col]).sum()
-            turnover = _map_index_to_dates(pd.Series(grouped.values, index=grouped.index.astype(int)), step_to_date).reindex(date_index, method="pad")
-        cost_col = next((c for c in trades_df.columns if c.lower() in {"tx_cost", "transaction_cost", "cost"}), None)
+            grouped = (
+                (trades_df[qty_col].abs() * trades_df[price_col].abs())
+                .groupby(trades_df[step_col])
+                .sum()
+            )
+            turnover = _map_index_to_dates(
+                pd.Series(grouped.values, index=grouped.index.astype(int)), step_to_date
+            ).reindex(date_index, method="pad")
+        cost_col = next(
+            (
+                c
+                for c in trades_df.columns
+                if c.lower() in {"tx_cost", "transaction_cost", "cost"}
+            ),
+            None,
+        )
         if step_col and cost_col:
             grouped_cost = trades_df.groupby(trades_df[step_col])[cost_col].sum()
-            tx_cost = _map_index_to_dates(pd.Series(grouped_cost.values, index=grouped_cost.index.astype(int)), step_to_date).reindex(date_index, method="pad")
+            tx_cost = _map_index_to_dates(
+                pd.Series(grouped_cost.values, index=grouped_cost.index.astype(int)),
+                step_to_date,
+            ).reindex(date_index, method="pad")
 
     if _is_non_empty(series.get("transaction_costs")):
         arr = np.asarray(series["transaction_costs"], dtype=float)
-        tx_cost = pd.Series(arr, index=date_index[: len(arr)]).reindex(date_index, method="pad")
+        tx_cost = pd.Series(arr, index=date_index[: len(arr)]).reindex(
+            date_index, method="pad"
+        )
 
-    proto_df = _prepare_proto_weights(_load_prototypes(prototypes_path), cfg, step_to_date)
+    proto_df = _prepare_proto_weights(
+        _load_prototypes(prototypes_path), cfg, step_to_date
+    )
     proto_entropy = None
     action_temp = None
     alpha_c = None
     if _is_non_empty(irt_payload.get("proto_entropy")):
         arr = np.asarray(irt_payload["proto_entropy"], dtype=float)
-        proto_entropy = pd.Series(arr, index=date_index[: len(arr)]).reindex(date_index, method="pad")
+        proto_entropy = pd.Series(arr, index=date_index[: len(arr)]).reindex(
+            date_index, method="pad"
+        )
     if _is_non_empty(irt_payload.get("alpha_c")):
         arr = np.asarray(irt_payload["alpha_c"], dtype=float)
-        alpha_c = pd.Series(arr, index=date_index[: len(arr)]).reindex(date_index, method="pad")
-    if proto_df is None and proto_entropy is None and _is_non_empty(series.get("prototype_weights")):
+        alpha_c = pd.Series(arr, index=date_index[: len(arr)]).reindex(
+            date_index, method="pad"
+        )
+    if (
+        proto_df is None
+        and proto_entropy is None
+        and _is_non_empty(series.get("prototype_weights"))
+    ):
         proto_df = pd.DataFrame(series["prototype_weights"])
         proto_df.index = [step_to_date.get(int(idx), idx) for idx in proto_df.index]
 
     if action_temp is None and _is_non_empty(series.get("action_temp")):
         arr = np.asarray(series["action_temp"], dtype=float)
-        action_temp = pd.Series(arr, index=date_index[: len(arr)]).reindex(date_index, method="pad")
+        action_temp = pd.Series(arr, index=date_index[: len(arr)]).reindex(
+            date_index, method="pad"
+        )
 
     attr_raw = _load_attributions(attr_parquet_path, attr_csv_path)
     attr_matrix = None
     attr_note = "Rows normalised so that Σ|attr|=1."
     if attr_raw is not None and not attr_raw.empty:
         if {"step", "feature", "attribution"}.issubset(attr_raw.columns):
-            pivot = attr_raw.pivot_table(index="step", columns="feature", values="attribution", aggfunc="mean").fillna(0.0)
+            pivot = attr_raw.pivot_table(
+                index="step", columns="feature", values="attribution", aggfunc="mean"
+            ).fillna(0.0)
             pivot = normalise_attributions(pivot, method="l1")
             pivot = resample_matrix(pivot, cfg.heatmap_steps)
             attr_matrix = _map_df_index_to_dates(pivot, step_to_date)
@@ -412,7 +503,11 @@ def build_report_data(root: Path, cfg: PlotConfig) -> Optional[ReportData]:
     topk_crisis = _extract_topk(summary, "crisis", cfg.max_topk)
 
     crisis_threshold = cfg.crisis_threshold
-    if cfg.crisis_quantile is not None and crisis_series is not None and not crisis_series.empty:
+    if (
+        cfg.crisis_quantile is not None
+        and crisis_series is not None
+        and not crisis_series.empty
+    ):
         crisis_threshold = float(crisis_series.quantile(cfg.crisis_quantile))
 
     regime_marks = None
@@ -461,7 +556,9 @@ def build_report_data(root: Path, cfg: PlotConfig) -> Optional[ReportData]:
         action_temp=action_temp,
         alpha_c=alpha_c,
         attr_matrix=attr_matrix,
-        attr_note="Rows normalised so that Σ|attr|=1." if attr_matrix is not None else "",
+        attr_note=(
+            "Rows normalised so that Σ|attr|=1." if attr_matrix is not None else ""
+        ),
         regime_marks=regime_marks,
         topk_normal=topk_normal,
         topk_crisis=topk_crisis,
@@ -489,7 +586,9 @@ def generate_plots(data: ReportData, cfg: PlotConfig, out_dir: Path) -> List[Pat
     if cfg.include_core:
         emit(
             "equity_vs_benchmark",
-            plot_equity(data.equity, benchmark=data.benchmark, annotations=data.metrics),
+            plot_equity(
+                data.equity, benchmark=data.benchmark, annotations=data.metrics
+            ),
         )
         emit("drawdown_curve", plot_drawdown(data.drawdown))
         emit(
@@ -593,7 +692,9 @@ def main() -> None:
     if not input_dir.is_dir():
         raise FileNotFoundError(f"입력 디렉토리를 찾을 수 없습니다: {input_dir}")
 
-    output_dir = Path(args.out_dir).expanduser().resolve() if args.out_dir else input_dir / "viz"
+    output_dir = (
+        Path(args.out_dir).expanduser().resolve() if args.out_dir else input_dir / "viz"
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
 
     cfg = PlotConfig(

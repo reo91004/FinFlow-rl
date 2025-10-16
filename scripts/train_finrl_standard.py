@@ -3,16 +3,16 @@
 """
 FinRL 표준 파이프라인 학습 스크립트
 
-DRLAgent를 사용하여 FinRL 논문과 동일한 조건으로 베이스라인을 학습한다.
+DRLAgent를 사용해 FinRL 논문과 동일한 설정으로 베이스라인 모델을 학습·평가합니다.
 
-Usage:
+사용 예:
     # SAC 학습 및 평가 (FinRL 표준)
     python scripts/train_finrl_standard.py --model sac --mode both
 
-    # PPO 학습만
+    # PPO 학습만 수행
     python scripts/train_finrl_standard.py --model ppo --mode train --timesteps 100000
 
-    # 저장된 모델 평가만
+    # 저장된 모델 평가
     python scripts/train_finrl_standard.py --model sac --mode test --checkpoint trained_models/sac_50k.zip
 """
 
@@ -41,7 +41,7 @@ def train_model(args):
     """DRLAgent를 사용한 표준 학습 파이프라인"""
 
     print("=" * 70)
-    print(f"{args.model.upper()} Training (FinRL Standard Pipeline)")
+    print(f"{args.model.upper()} Training (FinRL standard pipeline)")
     print("=" * 70)
 
     # 출력 디렉토리 (logs/ 아래에 통일)
@@ -64,16 +64,16 @@ def train_model(args):
         config.RESULTS_DIR
     ])
 
-    print(f"\n[Config]")
+    print("\n[Training Config]")
     print(f"  Model: {args.model.upper()}")
     print(f"  Stocks: Dow Jones 30 ({len(DOW_30_TICKER)} tickers)")
-    print(f"  Train: {args.train_start} ~ {args.train_end}")
-    print(f"  Test: {args.test_start} ~ {args.test_end}")
-    print(f"  Timesteps: {args.timesteps}")
-    print(f"  Output: {log_dir}")
+    print(f"  Train period: {args.train_start} ~ {args.train_end}")
+    print(f"  Test period: {args.test_start} ~ {args.test_end}")
+    print(f"  Total timesteps: {args.timesteps}")
+    print(f"  Output directory: {log_dir}")
 
     # 1. 데이터 다운로드
-    print(f"\n[1/6] Downloading data...")
+    print("\n[1/6] Downloading data...")
     df = YahooDownloader(
         start_date=args.train_start,
         end_date=args.test_end,
@@ -82,7 +82,7 @@ def train_model(args):
     print(f"  Downloaded: {df.shape[0]} rows")
 
     # 2. Feature Engineering
-    print(f"\n[2/6] Feature Engineering...")
+    print("\n[2/6] Running feature engineering...")
     fe = FeatureEngineer(
         use_technical_indicator=True,
         tech_indicator_list=INDICATORS,
@@ -90,26 +90,26 @@ def train_model(args):
         user_defined_feature=False
     )
     processed = fe.preprocess_data(df)
-    print(f"  Features: {processed.shape[1]} columns")
+    print(f"  Feature columns: {processed.shape[1]}")
 
     # 3. Train/Test Split
-    print(f"\n[3/6] Splitting data...")
+    print("\n[3/6] Splitting train/test data...")
     train_df = data_split(processed, args.train_start, args.train_end)
     test_df = data_split(processed, args.test_start, args.test_end)
-    print(f"  Train: {len(train_df)} rows")
-    print(f"  Test: {len(test_df)} rows")
+    print(f"  Train samples: {len(train_df)}")
+    print(f"  Test samples: {len(test_df)}")
 
     # 4. 환경 생성
-    print(f"\n[4/6] Creating training environment...")
+    print("\n[4/6] Building training environment...")
     stock_dim = len(train_df.tic.unique())
 
     # 데이터 누락 경고
     if stock_dim != len(DOW_30_TICKER):
         removed_count = len(DOW_30_TICKER) - stock_dim
-        print(f"  ⚠️  주의: {removed_count}개 주식이 데이터 부족으로 제외됨")
-        print(f"      (2008년 초 데이터가 없는 종목: Visa (V) 등)")
+        print(f"  ⚠️ Warning: {removed_count} tickers excluded due to missing data")
+        print(f"      (e.g., incomplete history for early-2008 listings such as Visa (V))")
 
-    print(f"  실제 주식 수: {stock_dim}")
+    print(f"  Effective stock count: {stock_dim}")
     state_space = 1 + (len(INDICATORS) + 2) * stock_dim
 
     env_kwargs = {
@@ -134,7 +134,6 @@ def train_model(args):
     print(f"  Action space: {stock_dim}")
     print(f"  Environment type: {type(env_train)}")
 
-    # 5. DRLAgent로 모델 학습
     print(f"\n[5/6] Training {args.model.upper()} with DRLAgent...")
 
     agent = DRLAgent(env=env_train)
@@ -148,7 +147,7 @@ def train_model(args):
         tensorboard_log=os.path.join(log_dir, "tensorboard")
     )
 
-    print(f"  Model created: {type(model)}")
+    print(f"  Model class: {type(model)}")
     print(f"  Total timesteps: {args.timesteps}")
 
     # Logger 설정 (log_dir 아래)
@@ -168,10 +167,10 @@ def train_model(args):
     model_path = os.path.join(log_dir, f"{args.model}_{args.timesteps//1000}k.zip")
     trained_model.save(model_path)
 
-    print(f"\n" + "=" * 70)
-    print(f"Training completed!")
+    print("\n" + "=" * 70)
+    print("Training completed!")
     print("=" * 70)
-    print(f"  Model saved: {model_path}")
+    print(f"  Saved model: {model_path}")
     print(f"  Logs: {log_dir}")
 
     return trained_model, model_path, log_dir
@@ -181,23 +180,23 @@ def test_model(args, trained_model=None, model_path=None, log_dir=None):
     """DRLAgent.DRL_prediction()을 사용한 평가"""
 
     print("=" * 70)
-    print(f"{args.model.upper()} Evaluation (FinRL Standard)")
+    print(f"{args.model.upper()} Evaluation (FinRL standard pipeline)")
     print("=" * 70)
 
     # log_dir 결정
     if log_dir is None:
         if args.checkpoint is None:
-            raise ValueError("--checkpoint가 필요합니다 (--mode test 실행 시)")
-        # checkpoint 디렉토리 사용
+            raise ValueError("--checkpoint is required when --mode test is used")
+        # use checkpoint directory
         log_dir = os.path.dirname(args.checkpoint)
         print(f"\n  Using checkpoint directory for output: {log_dir}")
 
-    print(f"\n[Config]")
-    print(f"  Test: {args.test_start} ~ {args.test_end}")
-    print(f"  Output: {log_dir}")
+    print("\n[Evaluation Config]")
+    print(f"  Test period: {args.test_start} ~ {args.test_end}")
+    print(f"  Output directory: {log_dir}")
 
-    # 1. 데이터 준비
-    print(f"\n[1/4] Downloading test data...")
+    # 1. Data preparation
+    print("\n[1/4] Downloading evaluation data...")
     df = YahooDownloader(
         start_date=args.test_start,
         end_date=args.test_end,
@@ -205,8 +204,8 @@ def test_model(args, trained_model=None, model_path=None, log_dir=None):
     ).fetch_data()
     print(f"  Downloaded: {df.shape[0]} rows")
 
-    # 2. Feature Engineering
-    print(f"\n[2/4] Feature Engineering...")
+    # 2. Feature engineering
+    print("\n[2/4] Running feature engineering...")
     fe = FeatureEngineer(
         use_technical_indicator=True,
         tech_indicator_list=INDICATORS,
@@ -215,10 +214,10 @@ def test_model(args, trained_model=None, model_path=None, log_dir=None):
     )
     processed = fe.preprocess_data(df)
     test_df = data_split(processed, args.test_start, args.test_end)
-    print(f"  Test rows: {len(test_df)}")
+    print(f"  Test samples: {len(test_df)}")
 
-    # 3. 테스트 환경 생성
-    print(f"\n[3/4] Creating test environment...")
+    # 3. Create test environment
+    print("\n[3/4] Creating test environment...")
     stock_dim = len(DOW_30_TICKER)
     state_space = 1 + (len(INDICATORS) + 2) * stock_dim
 
@@ -239,12 +238,12 @@ def test_model(args, trained_model=None, model_path=None, log_dir=None):
 
     e_test_gym = StockTradingEnv(**env_kwargs)
 
-    # 4. 모델 로드 및 평가
-    print(f"\n[4/4] Running evaluation with DRLAgent.DRL_prediction()...")
+    # 4. Load model and run evaluation
+    print("\n[4/4] Running DRLAgent.DRL_prediction()...")
 
     if trained_model is None:
         if args.checkpoint is None:
-            raise ValueError("--checkpoint가 필요합니다 (--mode test 실행 시)")
+            raise ValueError("--checkpoint is required when --mode test is used")
         # 모델 로드
         from stable_baselines3 import SAC, PPO, A2C, TD3, DDPG
         MODEL_CLASSES = {'sac': SAC, 'ppo': PPO, 'a2c': A2C, 'td3': TD3, 'ddpg': DDPG}
@@ -252,7 +251,7 @@ def test_model(args, trained_model=None, model_path=None, log_dir=None):
         print(f"  Model loaded from: {args.checkpoint}")
     else:
         model = trained_model
-        print(f"  Using trained model")
+        print("  Using the trained model instance from this session")
 
     # DRLAgent.DRL_prediction() 사용 (FinRL 표준)
     account_memory, actions_memory = DRLAgent.DRL_prediction(
@@ -280,25 +279,25 @@ def test_model(args, trained_model=None, model_path=None, log_dir=None):
         if account_memory['daily_return'].std() > 0 else 0
     )
 
-    print(f"\n" + "=" * 70)
-    print(f"Evaluation Results")
+    print("\n" + "=" * 70)
+    print("Evaluation Results")
     print("=" * 70)
-    print(f"\n[Period]")
+    print("\n[Period]")
     print(f"  Start: {args.test_start}")
     print(f"  End: {args.test_end}")
     print(f"  Steps: {len(account_memory)}")
 
-    print(f"\n[Performance]")
+    print("\n[Returns]")
     print(f"  Initial value: ${initial_value:,.2f}")
     print(f"  Final value: ${final_value:,.2f}")
     print(f"  Total return: {total_return*100:.2f}%")
-    print(f"  Sharpe Ratio: {sharpe_ratio:.3f}")
+    print(f"  Sharpe ratio: {sharpe_ratio:.3f}")
 
-    print(f"\n[Saved Files]")
+    print("\n[Saved files]")
     print(f"  Account values: {account_path}")
     print(f"  Actions: {actions_path}")
 
-    print(f"\n" + "=" * 70)
+    print("\n" + "=" * 70)
 
     return {
         'account_memory': account_memory,
@@ -317,46 +316,46 @@ def main():
                         help="RL 알고리즘 선택")
     parser.add_argument("--mode", type=str, default="both",
                         choices=['train', 'test', 'both'],
-                        help="실행 모드 (default: both)")
+                        help="실행 모드 (기본: both)")
 
     # 데이터 기간 (config.py 기본값)
     parser.add_argument("--train-start", type=str, default=TRAIN_START_DATE,
-                        help=f"Training start date (default: {TRAIN_START_DATE})")
+                        help=f"훈련 시작일 (기본: {TRAIN_START_DATE})")
     parser.add_argument("--train-end", type=str, default=TRAIN_END_DATE,
-                        help=f"Training end date (default: {TRAIN_END_DATE})")
+                        help=f"훈련 종료일 (기본: {TRAIN_END_DATE})")
     parser.add_argument("--test-start", type=str, default=TEST_START_DATE,
-                        help=f"Test start date (default: {TEST_START_DATE})")
+                        help=f"테스트 시작일 (기본: {TEST_START_DATE})")
     parser.add_argument("--test-end", type=str, default=TEST_END_DATE,
-                        help=f"Test end date (default: {TEST_END_DATE})")
+                        help=f"테스트 종료일 (기본: {TEST_END_DATE})")
 
     # 학습 설정
     parser.add_argument("--timesteps", type=int, default=50000,
-                        help="Total timesteps (default: 50000, FinRL standard)")
+                        help="총 타임스텝 수 (기본: 50000, FinRL 표준)")
     parser.add_argument("--output", type=str, default="logs",
-                        help="Output directory (default: logs)")
+                        help="출력 디렉터리 (기본: logs)")
 
     # 평가 전용
     parser.add_argument("--checkpoint", type=str, default=None,
-                        help="Checkpoint path for evaluation (required for --mode test)")
+                        help="평가용 체크포인트 경로 (--mode test에 필수)")
 
     args = parser.parse_args()
 
-    # 실행
+    # execution
     if args.mode == "train":
         trained_model, model_path, log_dir = train_model(args)
-        print(f"\n완료! 결과: {log_dir}")
+        print(f"\nTraining complete. Results directory: {log_dir}")
 
     elif args.mode == "test":
         results = test_model(args)
-        print(f"\n완료! Sharpe Ratio: {results['sharpe_ratio']:.3f}")
+        print(f"\nEvaluation complete. Sharpe ratio: {results['sharpe_ratio']:.3f}")
 
     elif args.mode == "both":
         trained_model, model_path, log_dir = train_model(args)
-        print(f"\n학습 완료. 이어서 평가 시작...\n")
+        print(f"\nTraining finished. Starting evaluation...\n")
         results = test_model(args, trained_model=trained_model, model_path=model_path, log_dir=log_dir)
-        print(f"\n모든 작업 완료!")
-        print(f"  결과: {log_dir}")
-        print(f"  Sharpe Ratio: {results['sharpe_ratio']:.3f}")
+        print(f"\nFull pipeline completed.")
+        print(f"  Outputs: {log_dir}")
+        print(f"  Sharpe ratio: {results['sharpe_ratio']:.3f}")
 
 
 if __name__ == "__main__":

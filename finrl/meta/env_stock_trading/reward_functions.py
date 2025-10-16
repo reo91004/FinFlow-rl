@@ -3,8 +3,7 @@
 """
 리스크 민감 보상 함수 모듈
 
-Phase 3: DSR (Differential Sharpe Ratio) + CVaR 기반 보상
-Sharpe ≥ 1.0 달성을 위한 직접적 신호 제공
+DSR(Differential Sharpe Ratio)와 CVaR 기반 보상을 결합해 Sharpe 비율과 꼬리 위험을 동시에 관리한다.
 
 이론적 근거:
 - DSR: Moody & Saffell (1998), "Learning to Trade via Direct RL"
@@ -29,11 +28,11 @@ class DifferentialSharpeRatio:
     - ΔS_t ≈ z_t - (S_{t-1}/2)·z_t², z_t = (R_t - μ_{t-1}) / σ_{t-1}
 
     Args:
-        beta: EMA 계수 (Phase 1: 0.95 for faster response to market changes)
+        beta: EMA 계수 (0.95 권장, 빠른 반응 속도 확보)
         epsilon: 분모 안정화 (σ=0 방지)
     """
 
-    def __init__(self, beta: float = 0.95, epsilon: float = 1e-8):  # Phase 1: 0.99 → 0.95
+    def __init__(self, beta: float = 0.95, epsilon: float = 1e-8):
         self.beta = beta
         self.epsilon = epsilon
 
@@ -134,26 +133,22 @@ class CVaREstimator:
 
 
 class RiskSensitiveReward:
-    """
-    DSR + CVaR 혼합 보상 래퍼 (Phase 3.5: 스케일 정규화)
+    r"""
+    DSR와 CVaR를 결합해 로그수익, Sharpe 지향 보너스, 꼬리 위험 패널티를 동시에 반영한다.
 
-    기본 로그수익에 Sharpe 지향 보너스(DSR)와 꼬리위험 패널티(CVaR) 혼합.
+    - EMA 기반 정규화로 DSR/CVaR의 스케일을 통일한다.
+    - 보상은 [-0.01, 0.01] 범위로 클리핑하여 이상값을 억제한다.
 
-    Phase 3.5 개선:
-    - EMA 기반 정규화: DSR/CVaR를 각자의 평균 절댓값으로 나눠 스케일 통일
-    - 보상 클리핑: [-0.01, 0.01] 범위로 제한
-
-    최종 보상:
-    r'_t = r_t + λ_S·(ΔS_t / ||ΔS||_EMA) - λ_CVaR·(|CVaR| / ||CVaR||_EMA)
-    클리핑: r'_t ∈ [-0.01, 0.01]
+    최종 보상: \\(r'_t = r_t + \lambda_S\,\hat{\Delta S}_t - \lambda_{\text{CVaR}}\,\hat{L}_t\\)
+    여기서 \\(\hat{\Delta S}_t\\)와 \\(\hat{L}_t\\)는 EMA로 정규화된 DSR, CVaR 값이다.
 
     Args:
-        lambda_dsr: DSR 가중치 (권장: 0.1~0.2)
-        lambda_cvar: CVaR 가중치 (권장: 0.05~0.1)
+        lambda_dsr: DSR 가중치 (권장 0.1~0.2)
+        lambda_cvar: CVaR 가중치 (권장 0.05~0.1)
         dsr_beta: DSR 이동평균 계수
         cvar_alpha: CVaR 분위수
-        cvar_window: CVaR 추정 윈도우
-        normalization_window: EMA 정규화 윈도우 (default: 30)
+        cvar_window: CVaR 추정 윈도우 길이
+        normalization_window: EMA 정규화에 사용하는 윈도우 길이 (기본: 30)
     """
 
     def __init__(
@@ -171,7 +166,7 @@ class RiskSensitiveReward:
         self.dsr = DifferentialSharpeRatio(beta=dsr_beta)
         self.cvar = CVaREstimator(alpha=cvar_alpha, window=cvar_window)
 
-        # Phase 3.5: 정규화 분모 (EMA)
+        # EMA 기반 정규화 계수
         self.norm_window = normalization_window
         self.norm_beta = 1.0 - 1.0 / normalization_window
 
@@ -182,7 +177,7 @@ class RiskSensitiveReward:
 
     def compute(self, basic_return: float) -> tuple[float, dict]:
         """
-        리스크 민감 보상 계산 (Phase 3.5: 정규화 + 클리핑)
+        리스크 민감 보상을 계산한다 (정규화 및 클리핑 포함).
 
         Args:
             basic_return: 기본 로그수익 (log(V_t/V_{t-1}))
@@ -198,7 +193,7 @@ class RiskSensitiveReward:
         cvar_value = self.cvar.update(basic_return)
         cvar_penalty = abs(cvar_value) if cvar_value < 0 else 0.0
 
-        # Phase 3.5: EMA 정규화 분모 업데이트
+        # 정규화 분모를 EMA 방식으로 업데이트한다.
         self.log_return_ema = (
             self.norm_beta * self.log_return_ema
             + (1.0 - self.norm_beta) * abs(basic_return)
@@ -211,15 +206,14 @@ class RiskSensitiveReward:
             + (1.0 - self.norm_beta) * abs(cvar_value)
         )
 
-        # Phase 3.5: 정규화 (스케일 통일)
-        # 분모에 1e-6 추가하여 0으로 나누기 방지
+        # 신호 스케일을 통일하기 위해 EMA 값으로 정규화하고 0으로 나누지 않도록 오프셋을 더한다.
         norm_dsr = dsr_bonus / (self.dsr_ema + 1e-6)
         norm_cvar = cvar_penalty / (self.cvar_ema + 1e-6)
 
         # 혼합 보상 (정규화된 신호 사용)
         reward = basic_return + self.lambda_dsr * norm_dsr - self.lambda_cvar * norm_cvar
 
-        # Phase 3.5: 클리핑 [-0.01, 0.01]
+        # 보상은 [-0.01, 0.01] 범위로 제한한다.
         reward_clipped = np.clip(reward, -0.01, 0.01)
 
         # 디버깅 정보
@@ -228,7 +222,7 @@ class RiskSensitiveReward:
             "cvar_value": cvar_value,
             "cvar_penalty": cvar_penalty,
             "sharpe_online": self.dsr.sharpe,
-            # Phase 3.5 추가 정보
+            # 정규화 및 클리핑 이전/이후 값을 함께 기록한다.
             "norm_dsr": norm_dsr,
             "norm_cvar": norm_cvar,
             "reward_pre_clip": reward,
@@ -241,11 +235,11 @@ class RiskSensitiveReward:
         return reward_clipped, info
 
     def reset(self):
-        """에피소드 종료 시 상태 초기화 (Phase 3.5: EMA도 리셋)"""
+        """에피소드 종료 시 내부 상태와 EMA를 모두 초기화한다."""
         self.dsr.reset()
         self.cvar.reset()
 
-        # Phase 3.5: 정규화 분모 초기화
+        # 정규화 분모 초기값 설정
         self.log_return_ema = 1.0
         self.dsr_ema = 1.0
         self.cvar_ema = 1.0
@@ -253,9 +247,9 @@ class RiskSensitiveReward:
 
 class AdaptiveRiskReward:
     """
-    Phase-H1: Adaptive Risk-Aware Reward with Crisis Sensitivity
+    위기 민감형 위험 보상 함수
 
-    Log-return base + Adaptive risk bonus + Transaction cost penalty
+    로그 수익 + 적응형 Sharpe 보너스 + CVaR 패널티 + 거래 비용 패널티로 구성된다.
 
     수식:
     r_t = log(V_t/V_{t-1}) + κ_S(c)·ΔSharpe - κ_C(c)·CVaR - μ·turnover
@@ -334,7 +328,7 @@ class AdaptiveRiskReward:
         current_weights: np.ndarray = None
     ) -> tuple[float, dict]:
         """
-        Phase-H1 Adaptive Risk-Aware Reward 계산
+        Adaptive Risk-Aware Reward를 계산한다.
 
         Args:
             basic_return: log(V_t/V_{t-1})

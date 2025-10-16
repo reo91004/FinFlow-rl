@@ -1,18 +1,19 @@
 # finrl/agents/irt/irt_operator.py
+# Sinkhorn 기반의 IRT 연산자와 면역 비용 설계를 정의한다.
 
 """
-IRT (Immune Replicator Transport) Operator
+IRT (Immune Replicator Transport) 연산자
 
-이론적 기초:
-- Optimal Transport: Cuturi (2013) Entropic OT
-- Replicator Dynamics: Hofbauer & Sigmund (1998)
-- 결합: (1-α)·Replicator + α·OT
+이 모듈은 Optimal Transport와 Replicator Dynamics를 결합하여
+포트폴리오 프로토타입 혼합 가중치를 계산하는 연산자를 구현한다.
 
-핵심 수식:
+핵심 식:
 w_t = (1-α)·Replicator(w_{t-1}, f_t) + α·Transport(E_t, K, C_t)
 
-의존성: torch
-사용처: BCellIRTActor
+주요 구성 요소:
+- Sinkhorn: 엔트로피 정규화 최적수송 알고리즘
+- 면역 비용 함수: 위험 신호·자기-내성·프로토타입 과신도를 포함한 비용 행렬
+- 동적 혼합 비율 α: 위기 레벨과 Sharpe 추세에 따라 조정되는 혼합 계수
 """
 
 import torch
@@ -22,12 +23,11 @@ from typing import Tuple, Optional, Dict
 
 class Sinkhorn(nn.Module):
     """
-    엔트로피 정규화 최적수송 (Sinkhorn 알고리즘)
+    엔트로피 정규화 최적수송을 계산하는 Sinkhorn 반복기
 
-    수학적 배경:
-    min_{P∈U(u,v)} <P,C> + ε·KL(P||uv^T)
-
-    수렴 보장: O(1/ε) 반복 내 선형 수렴 (Cuturi, 2013)
+    목적 함수:
+        min_{P∈U(u,v)} <P, C> + ε · KL(P || u v^T)
+    여기서 U(u, v)는 주어진 주변 분포를 만족하는 수송 행렬 집합이다.
     """
 
     def __init__(self, max_iters: int = 10, eps: float = 0.10, tol: float = 1e-3):
@@ -48,7 +48,7 @@ class Sinkhorn(nn.Module):
         """
         B, m, M = C.shape
 
-        # Log-space 연산 (수치 안정성)
+        # 로그 공간에서 연산하여 수치 안정성을 확보한다.
         log_K = -C / (self.eps + 1e-8)
         log_u = torch.log(u + 1e-8)
         log_v = torch.log(v + 1e-8)
@@ -72,7 +72,7 @@ class Sinkhorn(nn.Module):
         # 수송 계획 계산
         P = torch.exp(log_a + log_K + log_b)
 
-        # 수치 안정성 체크
+        # 수치 안정성을 위해 수송 행렬 값을 0~1 범위로 제한한다.
         P = torch.clamp(P, min=0.0, max=1.0)
 
         return P
@@ -97,15 +97,15 @@ class IRT(nn.Module):
                  emb_dim: int,
                  m_tokens: int = 6,
                  M_proto: int = 8,
-                 eps: float = 0.03,  # Phase-F2': 0.05 → 0.03 (OT 평탄화 완화)
-                 alpha: float = 0.45,  # Phase F: alpha_max 기본값으로 사용
-                 alpha_min: float = 0.05,  # Phase 3.5: 0.08 → 0.05 (Rep 경로 확장)
-                 alpha_max: Optional[float] = 0.55,  # Phase 3.5: OT 상한 확장
-                 gamma: float = 0.90,  # Phase 1.5: 위기 반응성 강화 (0.65 → 0.90)
+                 eps: float = 0.03,  # Sinkhorn 반복에서 사용하는 엔트로피 계수
+                 alpha: float = 0.45,  # 평시 기준의 OT 혼합 상한
+                 alpha_min: float = 0.05,  # 위기 시 Replicator 비중을 확보하기 위한 α 하한
+                 alpha_max: Optional[float] = 0.55,  # OT 혼합 비율의 상한 (None이면 alpha 사용)
+                 gamma: float = 0.90,  # 공자극 내적을 비용에서 차감할 때 사용하는 가중치
                  lambda_tol: float = 2.0,
                  rho: float = 0.3,
                  eta_0: float = 0.05,
-                 eta_1: float = 0.12,  # Phase E: 0.25 → 0.12 (민감도 완화)
+                 eta_1: float = 0.12,  # 위기 레벨에 따라 추가되는 Replicator 학습률 계수
                  alpha_update_rate: float = 0.95,
                  alpha_feedback_gain: float = 0.10,
                  alpha_feedback_bias: float = 0.0,
@@ -124,7 +124,7 @@ class IRT(nn.Module):
         self.M = M_proto
         self.alpha = alpha  # 후진 호환
 
-        # Phase 3.5: alpha_min 하한 제거 (0.05 허용)
+        # alpha_min이 극단적으로 작을 때는 수렴이 느려질 수 있으므로 경고만 출력한다.
         self.alpha_min = alpha_min
         self.alpha_max = alpha_max if alpha_max is not None else alpha
 
@@ -265,7 +265,7 @@ class IRT(nn.Module):
         B, m, D = E.shape
         M = K.shape[1]
 
-        # ===== Step 1: Optimal Transport 매칭 =====
+        # --- 1단계: Optimal Transport 매칭 ---
         u = torch.full((B, m, 1), 1.0/m, device=E.device)
         v = torch.full((B, 1, M), 1.0/M, device=E.device)
 
@@ -275,7 +275,7 @@ class IRT(nn.Module):
         # OT 마진 (프로토타입별 수송 질량)
         p_mass = P.sum(dim=1)  # [B, M]
 
-        # ===== Step 2: Replicator 업데이트 =====
+        # --- 2단계: Replicator 기반 가중치 적응 ---
         # 위기 가열: η(c) = η_0 + η_1·c (NaN 방어)
         crisis_level_safe = torch.nan_to_num(crisis_level, nan=0.0)
         eta = self.eta_0 + self.eta_1 * crisis_level_safe  # [B, 1]
@@ -291,28 +291,27 @@ class IRT(nn.Module):
         proto_self_sim = (K_norm @ sig_norm.T).max(dim=-1)[0]  # [B, M]
         r_penalty = 0.5 * proto_self_sim
 
-        # Replicator 방정식 (log-space)
+        # 로그 공간에서 계산한 Replicator 방정식
         log_w_prev = torch.log(w_prev + 1e-8)
         log_tilde_w = log_w_prev + eta * advantage - r_penalty
 
-        # Temperature softmax (τ < 1: 뾰족하게, 균등 혼합 고착 해제)
+        # 온도 조절 소프트맥스로 Replicator 출력의 집중도를 제어한다.
         tilde_w = F.softmax(log_tilde_w / self.replicator_temp, dim=-1)  # [B, M]
 
-        # ===== Step 3: 동적 α(c) 계산 (cosine mapping) =====
+        # --- 3단계: 위기 수준 기반 α(c) 계산 ---
         # α(c) = α_max + (α_min - α_max) · (1 - cos(πc)) / 2
         # c=0 → α=α_max, c=1 → α=α_min, 중간에서 민감도 최대
         pi_c = torch.tensor(torch.pi, device=crisis_level_safe.device) * torch.clamp(crisis_level_safe, 0.0, 1.0)
         alpha_c = self.alpha_max + (self.alpha_min - self.alpha_max) * (1 - torch.cos(pi_c)) / 2
 
-        # ===== Step 3.5: Sharpe gradient feedback (Phase C: 이득 증폭) =====
-        # delta_sharpe > 0 (상승) → alpha_c 증가 → OT 기여 ↑
-        # delta_sharpe < 0 (하락) → alpha_c 감소 → Rep 기여 ↑
-        # Phase 1.5: 증폭 계수 재조정 (gain/bias 파라미터화)
+        # --- 3단계 보강: Sharpe 기울기 피드백으로 α(c) 재조정 ---
+        # delta_sharpe > 0 (성과 개선) → alpha_c 증가 → OT 비중 확대
+        # delta_sharpe < 0 (성과 악화) → alpha_c 감소 → Replicator 비중 확대
         delta_sharpe_safe = torch.nan_to_num(delta_sharpe, nan=0.0)  # [B, 1]
         delta_tanh = torch.tanh(delta_sharpe_safe)
         alpha_c_raw = alpha_c * (1 + self.alpha_feedback_gain * delta_tanh) + self.alpha_feedback_bias * delta_tanh
 
-        # 방향성 감쇠 기반 α 업데이트 (Phase 1.5 → 재교정)
+        # 방향성 감쇠를 적용하여 α 변화량을 완화한다.
         alpha_star = torch.clamp(alpha_c_raw, min=self.alpha_min, max=self.alpha_max)
         if self.alpha_noise_std > 0 and self.training:
             noise = torch.randn_like(alpha_star) * self.alpha_noise_std
@@ -342,7 +341,7 @@ class IRT(nn.Module):
             self.alpha_state.copy_(updated_state.detach())
         # alpha_c: [B, 1]
 
-        # ===== Step 4: 이중 결합 (배치별 α) =====
+        # --- 4단계: Replicator와 OT 가중치 결합 ---
         w = (1 - alpha_c) * tilde_w + alpha_c * p_mass
 
         # 정규화 (수치 안정성, NaN 방어)
@@ -351,22 +350,22 @@ class IRT(nn.Module):
         w = torch.clamp(w, min=1e-6, max=1.0)
         w = w / w.sum(dim=-1, keepdim=True)  # 재정규화 (합=1)
 
-        # ===== Step 5: 디버그 정보 (시각화용) =====
+        # --- 5단계: 해석 및 시각화를 위한 보조 정보 ---
         debug_info = {
-            'w_rep': tilde_w,  # [B, M] - Replicator 출력
-            'w_ot': p_mass,    # [B, M] - OT 출력
-            'cost_matrix': C,  # [B, m, M] - Immunological cost
-            'eta': eta,        # [B, 1] - Crisis-adaptive learning rate
-            'alpha_c': alpha_c,  # [B, 1] - Dynamic OT-Replicator mixing ratio (clamped)
-            # Phase 1.5: α 업데이트 상세 정보
-            'alpha_c_raw': alpha_c_raw,  # [B, 1] - Raw alpha before clamp
-            'alpha_c_prev': alpha_prev.detach(),  # [B, 1]
-            'alpha_c_star': alpha_star,  # [B, 1] - Target alpha (after first clamp)
-            'alpha_c_decay_factor': decay_factor,  # [B, 1] - Directional decay factor
-            'pct_clamped_min': pct_clamped_min,  # scalar - % samples clamped to min
-            'pct_clamped_max': pct_clamped_max,  # scalar - % samples clamped to max
-            'alpha_candidate': alpha_candidate.detach(),  # [B, 1] - Pre-clamp candidate
-            'alpha_state_buffer': self.alpha_state.detach().clone(),  # [1,1] - Persistent state
+            'w_rep': tilde_w,  # [B, M] - Replicator 경로에서 생성된 가중치
+            'w_ot': p_mass,    # [B, M] - Optimal Transport 경로의 질량 합
+            'cost_matrix': C,  # [B, m, M] - 면역학적 비용 행렬
+            'eta': eta,        # [B, 1] - 위기 레벨에 반응하는 학습률
+            'alpha_c': alpha_c,  # [B, 1] - 동적으로 조정된 OT-Replicator 혼합 비율
+            # α 업데이트 과정을 해석하기 위한 세부 정보
+            'alpha_c_raw': alpha_c_raw,  # [B, 1] - 클램프 적용 전 α 값
+            'alpha_c_prev': alpha_prev.detach(),  # [B, 1] - 직전 배치에서 유지된 α
+            'alpha_c_star': alpha_star,  # [B, 1] - 노이즈·클램프 이전의 목표 α
+            'alpha_c_decay_factor': decay_factor,  # [B, 1] - 방향성 감쇠 계수
+            'pct_clamped_min': pct_clamped_min,  # 스칼라 - α가 하한에 걸린 비율
+            'pct_clamped_max': pct_clamped_max,  # 스칼라 - α가 상한에 걸린 비율
+            'alpha_candidate': alpha_candidate.detach(),  # [B, 1] - 감쇠 적용 후 후보 α
+            'alpha_state_buffer': self.alpha_state.detach().clone(),  # [1, 1] - 지연 업데이트 상태
             'alpha_feedback_gain': torch.tensor(self.alpha_feedback_gain, device=alpha_c.device),
             'alpha_feedback_bias': torch.tensor(self.alpha_feedback_bias, device=alpha_c.device),
             'directional_decay_min': torch.tensor(self.directional_decay_min, device=alpha_c.device),

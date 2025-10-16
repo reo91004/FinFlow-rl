@@ -1,268 +1,139 @@
 # FinRL-IRT: Crisis-Adaptive Portfolio Management
 
-IRT (Immune Replicator Transport) Operator를 FinRL 환경에서 검증하는 연구 프로젝트.
+FinRL-IRT는 면역학적 Replicator-Transport 연산자를 금융 강화학습 파이프라인에 통합하여 시장 위기 상황에서도 안정적인 포트폴리오 운용을 달성하고자 하는 연구 프로젝트입니다. Stable Baselines3의 SAC 구조 위에 IRT Actor를 결합하고, 위기 감지(T-Cell) 및 최적수송(Sinkhorn)을 통해 위기 레짐 전환에 능동적으로 대응합니다.
 
-## Overview
+## 프로젝트 개요
 
-본 프로젝트는 면역학적 메커니즘에서 영감을 받은 IRT Operator를 검증된 강화학습 환경인 FinRL에 통합하여, 시장 위기 상황에서의 포트폴리오 관리 성능을 입증하는 것을 목표로 한다.
+- 면역계의 B/T-Cell 원리를 차용하여 **위기 감지 → 학습률 가열 → 전문가 혼합**의 파이프라인을 구성합니다.
+- Optimal Transport와 Replicator Dynamics를 결합한 `IRT` 연산자가 프로토타입 전략을 동적으로 혼합합니다.
+- Stable Baselines3의 Critic을 재사용하면서 Actor만 커스텀 IRT Actor로 교체하여 기존 FinRL 코드베이스와 호환됩니다.
+- 위기 민감 보상(`dsr_cvar`)과 시각화(XAI, 프로토타입 추적)를 통해 모델 해석성을 확보합니다.
+- 학습·평가·문서화·테스트가 모두 포함된 재현 가능한 연구 버전을 제공합니다.
 
-### Core Innovation: IRT Operator
+## 수학적 개요
 
-```
-w_t = (1-α)·Replicator(w_{t-1}, f_t) + α·Transport(E_t, K, C_t)
-```
+\[
+w*t = (1-\alpha_c)\, \tilde{w}\_t + \alpha_c\, P_t\mathbf{1}, \quad
+\tilde{w}\_t \propto w*{t-1}\,\exp\{\eta(c_t)(f_t - \bar{f}\_t) - r_t\}
+\]
 
-- **Optimal Transport**: 현재 상태와 프로토타입 전략 간 구조적 매칭
-- **Replicator Dynamics**: 과거 성공 전략에 대한 시간 메모리
-- **Immunological Cost**: 도메인 지식이 내장된 비용 함수
+- \(P_t\): Sinkhorn 알고리즘으로 계산한 최적수송 계획
+- \(\alpha_c\): 위기 레벨 및 Sharpe 변화에 의해 조정되는 혼합 계수
+- \(\eta(c_t)\): 위기 레벨에 따라 가열되는 Replicator 학습률
+- \(r_t\): 자기-내성 서명과의 유사도에 기반한 억제 항
 
-## Features
+## 주요 구성 요소
 
-- ✅ **IRT Operator** - OT + Replicator Dynamics 결합
-- ✅ **SAC + Custom Policy** - Stable Baselines3 기반
-- ✅ **Crisis Adaptation** - T-Cell 위기 감지 메커니즘
-- ✅ **XAI Visualization** - 12개 해석 가능성 플롯
-- ✅ **FinRL Integration** - 검증된 환경 활용
+- `finrl/agents/irt/irt_operator.py`: Sinkhorn 기반 비용 행렬 및 IRT 연산자 구현
+- `finrl/agents/irt/bcell_actor.py`: 상태 인코딩, IRT 결합, Dirichlet 디코딩을 수행하는 B-Cell Actor
+- `finrl/agents/irt/t_cell.py`: 시장 피처로부터 위기 타입 점수와 공자극 임베딩을 추정하는 경량 T-Cell
+- `finrl/agents/irt/irt_policy.py`: SACPolicy를 상속받아 IRT Actor를 결합한 정책 클래스
+- `scripts/train_irt.py`: 데이터 다운로드→환경 구성→학습→평가까지 일괄 수행하는 학습 스크립트
+- `scripts/evaluate.py`: direct(deterministic) 및 drlagent 모드 평가, XAI·위험지표 추출 지원
 
-## Quick Start
-
-### 1. Installation
-
-```bash
-# Clone repository
-git clone <repo-url>
-cd FinFlow-rl
-
-# Install dependencies
-pip install -r requirements.txt
-pip install -e .
-```
-
-자세한 설치 가이드는 [INSTALL.md](INSTALL.md) 참조.
-
-### 2. Minimal Test
-
-**FinRL 환경 테스트**:
-
-```bash
-python tests/test_finrl_minimal.py
-```
-
-예상 출력:
-
-```
-✅ FinRL 최소 실행 테스트 성공!
-Total Portfolio Value: $1,000,234.56
-Total Reward: 0.0234
-```
-
-**IRT Policy 테스트**:
-
-```bash
-python tests/test_irt_policy.py
-```
-
-예상 출력:
-
-```
-✅ Test 1 passed: IRT forward pass 정상 작동
-✅ Test 2 passed: Simplex 제약 만족
-✅ Test 3 passed: SB3 통합 성공
-✅ Test 4 (CPU) passed: CPU 호환성 확인
-✅ Test 5 passed: IRT 분해 공식 검증
-✅ All tests passed!
-```
-
-### 3. Training
-
-#### SAC Baseline (FinRL Standard)
-
-FinRL 논문과 동일한 조건으로 베이스라인을 학습한다:
-
-```bash
-python scripts/train_finrl_standard.py --model sac --mode both
-```
-
-출력: `logs/finrl_sac/{timestamp}/sac_50k.zip`
-
-#### SAC Baseline (IRT 비교용)
-
-IRT와 정확히 동일한 조건으로 학습한다:
-
-```bash
-python scripts/train.py --model sac --mode both --episodes 200
-```
-
-출력: `logs/sac/{timestamp}/sac_final.zip`
-
-#### IRT
-
-```bash
-python scripts/train_irt.py --episodes 200
-```
-
-출력: `logs/irt/{timestamp}/irt_final.zip`
-
-### 4. Evaluation
-
-```bash
-# FinRL Standard Baseline 평가
-python scripts/evaluate.py \
-  --model logs/finrl_sac/{timestamp}/sac_50k.zip \
-  --method drlagent \
-  --save-plot --save-json
-
-# IRT vs Baseline 비교 평가
-python scripts/evaluate.py \
-  --model logs/sac/{timestamp}/sac_final.zip \
-  --method direct \
-  --save-plot --save-json
-
-python scripts/evaluate.py \
-  --model logs/irt/{timestamp}/irt_final.zip \
-  --method direct \
-  --save-plot --save-json
-```
-
-자동으로 생성되는 결과물:
-
-- `evaluation_results.json` - 메트릭 (Sharpe, Calmar, Max Drawdown 등)
-- `evaluation_plots/` - 시각화 (Portfolio Value, Drawdown, Returns Distribution)
-
-## Project Structure
+## 디렉터리 요약
 
 ```
 FinFlow-rl/
-├── finrl/                  # FinRL 핵심 라이브러리
-│   ├── agents/irt/         # IRT Custom Policy (Phase 1)
-│   │   ├── irt_operator.py # IRT Operator (Sinkhorn + Replicator)
-│   │   ├── t_cell.py       # TCellMinimal (위기 감지)
-│   │   ├── bcell_actor.py  # BCellIRTActor
-│   │   └── irt_policy.py   # IRTPolicy (SB3 통합)
-│   ├── evaluation/         # 평가 및 시각화
-│   │   └── visualizer.py   # 14개 IRT 시각화 플롯
-│   ├── config.py           # 하이퍼파라미터 및 설정
-│   ├── config_tickers.py   # DOW_30_TICKER 등
-│   └── meta/               # 환경, 전처리 등
-├── scripts/                # 학습/평가 스크립트
-│   ├── train.py            # 일반 RL 알고리즘 (SB3 직접 사용)
-│   ├── train_irt.py        # IRT Policy 학습
-│   ├── train_finrl_standard.py  # FinRL 표준 (DRLAgent)
-│   └── evaluate.py         # 평가 (두 가지 방식 지원)
-├── tests/                  # 테스트
-│   ├── test_irt_policy.py  # IRT Policy 단위 테스트
-│   └── test_finrl_minimal.py  # FinRL 환경 테스트
-├── logs/                   # 학습/평가 결과 (타임스탬프)
-│   ├── sac/
-│   ├── finrl_sac/
-│   └── irt/
-├── docs/                   # 문서
-│   ├── IRT.md              # IRT 알고리즘 설명서
-│   ├── SCRIPTS.md          # 스크립트 사용 가이드
-│   └── CHANGELOG.md        # 변경사항 이력
-└── README.md
+├── docs/                # 알고리즘 및 실험 문서
+├── finrl/agents/irt/    # IRT 핵심 모듈 (B-Cell, T-Cell, IRT Operator, Policy)
+├── scripts/             # 학습·평가 CLI 스크립트
+├── tests/               # 단위 테스트 및 최소 재현 실험
+├── requirements.txt     # 의존성 정의
+├── pyproject.toml       # 패키징/빌드 설정
+└── README.md            # 프로젝트 개요 (본 문서)
 ```
 
-## Configuration
+## 빠른 시작
 
-모든 하이퍼파라미터는 `finrl/config.py`에서 중앙 관리된다.
+1. **환경 설치**
+   ```bash
+   git clone <repo-url>
+   cd FinFlow-rl
+   pip install -r requirements.txt
+   pip install -e .
+   ```
+2. **최소 실행 검증**
+   ```bash
+   python tests/test_finrl_minimal.py
+   python tests/test_irt_policy.py
+   ```
+3. **브라우저 없이 로그만으로 결과 확인**: 모든 스크립트는 `logs/` 하위에 모델, 메타데이터, TensorBoard 로그를 남깁니다.
 
-### SAC Parameters
+## 학습 및 평가 파이프라인
 
-```python
-# finrl/config.py
-SAC_PARAMS = {
-    "batch_size": 64,
-    "buffer_size": 100000,
-    "learning_rate": 0.0001,
-    "learning_starts": 100,
-    "ent_coef": "auto_0.1",
-}
-```
+- **SAC/기본 알고리즘 학습**
+  ```bash
+  python scripts/train.py --model sac --mode both --episodes 200
+  ```
+- **IRT 전용 학습 + 즉시 평가**
+  ```bash
+  python scripts/train_irt.py --mode both --episodes 200 --alpha 0.45
+  ```
+- **평가 (direct / drlagent)**
 
-### Technical Indicators
+  ```bash
+  # direct 모드 (SB3 모델 직접 사용)
+  python scripts/evaluate.py --model logs/irt/<time>/irt_final.zip --method direct --save-plot
 
-```python
-# finrl/config.py
-INDICATORS = [
-    "macd",
-    "boll_ub",      # Bollinger Upper Band
-    "boll_lb",      # Bollinger Lower Band
-    "rsi_30",
-    "cci_30",
-    "dx_30",
-    "close_30_sma",
-    "close_60_sma",
-]
-```
+  # drlagent 모드 (FinRL DRLAgent API)
+  python scripts/evaluate.py --model logs/finrl_sac/<time>/sac_50k.zip --method drlagent
+  ```
 
-### Training Period
+- **XAI 활성화 (direct 전용)**
+  ```bash
+  python scripts/evaluate.py --model logs/irt/<time>/irt_final.zip \
+    --method direct --xai-level full --xai-target critic_q --xai-k 64
+  ```
 
-```python
-# finrl/config.py
-TRAIN_START_DATE = "2008-04-01"
-TRAIN_END_DATE = "2020-12-31"
+## 데이터 및 환경 설정
 
-TEST_START_DATE = "2021-01-01"
-TEST_END_DATE = "2024-12-31"
-```
+- 기본 종목: Dow Jones 30 (`finrl/config_tickers.py`)
+- 학습 구간: 2008-04-01 ~ 2020-12-31 / 평가 구간: 2021-01-01 ~ 2024-12-31 (`finrl/config.py`)
+- 기술지표: MACD, Bollinger Band, RSI 등 8종 (`INDICATORS`)
+- 보상 설정: `reward_type='dsr_cvar'` 사용 시 DSR·CVaR 특성이 상태에 포함되고 IRT Actor가 Sharpe/CVaR 신호를 함께 사용합니다.
 
-자세한 설정은 [finrl/config.py](finrl/config.py) 참조.
+## 재현성 체크리스트
 
-## Performance Metrics
+- `scripts/train_irt.py`는 `--seed` 인자를 받아 난수 시드를 고정합니다.
+- 학습 시 메타데이터(`env_meta.json`)가 자동 저장되며 평가 시 동일 구성을 복원합니다.
+- `tests/` 디렉터리의 단위 테스트로 forward pass, simplex 제약, Critic 연동을 매번 검증합니다.
+- TensorBoard 로그는 `logs/<model>/tensorboard/`에 기록되어 실험 비교가 용이합니다.
 
-| Metric       | SAC Baseline | IRT        | Improvement |
-| ------------ | ------------ | ---------- | ----------- |
-| Sharpe Ratio | 1.0-1.2      | 1.2-1.4    | +10-15%     |
-| Max Drawdown | -30 ~ -35%   | -20 ~ -25% | **-20-30%** |
-| Crisis MDD   | -40 ~ -45%   | -25 ~ -30% | **-30-40%** |
+## 문서 및 참고 자료
 
-**Note**: 위기 구간(2020 COVID, 2022 Fed 금리 인상)에서의 개선이 두드러짐.
+- `docs/IRT.md`: IRT 연산자, 위기 감지, 비용 함수에 대한 상세 수식 및 알고리즘 설명
+- `docs/SCRIPTS.md`: 학습/평가 스크립트별 인자 설명과 사용 예시
+- `docs/CHANGELOG.md`: 버전별 변경 이력
+- FinRL 공식 문서: <https://finrl.readthedocs.io/>
 
-## Documentation
+## 인용 안내
 
-- **[docs/IRT.md](docs/IRT.md)** - IRT 알고리즘 상세 설명 (OT, Replicator, 면역학적 비용)
-- **[docs/CHANGELOG.md](docs/CHANGELOG.md)** - 변경사항 이력 및 Phase 완료 내역
-- **[docs/SCRIPTS.md](docs/SCRIPTS.md)** - 스크립트 상세 사용 가이드
-- **[finrl/config.py](finrl/config.py)** - 하이퍼파라미터 및 설정
-- [FinRL 공식 문서](https://finrl.readthedocs.io/) - FinRL 라이브러리 참조
-
-## Citation
-
-본 프로젝트를 사용하는 경우 다음을 인용:
+연구 또는 제품에 본 프로젝트를 사용할 경우 아래 BibTeX을 참고하세요.
 
 ```bibtex
 @misc{finrl-irt-2025,
-  title={FinRL-IRT: Crisis-Adaptive Portfolio Management via Immune Replicator Transport},
-  author={Your Name},
-  year={2025},
-  note={GitHub repository},
-  url={<repo-url>}
+  title        = {FinRL-IRT: Crisis-Adaptive Portfolio Management via Immune Replicator Transport},
+  author       = {Your Name},
+  year         = {2025},
+  note         = {GitHub repository},
+  url          = {<repo-url>}
 }
 ```
 
-FinRL 인용:
+또한 FinRL 프레임워크 자체에 대해서는 다음 논문을 인용해 주세요.
 
 ```bibtex
 @article{liu2024finrl,
-  title={FinRL: Financial reinforcement learning framework},
-  author={Liu, Xiao-Yang and others},
-  journal={NeurIPS Workshop},
-  year={2024}
+  title   = {FinRL: Financial reinforcement learning framework},
+  author  = {Liu, Xiao-Yang and others},
+  journal = {NeurIPS Workshop},
+  year    = {2024}
 }
 ```
 
-## License
+## 라이선스 및 문의
 
-MIT License - [LICENSE](LICENSE) 파일 참조.
-
-FinRL은 원저자의 라이선스를 따름.
-
-## Contact
-
-- **Issues**: GitHub Issues 사용
-- **Discussions**: GitHub Discussions 활용
-
----
-
-**Status**: Phase 0 완료 ✅ | Phase 1 완료 ✅ | Phase 2 준비 중 📋
+- 라이선스: MIT (자세한 내용은 [LICENSE](LICENSE) 참조)
+- 이슈/기여: GitHub Issues 및 Pull Request를 통해 제보 혹은 토론 바랍니다.
+- 학술 협업 및 문의: 프로젝트 저장소의 Discussions 탭을 활용해 주세요.

@@ -89,7 +89,7 @@ class StrictEvalCallback(EvalCallback):
             self.logger.record("eval/mean_reward", mean_reward)
             self.logger.record("eval/mean_ep_length", mean_ep_length)
             self.logger.record("eval/mean_reward_raw", mean_reward, exclude="tensorboard")
-            # Phase 1.5: 상세 로깅
+            # 평가 표준편차와 최고 성과를 함께 기록한다.
             self.logger.record("eval/std_reward", std_reward)
             self.logger.record("eval/best_mean_reward", self.best_mean_reward)
 
@@ -107,7 +107,7 @@ class StrictEvalCallback(EvalCallback):
             self.logger.dump(self.num_timesteps)
 
             improved = mean_reward > (self.best_mean_reward + self.reward_improvement_epsilon)
-            # Phase 1.5: 상세 비교값 로깅
+            # 최고 성과 대비 차이를 별도로 기록해 진전 여부를 확인한다.
             delta_from_best = mean_reward - self.best_mean_reward
             self.logger.record("eval/delta_from_best", delta_from_best)
             self.logger.record("eval/improvement_threshold", self.best_mean_reward + self.reward_improvement_epsilon)

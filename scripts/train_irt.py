@@ -1,9 +1,10 @@
 # scripts/train_irt.py
+# SAC와 IRT 정책을 학습·평가하는 명령행 유틸리티를 제공한다.
 
 """
 IRT Policy 학습 스크립트
 
-위기 적응형 포트폴리오 관리를 위한 SAC + IRT Policy
+위기 적응형 포트폴리오 관리를 위해 SAC와 IRTPolicy를 결합한 학습·평가 파이프라인을 제공한다.
 
 사용법:
     # 기본 설정으로 학습 및 평가
@@ -64,7 +65,7 @@ from finrl.agents.stablebaselines3 import StrictEvalCallback
 
 def set_global_seed(seed: int) -> None:
     """
-    Configure all known PRNGs to use the same seed for reproducibility.
+    주요 난수 생성기(PyTorch, NumPy 등)에 동일한 시드를 설정해 재현성을 확보한다.
     """
     random.seed(seed)
     np.random.seed(seed)
@@ -78,7 +79,7 @@ def set_global_seed(seed: int) -> None:
 
 def seed_environment(env, seed: int) -> None:
     """
-    Try to seed gym environments and their spaces if supported.
+    지원되는 경우 환경과 내부 공간 전체에 시드를 주입한다.
     """
     target_envs: Iterable[Any]
     if hasattr(env, "envs") and hasattr(env, "seed"):
@@ -114,7 +115,7 @@ def seed_environment(env, seed: int) -> None:
 
 def _unwrap_env(env):
     """
-    Recursively unwrap VecEnv/Gym wrappers to obtain the base environment.
+    VecEnv 및 Gym 래퍼를 재귀적으로 풀어 실제 기본 환경을 반환한다.
     """
     env_ref = env
     visited = set()
@@ -157,7 +158,7 @@ ALLOWED_TENSORBOARD_TAGS = {
 
 class TensorboardWhitelistOutputFormat(TensorBoardOutputFormat):
     """
-    TensorBoard output that drops any keys outside the allowed FinFlow telemetry set.
+    허용된 FinFlow 텔레메트리 항목만 기록하도록 필터링하는 TensorBoard 출력기
     """
 
     def __init__(self, folder: str):
@@ -358,18 +359,16 @@ class ActionTempSchedulerCallback(BaseCallback):
 
 class CrisisBridgeCallback(BaseCallback):
     """
-    Phase-H1: Policy → Environment Crisis Level Bridge
-
-    IRT Policy에서 계산된 crisis_level을 환경의 AdaptiveRiskReward로 전달하는 브릿지.
+    정책이 산출한 위기 레벨을 환경의 위험 보상 모듈에 전달하는 브리지 콜백.
 
     동작:
-    1. Policy에서 get_irt_info()를 통해 crisis_level 추출
-    2. Environment의 risk_reward.set_crisis_level() 호출
-    3. Adaptive κ(c) 업데이트로 위기 반응성 향상
+    1. 정책의 `get_irt_info()`로부터 `crisis_level`을 추출합니다.
+    2. 환경의 `risk_reward.set_crisis_level()`을 호출해 보상 모듈의 위기 상태를 동기화합니다.
+    3. 동기화된 위기 레벨을 기반으로 κ(c) 등 위험 민감 파라미터가 업데이트됩니다.
 
     사용 조건:
-    - reward_type='adaptive_risk'인 환경에서만 작동
-    - IRT Policy 사용 시 필수
+    - `reward_type='adaptive_risk'` 환경에서만 의미가 있습니다.
+    - IRT Policy를 사용하는 평가/학습 루프에서 활성화합니다.
     """
 
     def __init__(self, learning_starts: int = 5000, verbose: int = 0):
@@ -382,11 +381,7 @@ class CrisisBridgeCallback(BaseCallback):
         if self.model is None:
             return True
 
-        # Phase 2.1: Remove learning_starts check - connect immediately
-        # Policy outputs crisis_level from step 0, should sync immediately
-        # Old code (removed):
-        # if getattr(self.model, "num_timesteps", 0) < self.learning_starts:
-        #     return True
+        # 초기 스텝부터 위기 레벨이 산출되므로 별도의 워밍업 없이 즉시 동기화한다.
 
         info = None
         policy = getattr(self.model, "policy", None)
@@ -422,15 +417,21 @@ class CrisisBridgeCallback(BaseCallback):
                 risk_reward.set_crisis_level(crisis_level)
             except (TypeError, ValueError) as exc:
                 if not self._warned_once:
-                    print(f"⚠️  CrisisBridgeCallback: Failed to update crisis level ({exc})")
+                    print(
+                        f"⚠️  CrisisBridgeCallback: Failed to update crisis level ({exc})"
+                    )
                     self._warned_once = True
                 return True
 
         if hasattr(base_env, "_crisis_history"):
-            base_env._crisis_history.append((int(self.model.num_timesteps), crisis_level))
+            base_env._crisis_history.append(
+                (int(self.model.num_timesteps), crisis_level)
+            )
 
         if not self._connected_once:
-            print(f"✅ CrisisBridgeCallback: Successfully connected (t={self.model.num_timesteps})")
+            print(
+                f"✅ CrisisBridgeCallback: Successfully connected (t={self.model.num_timesteps})"
+            )
             self._connected_once = True
             self._warned_once = False
 
@@ -456,10 +457,10 @@ def create_env(
     adaptive_dsr_beta: float = 0.92,
     adaptive_cvar_window: int = 40,
 ):
-    """StockTradingEnv 생성 (Phase 3: DSR + CVaR 보상 지원)"""
+    """DSR + CVaR 보상을 지원하는 StockTradingEnv를 생성한다."""
 
-    # State space: balance(1) + prices(N) + shares(N) + tech_indicators(K*N)
-    # Phase 3.5: reward_type='dsr_cvar'일 때 환경 내부에서 +2 (DSR/CVaR)
+    # 상태 = 잔고(1) + 가격(N) + 보유량(N) + 기술지표(K*N)
+    # `reward_type='dsr_cvar'`일 때는 DSR·CVaR 보조 지표가 추가되어 차원이 2만큼 증가한다.
     state_space = 1 + (len(tech_indicators) + 2) * stock_dim
 
     env_kwargs = {
@@ -475,7 +476,7 @@ def create_env(
         "action_space": stock_dim,
         "tech_indicator_list": tech_indicators,
         "print_verbosity": 500,
-        # Phase 3: 리스크 민감 보상
+        # 리스크 민감 보상 구성 요소
         "reward_type": reward_type,
         "lambda_dsr": lambda_dsr,
         "lambda_cvar": lambda_cvar,
@@ -625,8 +626,14 @@ def build_training_env_with_diversification(
         start_date = unique_dates[start_idx]
         end_date = unique_dates[end_idx - 1]
         _, _, window_df = _slice_df_by_dates(df, start_date, end_date)
-        tx_scale = 1.0 if mode == "off" else _sample_scales(rng, float(args.domain_rand_tx))
-        slip_scale = 1.0 if mode == "off" else _sample_scales(rng, float(args.domain_rand_slippage))
+        tx_scale = (
+            1.0 if mode == "off" else _sample_scales(rng, float(args.domain_rand_tx))
+        )
+        slip_scale = (
+            1.0
+            if mode == "off"
+            else _sample_scales(rng, float(args.domain_rand_slippage))
+        )
         config = DiversificationConfig(
             start_index=int(start_idx),
             start_date=str(start_date),
@@ -694,7 +701,7 @@ def train_irt(args):
     """IRT 모델 학습"""
 
     print("=" * 70)
-    print(f"IRT Training - Dow Jones 30")
+    print("IRT Training - Dow Jones 30")
     print("=" * 70)
 
     set_global_seed(args.seed)
@@ -704,24 +711,24 @@ def train_irt(args):
     log_dir = os.path.join(args.output, "irt", timestamp)
     os.makedirs(log_dir, exist_ok=True)
 
-    print(f"\n[Config]")
-    print(f"  Model: SAC + IRT Policy")
+    print("\n[Training Config]")
+    print("  Model: SAC + IRT Policy")
     print(f"  Stocks: Dow Jones 30 ({len(DOW_30_TICKER)} tickers)")
-    print(f"  Train: {args.train_start} ~ {args.train_end}")
-    print(f"  Test: {args.test_start} ~ {args.test_end}")
+    print(f"  Train period: {args.train_start} ~ {args.train_end}")
+    print(f"  Test period: {args.test_start} ~ {args.test_end}")
     print(f"  Episodes: {args.episodes}")
-    print(f"  IRT alpha: {args.alpha}")
-    print(f"  Output: {log_dir}")
+    print(f"  Initial alpha: {args.alpha}")
+    print(f"  Output directory: {log_dir}")
 
-    # 1. Download data
-    print(f"\n[1/5] Downloading data...")
+    # 1. 데이터 다운로드
+    print("\n[1/5] Downloading data...")
     df = YahooDownloader(
         start_date=args.train_start, end_date=args.test_end, ticker_list=DOW_30_TICKER
     ).fetch_data()
     print(f"  Downloaded: {df.shape[0]} rows")
 
-    # 2. Feature Engineering
-    print(f"\n[2/5] Feature Engineering...")
+    # 2. 피처 엔지니어링
+    print("\n[2/5] Running feature engineering...")
     fe = FeatureEngineer(
         use_technical_indicator=True,
         tech_indicator_list=INDICATORS,
@@ -729,28 +736,28 @@ def train_irt(args):
         user_defined_feature=False,
     )
     df_processed = fe.preprocess_data(df)
-    print(f"  Features: {df_processed.shape[1]} columns")
+    print(f"  Feature columns: {df_processed.shape[1]}")
 
-    # 3. Train/Test Split
-    print(f"\n[3/5] Splitting data...")
+    # 3. 학습/평가 데이터 분할
+    print("\n[3/5] Splitting train/test data...")
     train_df = data_split(df_processed, args.train_start, args.train_end)
     test_df = data_split(df_processed, args.test_start, args.test_end)
-    print(f"  Train: {len(train_df)} rows")
-    print(f"  Test: {len(test_df)} rows")
+    print(f"  Train samples: {len(train_df)}")
+    print(f"  Test samples: {len(test_df)}")
 
-    # 4. Create environments
-    print(f"\n[4/5] Creating environments...")
+    # 4. 환경 생성
+    print("\n[4/5] Creating environments...")
     stock_dim = len(train_df.tic.unique())
 
     # 데이터 누락 경고
     if stock_dim != len(DOW_30_TICKER):
         removed_count = len(DOW_30_TICKER) - stock_dim
-        print(f"  ⚠️  주의: {removed_count}개 주식이 데이터 부족으로 제외됨")
-        print(f"      (2008년 초 데이터가 없는 종목: Visa (V) 등)")
+        print(f"  ⚠️ Warning: {removed_count} tickers excluded due to missing data")
+        print(f"      (e.g., incomplete early-2008 listings such as Visa (V))")
 
-    print(f"  실제 주식 수: {stock_dim}")
+    print(f"  Effective stock count: {stock_dim}")
 
-    # Phase 3: 리스크 민감 보상 환경 생성
+    # 리스크 민감 보상 환경 생성
     train_env, diversify_meta = build_training_env_with_diversification(
         train_df,
         stock_dim,
@@ -774,9 +781,11 @@ def train_irt(args):
             f"domain_rand_slippage={diversify_meta['params']['domain_rand_slippage']}"
         )
         if diversify_meta.get("requested_mode") != diversify_meta["mode"]:
-            print("      (requested mode: {req}, downcast to {eff} because n_envs=1)".format(
-                req=diversify_meta.get("requested_mode"), eff=diversify_meta["mode"]
-            ))
+            print(
+                "      (requested mode: {req}, downcast to {eff} because n_envs=1)".format(
+                    req=diversify_meta.get("requested_mode"), eff=diversify_meta["mode"]
+                )
+            )
         for idx, cfg in enumerate(diversify_meta["configs"]):
             print(
                 "      Env[{idx}] start={start} end={end} days={days} tx×{tx:.3f} slip×{sl:.3f}".format(
@@ -809,7 +818,7 @@ def train_irt(args):
     )
     seed_environment(test_env, args.seed)
     print(
-        f"  Test env:  reward_scale={test_env.reward_scaling}, "
+        f"  테스트 환경 설정: reward_scale={test_env.reward_scaling}, "
         f"use_weighted_action={getattr(test_env, 'use_weighted_action', False)}, "
         f"slippage={getattr(test_env, 'weight_slippage', None)}, "
         f"tx_cost={getattr(test_env, 'weight_transaction_cost', None)}"
@@ -834,15 +843,15 @@ def train_irt(args):
         lambda_turnover = getattr(rr, "lambda_turnover", None)
         crisis_gain_sharpe = getattr(rr, "crisis_gain_sharpe", None)
         crisis_gain_cvar = getattr(rr, "crisis_gain_cvar", None)
-        print(f"    Phase-H1: Adaptive Risk-Aware Reward")
+        print("    Reward configuration: adaptive_risk (Sharpe/CVaR)")
         print(
             f"    λ_sharpe: {lambda_sharpe}, λ_cvar: {lambda_cvar}, "
             f"λ_turnover: {lambda_turnover}, "
             f"g_S: {crisis_gain_sharpe}, g_C: {crisis_gain_cvar}"
         )
 
-    # 5. Train IRT model
-    print(f"\n[5/5] Training SAC + IRT Policy...")
+    # 5. IRT 모델 학습
+    print("\n[5/5] Training SAC + IRT Policy...")
 
     # Callback 디렉토리 미리 생성 (FileNotFoundError 방지)
     os.makedirs(os.path.join(log_dir, "checkpoints"), exist_ok=True)
@@ -865,7 +874,7 @@ def train_irt(args):
         render=False,
     )
 
-    # Phase A: IRT 계측 callback
+    # IRT 관련 텔레메트리 콜백 등록
     irt_logging_callback = IRTLoggingCallback(log_freq=100, verbose=0)
 
     # IRT Policy kwargs
@@ -887,7 +896,7 @@ def train_irt(args):
         "stock_dim": stock_dim,
         "tech_indicator_count": tech_indicator_count,
         "has_dsr_cvar": has_dsr_cvar,
-        # Phase 3.5: Dirichlet 및 온도 파라미터 (훈련 경로 전달 필수)
+        # Dirichlet 농도 및 온도 파라미터는 평가 시점으로 전달된다.
         "dirichlet_min": args.dirichlet_min,
         "dirichlet_max": args.dirichlet_max,
         "action_temp": args.action_temp,
@@ -904,11 +913,11 @@ def train_irt(args):
         "directional_decay_min": args.directional_decay_min,
         "alpha_noise_std": args.alpha_noise_std,
         "alpha_crisis_source": args.alpha_crisis_source,
-        # Phase 3.5 Step 2: 다중 신호 위기 감지
+        # 위기 감지와 보상 모듈이 요구하는 신호 설정
         "w_r": args.w_r,
         "w_s": args.w_s,
         "w_c": args.w_c,
-        # Phase B: 바이어스 EMA 보정
+        # 위기 바이어스와 온도 보정 관련 설정 전달
         "eta_b": args.eta_b,
         "eta_b_min": args.eta_b_min,
         "eta_b_decay_steps": args.eta_b_decay_steps,
@@ -934,20 +943,19 @@ def train_irt(args):
     # SAC parameters
     sac_params = SAC_PARAMS.copy()
 
-    # Phase 2.2a: Increase entropy coefficient for exploration
-    # Simplex entropy H ∈ [0, log(30)] = [0, 3.40]
-    # Portfolio allocation requires higher exploration than typical continuous control
-    # 0.3 (Phase 2.1) was too conservative → uniform freeze
-    # 0.5 balances exploration and stability (comparable to portfolio RL literature)
-    sac_params["ent_coef"] = 0.5  # Phase 2.2a: 0.3 → 0.5 (enable diversity)
-    sac_params["learning_starts"] = 1000  # Phase 2: 5000 → 1000 (faster warmup)
+    # 포트폴리오 탐색을 강화하기 위해 엔트로피 계수를 상향 조정한다.
+    # 단순 연속 제어보다 큰 탐색 공간을 가지고 있으므로 0.5 수준이 안정적이었다.
+    sac_params["ent_coef"] = 0.5  # 탐색 다양성을 위한 높은 엔트로피 계수
+    sac_params["learning_starts"] = 1000  # SAC 워밍업 스텝을 줄여 빠르게 정책을 학습
 
     action_dim = int(train_env.action_space.shape[0])
     default_target_entropy = -float(action_dim)
     if args.target_entropy is not None:
         sac_params["target_entropy"] = float(args.target_entropy)
     elif args.target_entropy_mult is not None:
-        sac_params["target_entropy"] = default_target_entropy * float(args.target_entropy_mult)
+        sac_params["target_entropy"] = default_target_entropy * float(
+            args.target_entropy_mult
+        )
 
     if args.utd_ratio is not None and args.utd_ratio > 0:
         base_freq = sac_params.get("train_freq", 1)
@@ -958,22 +966,22 @@ def train_irt(args):
         gradient_steps = max(1, int(round(freq_value * float(args.utd_ratio))))
         sac_params["gradient_steps"] = gradient_steps
 
-    # Phase-H1: Critic learning rate 상향 (adaptive_risk 전용)
+    # adaptive_risk 보상에서는 Critic 학습률을 약간 높여 민감도를 확보한다.
     if args.reward_type == "adaptive_risk":
         sac_params["learning_rate"] = 5e-4  # 1e-4 → 5e-4 (5배 증가)
-        print("  Phase-H1: SAC learning_rate=5e-4 for gradient amplification")
+        print("  Setting critic learning rate to 5e-4 to amplify crisis gradients")
 
     print(f"  SAC params: {sac_params}")
     print(f"  IRT params: {policy_kwargs}")
 
-    # Phase-H1: Crisis Bridge callback (adaptive_risk 전용)
+    # 위기 교량 콜백(CrisisBridgeCallback)은 adaptive_risk 환경에서만 활성화한다.
     crisis_bridge_callback = None
     if args.reward_type == "adaptive_risk":
         crisis_bridge_callback = CrisisBridgeCallback(
-            learning_starts=0,  # Phase 2.1: Start immediately (was: sac_params["learning_starts"])
-            verbose=1,  # Phase 2.1: Enable verbose logging
+            learning_starts=0,  # 위기 레벨을 조기에 전달하기 위해 즉시 시작
+            verbose=1,  # 브리지 동작을 디버깅하기 위해 verbose 활성화
         )
-        print("  Phase-H1: CrisisBridgeCallback enabled (Policy→Env crisis signal)")
+        print("  CrisisBridgeCallback enabled (policy → environment crisis signal)")
 
     sac_params["seed"] = args.seed
 
@@ -993,40 +1001,58 @@ def train_irt(args):
         TensorboardWhitelistOutputFormat(tb_path),
     ]
     model.set_logger(Logger(log_dir, logger_formats))
-    
-    # Phase 1.5: 파라미터 그룹 검증 (프로토타입 포함 확인)
-    print("\n[Phase 1.5] Verifying optimizer parameter groups...")
+
+    # 최적화 대상에 프로토타입, IRT 연산자, T-Cell이 모두 포함되었는지 확인한다.
+    print("\n[Verification] Checking optimizer parameter groups...")
     actor_params = list(model.actor.parameters())
     actor_param_count = sum(p.numel() for p in actor_params)
     actor_requires_grad = sum(p.numel() for p in actor_params if p.requires_grad)
-    print(f"  Actor total params: {actor_param_count:,}")
-    print(f"  Actor trainable params: {actor_requires_grad:,}")
-    
+    print(f"  Actor total parameters: {actor_param_count:,}")
+    print(f"  Trainable parameters: {actor_requires_grad:,}")
+
     # Prototype decoder 파라미터 확인
-    if hasattr(model.actor, 'irt_actor'):
+    if hasattr(model.actor, "irt_actor"):
         irt_actor = model.actor.irt_actor
-        if hasattr(irt_actor, 'decoders'):
-            decoder_params = sum(p.numel() for d in irt_actor.decoders for p in d.parameters())
-            decoder_trainable = sum(p.numel() for d in irt_actor.decoders for p in d.parameters() if p.requires_grad)
-            print(f"  Prototype decoders: {decoder_params:,} params ({decoder_trainable:,} trainable)")
-            
+        if hasattr(irt_actor, "decoders"):
+            decoder_params = sum(
+                p.numel() for d in irt_actor.decoders for p in d.parameters()
+            )
+            decoder_trainable = sum(
+                p.numel()
+                for d in irt_actor.decoders
+                for p in d.parameters()
+                if p.requires_grad
+            )
+            print(
+                f"  Prototype decoder parameters: total {decoder_params:,} ({decoder_trainable:,} trainable)"
+            )
+
             # Gradient flow 검증용 플래그
             if decoder_trainable == 0:
-                print("  WARNING: Prototype decoders have 0 trainable parameters!")
+                print("  WARNING: all prototype decoder parameters are frozen!")
             elif decoder_trainable < decoder_params:
-                print(f"  WARNING: Some prototype parameters are frozen ({decoder_params - decoder_trainable} params)")
+                print(
+                    f"  WARNING: some prototype parameters are frozen ({decoder_params - decoder_trainable})"
+                )
 
     # Total timesteps
     total_timesteps = 250 * args.episodes
     print(f"\n  Total timesteps: {total_timesteps}")
-    print(f"  Starting training...")
+    print("  Starting training loop...")
 
     # Train
     callbacks = [checkpoint_callback, eval_callback, irt_logging_callback]
-    if args.action_temp_final is not None and args.action_temp_final != args.action_temp:
+    if (
+        args.action_temp_final is not None
+        and args.action_temp_final != args.action_temp
+    ):
         anneal_steps = args.action_temp_anneal_steps or total_timesteps
-        callbacks.append(ActionTempSchedulerCallback(args.action_temp_final, anneal_steps))
-        print(f"  ActionTempScheduler: {args.action_temp}->{args.action_temp_final} over {anneal_steps} steps")
+        callbacks.append(
+            ActionTempSchedulerCallback(args.action_temp_final, anneal_steps)
+        )
+        print(
+            f"  Action temperature scheduler: {args.action_temp} → {args.action_temp_final} over {anneal_steps} steps"
+        )
     if crisis_bridge_callback is not None:
         callbacks.append(crisis_bridge_callback)
 
@@ -1040,8 +1066,8 @@ def train_irt(args):
     final_model_path = os.path.join(log_dir, "irt_final.zip")
     model.save(final_model_path)
 
-    print(f"\n" + "=" * 70)
-    print(f"Training completed!")
+    print("\n" + "=" * 70)
+    print("Training completed!")
     print("=" * 70)
     print(f"  Final model: {final_model_path}")
     print(f"  Best model: {os.path.join(log_dir, 'best_model', 'best_model.zip')}")
@@ -1055,7 +1081,9 @@ def train_irt(args):
         "reward_type": args.reward_type,
         "use_weighted_action": getattr(base_train_env, "use_weighted_action", True),
         "weight_slippage": getattr(base_train_env, "weight_slippage", 0.001),
-        "weight_transaction_cost": getattr(base_train_env, "weight_transaction_cost", 0.0005),
+        "weight_transaction_cost": getattr(
+            base_train_env, "weight_transaction_cost", 0.0005
+        ),
         "reward_scaling": args.reward_scale,
         "stock_dim": stock_dim,
         "tech_indicator_count": tech_indicator_count,
@@ -1087,7 +1115,9 @@ def _log_returns_to_tensorboard(log_dir: str, metrics: Dict[str, Any]) -> None:
     candidates: list[str] = []
     if log_dir:
         candidates.append(os.path.join(log_dir, "tensorboard"))
-        parent = os.path.dirname(log_dir.rstrip(os.sep)) if log_dir.rstrip(os.sep) else ""
+        parent = (
+            os.path.dirname(log_dir.rstrip(os.sep)) if log_dir.rstrip(os.sep) else ""
+        )
         if parent and parent != log_dir:
             candidates.append(os.path.join(parent, "tensorboard"))
 
@@ -1132,7 +1162,7 @@ def test_irt(args, model_path=None):
     """IRT 모델 평가"""
 
     print("=" * 70)
-    print(f"IRT Evaluation")
+    print("IRT Evaluation")
     print("=" * 70)
 
     set_global_seed(args.seed)
@@ -1143,12 +1173,12 @@ def test_irt(args, model_path=None):
             raise ValueError("--checkpoint required for --mode test")
         model_path = args.checkpoint
 
-    print(f"\n[Config]")
-    print(f"  Model: {model_path}")
-    print(f"  Test: {args.test_start} ~ {args.test_end}")
+    print("\n[Evaluation Config]")
+    print(f"  Model path: {model_path}")
+    print(f"  Test period: {args.test_start} ~ {args.test_end}")
 
     # 메타데이터 로드 (관측 공간 검증 및 설정 유지)
-    # Phase 1.5: 체크포인트 config 우선
+    # 체크포인트에 저장된 환경 구성을 우선 적용한다.
     env_meta = {}
     expected_obs_dim = None
     use_weighted_action = True
@@ -1169,11 +1199,19 @@ def test_irt(args, model_path=None):
         expected_obs_dim = env_meta.get("obs_dim")
         use_weighted_action = env_meta.get("use_weighted_action", use_weighted_action)
         weight_slippage = env_meta.get("weight_slippage", weight_slippage)
-        weight_transaction_cost = env_meta.get("weight_transaction_cost", weight_transaction_cost)
+        weight_transaction_cost = env_meta.get(
+            "weight_transaction_cost", weight_transaction_cost
+        )
         reward_scaling = env_meta.get("reward_scaling", reward_scaling)
-        adaptive_lambda_sharpe = env_meta.get("adaptive_lambda_sharpe", adaptive_lambda_sharpe)
-        adaptive_lambda_cvar = env_meta.get("adaptive_lambda_cvar", adaptive_lambda_cvar)
-        adaptive_lambda_turnover = env_meta.get("adaptive_lambda_turnover", adaptive_lambda_turnover)
+        adaptive_lambda_sharpe = env_meta.get(
+            "adaptive_lambda_sharpe", adaptive_lambda_sharpe
+        )
+        adaptive_lambda_cvar = env_meta.get(
+            "adaptive_lambda_cvar", adaptive_lambda_cvar
+        )
+        adaptive_lambda_turnover = env_meta.get(
+            "adaptive_lambda_turnover", adaptive_lambda_turnover
+        )
         adaptive_crisis_gain_sharpe = env_meta.get(
             "adaptive_crisis_gain_sharpe",
             env_meta.get("adaptive_crisis_gain", adaptive_crisis_gain_sharpe),
@@ -1183,12 +1221,16 @@ def test_irt(args, model_path=None):
             adaptive_crisis_gain_cvar,
         )
         adaptive_dsr_beta = env_meta.get("adaptive_dsr_beta", adaptive_dsr_beta)
-        adaptive_cvar_window = env_meta.get("adaptive_cvar_window", adaptive_cvar_window)
+        adaptive_cvar_window = env_meta.get(
+            "adaptive_cvar_window", adaptive_cvar_window
+        )
 
-        # Phase 1.5: 체크포인트 reward_type 우선 (CLI보다 우선)
+        # reward_type이 저장되어 있으면 CLI 인자보다 우선시한다.
         if env_meta.get("reward_type"):
             if args.reward_type and args.reward_type != env_meta["reward_type"]:
-                print(f"  Warning: Overriding CLI reward_type ({args.reward_type}) with checkpoint ({env_meta['reward_type']})")
+                print(
+                    f"  Warning: overriding CLI reward_type ({args.reward_type}) with checkpoint value ({env_meta['reward_type']})"
+                )
             args.reward_type = env_meta["reward_type"]
         args.adaptive_lambda_sharpe = adaptive_lambda_sharpe
         args.adaptive_lambda_cvar = adaptive_lambda_cvar
@@ -1215,7 +1257,7 @@ def test_irt(args, model_path=None):
         tech_indicators=INDICATORS,
         initial_amount=1000000,
         verbose=True,
-        reward_type=args.reward_type,  # Phase-H1: reward_type 전달
+        reward_type=args.reward_type,
         lambda_dsr=args.lambda_dsr,
         lambda_cvar=args.lambda_cvar,
         expected_obs_dim=expected_obs_dim,
@@ -1237,33 +1279,33 @@ def test_irt(args, model_path=None):
     total_return = metrics["total_return"]
     step = metrics["n_steps"]
 
-    print(f"\n" + "=" * 70)
-    print(f"Evaluation Results")
+    print("\n" + "=" * 70)
+    print("Evaluation Results")
     print("=" * 70)
-    print(f"\n[Period]")
+    print("\n[Period]")
     print(f"  Start: {args.test_start}")
     print(f"  End: {args.test_end}")
     print(f"  Steps: {step}")
 
-    print(f"\n[Returns]")
-    print(f"  Total Return: {total_return*100:.2f}%")
-    print(f"  Annualized Return: {metrics['annualized_return']*100:.2f}%")
+    print("\n[Returns]")
+    print(f"  Total return: {total_return*100:.2f}%")
+    print(f"  Annualized return: {metrics['annualized_return']*100:.2f}%")
 
-    print(f"\n[Risk Metrics]")
+    print("\n[Risk Metrics]")
     print(f"  Volatility (annualized): {metrics['volatility']*100:.2f}%")
-    print(f"  Maximum Drawdown: {metrics['max_drawdown']*100:.2f}%")
+    print(f"  Maximum drawdown: {metrics['max_drawdown']*100:.2f}%")
 
-    print(f"\n[Risk-Adjusted Returns]")
-    print(f"  Sharpe Ratio: {metrics['sharpe_ratio']:.3f}")
-    print(f"  Sortino Ratio: {metrics['sortino_ratio']:.3f}")
-    print(f"  Calmar Ratio: {metrics['calmar_ratio']:.3f}")
+    print("\n[Risk-Adjusted Returns]")
+    print(f"  Sharpe ratio: {metrics['sharpe_ratio']:.3f}")
+    print(f"  Sortino ratio: {metrics['sortino_ratio']:.3f}")
+    print(f"  Calmar ratio: {metrics['calmar_ratio']:.3f}")
 
-    print(f"\n[Portfolio Value]")
-    print(f"  Initial: $1,000,000.00")
+    print("\n[Portfolio Value]")
+    print("  Initial: $1,000,000.00")
     print(f"  Final: ${final_value:,.2f}")
     print(f"  Profit/Loss: ${final_value - 1000000:,.2f}")
 
-    print(f"\n" + "=" * 70)
+    print("\n" + "=" * 70)
 
     _log_returns_to_tensorboard(os.path.dirname(model_path), metrics)
 
@@ -1281,8 +1323,8 @@ def test_irt(args, model_path=None):
 
         output_dir = args.output_plot or os.path.join(log_dir, "evaluation_plots")
 
-        print(f"\n[시각화 생성]")
-        print(f"  Output: {output_dir}")
+        print(f"\n[Visualization]")
+        print(f"  Output directory: {output_dir}")
 
         plot_all(
             portfolio_values=np.array(portfolio_values),
@@ -1311,7 +1353,7 @@ def test_irt(args, model_path=None):
             "returns": returns,
             "values": np.array(portfolio_values),
             "weights": irt_data["weights"],  # 목표가중
-            "actual_weights": irt_data["actual_weights"],  # Phase-1: 실행가중
+            "actual_weights": irt_data["actual_weights"],  # 체결 이후 실제 비중 시계열
             "crisis_levels": irt_data["crisis_levels"],
             "crisis_types": irt_data["crisis_types"],
             "prototype_weights": irt_data["prototype_weights"],
@@ -1343,7 +1385,7 @@ def test_irt(args, model_path=None):
                 "directional_decay_min": args.directional_decay_min,
                 "alpha_noise_std": args.alpha_noise_std,
                 "alpha_crisis_source": args.alpha_crisis_source,
-                # Phase B
+                # 위기 감지 가중치 및 바이어스 관련 파라미터
                 "w_r": args.w_r,
                 "w_s": args.w_s,
                 "w_c": args.w_c,
@@ -1351,8 +1393,8 @@ def test_irt(args, model_path=None):
             }
         }
 
-        print(f"\n[JSON 저장]")
-        print(f"  Output: {log_dir}")
+        print(f"\n[JSON output]")
+        print(f"  Output directory: {log_dir}")
         save_evaluation_results(results, Path(log_dir), config)
 
     return {
@@ -1365,7 +1407,7 @@ def test_irt(args, model_path=None):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="IRT Policy Training/Evaluation")
+    parser = argparse.ArgumentParser(description="IRT 정책 학습/평가")
 
     # Mode
     parser.add_argument(
@@ -1373,7 +1415,7 @@ def main():
         type=str,
         default="train",
         choices=["train", "eval", "both", "test"],
-        help="Execution mode (default: train; use 'eval' for evaluation only)",
+        help="실행 모드 (기본: train; 평가만 수행하려면 'eval')",
     )
 
     # Data period (defaults from config.py)
@@ -1381,86 +1423,89 @@ def main():
         "--train-start",
         type=str,
         default=TRAIN_START_DATE,
-        help=f"Training start date (default: {TRAIN_START_DATE})",
+        help=f"훈련 시작일 (기본: {TRAIN_START_DATE})",
     )
     parser.add_argument(
         "--train-end",
         type=str,
         default=TRAIN_END_DATE,
-        help=f"Training end date (default: {TRAIN_END_DATE})",
+        help=f"훈련 종료일 (기본: {TRAIN_END_DATE})",
     )
     parser.add_argument(
         "--test-start",
         type=str,
         default=TEST_START_DATE,
-        help=f"Test start date (default: {TEST_START_DATE})",
+        help=f"테스트 시작일 (기본: {TEST_START_DATE})",
     )
     parser.add_argument(
         "--test-end",
         type=str,
         default=TEST_END_DATE,
-        help=f"Test end date (default: {TEST_END_DATE})",
+        help=f"테스트 종료일 (기본: {TEST_END_DATE})",
     )
 
     # Training settings
     parser.add_argument(
-        "--episodes", type=int, default=60, help="Number of training episodes (default: 60)"
+        "--episodes",
+        type=int,
+        default=60,
+        help="학습 에피소드 수 (기본: 60)",
     )
     parser.add_argument(
         "--seed",
         type=int,
         default=42,
-        help="Random seed for reproducibility (default: 42)",
+        help="재현성을 위한 난수 시드 (기본: 42)",
     )
     parser.add_argument(
-        "--output", type=str, default="logs", help="Output directory (default: logs)"
+        "--output", type=str, default="logs", help="출력 디렉터리 (기본: logs)"
     )
     parser.add_argument(
         "--reward-scale",
         type=float,
-        default=1.0,  # Phase 1: 1e-2 → 1.0 (100x increase for proper gradient flow)
-        help="Reward scaling factor applied inside the trading environment (default: 1.0)",
+        default=1.0,  # 초기에는 1e-2였으나 기울기 전달 강화를 위해 1.0으로 상향
+        help="트레이딩 환경 내부에 적용하는 보상 스케일링 계수 (기본: 1.0)",
     )
     parser.add_argument(
         "--env-diversify",
         choices=["off", "basic", "vector"],
         default="vector",
-        help="Environment diversification strategy (default: vector)",
+        help="환경 다변화 전략 (기본: vector)",
     )
     parser.add_argument(
         "--advanced",
         action="store_true",
-        help="Display advanced configuration options and exit",
+        help="고급 설정 옵션 표시 후 종료",
     )
     parser.add_argument(
         "--n-envs",
         type=int,
         default=None,
-        help="Number of parallel environments when env-diversify=vector (default: auto)",
+        help="env-diversify=vector일 때 병렬 환경 수 (기본: 자동)",
     )
     parser.add_argument(
         "--start-offset-mode",
         choices=["random", "uniform", "rolling"],
         default="random",
-        help="Offset sampling mode for diversified training environments (default: random)",
+        help="다변화 학습용 오프셋 샘플링 모드 (기본: random)",
     )
     parser.add_argument(
         "--window-step",
         type=int,
         default=252,
-        help="Window step (days) when env-diversify uses rolling offsets (default: 252)",
+        help="롤링 오프셋 사용 시 윈도우 스텝(일) (기본: 252)",
     )
     parser.add_argument(
         "--domain-rand-tx",
         type=float,
         default=0.25,
-        help="Uniform domain randomization magnitude for transaction cost scaling (default: 0.25)",
+        help="거래비용 스케일링에 대한 균등 도메인 랜덤화 크기 (기본: 0.25)",
     )
     parser.add_argument(
         "--domain-rand-slippage",
         type=float,
         default=0.25,
-        help="Uniform domain randomization magnitude for slippage scaling (default: 0.25)",
+        help="슬리피지 스케일링에 대한 균등 도메인 랜덤화 크기 (기본: 0.25)",
     )
 
     # IRT parameters
@@ -1468,373 +1513,373 @@ def main():
         "--emb-dim",
         type=int,
         default=128,
-        help="IRT embedding dimension (default: 128)",
+        help="IRT 임베딩 차원 (기본: 128)",
     )
     parser.add_argument(
-        "--m-tokens", type=int, default=6, help="Number of epitope tokens (default: 6)"
+        "--m-tokens", type=int, default=6, help="에피토프 토큰 수 (기본: 6)"
     )
     parser.add_argument(
-        "--M-proto", type=int, default=8, help="Number of prototypes (default: 8)"
+        "--M-proto", type=int, default=8, help="프로토타입 수 (기본: 8)"
     )
     parser.add_argument(
         "--alpha",
         type=float,
         default=0.45,
-        help="Base OT-Replicator mixing ratio (default: 0.45, Phase F)",
+        help="OT-Replicator 혼합 비율의 기본값 (기본: 0.45)",
     )
     parser.add_argument(
         "--alpha-min",
         type=float,
         default=0.05,
-        help="Crisis minimum alpha (default: 0.05, Phase 3.5)",
+        help="위기 상황에서 허용되는 α 최소값 (기본: 0.05)",
     )
     parser.add_argument(
         "--alpha-max",
         type=float,
-        default=0.75,  # Phase 2: 0.55 → 0.75 (allow more OT usage, prevent saturation)
-        help="Normal maximum alpha (Phase 2: increased for IRT flexibility)",
+        default=0.75,  # OT 기여를 넓게 허용하기 위해 0.75로 설정
+        help="평시 α 상한 (IRT의 유연성을 확보하기 위해 확장)",
     )
     parser.add_argument(
         "--alpha-update-rate",
         type=float,
         default=0.85,
-        help="Update rate for alpha_c state adaptation (default: 0.85)",
+        help="alpha_c 상태 적응 업데이트율 (기본: 0.85)",
     )
     parser.add_argument(
         "--alpha-feedback-gain",
         type=float,
         default=0.25,
-        help="Sharpe feedback gain for alpha_c (default: 0.25)",
+        help="Sharpe 피드백 이득 (기본: 0.25)",
     )
     parser.add_argument(
         "--alpha-feedback-bias",
         type=float,
         default=0.0,
-        help="Sharpe feedback bias for alpha_c (default: 0.0)",
+        help="Sharpe 피드백 바이어스 (기본: 0.0)",
     )
     parser.add_argument(
         "--directional-decay-min",
         type=float,
         default=0.05,
-        help="Minimum directional decay factor near alpha bounds (default: 0.05)",
+        help="α 경계 부근 최소 방향성 감쇠 계수 (기본: 0.05)",
     )
     parser.add_argument(
         "--alpha-noise-std",
         type=float,
         default=0.02,
-        help="Gaussian noise std added to alpha during training (default: 0.02)",
+        help="학습 중 α에 주입하는 가우시안 노이즈 표준편차 (기본: 0.02)",
     )
     parser.add_argument(
         "--alpha-crisis-source",
         type=str,
         default="pre_guard",
         choices=["pre_guard", "post_guard"],
-        help="Which crisis signal source controls alpha_c (default: pre_guard)",
+        help="alpha_c에 사용할 위기 신호 소스 (기본: pre_guard)",
     )
     parser.add_argument(
         "--ema-beta",
         type=float,
         default=0.50,
-        help="EMA memory coefficient (default: 0.50, Phase 1.5)",
+        help="프로토타입 가중치 EMA 계수 (기본: 0.50)",
     )
     parser.add_argument(
         "--eps",
         type=float,
         default=0.05,
-        help="Sinkhorn entropy (default: 0.05, Phase 1)",
+        help="Sinkhorn 반복의 엔트로피 계수 (기본: 0.05)",
     )
     parser.add_argument(
         "--max-iters",
         type=int,
         default=30,
-        help="Sinkhorn max iterations (default: 30, Phase 1)",
+        help="Sinkhorn 최대 반복 횟수 (기본: 30)",
     )
     parser.add_argument(
         "--replicator-temp",
         type=float,
         default=0.4,
-        help="Replicator softmax temperature (default: 0.4 for stronger selection)",
+        help="Replicator 소프트맥스 온도 (기본: 0.4, 선택 강화)",
     )
     parser.add_argument(
         "--eta-0",
         type=float,
         default=0.05,
-        help="Base learning rate (Replicator) (default: 0.05)",
+        help="Replicator 기본 학습률 (기본: 0.05)",
     )
     parser.add_argument(
         "--eta-1",
         type=float,
         default=0.12,
-        help="Crisis increase (Replicator) (default: 0.12, Phase E)",
+        help="위기 레벨에 비례하는 Replicator 학습률 증가량 (기본: 0.12)",
     )
     parser.add_argument(
         "--gamma",
         type=float,
         default=0.90,
-        help="Co-stimulation weight in cost function (default: 0.90, Phase 1.5)",
+        help="OT 비용 함수에서 공자극 내적에 곱해지는 가중치 (기본: 0.90)",
     )
     parser.add_argument(
         "--market-feature-dim",
         type=int,
         default=12,
-        help="Market feature dimension (default: 12)",
+        help="T-Cell 입력으로 사용할 시장 특성 차원 (기본: 12)",
     )
-    # Phase 2: Dirichlet 및 온도 파라미터
+    # Dirichlet 및 행동 온도 관련 하이퍼파라미터
     parser.add_argument(
         "--dirichlet-min",
         type=float,
         default=0.05,
-        help="Dirichlet concentration minimum (default: 0.05 for sharper selectivity)"
+        help="Dirichlet 집중도 하한 (기본: 0.05, 선택적 집중을 강화)",
     )
     parser.add_argument(
         "--dirichlet-max",
         type=float,
         default=6.0,
-        help="Dirichlet concentration maximum (encourages sharper prototypes)"
+        help="Dirichlet 집중도 상한 (프로토타입을 더 뚜렷하게 만듦)",
     )
     parser.add_argument(
         "--action-temp",
         type=float,
         default=0.50,
-        help="Action softmax temperature (default: 0.50 for smoother regime transitions)"
+        help="행동 소프트맥스 온도 (기본: 0.50, 레짐 전환을 부드럽게 함)",
     )
     parser.add_argument(
         "--action-temp-final",
         type=float,
         default=None,
-        help="Final action temperature for linear annealing (default: disabled)"
+        help="행동 온도의 선형 감쇠 목표값 (기본: 사용하지 않음)",
     )
     parser.add_argument(
         "--action-temp-anneal-steps",
         type=int,
         default=0,
-        help="Number of steps to anneal action temperature (default: 0 = instantaneous)"
+        help="행동 온도를 감쇠시키는 스텝 수 (기본: 0, 즉시 적용)",
     )
     parser.add_argument(
         "--target-entropy",
         type=float,
         default=None,
-        help="Override SAC target entropy (default: heuristic)"
+        help="SAC 기본 타깃 엔트로피를 수동으로 지정 (기본: 자동 계산)",
     )
     parser.add_argument(
         "--target-entropy-mult",
         type=float,
         default=None,
-        help="Scale default SAC target entropy by this factor (default: disabled)"
+        help="SAC 타깃 엔트로피에 곱할 배율 (기본: 사용하지 않음)",
     )
     parser.add_argument(
         "--utd-ratio",
         type=float,
         default=None,
-        help="Update-to-data ratio for SAC gradient steps (default: heuristic)"
+        help="SAC의 update-to-data 비율 (기본: 알고리즘 내부 휴리스틱)",
     )
 
-    # Phase 3: DSR + CVaR 보상 파라미터
+    # DSR + CVaR 보상 및 위험 민감 설정
     parser.add_argument(
         "--reward-type",
         type=str,
         default="adaptive_risk",
         choices=["basic", "dsr_cvar", "adaptive_risk"],
-        help="Reward function (default: adaptive_risk)",
+        help="사용할 보상 함수 유형 (기본: adaptive_risk)",
     )
     parser.add_argument(
         "--lambda-dsr",
         type=float,
         default=0.15,
-        help="DSR bonus weight (default: 0.15, Phase C)",
+        help="DSR 보상 항 가중치 (기본: 0.15)",
     )
     parser.add_argument(
         "--lambda-cvar",
         type=float,
         default=0.05,
-        help="CVaR penalty weight (default: 0.05, Phase 3)",
+        help="CVaR 패널티 가중치 (기본: 0.05)",
     )
     parser.add_argument(
         "--adaptive-lambda-sharpe",
         type=float,
         default=0.20,
-        help="Adaptive risk reward Sharpe weight λ_S (default: 0.20)",
+        help="적응형 보상에서 Sharpe 항 가중치 λ_S (기본: 0.20)",
     )
     parser.add_argument(
         "--adaptive-lambda-cvar",
         type=float,
         default=0.40,
-        help="Adaptive risk reward CVaR penalty weight β (default: 0.40)",
+        help="적응형 보상에서 CVaR 패널티 가중치 β (기본: 0.40)",
     )
     parser.add_argument(
         "--adaptive-lambda-turnover",
         type=float,
         default=0.0,
-        help="Adaptive risk reward turnover penalty μ (default: 0.0; set >0 only if not already deducted in NAV)",
+        help="회전율 패널티 μ (기본: 0.0, NAV에서 이미 비용을 차감하지 않는 경우만 양수 설정)",
     )
     parser.add_argument(
         "--adaptive-crisis-gain",
         dest="adaptive_crisis_gain_sharpe",
         type=float,
         default=-0.15,
-        help="Adaptive risk reward Sharpe crisis gain g_S (default: -0.15, keep negative)",
+        help="위기 구간에서 Sharpe 항의 가중을 조정하는 계수 g_S (기본: -0.15)",
     )
     parser.add_argument(
         "--adaptive-crisis-gain-cvar",
         type=float,
         default=0.25,
-        help="Adaptive risk reward CVaR crisis gain g_C (default: 0.25, increase penalty in crises)",
+        help="위기 구간에서 CVaR 패널티를 강화하는 계수 g_C (기본: 0.25)",
     )
     parser.add_argument(
         "--adaptive-dsr-beta",
         type=float,
         default=0.92,
-        help="Adaptive risk reward DSR EMA β (default: 0.92)",
+        help="DSR EMA 계수 β (기본: 0.92)",
     )
     parser.add_argument(
         "--adaptive-cvar-window",
         type=int,
         default=40,
-        help="Adaptive risk reward CVaR window length (default: 40)",
+        help="CVaR 추정에 사용할 윈도우 길이 (기본: 40)",
     )
 
-    # Phase E: 위기신호 가중 재균형
+    # 위기 감지 신호 및 바이어스 보정 관련 하이퍼파라미터
     parser.add_argument(
         "--w-r",
         type=float,
         default=0.55,
-        help="Market crisis signal weight (T-Cell output) (Phase 1 default: 0.55)",
+        help="T-Cell 시장 신호 가중치 w_r (기본: 0.55)",
     )
     parser.add_argument(
         "--w-s",
         type=float,
         default=-0.25,
-        help="Sharpe signal weight (DSR bonus) (Phase 1 default: -0.25)",
+        help="Sharpe 신호 가중치 w_s (기본: -0.25)",
     )
     parser.add_argument(
         "--w-c",
         type=float,
         default=0.20,
-        help="CVaR signal weight (Phase 1 default: 0.20)",
+        help="CVaR 신호 가중치 w_c (기본: 0.20)",
     )
     parser.add_argument(
         "--eta-b",
         type=float,
         default=2e-2,
-        help="Initial bias learning rate for crisis calibration (Phase 1 default: 2e-2)",
+        help="위기 바이어스 보정을 위한 초기 학습률 (기본: 2e-2)",
     )
     parser.add_argument(
         "--eta-b-min",
         type=float,
         default=2e-3,
-        help="Minimum bias learning rate after decay (Phase 1 default: 2e-3)",
+        help="학습률 감쇠 이후의 최소값 (기본: 2e-3)",
     )
     parser.add_argument(
         "--eta-b-decay-steps",
         type=int,
         default=30000,
-        help="Cosine decay horizon for bias learning rate (Phase 1 default: 30000)",
+        help="바이어스 학습률 코사인 감쇠 구간 길이 (기본: 30000)",
     )
     parser.add_argument(
         "--eta-b-warmup-steps",
         type=int,
         default=10000,
-        help="Warmup steps to keep bias learning rate at warmup value (Phase 1 default: 10000)",
+        help="바이어스 학습률 워밍업 기간 (기본: 10000)",
     )
     parser.add_argument(
         "--eta-b-warmup-value",
         type=float,
         default=0.05,
-        help="Warmup bias learning rate before cosine decay (Phase 1 default: 0.05)",
+        help="워밍업 단계에서 사용할 바이어스 학습률 값 (기본: 0.05)",
     )
     parser.add_argument(
         "--eta-T",
         dest="eta_T",
         type=float,
         default=1e-2,
-        help="Temperature adaptation rate (Phase 1 default: 0.01)",
+        help="위기 온도 보정 학습률 (기본: 0.01)",
     )
     parser.add_argument(
         "--p-star",
         type=float,
         default=0.35,
-        help="Target crisis prevalence p* (Phase 1 default: 0.35)",
+        help="위기 레짐 목표 비중 p* (기본: 0.35)",
     )
     parser.add_argument(
         "--temperature-min",
         type=float,
         default=0.9,
-        help="Minimum adaptive temperature clamp (Phase 1 default: 0.9)",
+        help="적응형 온도 하한 (기본: 0.9)",
     )
     parser.add_argument(
         "--temperature-max",
         type=float,
         default=1.2,
-        help="Maximum adaptive temperature clamp (Phase 1 default: 1.2)",
+        help="적응형 온도 상한 (기본: 1.2)",
     )
     parser.add_argument(
         "--stat-momentum",
         type=float,
         default=0.92,
-        help="EMA momentum for crisis signal statistics (default: 0.92)",
+        help="위기 신호 통계를 위한 EMA 모멘텀 (기본: 0.92)",
     )
     parser.add_argument(
         "--crisis-guard-rate-init",
         type=float,
         default=0.07,
-        help="Initial crisis guard rate during warmup (default: 0.07)",
+        help="워밍업 기간 동안 사용할 위기 가드 비율 초기값 (기본: 0.07)",
     )
     parser.add_argument(
         "--crisis-guard-rate-final",
         type=float,
         default=0.02,
-        help="Final crisis guard rate after warmup (default: 0.02)",
+        help="워밍업 이후 적용되는 위기 가드 비율 (기본: 0.02)",
     )
     parser.add_argument(
         "--crisis-guard-warmup-steps",
         type=int,
         default=7500,
-        help="Warmup steps for crisis guard rate schedule (default: 7500)",
+        help="위기 가드 비율 스케줄 워밍업 스텝 수 (기본: 7500)",
     )
     parser.add_argument(
         "--hysteresis-up",
         type=float,
         default=0.52,
-        help="Crisis entry threshold when previous regime is normal (default: 0.52)",
+        help="이전 레짐이 정상일 때 위기 레짐으로 전환하는 임계값 (기본: 0.52)",
     )
     parser.add_argument(
         "--hysteresis-down",
         type=float,
         default=0.42,
-        help="Crisis exit threshold when previous regime is crisis (default: 0.42)",
+        help="이전 레짐이 위기일 때 정상 레짐으로 복귀하는 임계값 (기본: 0.42)",
     )
     parser.add_argument(
         "--hysteresis-quantile",
         type=float,
         default=0.72,
-        help="Quantile target for adaptive hysteresis thresholds (default: 0.72)",
+        help="적응형 히스테리시스 임계값을 계산할 때 사용하는 분위수 (기본: 0.72)",
     )
     parser.add_argument(
         "--k-s",
         dest="k_s",
         type=float,
         default=6.0,
-        help="Sigmoid slope for Sharpe z-score transform (Phase 1 default: 6.0)",
+        help="Sharpe z-score를 시그모이드로 변환할 때 사용하는 기울기 (기본: 6.0)",
     )
     parser.add_argument(
         "--k-c",
         dest="k_c",
         type=float,
         default=6.0,
-        help="Sigmoid slope for CVaR z-score transform (Phase 1 default: 6.0)",
+        help="CVaR z-score 시그모이드 변환 기울기 (기본: 6.0)",
     )
     parser.add_argument(
         "--k-b",
         dest="k_b",
         type=float,
         default=4.0,
-        help="Sigmoid slope for base crisis transform (Phase 1 default: 4.0)",
+        help="기본 위기 확률 시그모이드 변환 기울기 (기본: 4.0)",
     )
     parser.add_argument(
         "--crisis-guard-rate",
         type=float,
         default=None,
-        help="Legacy static crisis guard rate override (optional)",
+        help="위기 가드 비율을 고정값으로 강제하고 싶을 때 사용하는 옵션",
     )
 
     # Evaluation only
@@ -1842,28 +1887,34 @@ def main():
         "--checkpoint",
         type=str,
         default=None,
-        help="Checkpoint path for evaluation (required for --mode test)",
+        help="평가용 체크포인트 경로 (--mode test에 필수)",
     )
 
     # Visualization (기본값: 모두 저장)
     parser.add_argument(
         "--no-plot",
         action="store_true",
-        help="Disable saving evaluation plots (default: enabled)",
+        help="평가 플롯 저장 비활성화 (기본: 활성화)",
     )
     parser.add_argument(
         "--output-plot",
         type=str,
         default=None,
-        help="Plot output directory (default: log_dir/evaluation_plots)",
+        help="플롯 출력 디렉터리 (기본: log_dir/evaluation_plots)",
     )
     parser.add_argument(
         "--no-json",
         action="store_true",
-        help="Disable saving evaluation results as JSON (default: enabled)",
+        help="평가 결과 JSON 저장 비활성화 (기본: 활성화)",
     )
 
-    base_visible = {"--mode", "--reward-type", "--episodes", "--env-diversify", "--advanced"}
+    base_visible = {
+        "--mode",
+        "--reward-type",
+        "--episodes",
+        "--env-diversify",
+        "--advanced",
+    }
     advanced_descriptions: List[Tuple[str, str]] = []
     for action in list(parser._actions):
         option_strings = tuple(action.option_strings)
@@ -1882,7 +1933,9 @@ def main():
 
     if getattr(args, "advanced", False):
         print("Advanced options:\n")
-        for label, description in sorted(advanced_descriptions, key=lambda item: item[0]):
+        for label, description in sorted(
+            advanced_descriptions, key=lambda item: item[0]
+        ):
             print(f"  {label}\n    {description}")
         return
 
@@ -1906,18 +1959,22 @@ def main():
     # Execute
     if args.mode == "train":
         log_dir, model_path = train_irt(args)
-        print(f"\nCompleted! Results: {log_dir}")
+        print(f"\nTraining complete. Results directory: {log_dir}")
 
     elif args.mode == "eval":
         results = test_irt(args)
-        print(f"\nCompleted! Final return: {results['total_return']*100:.2f}%")
+        print(
+            f"\nEvaluation complete. Final return: {results['total_return']*100:.2f}%"
+        )
 
     elif args.mode == "both":
         log_dir, model_path = train_irt(args)
-        print(f"\nTraining completed. Starting evaluation...\n")
+        print(
+            "\nTraining finished. Starting evaluation with the same configuration...\n"
+        )
         results = test_irt(args, model_path=model_path)
-        print(f"\nAll tasks completed!")
-        print(f"  Training results: {log_dir}")
+        print("\nFull pipeline completed.")
+        print(f"  Training outputs: {log_dir}")
         print(f"  Final return: {results['total_return']*100:.2f}%")
 
 

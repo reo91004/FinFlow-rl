@@ -63,7 +63,7 @@ class StockTradingEnv(gym.Env):
         model_name="",
         mode="",
         iteration="",
-        # Phase 3: DSR + CVaR 보상
+        # DSR + CVaR 보상 관련 파라미터
         reward_type: str = "basic",
         lambda_dsr: float = 0.1,
         lambda_cvar: float = 0.05,
@@ -128,7 +128,7 @@ class StockTradingEnv(gym.Env):
                 "Set use_weighted_action=True."
             )
 
-        # Phase 3.5: state_space에 DSR/CVaR 2개 차원 추가
+        # 보상 유형에 따라 상태 공간에 추가 신호를 포함시킨다.
         if self.reward_type == "adaptive_risk":
             # ΔSharpe, CVaR, crisis_level 노출
             self.state_space = state_space + 3
@@ -155,7 +155,7 @@ class StockTradingEnv(gym.Env):
         self.mode = mode
         self.iteration = iteration
 
-        # Phase 3: 리스크 민감 보상 함수 (state 초기화 전에 설정 필요)
+        # 리스크 민감 보상 함수를 state 초기화 전에 구성한다.
         if self.reward_type == "dsr_cvar":
             from .reward_functions import RiskSensitiveReward
 
@@ -167,11 +167,11 @@ class StockTradingEnv(gym.Env):
                 cvar_window=cvar_window,
             )
 
-            # Phase 3.5: DSR/CVaR 값 버퍼 (state에 포함시킬 용도)
+            # DSR/CVaR 신호를 상태 벡터에 포함하기 위한 버퍼
             self.last_dsr = 0.0
             self.last_cvar = 0.0
         elif self.reward_type == "adaptive_risk":
-            # Phase-H1: Adaptive Risk-Aware Reward
+            # 위기 민감형 보상을 사용하는 경우
             from .reward_functions import AdaptiveRiskReward
 
             self.risk_reward = AdaptiveRiskReward(
@@ -185,7 +185,7 @@ class StockTradingEnv(gym.Env):
                 cvar_window=self.adaptive_cvar_window,
             )
 
-            # Phase-H1: crisis_level 및 디버깅 정보 저장
+            # 위기 레벨 및 보상 계수 추적용 변수
             self.last_crisis_level = 0.5
             self.last_kappa = self.adaptive_lambda_sharpe
             self.last_kappa_cvar = self.adaptive_lambda_cvar
@@ -546,7 +546,7 @@ class StockTradingEnv(gym.Env):
         self.asset_memory.append(end_total_asset)
         self.date_memory.append(self._get_date())
 
-        # Phase 3: 리스크 민감 보상 계산
+        # 리스크 민감 보상을 계산
         basic_reward = end_total_asset - begin_total_asset
 
         if self.reward_type == "dsr_cvar" and self.risk_reward is not None:
@@ -804,15 +804,15 @@ class StockTradingEnv(gym.Env):
         self._crisis_history.clear()
         self._last_reward_info = {}
 
-        # Phase 3: 리스크 민감 보상 함수 초기화
+        # 리스크 민감 보상 모듈을 초기화한다.
         if self.risk_reward is not None:
             self.risk_reward.reset()
 
-            # Phase 3.5: DSR/CVaR 버퍼 초기화
+            # DSR/CVaR 관련 버퍼 초기화
             if self.reward_type == "dsr_cvar":
                 self.last_dsr = 0.0
                 self.last_cvar = 0.0
-            # Phase-H1: Adaptive Risk 버퍼 초기화
+            # adaptive_risk 보상용 상태 변수 초기화
             elif self.reward_type == "adaptive_risk":
                 self.last_crisis_level = 0.5
                 self.last_kappa = self.adaptive_lambda_sharpe
@@ -882,7 +882,7 @@ class StockTradingEnv(gym.Env):
                     + sum(([self.data[tech]] for tech in self.tech_indicator_list), [])
                 )
 
-        # Phase 3.5: DSR/CVaR 신호 추가 (초기값 0.0, 0.0)
+        # 상태 벡터에 DSR/CVaR 및 위기 레벨 초기값을 추가한다.
         if self.reward_type == "dsr_cvar":
             state = state + [0.0, 0.0]
         elif self.reward_type == "adaptive_risk":
@@ -915,7 +915,7 @@ class StockTradingEnv(gym.Env):
                 + sum(([self.data[tech]] for tech in self.tech_indicator_list), [])
             )
 
-        # Phase 3.5: DSR/CVaR 신호 추가 (이전 step의 값)
+        # 이전 스텝에서 계산한 DSR/CVaR 및 위기 레벨을 상태 벡터에 포함한다.
         if self.reward_type == "dsr_cvar":
             state = state + [self.last_dsr, self.last_cvar]
         elif self.reward_type == "adaptive_risk":
