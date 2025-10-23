@@ -250,6 +250,8 @@ class IRTPolicy(SACPolicy):
         stock_dim: Optional[int] = None,
         tech_indicator_count: Optional[int] = None,
         has_dsr_cvar: bool = False,
+        mdp_feature_dim: int = 0,
+        mdp_feature_spec: Optional[List[Tuple[str, int]]] = None,
         dirichlet_min: float = 0.05,
         dirichlet_max: float = 6.0,
         action_temp: float = 0.50,
@@ -324,6 +326,8 @@ class IRTPolicy(SACPolicy):
             stock_dim: 종목 수 (명시하지 않으면 행동 차원에서 유추)
             tech_indicator_count: 기술 지표 개수 (명시하지 않으면 상태 차원에서 유추)
             has_dsr_cvar: 상태에 DSR·CVaR 추가 여부
+            mdp_feature_dim: 관측 확장을 위해 추가된 MDP 특징 수
+            mdp_feature_spec: 확장 특징의 이름-길이 목록 (옵션)
             dirichlet_min: Dirichlet 집중도 하한 (수치 안정성 확보용)
             dirichlet_max: Dirichlet 집중도 상한
             action_temp: Dirichlet 샘플링 온도
@@ -380,6 +384,18 @@ class IRTPolicy(SACPolicy):
             int(tech_indicator_count) if tech_indicator_count is not None else None
         )
         self.has_dsr_cvar = bool(has_dsr_cvar)
+        if mdp_feature_spec is not None:
+            cleaned_spec: List[Tuple[str, int]] = []
+            total = 0
+            for name, length in mdp_feature_spec:
+                length_int = max(int(length), 0)
+                cleaned_spec.append((name, length_int))
+                total += length_int
+            self.mdp_feature_spec = cleaned_spec
+            self.mdp_feature_dim = total
+        else:
+            self.mdp_feature_spec = []
+            self.mdp_feature_dim = int(max(mdp_feature_dim, 0))
         if market_feature_dim is not None:
             self.market_feature_dim = int(market_feature_dim)
         elif self.tech_indicator_count is not None:
@@ -482,6 +498,8 @@ class IRTPolicy(SACPolicy):
             stock_dim=self.stock_dim_meta or action_dim,
             tech_indicator_count=self.tech_indicator_count,
             has_dsr_cvar=self.has_dsr_cvar,
+            mdp_feature_dim=self.mdp_feature_dim,
+            mdp_feature_spec=self.mdp_feature_spec,
             dirichlet_min=self.dirichlet_min,
             dirichlet_max=self.dirichlet_max,
             action_temp=self.action_temp,  # Dirichlet 샘플 온도

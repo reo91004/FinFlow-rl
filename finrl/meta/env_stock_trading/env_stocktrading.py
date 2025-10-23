@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import gymnasium as gym
 import matplotlib
@@ -128,21 +128,12 @@ class StockTradingEnv(gym.Env):
                 "Set use_weighted_action=True."
             )
 
-        # 보상 유형에 따라 상태 공간에 추가 신호를 포함시킨다.
-        if self.reward_type == "adaptive_risk":
-            # ΔSharpe, CVaR, crisis_level 노출
-            self.state_space = state_space + 3
-        elif self.reward_type == "dsr_cvar":
-            self.state_space = state_space + 2  # DSR/CVaR 신호 추가
-        else:
-            self.state_space = state_space
-
         self.action_space = action_space
         self.tech_indicator_list = tech_indicator_list
         self.action_space = spaces.Box(low=-1, high=1, shape=(self.action_space,))
-        self.observation_space = spaces.Box(
-            low=-np.inf, high=np.inf, shape=(self.state_space,)
-        )
+        self.base_state_space = int(state_space)
+        self.state_space = int(state_space)
+        self.observation_space = None  # 최종 상태 공간은 보상 모듈 초기화 이후 설정된다.
         self.data = self.df.loc[self.day, :]
         self.terminal = False
         self.make_plots = make_plots
@@ -194,6 +185,22 @@ class StockTradingEnv(gym.Env):
         else:
             self.risk_reward = None
 
+        # ===== MDP 상태 확장을 위한 내부 상태 초기화 =====
+        self._prev_target_weights = np.ones(self.stock_dim, dtype=np.float64) / max(
+            1, self.stock_dim
+        )
+        self._prev_executed_weights = self._prev_target_weights.copy()
+        self._prev_turnover_target = 0.0
+        self._prev_turnover_executed = 0.0
+        self._prev_transaction_cost = 0.0
+        self._reward_state = self._get_reward_state()
+        self.mdp_feature_spec = self._build_mdp_feature_spec()
+        self.mdp_feature_dim = sum(length for _, length in self.mdp_feature_spec)
+        self.state_space = self.base_state_space + self.mdp_feature_dim
+        self.observation_space = spaces.Box(
+            low=-np.inf, high=np.inf, shape=(self.state_space,)
+        )
+
         # initalize state (reward_type 설정 후 호출)
         self.state = self._initiate_state()
 
@@ -220,6 +227,173 @@ class StockTradingEnv(gym.Env):
         #         self.logger = Logger('results',[CSVOutputFormat])
         # self.reset()
         self._seed()
+
+    def _build_mdp_feature_spec(self) -> List[Tuple[str, int]]:
+        """
+        확장 관측에 포함할 MDP 보조 특징의 정의를 생성한다.
+        """
+        spec: List[Tuple[str, int]] = [
+            ("prev_target_weights", self.stock_dim),
+            ("prev_executed_weights", self.stock_dim),
+            ("prev_turnover_target", 1),
+            ("prev_turnover_executed", 1),
+            ("prev_transaction_cost", 1),
+        ]
+        if self.reward_type == "dsr_cvar":
+            spec.extend(
+                [
+                    ("last_dsr", 1),
+                    ("last_cvar", 1),
+                    ("dsr_mu", 1),
+                    ("dsr_sigma", 1),
+                    ("dsr_sharpe", 1),
+                    ("log_return_ema", 1),
+                    ("dsr_ema", 1),
+                    ("cvar_ema", 1),
+                ]
+            )
+            window = 0
+            if self.risk_reward is not None and hasattr(self.risk_reward, "cvar"):
+                window = int(getattr(self.risk_reward.cvar, "window", 0))
+            if window > 0:
+                spec.append(("cvar_buffer", window))
+            spec.append(("cvar_fill_count", 1))
+        elif self.reward_type == "adaptive_risk":
+            spec.extend(
+                [
+                    ("last_delta_sharpe", 1),
+                    ("last_cvar", 1),
+                    ("last_crisis_level", 1),
+                    ("kappa_sharpe", 1),
+                    ("kappa_cvar", 1),
+                ]
+            )
+        else:
+            spec.append(("last_reward", 1))
+        return spec
+
+    def _get_reward_state(self) -> Dict[str, float]:
+        """
+        보상 모듈이 유지 중인 내부 상태를 사본으로 반환한다.
+        """
+        if self.reward_type == "dsr_cvar" and self.risk_reward is not None:
+            return self.risk_reward.get_state()
+        if self.reward_type == "adaptive_risk" and self.risk_reward is not None:
+            return {
+                "delta_sharpe": float(getattr(self, "last_delta_sharpe", 0.0)),
+                "cvar_value": float(getattr(self, "last_cvar", 0.0)),
+                "crisis_level": float(getattr(self, "last_crisis_level", 0.5)),
+                "kappa_sharpe": float(
+                    getattr(self, "last_kappa", self.adaptive_lambda_sharpe)
+                ),
+                "kappa_cvar": float(
+                    getattr(self, "last_kappa_cvar", self.adaptive_lambda_cvar)
+                ),
+            }
+        return {}
+
+    def _augment_state_with_mdp(self, state: List[float]) -> List[float]:
+        """
+        현재 상태 벡터에 MDP 보조 특징을 덧붙인다.
+        """
+        if not self.mdp_feature_spec:
+            return state
+        features: List[float] = []
+        reward_state = self._reward_state or {}
+        for name, length in self.mdp_feature_spec:
+            if length <= 0:
+                continue
+            if name == "prev_target_weights":
+                features.extend(self._prev_target_weights.tolist())
+            elif name == "prev_executed_weights":
+                features.extend(self._prev_executed_weights.tolist())
+            elif name == "prev_turnover_target":
+                features.append(float(self._prev_turnover_target))
+            elif name == "prev_turnover_executed":
+                features.append(float(self._prev_turnover_executed))
+            elif name == "prev_transaction_cost":
+                features.append(float(self._prev_transaction_cost))
+            elif name == "last_dsr":
+                features.append(float(getattr(self, "last_dsr", 0.0)))
+            elif name == "last_cvar":
+                features.append(float(getattr(self, "last_cvar", 0.0)))
+            elif name == "dsr_mu":
+                features.append(float(reward_state.get("mu", 0.0)))
+            elif name == "dsr_sigma":
+                features.append(float(reward_state.get("sigma", 0.0)))
+            elif name == "dsr_sharpe":
+                features.append(float(reward_state.get("sharpe", 0.0)))
+            elif name == "log_return_ema":
+                features.append(float(reward_state.get("log_return_ema", 0.0)))
+            elif name == "dsr_ema":
+                features.append(float(reward_state.get("dsr_ema", 0.0)))
+            elif name == "cvar_ema":
+                features.append(float(reward_state.get("cvar_ema", 0.0)))
+            elif name == "cvar_buffer":
+                if self.reward_type == "dsr_cvar" and self.risk_reward is not None:
+                    buffer_vals = self.risk_reward.get_cvar_buffer(length)
+                else:
+                    buffer_vals = [0.0] * length
+                features.extend(buffer_vals)
+            elif name == "cvar_fill_count":
+                features.append(float(reward_state.get("cvar_fill_count", 0.0)))
+            elif name == "last_delta_sharpe":
+                features.append(float(getattr(self, "last_delta_sharpe", 0.0)))
+            elif name == "last_crisis_level":
+                features.append(float(getattr(self, "last_crisis_level", 0.5)))
+            elif name == "kappa_sharpe":
+                features.append(float(getattr(self, "last_kappa", self.adaptive_lambda_sharpe)))
+            elif name == "kappa_cvar":
+                features.append(
+                    float(getattr(self, "last_kappa_cvar", self.adaptive_lambda_cvar))
+                )
+            elif name == "last_reward":
+                features.append(float(getattr(self, "reward", 0.0)))
+            else:
+                features.extend([0.0] * length)
+        return state + features
+
+    def _current_portfolio_weights(self, state_vector: List[float]) -> np.ndarray:
+        prices = np.array(state_vector[1 : (self.stock_dim + 1)], dtype=np.float64)
+        holdings = np.array(
+            state_vector[(self.stock_dim + 1) : (self.stock_dim * 2 + 1)],
+            dtype=np.float64,
+        )
+        invested = prices * holdings
+        portfolio_value = float(state_vector[0] + invested.sum())
+        if portfolio_value <= 1e-8 or not np.isfinite(portfolio_value):
+            return np.ones(self.stock_dim, dtype=np.float64) / max(self.stock_dim, 1)
+        weights = invested / portfolio_value
+        weights = np.clip(weights, 0.0, 1.0)
+        if weights.sum() > 1.0:
+            weights /= weights.sum()
+        return weights
+
+    def _sync_prev_weights_from_state(self, state_vector: List[float]) -> None:
+        weights = self._current_portfolio_weights(state_vector)
+        self._prev_target_weights = weights.copy()
+        self._prev_executed_weights = weights.copy()
+        self._prev_turnover_target = 0.0
+        self._prev_turnover_executed = 0.0
+        self._prev_transaction_cost = 0.0
+
+    def _update_weight_history(
+        self,
+        target_weights: Optional[np.ndarray],
+        executed_weights: Optional[np.ndarray],
+        turnover_target: float,
+        turnover_executed: float,
+        transaction_cost: float,
+    ) -> None:
+        if target_weights is not None:
+            self._prev_target_weights = np.asarray(target_weights, dtype=np.float64)
+        if executed_weights is not None:
+            self._prev_executed_weights = np.asarray(
+                executed_weights, dtype=np.float64
+            )
+        self._prev_turnover_target = float(turnover_target)
+        self._prev_turnover_executed = float(turnover_executed)
+        self._prev_transaction_cost = float(transaction_cost)
 
     def _sell_stock(self, index, action):
         def _do_sell_normal():
@@ -528,6 +702,15 @@ class StockTradingEnv(gym.Env):
             actions[index] = self._buy_stock(index, actions[index])
 
         self.actions_memory.append(actions)
+        base_snapshot = list(self.state[: self.base_state_space])
+        current_weights = self._current_portfolio_weights(base_snapshot)
+        self._update_weight_history(
+            current_weights,
+            current_weights,
+            0.0,
+            0.0,
+            0.0,
+        )
 
         # state: s -> s+1
         self.day += 1
@@ -606,6 +789,10 @@ class StockTradingEnv(gym.Env):
                 },
             }
 
+        self._reward_state = self._get_reward_state()
+        base_state = list(self.state[: self.base_state_space])
+        self.state = self._augment_state_with_mdp(base_state)
+
         self.rewards_memory.append(self.reward)
         self.state_memory.append(self.state)
 
@@ -674,6 +861,13 @@ class StockTradingEnv(gym.Env):
         self.cost += tc_value
         self._last_tc = tc_value
         self.state[0] = max(self.state[0] - tc_value, 0.0)
+        self._update_weight_history(
+            target_weights,
+            executed_weights,
+            turnover_target,
+            actual_turnover,
+            tc_value,
+        )
 
         investable_value = max(portfolio_value - tc_value, 1e-8)
         new_holdings = (executed_weights * investable_value) / (prices + 1e-8)
@@ -748,6 +942,10 @@ class StockTradingEnv(gym.Env):
                 },
             }
 
+        self._reward_state = self._get_reward_state()
+        base_state = list(self.state[: self.base_state_space])
+        self.state = self._augment_state_with_mdp(base_state)
+
         self.rewards_memory.append(self.reward)
         self.state_memory.append(self.state)
 
@@ -821,6 +1019,10 @@ class StockTradingEnv(gym.Env):
                 self.last_cvar = 0.0
                 self._crisis_level = 0.5
 
+        self._reward_state = self._get_reward_state()
+        base_state = list(self.state[: self.base_state_space])
+        self.state = self._augment_state_with_mdp(base_state)
+
         self.episode += 1
 
         return self.state, {}
@@ -882,13 +1084,11 @@ class StockTradingEnv(gym.Env):
                     + sum(([self.data[tech]] for tech in self.tech_indicator_list), [])
                 )
 
-        # 상태 벡터에 DSR/CVaR 및 위기 레벨 초기값을 추가한다.
-        if self.reward_type == "dsr_cvar":
-            state = state + [0.0, 0.0]
-        elif self.reward_type == "adaptive_risk":
-            state = state + [0.0, 0.0, 0.5]
+        # 초기 상태 기준으로 이전 가중치/리스크 통계 동기화
+        self._reward_state = self._get_reward_state()
+        self._sync_prev_weights_from_state(state)
 
-        return state
+        return self._augment_state_with_mdp(state)
 
     def _update_state(self):
         if len(self.df.tic.unique()) > 1:
@@ -915,17 +1115,7 @@ class StockTradingEnv(gym.Env):
                 + sum(([self.data[tech]] for tech in self.tech_indicator_list), [])
             )
 
-        # 이전 스텝에서 계산한 DSR/CVaR 및 위기 레벨을 상태 벡터에 포함한다.
-        if self.reward_type == "dsr_cvar":
-            state = state + [self.last_dsr, self.last_cvar]
-        elif self.reward_type == "adaptive_risk":
-            state = state + [
-                self.last_delta_sharpe,
-                self.last_cvar,
-                self._crisis_level,
-            ]
-
-        return state
+        return self._augment_state_with_mdp(state)
 
     def _get_date(self):
         if len(self.df.tic.unique()) > 1:

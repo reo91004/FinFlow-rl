@@ -244,6 +244,45 @@ class RiskSensitiveReward:
         self.dsr_ema = 1.0
         self.cvar_ema = 1.0
 
+    def get_state(self) -> dict:
+        """
+        현재 보상 모듈의 내부 상태를 사본으로 반환한다.
+
+        Returns:
+            dict: DSR·CVaR 추정기 및 정규화 통계
+        """
+        sigma_sq = float(self.dsr.sigma_sq)
+        sigma = float(np.sqrt(max(sigma_sq, self.dsr.epsilon)))
+        buffer_values = list(self.cvar.buffer)
+        return {
+            "mu": float(self.dsr.mu),
+            "sigma_sq": sigma_sq,
+            "sigma": sigma,
+            "sharpe": float(self.dsr.sharpe),
+            "log_return_ema": float(self.log_return_ema),
+            "dsr_ema": float(self.dsr_ema),
+            "cvar_ema": float(self.cvar_ema),
+            "cvar_buffer": buffer_values,
+            "cvar_window": int(self.cvar.window),
+            "cvar_fill_count": len(buffer_values),
+        }
+
+    def get_cvar_buffer(self, max_len: int) -> list[float]:
+        """
+        CVaR 버퍼를 길이 max_len으로 패딩하여 반환한다.
+
+        Args:
+            max_len: 반환할 벡터 길이
+
+        Returns:
+            list[float]: 최근 리턴 (최신값이 마지막), 부족분은 0으로 패딩
+        """
+        buffer_values = list(self.cvar.buffer)
+        if len(buffer_values) >= max_len:
+            return buffer_values[-max_len:]
+        padding = [0.0] * (max_len - len(buffer_values))
+        return buffer_values + padding
+
 
 class AdaptiveRiskReward:
     """

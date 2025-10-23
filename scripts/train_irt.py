@@ -460,7 +460,7 @@ def create_env(
     """DSR + CVaR 보상을 지원하는 StockTradingEnv를 생성한다."""
 
     # 상태 = 잔고(1) + 가격(N) + 보유량(N) + 기술지표(K*N)
-    # `reward_type='dsr_cvar'`일 때는 DSR·CVaR 보조 지표가 추가되어 차원이 2만큼 증가한다.
+    # 보상 및 MDP 확장 특징은 환경 내부에서 자동으로 추가된다.
     state_space = 1 + (len(tech_indicators) + 2) * stock_dim
 
     env_kwargs = {
@@ -884,6 +884,9 @@ def train_irt(args):
         else 4 + tech_indicator_count
     )
 
+    mdp_feature_dim = int(getattr(base_train_env, "mdp_feature_dim", 0))
+    mdp_feature_spec = getattr(base_train_env, "mdp_feature_spec", [])
+
     policy_kwargs = {
         "emb_dim": args.emb_dim,
         "m_tokens": args.m_tokens,
@@ -896,6 +899,8 @@ def train_irt(args):
         "stock_dim": stock_dim,
         "tech_indicator_count": tech_indicator_count,
         "has_dsr_cvar": has_dsr_cvar,
+        "mdp_feature_dim": mdp_feature_dim,
+        "mdp_feature_spec": mdp_feature_spec,
         # Dirichlet 농도 및 온도 파라미터는 평가 시점으로 전달된다.
         "dirichlet_min": args.dirichlet_min,
         "dirichlet_max": args.dirichlet_max,

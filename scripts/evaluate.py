@@ -81,7 +81,7 @@ def create_env(
 ) -> StockTradingEnv:
     """평가용 StockTradingEnv를 생성하고 보상 구성 옵션을 설정한다."""
     # 상태 공간 구성: 잔고(1) + 가격(N) + 보유량(N) + 기술지표(K*N) 구조
-    # reward_type이 'dsr_cvar'이면 상태 벡터에 DSR·CVaR 특성이 추가된다.
+    # 보상/리스크 관련 확장 특징은 환경 내부에서 자동으로 덧붙여진다.
     state_space = 1 + (len(tech_indicators) + 2) * stock_dim
 
     env_kwargs = {

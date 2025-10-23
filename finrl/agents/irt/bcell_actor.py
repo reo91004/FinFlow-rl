@@ -42,6 +42,8 @@ class BCellIRTActor(nn.Module):
         stock_dim: Optional[int] = None,
         tech_indicator_count: Optional[int] = None,
         has_dsr_cvar: bool = False,
+        mdp_feature_dim: int = 0,
+        mdp_feature_spec: Optional[List[Tuple[str, int]]] = None,
         dirichlet_min: float = 0.05,
         dirichlet_max: float = 6.0,
         action_temp: float = 0.50,
@@ -95,6 +97,8 @@ class BCellIRTActor(nn.Module):
             stock_dim: 종목 수 (지정하지 않으면 action_dim으로 설정)
             tech_indicator_count: 기술 지표 개수 (자동 추정 가능)
             has_dsr_cvar: 상태에 DSR·CVaR 특성을 포함하는지 여부
+            mdp_feature_dim: 관측에 추가된 MDP 확장 특징 수
+            mdp_feature_spec: 확장 특징 이름과 길이 목록 (관측 파싱용)
             dirichlet_min: Dirichlet 집중도 하한
             dirichlet_max: Dirichlet 집중도 상한
             action_temp: Dirichlet 샘플 온도
@@ -140,13 +144,37 @@ class BCellIRTActor(nn.Module):
         self.dirichlet_max = dirichlet_max
         self.action_temp = action_temp  # Dirichlet 샘플 온도
         self.has_dsr_cvar = bool(has_dsr_cvar)
+        if mdp_feature_spec is not None:
+            cleaned_spec: List[Tuple[str, int]] = []
+            offset = 0
+            for name, length in mdp_feature_spec:
+                length_int = max(int(length), 0)
+                cleaned_spec.append((name, length_int))
+                offset += length_int
+            self.mdp_feature_spec = cleaned_spec
+            self.mdp_feature_dim = offset
+        else:
+            self.mdp_feature_spec = []
+            self.mdp_feature_dim = int(max(mdp_feature_dim, 0))
+        self._mdp_slices: Dict[str, Tuple[int, int]] = {}
+        offset = 0
+        for name, length in self.mdp_feature_spec:
+            if length <= 0:
+                continue
+            self._mdp_slices[name] = (offset, offset + length)
+            offset += length
+        if not self.mdp_feature_spec and self.mdp_feature_dim < 0:
+            self.mdp_feature_dim = 0
         self.stock_dim = int(stock_dim) if stock_dim is not None else action_dim
         if self.stock_dim <= 0:
             raise ValueError(f"stock_dim must be positive, got {self.stock_dim}")
-        extra_dims = 2 if self.has_dsr_cvar else 0
+        extra_dims = 0
         inferred_indicator_count = tech_indicator_count
         if inferred_indicator_count is None:
-            remainder = max(state_dim - (1 + 2 * self.stock_dim) - extra_dims, 0)
+            remainder = max(
+                state_dim - (1 + 2 * self.stock_dim) - self.mdp_feature_dim - extra_dims,
+                0,
+            )
             inferred_indicator_count = remainder // self.stock_dim if self.stock_dim > 0 else 0
         self.tech_indicator_count = int(max(inferred_indicator_count or 0, 0))
         computed_market_dim = 4 + self.tech_indicator_count
@@ -446,8 +474,8 @@ class BCellIRTActor(nn.Module):
 
         # 기술 지표는 각 지표별 첫 번째 종목 값을 사용한다.
         tech_start = shares_end
-        dsr_offset = 2 if self.has_dsr_cvar else 0
-        available = max(state.size(1) - dsr_offset - tech_start, 0)
+        mdp_total = self.mdp_feature_dim
+        available = max(state.size(1) - mdp_total - tech_start, 0)
         indicator_blocks = min(self.tech_indicator_count, available // stock_dim)
         tech_features = None
         if indicator_blocks > 0:
@@ -472,6 +500,19 @@ class BCellIRTActor(nn.Module):
             )
         elif market_features.shape[1] > self.market_feature_dim:
             market_features = market_features[:, : self.market_feature_dim]
+
+        mdp_start = tech_start + indicator_blocks * stock_dim
+        mdp_features: Dict[str, torch.Tensor] = {}
+        if self.mdp_feature_dim > 0 and state.size(1) >= mdp_start + self.mdp_feature_dim:
+            ptr = mdp_start
+            if self.mdp_feature_spec:
+                for name, length in self.mdp_feature_spec:
+                    if length <= 0:
+                        continue
+                    mdp_features[name] = state[:, ptr : ptr + length]
+                    ptr += length
+            else:
+                mdp_features["mdp_tail"] = state[:, ptr : ptr + self.mdp_feature_dim]
 
         z, danger_embed, crisis_affine_raw, crisis_base_sigmoid = self.t_cell(
             market_features, update_stats=self.training
@@ -510,18 +551,16 @@ class BCellIRTActor(nn.Module):
         crisis_base_component = torch.sigmoid(self.k_b * base_z)
 
         # DSR/CVaR 신호를 추출해 위기 레벨 계산에 반영한다.
-        # state 마지막 2개 차원: [dsr_bonus, cvar_value]
-        # state_dim은 reward_type='dsr_cvar'일 때 +2 되어 있음
-        # 따라서 항상 마지막 2개 차원을 시도하되, 존재하지 않으면 0으로 처리
         delta_sharpe_raw = torch.zeros(B, 1, device=state.device)
         cvar_raw = torch.zeros(B, 1, device=state.device)
         delta_component = torch.full_like(crisis_base_component, 0.5)
         cvar_component = torch.full_like(crisis_base_component, 0.5)
 
-        if self.has_dsr_cvar and state.size(1) >= 2:
-            # DSR/CVaR가 state에 포함된 경우 (reward_type='dsr_cvar')
-            delta_sharpe_raw = state[:, -2:-1]  # [B, 1] - DSR bonus (원본 스케일 ~0.1)
-            cvar_raw = state[:, -1:]  # [B, 1] - CVaR value (원본 스케일 ~0.01)
+        if self.has_dsr_cvar:
+            if "last_dsr" in mdp_features:
+                delta_sharpe_raw = mdp_features["last_dsr"]
+            if "last_cvar" in mdp_features:
+                cvar_raw = mdp_features["last_cvar"]
 
             _update_running_stats(delta_sharpe_raw, self.sharpe_mean, self.sharpe_var)
             _update_running_stats(cvar_raw, self.cvar_mean, self.cvar_var)
@@ -804,16 +843,8 @@ class BCellIRTActor(nn.Module):
             "tech_indicator_count_active": torch.tensor(indicator_blocks, device=state.device),
             "has_dsr_cvar": torch.tensor(1 if self.has_dsr_cvar else 0, device=state.device),
             "stock_dim": torch.tensor(self.stock_dim, device=state.device),
-            "delta_sharpe": (
-                delta_sharpe.detach()
-                if state.size(1) >= self.state_dim - 2
-                else torch.zeros(B, 1, device=state.device)
-            ),
-            "cvar": (
-                cvar.detach()
-                if state.size(1) >= self.state_dim - 2
-                else torch.zeros(B, 1, device=state.device)
-            ),
+            "delta_sharpe": delta_sharpe.detach(),
+            "cvar": cvar.detach(),
         }
 
         if retain_grad:
